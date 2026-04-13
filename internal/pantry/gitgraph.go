@@ -59,7 +59,7 @@ func (s *GitGraphStore) Sync(repoPath string) (int, error) {
 	count := 0
 	for path, fs := range stats {
 		stability := classifyStability(fs.Churn90d)
-		_, err := stmt.Exec(repoPath, path, fs.Churn30d, fs.Churn90d, fs.Authors30d,
+		_, err := stmt.Exec(repoPath, path, fs.Churn30d, fs.Churn90d, len(fs.Authors30d),
 			fs.LastAuthor, fs.LastAuthor, stability, now)
 		if err != nil {
 			_ = tx.Rollback()
