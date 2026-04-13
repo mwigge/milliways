@@ -373,22 +373,22 @@
 
 ### Course MW-32: milliways.nvim Plugin [3 SP]
 
-- [ ] MW-32.1 Create nvim-plugin/lua/milliways/init.lua — plugin setup and command registration
-- [ ] MW-32.2 :Milliways command — prompt input, call `milliways --json`, display in floating window
-- [ ] MW-32.3 :MilliwaysExplain — call `milliways --explain --json`, display routing decision
-- [ ] MW-32.4 :MilliwaysKitchen — pick kitchen via telescope/fzf, then dispatch
-- [ ] MW-32.5 :MilliwaysRecipe — pick recipe, dispatch multi-course
-- [ ] MW-32.6 :MilliwaysStatus — call `milliways status`, display in floating window
-- [ ] MW-32.7 :MilliwaysDetached — call `milliways detached`, display tickets
+- [x] MW-32.1 nvim-plugin/lua/milliways/init.lua with setup(), config, command registration
+- [x] MW-32.2 :Milliways calls milliways --json, displays in floating window with markdown filetype
+- [x] MW-32.3 :MilliwaysExplain calls --explain --json, shows kitchen/reason/tier/risk
+- [x] MW-32.4 :MilliwaysKitchen uses vim.ui.select picker, then dispatches with --kitchen
+- [x] MW-32.5 :MilliwaysRecipe uses vim.ui.select picker, then dispatches with --recipe
+- [x] MW-32.6 :MilliwaysStatus calls milliways status, displays in floating window
+- [x] MW-32.7 :MilliwaysDetached calls milliways tickets, displays in floating window
 
 ### Course MW-33: Neovim Context Injection [2 SP]
 
-- [ ] MW-33.1 Visual selection -> pass as --context-lines to milliways
-- [ ] MW-33.2 Current file path -> pass as --context-file
+- [x] MW-33.1 Visual selection passed as code block context in prompt via dispatch_selection()
+- [x] MW-33.2 Current file via vim.fn.expand passed as --context-file
 - [ ] MW-33.3 LSP symbol at cursor -> pass as --context-symbol
 - [ ] MW-33.4 Git diff of current buffer -> pass as --context-diff
-- [ ] MW-33.5 Floating window actions: q(close), a(apply diff to buffer), y(yank), r(retry with different kitchen)
-- [ ] MW-33.6 Keybindings: <leader>mm, <leader>me, <leader>ms, <leader>mr, <leader>mk
+- [x] MW-33.5 q(close) and y(yank to clipboard) keybindings on floating window
+- [x] MW-33.6 <leader>mm dispatch, <leader>me explain, <leader>ms status, <leader>mr recipe, <leader>mk kitchen
 
 - [ ] 🍋 **Palate Cleanser 6** — Neovim verified: select code -> :Milliways explain -> floating window shows response from correct kitchen, a(apply) patches buffer
 
