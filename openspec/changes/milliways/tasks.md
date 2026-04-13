@@ -4,49 +4,48 @@
 
 ### Course MW-1: CLI Skeleton [2 SP]
 
-- [ ] MW-1.1 `go mod init github.com/mwigge/milliways` with Go 1.22+
-- [ ] MW-1.2 Add Cobra dependency, create `cmd/milliways/main.go` with root command
-- [ ] MW-1.3 Flags: `--kitchen` (force kitchen), `--json` (JSON output), `--recipe` (multi-course), `--tui` (interactive), `--explain` (show routing without executing), `--keep-context` (preserve temp files)
-- [ ] MW-1.4 `--version` flag, `--help` with restaurant-themed descriptions
-- [ ] MW-1.5 Config loader: read `~/.config/milliways/carte.yaml`, merge with defaults
-- [ ] MW-1.6 Unit tests for config loading and flag parsing
+- [x] MW-1.1 `go mod init github.com/mwigge/milliways` with Go 1.22+
+- [x] MW-1.2 Add Cobra dependency, create `cmd/milliways/main.go` with root command
+- [x] MW-1.3 Flags: `--kitchen` (force kitchen), `--json` (JSON output), `--recipe` (multi-course), `--tui` (interactive), `--explain` (show routing without executing), `--keep-context` (preserve temp files)
+- [x] MW-1.4 `--version` flag, `--help` with restaurant-themed descriptions
+- [x] MW-1.5 Config loader: read `~/.config/milliways/carte.yaml`, merge with defaults
+- [x] MW-1.6 Unit tests for config loading and flag parsing
 
 ### Course MW-2: Kitchen Interface [1 SP]
 
-- [ ] MW-2.1 Define `Kitchen` interface: `Name() string`, `Exec(ctx, Task) (Result, error)`, `Stations() []string`, `CostTier() CostTier`
-- [ ] MW-2.2 Define `Task` struct: `Prompt`, `Dir`, `Context`, `OnLine func(string)`
-- [ ] MW-2.3 Define `Result` struct: `ExitCode`, `Output`, `Duration`, `LinesAdded`, `LinesRemoved`
-- [ ] MW-2.4 Define `CostTier` enum: `Cloud`, `Local`, `Free`
-- [ ] MW-2.5 `KitchenRegistry` — load from carte.yaml, lookup by name or station
-- [ ] MW-2.6 Unit tests for registry lookup
+- [x] MW-2.1 Define `Kitchen` interface: `Name() string`, `Exec(ctx, Task) (Result, error)`, `Stations() []string`, `CostTier() CostTier`
+- [x] MW-2.2 Define `Task` struct: `Prompt`, `Dir`, `Context`, `OnLine func(string)`
+- [x] MW-2.3 Define `Result` struct: `ExitCode`, `Output`, `Duration`
+- [x] MW-2.4 Define `CostTier` enum: `CostTierUnknown`, `Cloud`, `Local`, `Free`
+- [x] MW-2.5 `KitchenRegistry` — load from carte.yaml, lookup by name or station
+- [x] MW-2.6 Unit tests for registry lookup
 
 ### Course MW-3: Claude Kitchen Adapter [2 SP]
 
-- [ ] MW-3.1 Implement `Available()` — `exec.LookPath("claude")`, test with `claude --version`; report unavailable kitchens in `--explain` and skip during routing
-- [ ] MW-3.2 Implement `ClaudeKitchen` — exec `claude -p {prompt}`, capture stdout via `bufio.Scanner`
-- [ ] MW-3.2 Stream each line to `task.OnLine()` as it arrives
-- [ ] MW-3.3 Capture exit code, compute duration
-- [ ] MW-3.4 Handle timeout via `context.WithTimeout` (default 5 minutes, configurable)
-- [ ] MW-3.5 Handle missing `claude` binary gracefully (error message with install instructions)
-- [ ] MW-3.6 Unit tests with mocked exec.Command
+- [x] MW-3.1 Implement `Status()` — `exec.LookPath` + allowedCmds allowlist; report unavailable kitchens in `--explain` and skip during routing
+- [x] MW-3.2 Implement `GenericKitchen.Exec()` — exec CLI with stdout streaming via `bufio.Scanner`, scanner.Err() checked
+- [x] MW-3.3 Capture exit code, compute duration
+- [x] MW-3.4 Handle timeout via `context.WithTimeout` (default 5 minutes, configurable)
+- [x] MW-3.5 Handle missing binary gracefully (error message with install instructions)
+- [x] MW-3.6 Unit tests: Exec happy path, disallowed cmd, not-ready kitchen, defensive copies
 - [ ] MW-3.7 Integration test: real `claude -p "say hello"` returns non-empty output
 
 ### Course MW-4: Ledger [2 SP]
 
-- [ ] MW-4.1 Define `LedgerEntry` struct: ts, task_hash, task_type, kitchen, station, file, duration_s, exit_code, lines_added, lines_removed, cost_est_usd, outcome
-- [ ] MW-4.2 ndjson writer: append one JSON line to `~/.config/milliways/ledger.ndjson`
+- [x] MW-4.1 Define `LedgerEntry` struct: ts, task_hash, task_type, kitchen, station, file, duration_s, exit_code, cost_est_usd, outcome
+- [x] MW-4.2 ndjson writer: append one JSON line to `~/.config/milliways/ledger.ndjson` (0600 permissions)
 - [ ] MW-4.3 SQLite writer: INSERT into `ledger.db` (same fields, indexed by kitchen + task_type)
 - [ ] MW-4.4 Dual write on every kitchen dispatch (ndjson + SQLite)
-- [ ] MW-4.5 `milliways report` subcommand: read ledger.db, print summary (dispatches per kitchen, success rate, total cost)
-- [ ] MW-4.6 Unit tests for write + read + report
+- [x] MW-4.5 `milliways report` subcommand: read ledger ndjson, print summary (dispatches per kitchen, success rate)
+- [x] MW-4.6 Unit tests for write + read + hash determinism
 
 ### Course MW-5: Keyword Router [1 SP]
 
-- [ ] MW-5.1 Parse `routing.keywords` from carte.yaml into map[string]string
-- [ ] MW-5.2 `Route(prompt string) (kitchen string, reason string)` — scan prompt for keywords, return first match
-- [ ] MW-5.3 `--explain` mode: print routing decision without executing
-- [ ] MW-5.4 Fallback: if no keyword matches, use `routing.default`
-- [ ] MW-5.5 Unit tests: keyword matching, fallback, explain output
+- [x] MW-5.1 Parse `routing.keywords` from carte.yaml into sorted slice (longest-match-first, deterministic)
+- [x] MW-5.2 `Route(prompt string) Decision` — scan prompt for keywords, return first match with reason
+- [x] MW-5.3 `--explain` mode: print routing decision without executing
+- [x] MW-5.4 Fallback: if no keyword matches, use `routing.default`; cascade to budget_fallback; cascade to first ready
+- [x] MW-5.5 Unit tests: keyword matching, longest-match, deterministic order, fallback, unavailable kitchen, force route
 
 ### Course MW-5B: Kitchen Onboarding [2 SP]
 
