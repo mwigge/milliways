@@ -34,8 +34,8 @@
 
 - [x] MW-4.1 Define `LedgerEntry` struct: ts, task_hash, task_type, kitchen, station, file, duration_s, exit_code, cost_est_usd, outcome
 - [x] MW-4.2 ndjson writer: append one JSON line to `~/.config/milliways/ledger.ndjson` (0600 permissions)
-- [ ] MW-4.3 SQLite writer: INSERT into `ledger.db` (same fields, indexed by kitchen + task_type)
-- [ ] MW-4.4 Dual write on every kitchen dispatch (ndjson + SQLite)
+- [x] MW-4.3 SQLite writer: INSERT into `ledger.db` (same fields, indexed by kitchen + task_type + outcome)
+- [x] MW-4.4 Dual write on every kitchen dispatch (ndjson + SQLite via DualWriter)
 - [x] MW-4.5 `milliways report` subcommand: read ledger ndjson, print summary (dispatches per kitchen, success rate)
 - [x] MW-4.6 Unit tests for write + read + hash determinism
 
@@ -49,16 +49,16 @@
 
 ### Course MW-5B: Kitchen Onboarding [2 SP]
 
-- [ ] MW-5B.1 Three-level status check per kitchen: `Ready` / `NeedsAuth` / `NotInstalled` / `Disabled`
+- [x] MW-5B.1 Three-level status check per kitchen: `Ready` / `NeedsAuth` / `NotInstalled` / `Disabled` (+ `StatusUnknown` sentinel)
 - [ ] MW-5B.2 Auth probe per kitchen (e.g. `claude -p "test"` exit code, `gcloud auth list` for gemini)
-- [ ] MW-5B.3 Install helpers table: kitchen → install command (brew/npm/pip)
-- [ ] MW-5B.4 `milliways --setup <kitchen>` — run install command, wait, re-check status, run auth if needed
+- [x] MW-5B.3 Install helpers table: kitchen → install command (brew/npm/pip)
+- [x] MW-5B.4 `milliways setup <kitchen>` — run install command, wait, re-check status, guide auth if needed
 - [ ] MW-5B.5 First-run welcome screen: list all kitchens with status, offer [i]nstall / [a]uth / [s]kip
-- [ ] MW-5B.6 `milliways status` — display kitchen availability, pantry health, ledger stats
-- [ ] MW-5B.7 Graceful degradation: sommelier routes only to `Ready` kitchens, skips others with log entry
-- [ ] MW-5B.8 Single-kitchen mode: works with just one kitchen (reduced routing, no errors)
-- [ ] MW-5B.9 carte.yaml `enabled: true/false` per kitchen — user opt-out respected
-- [ ] MW-5B.10 Unit tests: status detection, fallback routing, single-kitchen mode
+- [x] MW-5B.6 `milliways status` — display kitchen availability, action column, ledger stats
+- [x] MW-5B.7 Graceful degradation: sommelier routes only to `Ready` kitchens, skips others with fallback
+- [x] MW-5B.8 Single-kitchen mode: works with just one kitchen (reduced routing, no errors)
+- [x] MW-5B.9 carte.yaml `enabled: true/false` per kitchen — user opt-out respected
+- [x] MW-5B.10 Unit tests: status detection (Diagnose, ReadyCounts), setup ready/disabled paths
 
 ### Course MW-INT1: Integration Test [2 SP]
 

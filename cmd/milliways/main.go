@@ -71,6 +71,7 @@ based on what each tool does best.
 
 	cmd.AddCommand(statusCmd(&configPath))
 	cmd.AddCommand(reportCmd(&configPath))
+	cmd.AddCommand(setupCmd(&configPath))
 
 	return cmd
 }
@@ -136,11 +137,16 @@ func dispatch(prompt, kitchenForce string, jsonOutput, explain, verbose bool, co
 		fmt.Fprintf(os.Stderr, "[dispatch] %s done (%.1fs, exit=%d)\n", decision.Kitchen, duration, result.ExitCode)
 	}
 
-	// Write ledger entry (best-effort, don't fail dispatch on ledger error)
+	// Write ledger entry (dual: ndjson + SQLite, best-effort)
 	entry := ledger.NewEntry(prompt, decision.Kitchen, "", duration, result.ExitCode)
-	lw := ledger.NewWriter(cfg.Ledger.NDJSON)
-	if writeErr := lw.Write(entry); writeErr != nil {
-		fmt.Fprintf(os.Stderr, "[ledger] warning: %v\n", writeErr)
+	dw, dwErr := ledger.NewDualWriter(cfg.Ledger.NDJSON, cfg.Ledger.DB)
+	if dwErr != nil {
+		fmt.Fprintf(os.Stderr, "[ledger] warning: %v\n", dwErr)
+	} else {
+		defer func() { _ = dw.Close() }()
+		if writeErr := dw.Write(entry); writeErr != nil {
+			fmt.Fprintf(os.Stderr, "[ledger] warning: %v\n", writeErr)
+		}
 	}
 
 	if execErr != nil {
@@ -234,28 +240,42 @@ func statusCmd(configPath *string) *cobra.Command {
 				return err
 			}
 			reg := buildRegistry(cfg)
+			health := maitre.Diagnose(reg)
+			maitre.PrintStatus(health)
 
-			fmt.Println("Kitchen     Status              Cost")
-			fmt.Println("───────     ──────              ────")
-
-			readyCount := 0
-			totalCount := 0
-			for name, k := range reg.All() {
-				totalCount++
-				status := k.Status()
-				if status == kitchen.Ready {
-					readyCount++
+			// Show ledger stats if available
+			store, storeErr := ledger.OpenStore(cfg.Ledger.DB)
+			if storeErr == nil {
+				defer func() { _ = store.Close() }()
+				total, _ := store.Total()
+				if total > 0 {
+					fmt.Printf("\nLedger: %d entries\n", total)
 				}
-				fmt.Printf("%-12s %s %-18s %s\n", name, status.Symbol(), status, k.CostTier())
 			}
-
-			fmt.Printf("\n%d/%d kitchens ready.", readyCount, totalCount)
-			if readyCount < totalCount {
-				fmt.Print(" Run 'milliways --setup <kitchen>' to add more.")
-			}
-			fmt.Println()
 
 			return nil
+		},
+	}
+}
+
+func setupCmd(configPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "setup <kitchen>",
+		Short: "Install and authenticate a kitchen",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := maitre.LoadConfig(*configPath)
+			if err != nil {
+				return err
+			}
+			reg := buildRegistry(cfg)
+
+			k, ok := reg.Get(args[0])
+			if !ok {
+				return fmt.Errorf("unknown kitchen %q — run 'milliways status' to see available kitchens", args[0])
+			}
+
+			return maitre.SetupKitchen(k)
 		},
 	}
 }
