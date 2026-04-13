@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/mwigge/milliways/internal/kitchen"
-	"github.com/mwigge/milliways/internal/ledger"
+	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/sommelier"
 )
 
@@ -94,23 +94,28 @@ routing:
 		t.Error("expected output lines")
 	}
 
-	// Write to dual ledger
-	ndjsonPath := filepath.Join(dir, "ledger.ndjson")
-	dbPath := filepath.Join(dir, "ledger.db")
-
-	dw, err := ledger.NewDualWriter(ndjsonPath, dbPath)
+	// Write to PantryDB
+	dbPath := filepath.Join(dir, "milliways.db")
+	pdb, err := pantry.Open(dbPath)
 	if err != nil {
-		t.Fatalf("NewDualWriter: %v", err)
+		t.Fatalf("pantry.Open: %v", err)
 	}
-	defer func() { _ = dw.Close() }()
+	defer func() { _ = pdb.Close() }()
 
-	entry := ledger.NewEntry("hello from integration test", decision.Kitchen, "", result.Duration.Seconds(), result.ExitCode)
-	if err := dw.Write(entry); err != nil {
-		t.Fatalf("DualWriter.Write: %v", err)
+	entry := pantry.LedgerEntry{
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		TaskHash:    "test-hash",
+		Kitchen:     decision.Kitchen,
+		DurationSec: result.Duration.Seconds(),
+		ExitCode:    result.ExitCode,
+		Outcome:     "success",
+	}
+	if _, err := pdb.Ledger().Insert(entry); err != nil {
+		t.Fatalf("Ledger.Insert: %v", err)
 	}
 
 	// Verify ledger
-	total, err := dw.Store().Total()
+	total, err := pdb.Ledger().Total()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +123,7 @@ routing:
 		t.Errorf("expected 1 ledger entry, got %d", total)
 	}
 
-	stats, err := dw.Store().Stats()
+	stats, err := pdb.Ledger().Stats()
 	if err != nil {
 		t.Fatal(err)
 	}

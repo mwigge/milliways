@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/ledger"
 	"github.com/mwigge/milliways/internal/maitre"
+	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/sommelier"
 	"github.com/spf13/cobra"
 )
@@ -137,16 +139,34 @@ func dispatch(prompt, kitchenForce string, jsonOutput, explain, verbose bool, co
 		fmt.Fprintf(os.Stderr, "[dispatch] %s done (%.1fs, exit=%d)\n", decision.Kitchen, duration, result.ExitCode)
 	}
 
-	// Write ledger entry (dual: ndjson + SQLite, best-effort)
-	entry := ledger.NewEntry(prompt, decision.Kitchen, "", duration, result.ExitCode)
-	dw, dwErr := ledger.NewDualWriter(cfg.Ledger.NDJSON, cfg.Ledger.DB)
-	if dwErr != nil {
-		fmt.Fprintf(os.Stderr, "[ledger] warning: %v\n", dwErr)
+	// Write to unified PantryDB + ndjson audit trail (best-effort)
+	dbPath := filepath.Join(maitre.DefaultConfigDir(), "milliways.db")
+	pdb, pdbErr := pantry.Open(dbPath)
+	if pdbErr != nil {
+		fmt.Fprintf(os.Stderr, "[pantry] warning: %v\n", pdbErr)
 	} else {
-		defer func() { _ = dw.Close() }()
-		if writeErr := dw.Write(entry); writeErr != nil {
-			fmt.Fprintf(os.Stderr, "[ledger] warning: %v\n", writeErr)
+		defer func() { _ = pdb.Close() }()
+		entry := pantry.LedgerEntry{
+			Timestamp:    time.Now().UTC().Format(time.RFC3339),
+			TaskHash:     ledger.HashPrompt(prompt),
+			Kitchen:      decision.Kitchen,
+			DurationSec:  duration,
+			ExitCode:     result.ExitCode,
+			Outcome:      outcomeFromExit(result.ExitCode),
+			DispatchMode: "sync",
 		}
+		if _, writeErr := pdb.Ledger().Insert(entry); writeErr != nil {
+			fmt.Fprintf(os.Stderr, "[pantry] ledger warning: %v\n", writeErr)
+		}
+		if quotaErr := pdb.Quotas().Increment(decision.Kitchen, duration, result.ExitCode != 0); quotaErr != nil {
+			fmt.Fprintf(os.Stderr, "[pantry] quota warning: %v\n", quotaErr)
+		}
+	}
+	// ndjson audit trail (human-readable, never read by Milliways)
+	ndjsonEntry := ledger.NewEntry(prompt, decision.Kitchen, "", duration, result.ExitCode)
+	nw := ledger.NewWriter(cfg.Ledger.NDJSON)
+	if writeErr := nw.Write(ndjsonEntry); writeErr != nil {
+		fmt.Fprintf(os.Stderr, "[ledger] ndjson warning: %v\n", writeErr)
 	}
 
 	if execErr != nil {
@@ -191,6 +211,18 @@ func printJSON(v any, asJSON bool) error {
 	}
 	fmt.Println(string(data))
 	return nil
+}
+
+func outcomeFromExit(exitCode int) string {
+	if exitCode == 0 {
+		return "success"
+	}
+	return "failure"
+}
+
+func openPantryDB() (*pantry.DB, error) {
+	dbPath := filepath.Join(maitre.DefaultConfigDir(), "milliways.db")
+	return pantry.Open(dbPath)
 }
 
 func buildRegistry(cfg *maitre.Config) *kitchen.Registry {
@@ -243,11 +275,11 @@ func statusCmd(configPath *string) *cobra.Command {
 			health := maitre.Diagnose(reg)
 			maitre.PrintStatus(health)
 
-			// Show ledger stats if available
-			store, storeErr := ledger.OpenStore(cfg.Ledger.DB)
-			if storeErr == nil {
-				defer func() { _ = store.Close() }()
-				total, _ := store.Total()
+			// Show ledger stats from PantryDB
+			pdb, pdbErr := openPantryDB()
+			if pdbErr == nil {
+				defer func() { _ = pdb.Close() }()
+				total, _ := pdb.Ledger().Total()
 				if total > 0 {
 					fmt.Printf("\nLedger: %d entries\n", total)
 				}
@@ -280,52 +312,37 @@ func setupCmd(configPath *string) *cobra.Command {
 	}
 }
 
-func reportCmd(configPath *string) *cobra.Command {
+func reportCmd(_ *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "report",
 		Short: "Show routing stats from the ledger",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := maitre.LoadConfig(*configPath)
+			pdb, err := openPantryDB()
+			if err != nil {
+				return fmt.Errorf("opening pantry: %w", err)
+			}
+			defer func() { _ = pdb.Close() }()
+
+			total, err := pdb.Ledger().Total()
 			if err != nil {
 				return err
 			}
-
-			data, err := os.ReadFile(cfg.Ledger.NDJSON)
-			if err != nil {
-				if os.IsNotExist(err) {
-					fmt.Println("No ledger entries yet. Start dispatching tasks!")
-					return nil
-				}
-				return fmt.Errorf("reading ledger: %w", err)
+			if total == 0 {
+				fmt.Println("No ledger entries yet. Start dispatching tasks!")
+				return nil
 			}
 
-			kitchenCounts := make(map[string]int)
-			kitchenSuccess := make(map[string]int)
-			total := 0
-
-			for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-				if line == "" {
-					continue
-				}
-				var e ledger.Entry
-				if err := json.Unmarshal([]byte(line), &e); err != nil {
-					continue
-				}
-				total++
-				kitchenCounts[e.Kitchen]++
-				if e.Outcome == "success" {
-					kitchenSuccess[e.Kitchen]++
-				}
+			stats, err := pdb.Ledger().Stats()
+			if err != nil {
+				return err
 			}
 
 			fmt.Printf("Ledger: %d entries\n\n", total)
 			fmt.Println("Kitchen      Dispatches  Success Rate")
 			fmt.Println("───────      ──────────  ────────────")
 
-			for name, count := range kitchenCounts {
-				success := kitchenSuccess[name]
-				rate := float64(success) / float64(count) * 100
-				fmt.Printf("%-12s %10d  %11.0f%%\n", name, count, rate)
+			for _, ks := range stats {
+				fmt.Printf("%-12s %10d  %11.0f%%\n", ks.Kitchen, ks.Dispatches, ks.SuccessRate)
 			}
 
 			return nil

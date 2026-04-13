@@ -72,7 +72,7 @@ func NewEntry(prompt, kitchen, station string, durationSec float64, exitCode int
 
 	return Entry{
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
-		TaskHash:    hashPrompt(prompt),
+		TaskHash:    HashPrompt(prompt),
 		Kitchen:     kitchen,
 		Station:     station,
 		DurationSec: durationSec,
@@ -81,7 +81,8 @@ func NewEntry(prompt, kitchen, station string, durationSec float64, exitCode int
 	}
 }
 
-func hashPrompt(prompt string) string {
+// HashPrompt returns a truncated SHA-256 hash of the prompt for deduplication.
+func HashPrompt(prompt string) string {
 	truncated := prompt
 	if len(truncated) > 200 {
 		truncated = truncated[:200]
