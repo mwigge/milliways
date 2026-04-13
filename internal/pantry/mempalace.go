@@ -11,7 +11,7 @@ type MemPalaceClient struct {
 	mcp *MCPClient
 }
 
-// Drawer represents a MemPalace search result.
+// Drawer represents a MemPalace search result with semantic similarity score.
 type Drawer struct {
 	ID      string  `json:"id"`
 	Text    string  `json:"text"`
@@ -82,34 +82,32 @@ func (c *MemPalaceClient) Close() error {
 
 // parseToolContent extracts typed content from an MCP tool result.
 // MCP tool results wrap content in a {"content": [{"type": "text", "text": "..."}]} structure.
+// The wrapper format is tried first because it is more specific; falling back to direct
+// parse avoids masking actual content inside a wrapper when T is a slice or nullable type.
 func parseToolContent[T any](raw json.RawMessage) (T, error) {
 	var zero T
 
-	// Try direct parse first (some servers return plain JSON)
-	if err := json.Unmarshal(raw, &zero); err == nil {
-		return zero, nil
-	}
-
-	// Try MCP content wrapper: {"content": [{"type": "text", "text": "..."}]}
+	// Try MCP content wrapper first (more specific format)
 	var wrapper struct {
 		Content []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
 	}
-	if err := json.Unmarshal(raw, &wrapper); err != nil {
-		return zero, fmt.Errorf("parsing MCP response: %w", err)
-	}
-
-	for _, c := range wrapper.Content {
-		if c.Type == "text" {
-			var result T
-			if err := json.Unmarshal([]byte(c.Text), &result); err != nil {
-				return zero, fmt.Errorf("parsing tool content text: %w", err)
+	if err := json.Unmarshal(raw, &wrapper); err == nil {
+		for _, c := range wrapper.Content {
+			if c.Type == "text" {
+				var result T
+				if err := json.Unmarshal([]byte(c.Text), &result); err == nil {
+					return result, nil
+				}
 			}
-			return result, nil
 		}
 	}
 
-	return zero, fmt.Errorf("no text content in MCP response")
+	// Fall back to direct parse (some servers return plain JSON)
+	if err := json.Unmarshal(raw, &zero); err != nil {
+		return zero, fmt.Errorf("parsing MCP response: %w", err)
+	}
+	return zero, nil
 }

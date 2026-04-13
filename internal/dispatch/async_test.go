@@ -1,8 +1,13 @@
 package dispatch
 
+// TODO: Add go.uber.org/goleak.VerifyTestMain when the dependency is adopted.
+// This package spawns goroutines in DispatchAsync; all are joined via Wait()
+// in each test, but goleak would catch any future leak regressions.
+
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,29 +93,18 @@ func TestDispatchAsync_TicketList(t *testing.T) {
 	}
 }
 
-func TestDispatchDetached(t *testing.T) {
+func TestDispatchDetached_ReturnsNotImplemented(t *testing.T) {
 	t.Parallel()
 	pdb := openTestPantry(t)
 	d := NewAsyncDispatcher(pdb)
 
 	k := kitchen.NewGeneric(kitchen.GenericConfig{Name: "echo-test", Cmd: "echo", Enabled: true})
 
-	ticketID, err := d.DispatchDetached(k, "detached task")
-	if err != nil {
-		t.Fatalf("DispatchDetached: %v", err)
+	_, err := d.DispatchDetached(k, "detached task")
+	if err == nil {
+		t.Fatal("expected error from DispatchDetached, got nil")
 	}
-	if ticketID == "" {
-		t.Fatal("expected non-empty ticket ID")
-	}
-
-	ticket, err := pdb.Tickets().Get(ticketID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ticket == nil {
-		t.Fatal("ticket not found")
-	}
-	if ticket.Mode != "detached" {
-		t.Errorf("expected mode 'detached', got %q", ticket.Mode)
+	if !strings.Contains(err.Error(), "not yet implemented") {
+		t.Errorf("expected 'not yet implemented' error, got: %v", err)
 	}
 }

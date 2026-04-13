@@ -21,6 +21,7 @@ var allowedCmds = map[string]bool{
 	"echo":     true, // for testing
 	"false":    true, // for testing non-zero exit codes
 	"true":     true, // for testing
+	"sleep":    true, // for testing timeouts
 }
 
 // GenericConfig holds configuration for a GenericKitchen.

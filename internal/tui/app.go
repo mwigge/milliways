@@ -17,7 +17,7 @@ import (
 // DispatchFunc is the callback Milliways TUI uses to dispatch a task.
 type DispatchFunc func(ctx context.Context, prompt, kitchenForce string) (kitchen.Result, sommelier.Decision, error)
 
-// Model is the main Bubble Tea TUI model.
+// Model is the main Bubble Tea application model for the Milliways TUI.
 type Model struct {
 	input       textinput.Model
 	output      viewport.Model

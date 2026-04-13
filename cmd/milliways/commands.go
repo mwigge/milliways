@@ -157,41 +157,8 @@ func dispatchAsync(prompt, kitchenForce string, verbose bool, configPath string)
 	return nil
 }
 
-func dispatchDetach(prompt, kitchenForce string, verbose bool, configPath string) error {
-	cfg, err := maitre.LoadConfig(configPath)
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-
-	reg := buildRegistry(cfg)
-	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, reg)
-
-	var decision sommelier.Decision
-	if kitchenForce != "" {
-		decision = som.ForceRoute(kitchenForce)
-	} else {
-		decision = som.Route(prompt)
-	}
-
-	k, ok := reg.Get(decision.Kitchen)
-	if !ok || k.Status() != kitchen.Ready {
-		return fmt.Errorf("kitchen %q not available", decision.Kitchen)
-	}
-
-	pdb, err := openPantryDB()
-	if err != nil {
-		return fmt.Errorf("opening pantry: %w", err)
-	}
-	defer func() { _ = pdb.Close() }()
-
-	ad := asyncdispatch.NewAsyncDispatcher(pdb)
-	ticketID, err := ad.DispatchDetached(k, prompt)
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("Detached:   %s\nKitchen:    %s\nCheck:      milliways tickets\n", ticketID, decision.Kitchen)
-	return nil
+func dispatchDetach(_, _ string, _ bool, _ string) error {
+	return fmt.Errorf("detached dispatch not yet implemented — use --async instead")
 }
 
 func ticketCmd() *cobra.Command {

@@ -565,6 +565,12 @@ func pantryCmd() *cobra.Command {
 				repoPath = args[0]
 			}
 
+			// Validate that the path is a git repository
+			gitDir := filepath.Join(repoPath, ".git")
+			if _, err := os.Stat(gitDir); os.IsNotExist(err) {
+				return fmt.Errorf("%s is not a git repository (no .git directory)", repoPath)
+			}
+
 			pdb, err := openPantryDB()
 			if err != nil {
 				return fmt.Errorf("opening pantry: %w", err)

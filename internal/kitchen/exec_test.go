@@ -56,15 +56,21 @@ func TestExec_CapturesNonZeroExitCode(t *testing.T) {
 
 func TestExec_ContextTimeout(t *testing.T) {
 	t.Parallel()
-	// "sleep" with very short timeout
-	k := NewGeneric(GenericConfig{Name: "sleep-test", Cmd: "echo", Args: []string{"-n"}, Enabled: true})
+	k := NewGeneric(GenericConfig{Name: "sleep-test", Cmd: "sleep", Args: []string{"10"}, Enabled: true})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	// With such a short timeout, echo might still complete.
-	// The point is it doesn't hang.
-	_, _ = k.Exec(ctx, Task{Prompt: "quick"})
+	start := time.Now()
+	_, err := k.Exec(ctx, Task{Prompt: ""})
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Errorf("expected fast timeout, took %v", elapsed)
+	}
+	if err == nil {
+		t.Log("timeout may not have triggered if sleep completed first")
+	}
 }
 
 func TestExec_NilOnLine(t *testing.T) {

@@ -79,30 +79,10 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 	return ticketID, nil
 }
 
-// DispatchDetached runs a kitchen as a detached OS process that survives Milliways exit.
-func (d *AsyncDispatcher) DispatchDetached(k kitchen.Kitchen, prompt string) (string, error) {
-	detachedDir := filepath.Join(os.TempDir(), "milliways-detached")
-	if err := os.MkdirAll(detachedDir, 0o700); err != nil {
-		return "", fmt.Errorf("creating detached dir: %w", err)
-	}
-
-	ticketID, err := d.pdb.Tickets().Create(k.Name(), prompt, "detached", 0, "")
-	if err != nil {
-		return "", fmt.Errorf("creating ticket: %w", err)
-	}
-
-	outputPath := filepath.Join(detachedDir, ticketID+".log")
-
-	// For detached mode, we need to track that the process was started.
-	// The actual detached process management requires platform-specific code.
-	// For now, write a marker file that can be checked later.
-	marker := fmt.Sprintf("kitchen=%s\nprompt=%s\nstarted=%s\nstatus=running\n",
-		k.Name(), prompt, time.Now().UTC().Format(time.RFC3339))
-	if err := os.WriteFile(outputPath, []byte(marker), 0o600); err != nil {
-		return "", fmt.Errorf("writing detached marker: %w", err)
-	}
-
-	return ticketID, nil
+// DispatchDetached is not yet implemented. Detached mode requires
+// platform-specific process management. Use --async instead.
+func (d *AsyncDispatcher) DispatchDetached(_ kitchen.Kitchen, _ string) (string, error) {
+	return "", fmt.Errorf("detached dispatch not yet implemented — use --async instead")
 }
 
 // Wait blocks until all async dispatches have completed.

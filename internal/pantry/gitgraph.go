@@ -60,7 +60,7 @@ func (s *GitGraphStore) Sync(repoPath string) (int, error) {
 	for path, fs := range stats {
 		stability := classifyStability(fs.Churn90d)
 		_, err := stmt.Exec(repoPath, path, fs.Churn30d, fs.Churn90d, len(fs.Authors30d),
-			fs.LastAuthor, fs.LastAuthor, stability, now)
+			fs.LastAuthor, fs.LastChanged.Format(time.RFC3339), stability, now)
 		if err != nil {
 			_ = tx.Rollback()
 			return 0, fmt.Errorf("upserting %s: %w", path, err)
@@ -106,10 +106,11 @@ func classifyStability(churn90d int) string {
 
 // fileAccum accumulates git log data per file.
 type fileAccum struct {
-	Churn30d   int
-	Churn90d   int
-	Authors30d map[string]bool
-	LastAuthor string
+	Churn30d    int
+	Churn90d    int
+	Authors30d  map[string]bool
+	LastAuthor  string
+	LastChanged time.Time
 }
 
 // parseGitLog runs git log --numstat and aggregates per-file churn.
@@ -117,7 +118,7 @@ func parseGitLog(repoPath string) (map[string]*fileAccum, error) {
 	now := time.Now()
 	since90d := now.AddDate(0, 0, -90).Format("2006-01-02")
 
-	cmd := exec.Command("git", "log", "--numstat", "--format=%aE %aI", "--since="+since90d)
+	cmd := exec.Command("git", "log", "--numstat", "--format=MILLIWAYS_COMMIT:%aE %aI", "--since="+since90d)
 	cmd.Dir = repoPath
 
 	out, err := cmd.Output()
@@ -138,12 +139,17 @@ func parseGitLog(repoPath string) (map[string]*fileAccum, error) {
 			continue
 		}
 
-		// Author line: "email@example.com 2026-04-01T12:00:00+00:00"
-		if strings.Contains(line, "@") && strings.Contains(line, "T") {
+		// Author line: "MILLIWAYS_COMMIT:email@example.com 2026-04-01T12:00:00+00:00"
+		if strings.HasPrefix(line, "MILLIWAYS_COMMIT:") {
+			line = strings.TrimPrefix(line, "MILLIWAYS_COMMIT:")
 			parts := strings.SplitN(line, " ", 2)
 			if len(parts) == 2 {
 				currentAuthor = parts[0]
-				currentDate, _ = time.Parse(time.RFC3339, parts[1])
+				parsed, parseErr := time.Parse(time.RFC3339, parts[1])
+				if parseErr != nil {
+					continue
+				}
+				currentDate = parsed
 			}
 			continue
 		}
@@ -170,6 +176,9 @@ func parseGitLog(repoPath string) (map[string]*fileAccum, error) {
 
 		fs.Churn90d += churn
 		fs.LastAuthor = currentAuthor
+		if fs.LastChanged.IsZero() || currentDate.After(fs.LastChanged) {
+			fs.LastChanged = currentDate
+		}
 
 		if currentDate.After(since30d) {
 			fs.Churn30d += churn

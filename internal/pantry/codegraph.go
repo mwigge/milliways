@@ -11,14 +11,16 @@ type CodeGraphClient struct {
 	mcp *MCPClient
 }
 
-// ContextResult holds the AI-ready context for a task from CodeGraph.
+// ContextResult holds AI-ready context assembled by CodeGraph for a given task,
+// including the number of files and symbols that contributed to the context.
 type ContextResult struct {
 	Context string `json:"context"`
 	Files   int    `json:"files"`
 	Symbols int    `json:"symbols"`
 }
 
-// ImpactResult holds blast radius analysis from CodeGraph.
+// ImpactResult holds blast radius analysis from CodeGraph, reporting how many
+// callers, callees, and files would be affected by changing a symbol.
 type ImpactResult struct {
 	Symbol      string   `json:"symbol"`
 	Callers     int      `json:"callers"`
@@ -27,7 +29,8 @@ type ImpactResult struct {
 	BlastRadius int      `json:"blast_radius"`
 }
 
-// SymbolInfo holds details about a code symbol.
+// SymbolInfo holds details about a code symbol including its location,
+// kind (function, type, variable), signature, and number of callers.
 type SymbolInfo struct {
 	Name      string `json:"name"`
 	Kind      string `json:"kind"`
