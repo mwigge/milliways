@@ -42,7 +42,7 @@ func TestDispatchAsync(t *testing.T) {
 	}
 
 	// Wait for background goroutine to complete
-	time.Sleep(500 * time.Millisecond)
+	d.Wait()
 
 	// Verify ticket was created and updated
 	ticket, err := pdb.Tickets().Get(ticketID)
@@ -77,7 +77,7 @@ func TestDispatchAsync_TicketList(t *testing.T) {
 	_, _ = d.DispatchAsync(ctx, k, "task one")
 	_, _ = d.DispatchAsync(ctx, k, "task two")
 
-	time.Sleep(500 * time.Millisecond)
+	d.Wait()
 
 	tickets, err := pdb.Tickets().List("")
 	if err != nil {

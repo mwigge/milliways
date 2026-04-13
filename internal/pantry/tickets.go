@@ -32,10 +32,12 @@ type Ticket struct {
 func (s *TicketStore) Create(kitchen, prompt, mode string, pid int, outputPath string) (string, error) {
 	id := generateTicketID()
 
+	// Prompt is truncated for display in `milliways tickets` — callers should
+	// avoid putting sensitive data in prompts (same as shell history).
 	_, err := s.db.Exec(`
 		INSERT INTO mw_tickets (id, kitchen, prompt, mode, pid, status, output_path, started_at)
 		VALUES (?, ?, ?, ?, ?, 'running', ?, ?)
-	`, id, kitchen, truncatePrompt(prompt, 200), mode, pid, outputPath, time.Now().UTC().Format(time.RFC3339))
+	`, id, kitchen, truncatePrompt(prompt, 100), mode, pid, outputPath, time.Now().UTC().Format(time.RFC3339))
 	if err != nil {
 		return "", fmt.Errorf("creating ticket: %w", err)
 	}

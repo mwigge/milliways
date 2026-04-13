@@ -82,9 +82,43 @@ func (s *LedgerStore) Stats() ([]KitchenStats, error) {
 	return stats, rows.Err()
 }
 
-// StatsDB returns the underlying database connection for complex analytical queries.
-func (s *LedgerStore) StatsDB() *sql.DB {
-	return s.db
+// TaskKitchenStat holds per task-type/kitchen aggregated statistics.
+type TaskKitchenStat struct {
+	TaskType   string
+	Kitchen    string
+	Dispatches int
+	Successes  int
+	Rate       float64
+}
+
+// TieredStats returns per task-type/kitchen success rates for tiered-CLI analysis.
+func (s *LedgerStore) TieredStats() ([]TaskKitchenStat, error) {
+	rows, err := s.db.Query(`
+		SELECT task_type, kitchen,
+		       COUNT(*) as dispatches,
+		       SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) as successes
+		FROM mw_ledger
+		WHERE task_type != ''
+		GROUP BY task_type, kitchen
+		ORDER BY task_type, successes DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("querying tiered stats: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var stats []TaskKitchenStat
+	for rows.Next() {
+		var ts TaskKitchenStat
+		if err := rows.Scan(&ts.TaskType, &ts.Kitchen, &ts.Dispatches, &ts.Successes); err != nil {
+			return nil, fmt.Errorf("scanning tiered stats: %w", err)
+		}
+		if ts.Dispatches > 0 {
+			ts.Rate = float64(ts.Successes) / float64(ts.Dispatches) * 100
+		}
+		stats = append(stats, ts)
+	}
+	return stats, rows.Err()
 }
 
 // Total returns the total number of ledger entries.

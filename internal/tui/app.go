@@ -27,6 +27,7 @@ type Model struct {
 	ledgerLog   []ledgerLine
 	processMap  processState
 	dispatching bool
+	cancelFn    context.CancelFunc
 	dispatchFn  DispatchFunc
 	history     []string
 	historyIdx  int
@@ -107,6 +108,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "ctrl+c":
 			if m.dispatching {
+				if m.cancelFn != nil {
+					m.cancelFn()
+				}
 				m.dispatching = false
 				m.processMap.status = "cancelled"
 				return m, nil
@@ -195,9 +199,11 @@ func (m *Model) startDispatch() tea.Cmd {
 		startedAt: time.Now(),
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancelFn = cancel
+
 	return tea.Batch(
 		func() tea.Msg {
-			ctx := context.Background()
 			start := time.Now()
 			result, decision, err := m.dispatchFn(ctx, prompt, kitchenForce)
 			dur := time.Since(start)

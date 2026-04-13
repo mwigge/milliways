@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/mwigge/milliways/internal/kitchen"
@@ -14,6 +15,7 @@ import (
 // AsyncDispatcher handles async and detached kitchen dispatches.
 type AsyncDispatcher struct {
 	pdb *pantry.DB
+	wg  sync.WaitGroup
 }
 
 // NewAsyncDispatcher creates an async dispatcher backed by PantryDB.
@@ -35,7 +37,10 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 
 	outputPath := filepath.Join(outputDir, ticketID+".out")
 
+	d.wg.Add(1)
 	go func() {
+		defer d.wg.Done()
+
 		task := kitchen.Task{Prompt: prompt}
 		start := time.Now()
 		result, execErr := k.Exec(ctx, task)
@@ -98,6 +103,11 @@ func (d *AsyncDispatcher) DispatchDetached(k kitchen.Kitchen, prompt string) (st
 	}
 
 	return ticketID, nil
+}
+
+// Wait blocks until all async dispatches have completed.
+func (d *AsyncDispatcher) Wait() {
+	d.wg.Wait()
 }
 
 func outcomeStr(exitCode int) string {

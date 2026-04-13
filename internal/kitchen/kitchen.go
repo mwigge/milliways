@@ -101,13 +101,19 @@ type Result struct {
 	Duration time.Duration
 }
 
-// Kitchen is the interface every kitchen adapter implements.
+// Kitchen is the core interface every kitchen adapter implements.
 type Kitchen interface {
 	Name() string
 	Exec(ctx context.Context, task Task) (Result, error)
 	Stations() []string
 	CostTier() CostTier
 	Status() Status
+}
+
+// Setupable extends Kitchen with install and auth commands.
+// Use type assertion to check if a Kitchen supports setup operations.
+type Setupable interface {
+	Kitchen
 	InstallCmd() string
 	AuthCmd() string
 }
@@ -161,11 +167,11 @@ func (r *Registry) Ready() []Kitchen {
 	return result
 }
 
-// All returns a copy of all registered kitchens.
+// All returns a defensive copy of all registered kitchens.
 func (r *Registry) All() map[string]Kitchen {
-	copy := make(map[string]Kitchen, len(r.kitchens))
+	result := make(map[string]Kitchen, len(r.kitchens))
 	for k, v := range r.kitchens {
-		copy[k] = v
+		result[k] = v
 	}
-	return copy
+	return result
 }

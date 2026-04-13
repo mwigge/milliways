@@ -2,12 +2,14 @@ package pantry
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os/exec"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // MCPClient communicates with an MCP server via JSON-RPC over stdio.
@@ -65,7 +67,10 @@ func StartMCP(command string, args ...string) (*MCPClient, error) {
 	}
 
 	// Initialize the MCP session
-	_, err = client.Call("initialize", map[string]any{
+	initCtx, initCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer initCancel()
+
+	_, err = client.Call(initCtx, "initialize", map[string]any{
 		"protocolVersion": "2024-11-05",
 		"capabilities":    map[string]any{},
 		"clientInfo": map[string]any{
@@ -81,10 +86,30 @@ func StartMCP(command string, args ...string) (*MCPClient, error) {
 	return client, nil
 }
 
+// mcpDefaultTimeout is the default timeout for MCP calls when no context deadline is set.
+const mcpDefaultTimeout = 30 * time.Second
+
+// mcpMaxResponseLines is the maximum number of response lines to read before giving up.
+const mcpMaxResponseLines = 10000
+
+// callResult holds the result of a background read operation.
+type callResult struct {
+	data json.RawMessage
+	err  error
+}
+
 // Call sends a JSON-RPC request and waits for the response.
-func (c *MCPClient) Call(method string, params any) (json.RawMessage, error) {
+// The context controls the overall timeout for the call.
+func (c *MCPClient) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Apply default timeout if no deadline is set
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, mcpDefaultTimeout)
+		defer cancel()
+	}
 
 	id := c.nextID.Add(1)
 
@@ -105,31 +130,45 @@ func (c *MCPClient) Call(method string, params any) (json.RawMessage, error) {
 		return nil, fmt.Errorf("writing request: %w", err)
 	}
 
-	// Read response lines until we get one with our ID
-	for {
-		line, err := c.reader.ReadBytes('\n')
-		if err != nil {
-			return nil, fmt.Errorf("reading response: %w", err)
-		}
-
-		var resp jsonRPCResponse
-		if err := json.Unmarshal(line, &resp); err != nil {
-			continue // skip non-JSON lines (notifications, logs)
-		}
-
-		if resp.ID == id {
-			if resp.Error != nil {
-				return nil, fmt.Errorf("MCP error %d: %s", resp.Error.Code, resp.Error.Message)
+	// Read response in a goroutine so we can respect context cancellation
+	ch := make(chan callResult, 1)
+	go func() {
+		for linesRead := 0; linesRead < mcpMaxResponseLines; linesRead++ {
+			line, readErr := c.reader.ReadBytes('\n')
+			if readErr != nil {
+				ch <- callResult{err: fmt.Errorf("reading response: %w", readErr)}
+				return
 			}
-			return resp.Result, nil
+
+			var resp jsonRPCResponse
+			if unmarshalErr := json.Unmarshal(line, &resp); unmarshalErr != nil {
+				continue // skip non-JSON lines (notifications, logs)
+			}
+
+			if resp.ID == id {
+				if resp.Error != nil {
+					ch <- callResult{err: fmt.Errorf("MCP error %d: %s", resp.Error.Code, resp.Error.Message)}
+					return
+				}
+				ch <- callResult{data: resp.Result}
+				return
+			}
+			// Not our response — could be a notification, skip it
 		}
-		// Not our response — could be a notification, skip it
+		ch <- callResult{err: fmt.Errorf("MCP response not found after %d lines", mcpMaxResponseLines)}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, fmt.Errorf("MCP call %s: %w", method, ctx.Err())
+	case result := <-ch:
+		return result.data, result.err
 	}
 }
 
 // CallTool invokes an MCP tool and returns the result.
-func (c *MCPClient) CallTool(toolName string, args map[string]any) (json.RawMessage, error) {
-	return c.Call("tools/call", map[string]any{
+func (c *MCPClient) CallTool(ctx context.Context, toolName string, args map[string]any) (json.RawMessage, error) {
+	return c.Call(ctx, "tools/call", map[string]any{
 		"name":      toolName,
 		"arguments": args,
 	})

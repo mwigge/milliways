@@ -1,6 +1,7 @@
 package pantry
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 )
@@ -30,7 +31,7 @@ func NewMemPalaceClient(command string, args ...string) (*MemPalaceClient, error
 }
 
 // Search performs a semantic search across MemPalace drawers.
-func (c *MemPalaceClient) Search(query, wing string, limit int) ([]Drawer, error) {
+func (c *MemPalaceClient) Search(ctx context.Context, query, wing string, limit int) ([]Drawer, error) {
 	args := map[string]any{
 		"query": query,
 		"limit": limit,
@@ -39,7 +40,7 @@ func (c *MemPalaceClient) Search(query, wing string, limit int) ([]Drawer, error
 		args["wing"] = wing
 	}
 
-	result, err := c.mcp.CallTool("mempalace_search", args)
+	result, err := c.mcp.CallTool(ctx, "mempalace_search", args)
 	if err != nil {
 		return nil, fmt.Errorf("mempalace_search: %w", err)
 	}
@@ -57,7 +58,7 @@ type KGTriple struct {
 }
 
 // KGQuery queries the MemPalace temporal knowledge graph.
-func (c *MemPalaceClient) KGQuery(subject, predicate string) ([]KGTriple, error) {
+func (c *MemPalaceClient) KGQuery(ctx context.Context, subject, predicate string) ([]KGTriple, error) {
 	args := map[string]any{}
 	if subject != "" {
 		args["subject"] = subject
@@ -66,7 +67,7 @@ func (c *MemPalaceClient) KGQuery(subject, predicate string) ([]KGTriple, error)
 		args["predicate"] = predicate
 	}
 
-	result, err := c.mcp.CallTool("mempalace_kg_query", args)
+	result, err := c.mcp.CallTool(ctx, "mempalace_kg_query", args)
 	if err != nil {
 		return nil, fmt.Errorf("mempalace_kg_query: %w", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -30,6 +31,9 @@ type HookConfig struct {
 // HookRunner executes hooks for lifecycle events.
 type HookRunner struct {
 	hooks map[HookEvent][]HookConfig
+	// TrustedDir restricts hook scripts to this directory when set.
+	// If empty, any command is allowed (carte.yaml is user-controlled).
+	TrustedDir string
 }
 
 // NewHookRunner creates a hook runner from configuration.
@@ -59,6 +63,14 @@ func (r *HookRunner) Run(event HookEvent, ctx HookContext) error {
 	}
 
 	for _, h := range hooks {
+		if r.TrustedDir != "" {
+			absCmd, absErr := filepath.Abs(h.Command)
+			if absErr != nil || !strings.HasPrefix(absCmd, filepath.Clean(r.TrustedDir)+string(filepath.Separator)) {
+				return fmt.Errorf("hook command %q not in trusted directory %q", h.Command, r.TrustedDir)
+			}
+		}
+
+		fmt.Fprintf(os.Stderr, "[hook] executing: %s (from carte.yaml)\n", h.Command)
 		env := buildHookEnv(ctx)
 		err := executeHook(h, env)
 		if err != nil && h.Blocking {

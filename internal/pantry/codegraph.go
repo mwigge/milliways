@@ -1,6 +1,7 @@
 package pantry
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 )
@@ -46,8 +47,8 @@ func NewCodeGraphClient(command string, args ...string) (*CodeGraphClient, error
 }
 
 // Context builds AI-ready context for a task, including relevant symbols and files.
-func (c *CodeGraphClient) Context(task string) (string, error) {
-	result, err := c.mcp.CallTool("codegraph_context", map[string]any{
+func (c *CodeGraphClient) Context(ctx context.Context, task string) (string, error) {
+	result, err := c.mcp.CallTool(ctx, "codegraph_context", map[string]any{
 		"task": task,
 	})
 	if err != nil {
@@ -63,13 +64,13 @@ func (c *CodeGraphClient) Context(task string) (string, error) {
 }
 
 // Impact returns blast radius analysis for a symbol.
-func (c *CodeGraphClient) Impact(symbol string, depth int) (*ImpactResult, error) {
+func (c *CodeGraphClient) Impact(ctx context.Context, symbol string, depth int) (*ImpactResult, error) {
 	args := map[string]any{"symbol": symbol}
 	if depth > 0 {
 		args["depth"] = depth
 	}
 
-	result, err := c.mcp.CallTool("codegraph_impact", args)
+	result, err := c.mcp.CallTool(ctx, "codegraph_impact", args)
 	if err != nil {
 		return nil, fmt.Errorf("codegraph_impact: %w", err)
 	}
@@ -82,13 +83,13 @@ func (c *CodeGraphClient) Impact(symbol string, depth int) (*ImpactResult, error
 }
 
 // Search finds symbols matching a query.
-func (c *CodeGraphClient) Search(query string, limit int) ([]SymbolInfo, error) {
+func (c *CodeGraphClient) Search(ctx context.Context, query string, limit int) ([]SymbolInfo, error) {
 	args := map[string]any{"query": query}
 	if limit > 0 {
 		args["limit"] = limit
 	}
 
-	result, err := c.mcp.CallTool("codegraph_search", args)
+	result, err := c.mcp.CallTool(ctx, "codegraph_search", args)
 	if err != nil {
 		return nil, fmt.Errorf("codegraph_search: %w", err)
 	}
@@ -98,8 +99,8 @@ func (c *CodeGraphClient) Search(query string, limit int) ([]SymbolInfo, error) 
 
 // FileComplexity returns the number of symbols and callers for a file.
 // Used by the sommelier to assess file risk.
-func (c *CodeGraphClient) FileComplexity(filePath string) (symbols int, callers int, err error) {
-	result, err := c.mcp.CallTool("codegraph_files", map[string]any{
+func (c *CodeGraphClient) FileComplexity(ctx context.Context, filePath string) (symbols int, callers int, err error) {
+	result, err := c.mcp.CallTool(ctx, "codegraph_files", map[string]any{
 		"path": filePath,
 	})
 	if err != nil {

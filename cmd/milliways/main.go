@@ -121,6 +121,11 @@ func dispatch(prompt, kitchenForce string, jsonOutput, explain, verbose bool, co
 		fmt.Fprintf(os.Stderr, "[mode] %s\n", mode)
 	}
 
+	// Check prompt for absolute paths and enforce circuit breaker
+	if pathErr := checkPromptPaths(prompt, mode); pathErr != nil {
+		return pathErr
+	}
+
 	var decision sommelier.Decision
 	if kitchenForce != "" {
 		decision = som.ForceRoute(kitchenForce)
@@ -313,6 +318,30 @@ func openPantryDB() (*pantry.DB, error) {
 	return pantry.Open(dbPath)
 }
 
+// checkPromptPaths scans for absolute paths in the prompt and enforces
+// the circuit breaker on each one. Returns the first violation found.
+func checkPromptPaths(prompt string, mode maitre.Mode) error {
+	for _, word := range strings.Fields(prompt) {
+		isAbsolute := strings.HasPrefix(word, "/")
+		isHome := strings.HasPrefix(word, "~/")
+		if !isAbsolute && !isHome {
+			continue
+		}
+		path := word
+		if isHome {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				continue
+			}
+			path = filepath.Join(home, word[2:])
+		}
+		if err := maitre.PathAllowed(path, mode); err != nil {
+			return fmt.Errorf("circuit breaker: %w", err)
+		}
+	}
+	return nil
+}
+
 func buildRegistry(cfg *maitre.Config) *kitchen.Registry {
 	reg := kitchen.NewRegistry()
 
@@ -449,51 +478,27 @@ func reportCmd(_ *string) *cobra.Command {
 }
 
 func printTieredReport(pdb *pantry.DB) {
-	// Query per task_type × kitchen success rates
-	rows, err := pdb.Ledger().StatsDB().Query(`
-		SELECT task_type, kitchen,
-		       COUNT(*) as dispatches,
-		       SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) as successes
-		FROM mw_ledger
-		WHERE task_type != ''
-		GROUP BY task_type, kitchen
-		ORDER BY task_type, successes DESC
-	`)
+	tieredStats, err := pdb.Ledger().TieredStats()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[report] tiered query failed: %v\n", err)
 		return
 	}
-	defer func() { _ = rows.Close() }()
 
-	type taskKitchenStat struct {
-		taskType   string
-		kitchen    string
-		dispatches int
-		successes  int
-		rate       float64
-	}
-
-	bestPerType := make(map[string]*taskKitchenStat)
+	bestPerType := make(map[string]*pantry.TaskKitchenStat)
 	kitchenTotals := make(map[string]struct{ dispatches, successes int })
 
-	for rows.Next() {
-		var s taskKitchenStat
-		if err := rows.Scan(&s.taskType, &s.kitchen, &s.dispatches, &s.successes); err != nil {
-			continue
-		}
-		if s.dispatches > 0 {
-			s.rate = float64(s.successes) / float64(s.dispatches) * 100
-		}
+	for i := range tieredStats {
+		s := &tieredStats[i]
 		// Track best kitchen per task type
-		if best, ok := bestPerType[s.taskType]; !ok || s.rate > best.rate {
-			bestPerType[s.taskType] = &s
+		if best, ok := bestPerType[s.TaskType]; !ok || s.Rate > best.Rate {
+			bestPerType[s.TaskType] = s
 		}
 
 		// Track overall per kitchen
-		totals := kitchenTotals[s.kitchen]
-		totals.dispatches += s.dispatches
-		totals.successes += s.successes
-		kitchenTotals[s.kitchen] = totals
+		totals := kitchenTotals[s.Kitchen]
+		totals.dispatches += s.Dispatches
+		totals.successes += s.Successes
+		kitchenTotals[s.Kitchen] = totals
 	}
 
 	if len(bestPerType) == 0 {
@@ -510,9 +515,9 @@ func printTieredReport(pdb *pantry.DB) {
 	multiCLISuccess := 0
 	multiCLITotal := 0
 	for _, best := range bestPerType {
-		fmt.Printf("%-12s %-14s %5.0f%%   %d\n", best.taskType, best.kitchen, best.rate, best.dispatches)
-		multiCLISuccess += best.successes
-		multiCLITotal += best.dispatches
+		fmt.Printf("%-12s %-14s %5.0f%%   %d\n", best.TaskType, best.Kitchen, best.Rate, best.Dispatches)
+		multiCLISuccess += best.Successes
+		multiCLITotal += best.Dispatches
 	}
 
 	// Compute best single-CLI score

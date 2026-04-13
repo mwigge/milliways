@@ -142,15 +142,18 @@ func dispatchAsync(prompt, kitchenForce string, verbose bool, configPath string)
 	if err != nil {
 		return fmt.Errorf("opening pantry: %w", err)
 	}
-	// Don't close pdb — background goroutine needs it
 
 	ad := asyncdispatch.NewAsyncDispatcher(pdb)
 	ticketID, err := ad.DispatchAsync(context.Background(), k, prompt)
 	if err != nil {
+		_ = pdb.Close()
 		return err
 	}
 
 	fmt.Printf("Dispatched: %s\nKitchen:    %s\nStatus:     running\nCheck:      milliways ticket %s\n", ticketID, decision.Kitchen, ticketID)
+
+	ad.Wait()
+	_ = pdb.Close()
 	return nil
 }
 

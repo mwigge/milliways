@@ -21,13 +21,16 @@ type KitchenHealth struct {
 func Diagnose(reg *kitchen.Registry) []KitchenHealth {
 	var results []KitchenHealth
 	for name, k := range reg.All() {
-		results = append(results, KitchenHealth{
-			Name:       name,
-			Status:     k.Status(),
-			CostTier:   k.CostTier(),
-			InstallCmd: k.InstallCmd(),
-			AuthCmd:    k.AuthCmd(),
-		})
+		h := KitchenHealth{
+			Name:     name,
+			Status:   k.Status(),
+			CostTier: k.CostTier(),
+		}
+		if s, ok := k.(kitchen.Setupable); ok {
+			h.InstallCmd = s.InstallCmd()
+			h.AuthCmd = s.AuthCmd()
+		}
+		results = append(results, h)
 	}
 	return results
 }
@@ -77,8 +80,14 @@ func PrintStatus(health []KitchenHealth) {
 }
 
 // SetupKitchen attempts to install and/or authenticate a kitchen.
-// Returns nil on success, error on failure.
+// Returns nil on success, error on failure. The kitchen must implement
+// Setupable; otherwise setup is not supported.
 func SetupKitchen(k kitchen.Kitchen) error {
+	s, ok := k.(kitchen.Setupable)
+	if !ok {
+		return fmt.Errorf("%s does not support setup", k.Name())
+	}
+
 	status := k.Status()
 
 	switch status {
@@ -89,7 +98,7 @@ func SetupKitchen(k kitchen.Kitchen) error {
 		return nil
 	case kitchen.NotInstalled:
 		fmt.Printf("Installing %s...\n", k.Name())
-		installCmd := k.InstallCmd()
+		installCmd := s.InstallCmd()
 		if installCmd == "" {
 			return fmt.Errorf("no install command configured for %s", k.Name())
 		}
@@ -111,7 +120,7 @@ func SetupKitchen(k kitchen.Kitchen) error {
 		fallthrough
 
 	case kitchen.NeedsAuth:
-		authCmd := k.AuthCmd()
+		authCmd := s.AuthCmd()
 		if authCmd == "" {
 			return fmt.Errorf("no auth command configured for %s", k.Name())
 		}

@@ -40,6 +40,12 @@ type GenericKitchen struct {
 	cfg GenericConfig
 }
 
+// Compile-time interface checks.
+var (
+	_ Kitchen   = (*GenericKitchen)(nil)
+	_ Setupable = (*GenericKitchen)(nil)
+)
+
 // NewGeneric creates a kitchen adapter for any CLI tool.
 func NewGeneric(cfg GenericConfig) *GenericKitchen {
 	return &GenericKitchen{cfg: cfg}
@@ -86,8 +92,8 @@ func (k *GenericKitchen) Exec(ctx context.Context, task Task) (Result, error) {
 	}
 	if len(task.Env) > 0 {
 		cmd.Env = os.Environ()
-		for k, v := range task.Env {
-			cmd.Env = append(cmd.Env, k+"="+v)
+		for envKey, v := range task.Env {
+			cmd.Env = append(cmd.Env, envKey+"="+v)
 		}
 	}
 
