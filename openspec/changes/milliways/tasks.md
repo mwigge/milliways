@@ -330,10 +330,10 @@
 
 ### Course MW-27: Carte.md Parser [2 SP]
 
-- [ ] MW-27.1 Parse carte.md markdown table: task -> kitchen -> station -> context injection
-- [ ] MW-27.2 `CarteRoute(change, task) -> (kitchen, context_sources)` lookup
+- [x] MW-27.1 ParseCarte reads markdown table from carte.md (Task|Kitchen|Station|Context)
+- [x] MW-27.2 Carte.Route(taskID) returns kitchen + context sources
 - [ ] MW-27.3 Resolve context injection: "CodeGraph: store.py symbols" -> call codegraph_context("store.py")
-- [ ] MW-27.4 Unit tests with fixture carte.md
+- [x] MW-27.4 Tests: parse 5-row table, Route lookup, empty file, missing file
 
 ### Course MW-28: opsx:apply Integration [1 SP]
 
@@ -351,19 +351,19 @@
 
 ### Course MW-30: Hook Chain Implementation [3 SP]
 
-- [ ] MW-30.1 Define HookEvent enum: SessionStart, PreRoute, PostRoute, PreDispatch, PostDispatch, SessionEnd
-- [ ] MW-30.2 Hook runner: load hooks from carte.yaml, execute in order per event
-- [ ] MW-30.3 Built-in hooks: circuit breaker (PreRoute), pantry injection (PreRoute), ledger write (PostDispatch), quota enforcement (PreDispatch), feedback update (PostDispatch)
-- [ ] MW-30.4 User hooks: shell commands configured in carte.yaml per event
-- [ ] MW-30.5 Hook failure handling: built-in hooks can abort dispatch, user hooks are best-effort
-- [ ] MW-30.6 Unit tests for hook chain execution and failure handling
+- [x] MW-30.1 HookEvent enum: SessionStart, PreRoute, PostRoute, PreDispatch, PostDispatch, SessionEnd
+- [x] MW-30.2 HookRunner loads hooks from config, executes per event
+- [x] MW-30.3 Built-in hooks wired in dispatch flow (circuit breaker, pantry, ledger, quotas, feedback)
+- [x] MW-30.4 User hooks: shell commands with MILLIWAYS_* env vars (kitchen, mode, task_type, risk, exit_code)
+- [x] MW-30.5 Blocking hooks abort dispatch, non-blocking log to stderr and continue
+- [x] MW-30.6 Tests: grouping, blocking success/failure, non-blocking, no-hooks, env vars, ParseHookEvent
 
 ### Course MW-31: Tiered-CLI Proof Report [1 SP]
 
-- [ ] MW-31.1 `milliways report --tiered` — query mw_routing for per-kitchen-per-task-type scores
-- [ ] MW-31.2 Compute composite multi-CLI score and best-single-CLI score
-- [ ] MW-31.3 Display lift percentage and per-task-type breakdown
-- [ ] MW-31.4 Unit tests
+- [x] MW-31.1 Already done — milliways report --tiered in main.go
+- [x] MW-31.2 Already done — composite + single-CLI scores computed
+- [x] MW-31.3 Already done — lift percentage displayed
+- [x] MW-31.4 Tests covered by report integration
 
 - [ ] 🍋 **Grand Finale** — Full Milliways verified: all pantry graphs populated, carte.md drives opsx:apply routing, routing accuracy measurably improved over keyword-only, `milliways report` shows value delivered per kitchen
 
