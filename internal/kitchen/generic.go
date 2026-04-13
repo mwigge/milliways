@@ -18,6 +18,8 @@ var allowedCmds = map[string]bool{
 	"goose":    true,
 	"cline":    true,
 	"echo":     true, // for testing
+	"false":    true, // for testing non-zero exit codes
+	"true":     true, // for testing
 }
 
 // GenericConfig holds configuration for a GenericKitchen.

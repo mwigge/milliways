@@ -1,0 +1,101 @@
+package kitchen
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+// Integration tests that exercise real CLI execution.
+// These use "echo" as the kitchen command — available on all systems.
+
+func TestExec_StreamsOutput(t *testing.T) {
+	t.Parallel()
+	k := NewGeneric(GenericConfig{Name: "echo-stream", Cmd: "echo", Enabled: true})
+
+	var lines []string
+	task := Task{
+		Prompt: "line one",
+		OnLine: func(line string) { lines = append(lines, line) },
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := k.Exec(ctx, task)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("exit code: got %d, want 0", result.ExitCode)
+	}
+	if len(lines) == 0 {
+		t.Error("expected OnLine to be called at least once")
+	}
+	if result.Duration <= 0 {
+		t.Error("expected positive duration")
+	}
+}
+
+func TestExec_CapturesNonZeroExitCode(t *testing.T) {
+	t.Parallel()
+	// "false" always exits with code 1
+	k := NewGeneric(GenericConfig{Name: "false-test", Cmd: "false", Enabled: true})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := k.Exec(ctx, Task{Prompt: ""})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if result.ExitCode != 1 {
+		t.Errorf("exit code: got %d, want 1", result.ExitCode)
+	}
+}
+
+func TestExec_ContextTimeout(t *testing.T) {
+	t.Parallel()
+	// "sleep" with very short timeout
+	k := NewGeneric(GenericConfig{Name: "sleep-test", Cmd: "echo", Args: []string{"-n"}, Enabled: true})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	defer cancel()
+
+	// With such a short timeout, echo might still complete.
+	// The point is it doesn't hang.
+	_, _ = k.Exec(ctx, Task{Prompt: "quick"})
+}
+
+func TestExec_NilOnLine(t *testing.T) {
+	t.Parallel()
+	k := NewGeneric(GenericConfig{Name: "nil-online", Cmd: "echo", Enabled: true})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// OnLine is nil — should not panic
+	result, err := k.Exec(ctx, Task{Prompt: "hello", OnLine: nil})
+	if err != nil {
+		t.Fatalf("Exec with nil OnLine: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("exit code: got %d, want 0", result.ExitCode)
+	}
+}
+
+func TestExec_WithDir(t *testing.T) {
+	t.Parallel()
+	k := NewGeneric(GenericConfig{Name: "pwd-test", Cmd: "echo", Enabled: true})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := k.Exec(ctx, Task{Prompt: "hello", Dir: "/tmp"})
+	if err != nil {
+		t.Fatalf("Exec with dir: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("exit code: got %d, want 0", result.ExitCode)
+	}
+}

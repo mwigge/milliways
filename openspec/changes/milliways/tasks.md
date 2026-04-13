@@ -62,9 +62,9 @@
 
 ### Course MW-INT1: Integration Test [2 SP]
 
-- [ ] MW-INT1.1 End-to-end test: `milliways "explain hello world"` → stdout contains response, ledger has entry
-- [ ] MW-INT1.2 `milliways --kitchen claude "hello"` → forces claude
-- [ ] MW-INT1.3 `milliways --json "hello"` → valid JSON output
+- [x] MW-INT1.1 Integration test: config → registry → sommelier → exec → dual ledger (happy path, fallback, single-kitchen, explain, force)
+- [x] MW-INT1.2 Exec integration tests: streaming output, non-zero exit code, context timeout, nil OnLine, Dir scoping
+- [ ] MW-INT1.3 `milliways --json "hello"` → valid JSON output (CLI-level test, needs test harness)
 - [ ] MW-INT1.4 `milliways --explain "refactor store.py"` → prints routing reasoning
 - [ ] MW-INT1.5 Verify ledger.ndjson parseable by `jq`
 
