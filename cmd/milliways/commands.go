@@ -56,7 +56,14 @@ func runTUI(configPath string) error {
 		return result, decision, err
 	}
 
-	return tui.Run(dispatchFn)
+	// Open ticket store for the jobs panel (best-effort — nil disables panel).
+	var ticketStore *pantry.TicketStore
+	if pdb, pdbErr := openPantryDB(); pdbErr == nil {
+		ticketStore = pdb.Tickets()
+		// pdb stays open for the lifetime of the TUI; GC/OS will close it on exit.
+	}
+
+	return tui.Run(dispatchFn, ticketStore)
 }
 
 func dispatchRecipe(recipeName, prompt string, verbose bool, configPath string, keepContext bool) error {

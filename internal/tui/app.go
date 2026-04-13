@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mwigge/milliways/internal/kitchen"
+	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/sommelier"
 )
 
@@ -29,9 +30,11 @@ type Model struct {
 	dispatching bool
 	cancelFn    context.CancelFunc
 	dispatchFn  DispatchFunc
-	history     []string
-	historyIdx  int
-	ready       bool
+	history      []string
+	historyIdx   int
+	ready        bool
+	jobTickets   []pantry.Ticket  // nil = panel unavailable
+	ticketStore  *pantry.TicketStore
 }
 
 type ledgerLine struct {
@@ -64,8 +67,12 @@ type dispatchDoneMsg struct {
 // Tick for elapsed timer
 type tickMsg time.Time
 
+// jobsRefreshMsg carries a fresh slice of recent tickets.
+type jobsRefreshMsg []pantry.Ticket
+
 // NewModel creates the TUI model.
-func NewModel(dispatchFn DispatchFunc) Model {
+// store may be nil — if so, the jobs panel renders "Jobs unavailable".
+func NewModel(dispatchFn DispatchFunc, store *pantry.TicketStore) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Type a task... (@kitchen to force, Ctrl+D to exit)"
 	ti.Focus()
@@ -79,15 +86,45 @@ func NewModel(dispatchFn DispatchFunc) Model {
 	vp.SetContent("")
 
 	return Model{
-		input:      ti,
-		output:     vp,
-		dispatchFn: dispatchFn,
-		historyIdx: -1,
+		input:       ti,
+		output:      vp,
+		dispatchFn:  dispatchFn,
+		historyIdx:  -1,
+		ticketStore: store,
 	}
 }
 
+// jobsRefreshCmd fetches recent tickets and returns a jobsRefreshMsg.
+// If store is nil the command is a no-op (returns nil slice).
+func jobsRefreshCmd(store *pantry.TicketStore) tea.Cmd {
+	return func() tea.Msg {
+		if store == nil {
+			return jobsRefreshMsg(nil)
+		}
+		tickets, err := store.ListRecent(jobsPanelMaxRows)
+		if err != nil {
+			return jobsRefreshMsg(nil)
+		}
+		return jobsRefreshMsg(tickets)
+	}
+}
+
+// scheduleJobsRefresh returns a command that fires jobsRefreshCmd after 5 s.
+func scheduleJobsRefresh(store *pantry.TicketStore) tea.Cmd {
+	return tea.Tick(5*time.Second, func(_ time.Time) tea.Msg {
+		if store == nil {
+			return jobsRefreshMsg(nil)
+		}
+		tickets, err := store.ListRecent(jobsPanelMaxRows)
+		if err != nil {
+			return jobsRefreshMsg(nil)
+		}
+		return jobsRefreshMsg(tickets)
+	})
+}
+
 func (m Model) Init() tea.Cmd {
-	return textinput.Blink
+	return tea.Batch(textinput.Blink, jobsRefreshCmd(m.ticketStore))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -160,6 +197,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.processMap.elapsed = time.Since(m.processMap.startedAt)
 			return m, tickCmd()
 		}
+
+	case jobsRefreshMsg:
+		m.jobTickets = []pantry.Ticket(msg)
+		return m, tea.Batch(scheduleJobsRefresh(m.ticketStore))
 	}
 
 	var inputCmd tea.Cmd
@@ -236,13 +277,16 @@ func (m Model) View() string {
 	// Ledger panel (right)
 	ledgerPanel := panelBorder.
 		Width(24).
-		Height(m.height - 6).
+		Height((m.height - 6) / 2).
 		Render(m.renderLedger())
 
-	// Combine output + process map + ledger
+	// Jobs panel (right, below ledger)
+	jobsPanel := RenderJobsPanel(m.jobTickets, 24)
+
+	// Combine output + process map + ledger + jobs
 	mainArea := lipgloss.JoinHorizontal(lipgloss.Top,
 		outputPanel,
-		lipgloss.JoinVertical(lipgloss.Left, processMap, ledgerPanel),
+		lipgloss.JoinVertical(lipgloss.Left, processMap, ledgerPanel, jobsPanel),
 	)
 
 	// Input at bottom
@@ -295,10 +339,11 @@ func (m Model) renderLedger() string {
 	return strings.Join(lines, "\n")
 }
 
-// Run starts the TUI.
-func Run(dispatchFn DispatchFunc) error {
+// Run starts the TUI with an optional ticket store for the jobs panel.
+// Pass nil for store to disable jobs panel.
+func Run(dispatchFn DispatchFunc, store *pantry.TicketStore) error {
 	p := tea.NewProgram(
-		NewModel(dispatchFn),
+		NewModel(dispatchFn, store),
 		tea.WithAltScreen(),
 	)
 	_, err := p.Run()
