@@ -54,12 +54,11 @@ func TestRoute_LongestMatchWins(t *testing.T) {
 	keywords := map[string]string{
 		"search":     "gemini",
 		"code":       "opencode",
-		"search for": "gemini", // longer match should win
+		"search for": "gemini",
 	}
 	s := New(keywords, "claude", "opencode", newTestRegistry())
 
 	d := s.Route("search for code patterns")
-	// "search for" (10 chars) should match before "search" (6) or "code" (4)
 	if d.Kitchen != "gemini" {
 		t.Errorf("expected longest match 'search for' → gemini, got %q via %q", d.Kitchen, d.Reason)
 	}
@@ -73,7 +72,6 @@ func TestRoute_DeterministicOrder(t *testing.T) {
 	}
 	s := New(keywords, "claude", "opencode", newTestRegistry())
 
-	// Run 100 times — non-deterministic map iteration would produce varying results
 	results := make(map[string]int)
 	for range 100 {
 		d := s.Route("auth code both keywords")
@@ -131,5 +129,132 @@ func TestForceRoute_UnknownKitchen(t *testing.T) {
 	d := s.ForceRoute("nonexistent")
 	if d.Kitchen != "nonexistent" {
 		t.Errorf("expected kitchen name passed through, got %q", d.Kitchen)
+	}
+}
+
+// === Tier 2: Enriched Routing ===
+
+func TestRouteEnriched_HighRiskOverridesToClaude(t *testing.T) {
+	t.Parallel()
+	keywords := map[string]string{"refactor": "opencode"}
+	s := New(keywords, "claude", "opencode", newTestRegistry())
+
+	// Without signals: keyword routes to opencode
+	d1 := s.Route("refactor the auth module")
+	if d1.Kitchen != "opencode" {
+		t.Errorf("without signals: expected opencode, got %q", d1.Kitchen)
+	}
+
+	// With HIGH risk signals: override to claude
+	signals := &Signals{
+		FileStability: "volatile",
+		FileChurn90d:  45,
+		Complexity:    34,
+		Coverage:      30,
+	}
+	d2 := s.RouteEnriched("refactor the auth module", signals)
+	if d2.Kitchen != "claude" {
+		t.Errorf("with high risk: expected claude override, got %q (reason: %s)", d2.Kitchen, d2.Reason)
+	}
+	if d2.Tier != "enriched" {
+		t.Errorf("expected tier 'enriched', got %q", d2.Tier)
+	}
+	if d2.Risk != "high" {
+		t.Errorf("expected risk 'high', got %q", d2.Risk)
+	}
+}
+
+func TestRouteEnriched_LowRiskKeepsKeyword(t *testing.T) {
+	t.Parallel()
+	keywords := map[string]string{"refactor": "opencode"}
+	s := New(keywords, "claude", "opencode", newTestRegistry())
+
+	signals := &Signals{
+		FileStability: "stable",
+		FileChurn90d:  1,
+		Complexity:    5,
+		Coverage:      90,
+	}
+	d := s.RouteEnriched("refactor the auth module", signals)
+	if d.Kitchen != "opencode" {
+		t.Errorf("low risk should keep keyword routing to opencode, got %q", d.Kitchen)
+	}
+	if d.Tier != "keyword" {
+		t.Errorf("expected tier 'keyword', got %q", d.Tier)
+	}
+}
+
+func TestRouteEnriched_MediumRiskKeepsKeyword(t *testing.T) {
+	t.Parallel()
+	keywords := map[string]string{"code": "opencode"}
+	s := New(keywords, "claude", "opencode", newTestRegistry())
+
+	signals := &Signals{
+		FileStability: "active",
+		Complexity:    20,
+		Coverage:      60,
+	}
+	d := s.RouteEnriched("code a handler", signals)
+	// Medium risk doesn't override — only HIGH does
+	if d.Kitchen != "opencode" {
+		t.Errorf("medium risk should keep keyword, got %q", d.Kitchen)
+	}
+}
+
+func TestRouteEnriched_NilSignalsGraceful(t *testing.T) {
+	t.Parallel()
+	keywords := map[string]string{"code": "opencode"}
+	s := New(keywords, "claude", "opencode", newTestRegistry())
+
+	// nil signals = keyword-only (pantry unavailable)
+	d := s.RouteEnriched("code a handler", nil)
+	if d.Kitchen != "opencode" {
+		t.Errorf("nil signals: expected keyword routing, got %q", d.Kitchen)
+	}
+	if d.Signals != nil {
+		t.Error("expected nil signals in decision")
+	}
+}
+
+// === Tier 3: Learned Routing ===
+
+func TestRouteEnriched_LearnedOverridesKeyword(t *testing.T) {
+	t.Parallel()
+	keywords := map[string]string{"refactor": "opencode"}
+	s := New(keywords, "claude", "opencode", newTestRegistry())
+
+	signals := &Signals{
+		FileStability:  "active",
+		Complexity:     10,
+		Coverage:       80,
+		LearnedKitchen: "claude",
+		LearnedRate:    95.0,
+	}
+	d := s.RouteEnriched("refactor the module", signals)
+	if d.Kitchen != "claude" {
+		t.Errorf("learned routing should override keyword, got %q", d.Kitchen)
+	}
+	if d.Tier != "learned" {
+		t.Errorf("expected tier 'learned', got %q", d.Tier)
+	}
+}
+
+func TestRouteEnriched_LearnedKitchenUnavailable(t *testing.T) {
+	t.Parallel()
+	reg := kitchen.NewRegistry()
+	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "claude", Cmd: "nonexistent-xyz", Enabled: true}))
+	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "opencode", Cmd: "echo", Enabled: true}))
+
+	keywords := map[string]string{"refactor": "opencode"}
+	s := New(keywords, "opencode", "opencode", reg)
+
+	signals := &Signals{
+		LearnedKitchen: "claude", // claude not installed
+		LearnedRate:    90.0,
+	}
+	d := s.RouteEnriched("refactor module", signals)
+	// Learned kitchen unavailable → fall through to keyword
+	if d.Kitchen != "opencode" {
+		t.Errorf("expected fallthrough to keyword, got %q", d.Kitchen)
 	}
 }

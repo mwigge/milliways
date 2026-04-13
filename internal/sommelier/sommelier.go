@@ -10,13 +10,14 @@ import (
 
 // Decision captures why a kitchen was chosen.
 type Decision struct {
-	Kitchen string `json:"kitchen"`
-	Reason  string `json:"reason"`
-	Tier    string `json:"tier"` // "keyword", "enriched", "learned", "forced", "fallback"
+	Kitchen string   `json:"kitchen"`
+	Reason  string   `json:"reason"`
+	Tier    string   `json:"tier"`           // "keyword", "enriched", "learned", "forced", "fallback"
+	Risk    string   `json:"risk,omitempty"` // "low", "medium", "high" (from signals)
+	Signals *Signals `json:"signals,omitempty"`
 }
 
 // keywordRule is a keyword-to-kitchen mapping with defined priority.
-// Longer keywords match first (e.g., "search" before "code" in "search for code").
 type keywordRule struct {
 	keyword string
 	kitchen string
@@ -41,7 +42,7 @@ func New(keywords map[string]string, defaultKitchen, fallback string, reg *kitch
 		if len(rules[i].keyword) != len(rules[j].keyword) {
 			return len(rules[i].keyword) > len(rules[j].keyword)
 		}
-		return rules[i].keyword < rules[j].keyword // stable tiebreak
+		return rules[i].keyword < rules[j].keyword
 	})
 
 	return &Sommelier{
@@ -52,55 +53,67 @@ func New(keywords map[string]string, defaultKitchen, fallback string, reg *kitch
 	}
 }
 
-// Route determines which kitchen should handle a prompt.
+// Route determines which kitchen should handle a prompt using keyword matching only (Tier 1).
 func (s *Sommelier) Route(prompt string) Decision {
+	return s.RouteEnriched(prompt, nil)
+}
+
+// RouteEnriched uses all three tiers: keywords → pantry signals → learned history.
+// Pass nil signals for keyword-only routing (graceful degradation when pantry is unavailable).
+func (s *Sommelier) RouteEnriched(prompt string, signals *Signals) Decision {
 	lower := strings.ToLower(prompt)
 
-	// Tier 1: keyword scan (longest match first, deterministic order)
-	for _, rule := range s.rules {
-		if strings.Contains(lower, rule.keyword) {
-			if k, ok := s.registry.Get(rule.kitchen); ok && k.Status() == kitchen.Ready {
+	// Tier 3: learned routing (if sufficient data, overrides keyword)
+	if signals != nil && signals.LearnedKitchen != "" {
+		if k, ok := s.registry.Get(signals.LearnedKitchen); ok && k.Status() == kitchen.Ready {
+			return Decision{
+				Kitchen: signals.LearnedKitchen,
+				Reason:  fmt.Sprintf("learned: %s succeeded %.0f%% for this task type (%s)", signals.LearnedKitchen, signals.LearnedRate, signals.Summary()),
+				Tier:    "learned",
+				Risk:    signals.RiskLevel(),
+				Signals: signals,
+			}
+		}
+	}
+
+	// Tier 2: enriched routing (high risk overrides keyword → route to careful kitchen)
+	if signals != nil && signals.RiskLevel() == "high" {
+		// High risk: prefer claude (deep reasoning) over keyword match
+		if k, ok := s.registry.Get("claude"); ok && k.Status() == kitchen.Ready {
+			keywordMatch := s.keywordMatch(lower)
+			if keywordMatch != "claude" {
 				return Decision{
-					Kitchen: rule.kitchen,
-					Reason:  fmt.Sprintf("keyword %q matched → %s", rule.keyword, rule.kitchen),
-					Tier:    "keyword",
+					Kitchen: "claude",
+					Reason:  fmt.Sprintf("risk HIGH overrides keyword %q → claude for safety (%s)", keywordMatch, signals.Summary()),
+					Tier:    "enriched",
+					Risk:    "high",
+					Signals: signals,
 				}
 			}
 		}
 	}
 
-	// Fallback: default kitchen
-	if k, ok := s.registry.Get(s.defaultKitchen); ok && k.Status() == kitchen.Ready {
-		return Decision{
-			Kitchen: s.defaultKitchen,
-			Reason:  fmt.Sprintf("no keyword matched → default %s", s.defaultKitchen),
-			Tier:    "fallback",
+	// Tier 1: keyword scan (longest match first, deterministic order)
+	for _, rule := range s.rules {
+		if strings.Contains(lower, rule.keyword) {
+			if k, ok := s.registry.Get(rule.kitchen); ok && k.Status() == kitchen.Ready {
+				d := Decision{
+					Kitchen: rule.kitchen,
+					Reason:  fmt.Sprintf("keyword %q matched → %s", rule.keyword, rule.kitchen),
+					Tier:    "keyword",
+				}
+				if signals != nil {
+					d.Risk = signals.RiskLevel()
+					d.Signals = signals
+					d.Reason += fmt.Sprintf(" (%s)", signals.Summary())
+				}
+				return d
+			}
 		}
 	}
 
-	// Budget fallback
-	if k, ok := s.registry.Get(s.fallback); ok && k.Status() == kitchen.Ready {
-		return Decision{
-			Kitchen: s.fallback,
-			Reason:  fmt.Sprintf("default %s unavailable → fallback %s", s.defaultKitchen, s.fallback),
-			Tier:    "fallback",
-		}
-	}
-
-	// Last resort: first ready kitchen
-	for _, k := range s.registry.Ready() {
-		return Decision{
-			Kitchen: k.Name(),
-			Reason:  fmt.Sprintf("all preferred unavailable → first ready: %s", k.Name()),
-			Tier:    "fallback",
-		}
-	}
-
-	return Decision{
-		Kitchen: "",
-		Reason:  "no kitchens available",
-		Tier:    "fallback",
-	}
+	// Fallback chain
+	return s.fallbackRoute(signals)
 }
 
 // ForceRoute returns a decision for an explicitly chosen kitchen.
@@ -123,5 +136,56 @@ func (s *Sommelier) ForceRoute(kitchenName string) Decision {
 		Kitchen: kitchenName,
 		Reason:  fmt.Sprintf("unknown kitchen %q", kitchenName),
 		Tier:    "forced",
+	}
+}
+
+// keywordMatch returns the kitchen name that would match by keyword, or "".
+func (s *Sommelier) keywordMatch(lowerPrompt string) string {
+	for _, rule := range s.rules {
+		if strings.Contains(lowerPrompt, rule.keyword) {
+			return rule.kitchen
+		}
+	}
+	return ""
+}
+
+func (s *Sommelier) fallbackRoute(signals *Signals) Decision {
+	risk := ""
+	if signals != nil {
+		risk = signals.RiskLevel()
+	}
+
+	if k, ok := s.registry.Get(s.defaultKitchen); ok && k.Status() == kitchen.Ready {
+		return Decision{
+			Kitchen: s.defaultKitchen,
+			Reason:  fmt.Sprintf("no keyword matched → default %s", s.defaultKitchen),
+			Tier:    "fallback",
+			Risk:    risk,
+			Signals: signals,
+		}
+	}
+
+	if k, ok := s.registry.Get(s.fallback); ok && k.Status() == kitchen.Ready {
+		return Decision{
+			Kitchen: s.fallback,
+			Reason:  fmt.Sprintf("default %s unavailable → fallback %s", s.defaultKitchen, s.fallback),
+			Tier:    "fallback",
+			Risk:    risk,
+		}
+	}
+
+	for _, k := range s.registry.Ready() {
+		return Decision{
+			Kitchen: k.Name(),
+			Reason:  fmt.Sprintf("all preferred unavailable → first ready: %s", k.Name()),
+			Tier:    "fallback",
+			Risk:    risk,
+		}
+	}
+
+	return Decision{
+		Kitchen: "",
+		Reason:  "no kitchens available",
+		Tier:    "fallback",
 	}
 }
