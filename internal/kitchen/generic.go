@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -82,6 +83,12 @@ func (k *GenericKitchen) Exec(ctx context.Context, task Task) (Result, error) {
 	cmd := exec.CommandContext(ctx, k.cfg.Cmd, args...)
 	if task.Dir != "" {
 		cmd.Dir = task.Dir
+	}
+	if len(task.Env) > 0 {
+		cmd.Env = os.Environ()
+		for k, v := range task.Env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
 	}
 
 	stdout, err := cmd.StdoutPipe()

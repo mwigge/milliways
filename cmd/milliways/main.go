@@ -74,6 +74,7 @@ based on what each tool does best.
 	cmd.AddCommand(statusCmd(&configPath))
 	cmd.AddCommand(reportCmd(&configPath))
 	cmd.AddCommand(setupCmd(&configPath))
+	cmd.AddCommand(pantryCmd())
 
 	return cmd
 }
@@ -99,7 +100,20 @@ func dispatch(prompt, kitchenForce string, jsonOutput, explain, verbose bool, co
 	} else {
 		// Assemble pantry signals (best-effort, nil if pantry unavailable)
 		signals := assembleSignals(cfg, prompt, verbose)
-		decision = som.RouteEnriched(prompt, signals)
+
+		// Skill catalog hint (best-effort)
+		var skillHint *sommelier.SkillHint
+		catalog := maitre.ScanSkills()
+		if catalog.Total() > 0 {
+			if kitchenName, skill := catalog.HasSkill(prompt); skill != nil {
+				skillHint = &sommelier.SkillHint{Kitchen: kitchenName, SkillName: skill.Name}
+				if verbose {
+					fmt.Fprintf(os.Stderr, "[skills] %q matches skill %q in %s\n", prompt, skill.Name, kitchenName)
+				}
+			}
+		}
+
+		decision = som.RouteEnriched(prompt, signals, skillHint)
 	}
 
 	if verbose {
@@ -128,6 +142,7 @@ func dispatch(prompt, kitchenForce string, jsonOutput, explain, verbose bool, co
 
 	task := kitchen.Task{
 		Prompt: prompt,
+		Env:    map[string]string{"MILLIWAYS_MODE": string(mode)},
 		OnLine: func(line string) {
 			if !jsonOutput {
 				fmt.Println(line)
@@ -500,4 +515,40 @@ func printTieredReport(pdb *pantry.DB) {
 	} else {
 		fmt.Printf("Tiered-CLI lift:     %.1f%% (need more data or varied tasks)\n", lift)
 	}
+}
+
+func pantryCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "pantry",
+		Short: "Manage pantry knowledge stores",
+	}
+
+	syncCmd := &cobra.Command{
+		Use:   "sync [repo-path]",
+		Short: "Sync GitGraph from git history for a repository",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repoPath := "."
+			if len(args) > 0 {
+				repoPath = args[0]
+			}
+
+			pdb, err := openPantryDB()
+			if err != nil {
+				return fmt.Errorf("opening pantry: %w", err)
+			}
+			defer func() { _ = pdb.Close() }()
+
+			count, err := pdb.GitGraph().Sync(repoPath)
+			if err != nil {
+				return fmt.Errorf("syncing gitgraph: %w", err)
+			}
+
+			fmt.Printf("GitGraph: synced %d files from %s\n", count, repoPath)
+			return nil
+		},
+	}
+
+	cmd.AddCommand(syncCmd)
+	return cmd
 }

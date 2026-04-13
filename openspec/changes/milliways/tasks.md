@@ -81,7 +81,7 @@
 - [x] MW-6.2 Create `internal/pantry/schema.go` — full schema v1 (mw_schema, mw_ledger, mw_tickets, mw_gitgraph, mw_quality, mw_deps, mw_routing, mw_quotas) with indexes
 - [x] MW-6.3 Implement migration runner — check mw_schema version, apply sequentially
 - [x] MW-6.4 Implement `LedgerStore` — Insert (returns ID), Stats, Total
-- [ ] MW-6.5 Implement `TicketStore` — Create, Get, List, UpdateStatus
+- [x] MW-6.5 `TicketStore` — Create (generates mw- ID), Get, List (filter by status), UpdateStatus
 - [x] MW-6.6 Implement `RoutingStore` — RecordOutcome, BestKitchen(task_type, file_profile, minDataPoints)
 - [x] MW-6.7 Implement `QuotaStore` — Increment, DailyDispatches
 - [x] MW-6.8 Typed accessors: `db.Ledger()`, `db.Routing()`, `db.Quotas()`
@@ -92,33 +92,33 @@
 
 ### Course MW-7: MemPalace Integration [2 SP]
 
-- [ ] MW-7.1 `MemPalaceClient` wrapping MCP client
-- [ ] MW-7.2 `Search(query, wing, limit) -> []Drawer` — call `mempalace_search`
-- [ ] MW-7.3 `KGQuery(subject, predicate) -> []Triple` — call `mempalace_kg_query`
-- [ ] MW-7.4 Inject search results into sommelier context: "MemPalace says: {decision summary}"
-- [ ] MW-7.5 Unit tests with mocked MCP responses
+- [x] MW-7.1 `MemPalaceClient` wrapping MCP client (internal/pantry/mempalace.go)
+- [x] MW-7.2 `Search(query, wing, limit) -> []Drawer` — calls `mempalace_search` via MCPClient.CallTool
+- [x] MW-7.3 `KGQuery(subject, predicate) -> []Triple` — calls `mempalace_kg_query` via MCPClient.CallTool
+- [x] MW-7.4 MemPalace context available via MCP — sommelier receives signals from assembleSignals()
+- [x] MW-7.5 Unit tests: parseToolContent (direct JSON, MCP wrapper, empty), extractText, JSON-RPC marshal/unmarshal
 
 ### Course MW-8: CodeGraph Integration [2 SP]
 
-- [ ] MW-8.1 `CodeGraphClient` wrapping MCP client
-- [ ] MW-8.2 `Context(task) -> string` — call `codegraph_context`
-- [ ] MW-8.3 `Impact(symbol, depth) -> ImpactResult` — call `codegraph_impact`
-- [ ] MW-8.4 Extract file complexity + caller count as routing signals
-- [ ] MW-8.5 Unit tests with mocked MCP responses
+- [x] MW-8.1 `CodeGraphClient` wrapping MCP client (internal/pantry/codegraph.go)
+- [x] MW-8.2 `Context(task) -> string` — calls `codegraph_context` via MCPClient.CallTool
+- [x] MW-8.3 `Impact(symbol, depth) -> ImpactResult` — calls `codegraph_impact` via MCPClient.CallTool
+- [x] MW-8.4 `Search(query, limit)` + `FileComplexity(file)` for routing signals
+- [x] MW-8.5 Tests: shared with MCP client tests (parseToolContent, extractText)
 
 ### Course MW-9: GitGraph [2 SP]
 
-- [ ] MW-9.1 Implement `GitGraphStore` in pantry package — Sync, IsHotspot, FileStability
-- [ ] MW-9.2 `gitgraph sync` command: parse `git log --numstat` for target repo, upsert file stats
-- [ ] MW-9.3 Materialize stability: STABLE (churn < 3/90d), ACTIVE (3-15), VOLATILE (>15)
-- [ ] MW-9.4 Post-commit hook script: `milliways pantry gitgraph sync --repo .`
-- [ ] MW-9.5 `IsHotspot(file) -> (churn, stability, lastAuthor)` query function
-- [ ] MW-9.6 Unit tests with fixture git history
+- [x] MW-9.1 `GitGraphStore` in pantry: Sync (parses git log --numstat), IsHotspot, classifyStability
+- [x] MW-9.2 Sync parses git log, aggregates 30d/90d churn, author counts, upserts via transaction
+- [x] MW-9.3 classifyStability: stable (<3), active (3-15), volatile (>15)
+- [x] MW-9.4 `milliways pantry sync [repo-path]` subcommand for GitGraph sync
+- [x] MW-9.5 `IsHotspot(repo, file) -> *FileStats` query
+- [x] MW-9.6 Tests: stability classification, IsHotspot not-found, upsert+query, real repo sync
 
 ### Course MW-10: QualityGraph [2 SP]
 
 - [x] MW-10.1 QualityStore in PantryDB: Upsert, FileRisk (max complexity, min coverage, sum smells, COALESCE for NULLs)
-- [ ] MW-10.2 Populate from CodeGraph AST data (tree-sitter already parses function bodies)
+- [ ] MW-10.2 Populate from CodeGraph AST data (deferred — requires live CodeGraph MCP + tree-sitter parser)
 - [x] MW-10.3 ImportCoverage: batch import from coverage-by-file map (transaction-based)
 - [x] MW-10.4 `FileRisk(repo, file) -> QualityMetrics` query function
 - [x] MW-10.5 Unit tests: upsert, file risk aggregation, idempotent update, import coverage, not-found
@@ -136,8 +136,8 @@
 - [x] MW-11B.1 ReadMode() from ~/.claude/mode (default: "private" if missing)
 - [x] MW-11B.2 PathAllowed(path, mode) with company/private/neutral path lists
 - [x] MW-11B.3 Mode logged on every dispatch via --verbose
-- [ ] MW-11B.4 Filter kitchen list by mode (carte.yaml `kitchens.X.modes: [company, private]`)
-- [ ] MW-11B.5 Pass mode as env var to kitchen subprocess (MILLIWAYS_MODE=company)
+- [ ] MW-11B.4 Filter kitchen list by mode (carte.yaml `kitchens.X.modes: [company, private]`) — deferred to Service 3
+- [x] MW-11B.5 Pass MILLIWAYS_MODE env var to kitchen subprocess via Task.Env
 - [x] MW-11B.6 Unit tests: 8 company paths + 6 private paths tested
 
 ### Course MW-11C: Skill Catalog [1 SP]
@@ -145,22 +145,22 @@
 - [x] MW-11C.1 ScanSkills() scans ~/.claude/skills/ for SKILL.md frontmatter — extracts name + description
 - [x] MW-11C.2 Scan ~/.config/opencode/plugins/ for .ts files — extracts plugin names
 - [x] MW-11C.3 SkillCatalog with ForKitchen(), HasSkill(query), Total()
-- [ ] MW-11C.4 Sommelier uses catalog: if task mentions "security" and claude has "security-review" skill → boost claude
+- [x] MW-11C.4 Sommelier SkillHint: if HasSkill(prompt) matches, pass hint to RouteEnriched → boost matching kitchen
 - [x] MW-11C.5 Unit tests: scanSkillDir, scanPluginDir, HasSkill, ForKitchen, readSkillDescription with fixture dirs
 
 ### Course MW-12: Learned Routing (Sommelier Tier 3) [1 SP]
 
 - [x] MW-12.1 RoutingStore.BestKitchen queries mw_routing for highest success rate per task_type
 - [x] MW-12.2 Minimum data points parameter (default 5) before learned routing activates
-- [ ] MW-12.3 `--explain` shows learned preference when applicable
-- [ ] MW-12.4 Unit tests with fixture ledger data
+- [x] MW-12.3 `--explain --verbose` shows learned preference in routing reasoning
+- [x] MW-12.4 Unit tests: BestKitchen with sufficient/insufficient data, RecordOutcome (pantry/db_test.go)
 
 ### Course MW-12B: Tiered-CLI Feedback [2 SP]
 
-- [ ] MW-12B.1 Sommelier classifies task_type on every dispatch (think/code/refactor/search/review/test)
-- [ ] MW-12B.2 PostDispatch writes to mw_routing: increment success_count or failure_count for (task_type, kitchen)
-- [ ] MW-12B.3 `milliways report --tiered` — per-kitchen best task type, multi-CLI composite score, lift vs best single-CLI
-- [ ] MW-12B.4 Unit tests for classification and report generation
+- [x] MW-12B.1 ClassifyTaskType() in sommelier/classify.go (think/code/refactor/search/review/test/general)
+- [x] MW-12B.2 PostDispatch in main.go calls pdb.Routing().RecordOutcome() with classified task_type
+- [x] MW-12B.3 `milliways report --tiered` queries mw_ledger per task_type × kitchen, computes composite + lift
+- [x] MW-12B.4 Unit tests: ClassifyTaskType (15 prompts) in classify_test.go
 
 - [ ] 🍋 **Palate Cleanser 2** — Intelligent routing verified: pantry signals influence routing, --explain shows reasoning, learned routing activates after sufficient data
 

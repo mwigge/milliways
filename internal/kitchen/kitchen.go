@@ -90,6 +90,7 @@ type Task struct {
 	Prompt  string
 	Dir     string
 	Context string
+	Env     map[string]string // extra env vars to pass to kitchen subprocess
 	OnLine  func(string)
 }
 

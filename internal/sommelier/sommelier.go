@@ -55,12 +55,26 @@ func New(keywords map[string]string, defaultKitchen, fallback string, reg *kitch
 
 // Route determines which kitchen should handle a prompt using keyword matching only (Tier 1).
 func (s *Sommelier) Route(prompt string) Decision {
-	return s.RouteEnriched(prompt, nil)
+	return s.RouteEnriched(prompt, nil, nil)
+}
+
+func riskFromSignals(signals *Signals) string {
+	if signals != nil {
+		return signals.RiskLevel()
+	}
+	return ""
+}
+
+// SkillHint is a hint from the skill catalog about which kitchen has a relevant skill.
+type SkillHint struct {
+	Kitchen   string
+	SkillName string
 }
 
 // RouteEnriched uses all three tiers: keywords → pantry signals → learned history.
 // Pass nil signals for keyword-only routing (graceful degradation when pantry is unavailable).
-func (s *Sommelier) RouteEnriched(prompt string, signals *Signals) Decision {
+// Pass nil skillHint when skill catalog is unavailable or no match found.
+func (s *Sommelier) RouteEnriched(prompt string, signals *Signals, skillHint *SkillHint) Decision {
 	lower := strings.ToLower(prompt)
 
 	// Tier 3: learned routing (if sufficient data, overrides keyword)
@@ -71,6 +85,19 @@ func (s *Sommelier) RouteEnriched(prompt string, signals *Signals) Decision {
 				Reason:  fmt.Sprintf("learned: %s succeeded %.0f%% for this task type (%s)", signals.LearnedKitchen, signals.LearnedRate, signals.Summary()),
 				Tier:    "learned",
 				Risk:    signals.RiskLevel(),
+				Signals: signals,
+			}
+		}
+	}
+
+	// Tier 2b: skill-based boost (if a kitchen has a matching skill, prefer it)
+	if skillHint != nil && skillHint.Kitchen != "" {
+		if k, ok := s.registry.Get(skillHint.Kitchen); ok && k.Status() == kitchen.Ready {
+			return Decision{
+				Kitchen: skillHint.Kitchen,
+				Reason:  fmt.Sprintf("skill %q available in %s", skillHint.SkillName, skillHint.Kitchen),
+				Tier:    "enriched",
+				Risk:    riskFromSignals(signals),
 				Signals: signals,
 			}
 		}

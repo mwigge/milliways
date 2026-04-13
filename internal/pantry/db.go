@@ -37,6 +37,9 @@ func Open(dbPath string) (*DB, error) {
 // Ledger returns the ledger store (dispatch history).
 func (db *DB) Ledger() *LedgerStore { return &LedgerStore{db: db.conn} }
 
+// Tickets returns the ticket store (async/detached dispatch tracking).
+func (db *DB) Tickets() *TicketStore { return &TicketStore{db: db.conn} }
+
 // Routing returns the routing store (learned kitchen preferences).
 func (db *DB) Routing() *RoutingStore { return &RoutingStore{db: db.conn} }
 
