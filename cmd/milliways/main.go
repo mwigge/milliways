@@ -43,6 +43,10 @@ func rootCmd() *cobra.Command {
 		explainFlag bool
 		configPath  string
 		verbose     bool
+		recipeFlag  string
+		asyncFlag   bool
+		detachFlag  bool
+		keepContext bool
 	)
 
 	cmd := &cobra.Command{
@@ -60,6 +64,15 @@ based on what each tool does best.
 		Args:    cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			prompt := strings.Join(args, " ")
+			if recipeFlag != "" {
+				return dispatchRecipe(recipeFlag, prompt, verbose, configPath, keepContext)
+			}
+			if asyncFlag {
+				return dispatchAsync(prompt, kitchenFlag, verbose, configPath)
+			}
+			if detachFlag {
+				return dispatchDetach(prompt, kitchenFlag, verbose, configPath)
+			}
 			return dispatch(prompt, kitchenFlag, jsonFlag, explainFlag, verbose, configPath)
 		},
 		SilenceUsage: true,
@@ -70,11 +83,17 @@ based on what each tool does best.
 	cmd.Flags().BoolVarP(&explainFlag, "explain", "e", false, "Show routing decision without executing")
 	cmd.Flags().StringVarP(&configPath, "config", "c", maitre.DefaultConfigPath(), "Path to carte.yaml")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print sommelier reasoning to stderr")
+	cmd.Flags().StringVarP(&recipeFlag, "recipe", "r", "", "Execute a multi-course recipe")
+	cmd.Flags().BoolVar(&asyncFlag, "async", false, "Dispatch asynchronously, return ticket ID")
+	cmd.Flags().BoolVar(&detachFlag, "detach", false, "Dispatch detached (survives exit)")
+	cmd.Flags().BoolVar(&keepContext, "keep-context", false, "Keep recipe context files")
 
 	cmd.AddCommand(statusCmd(&configPath))
 	cmd.AddCommand(reportCmd(&configPath))
 	cmd.AddCommand(setupCmd(&configPath))
 	cmd.AddCommand(pantryCmd())
+	cmd.AddCommand(ticketCmd())
+	cmd.AddCommand(ticketsCmd())
 
 	return cmd
 }
