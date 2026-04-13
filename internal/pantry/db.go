@@ -46,6 +46,9 @@ func (db *DB) Quotas() *QuotaStore { return &QuotaStore{db: db.conn} }
 // GitGraph returns the git graph store (file churn and blame).
 func (db *DB) GitGraph() *GitGraphStore { return &GitGraphStore{db: db.conn} }
 
+// Quality returns the quality metrics store (complexity and coverage).
+func (db *DB) Quality() *QualityStore { return &QualityStore{db: db.conn} }
+
 // Path returns the database file path.
 func (db *DB) Path() string { return db.path }
 

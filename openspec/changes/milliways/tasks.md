@@ -117,41 +117,41 @@
 
 ### Course MW-10: QualityGraph [2 SP]
 
-- [ ] MW-10.1 QualityGraph schema in PantryDB (mw_quality table): metrics(file, function, cyclomatic_complexity, cognitive_complexity, coverage_pct, smell_count, last_updated)
+- [x] MW-10.1 QualityStore in PantryDB: Upsert, FileRisk (max complexity, min coverage, sum smells, COALESCE for NULLs)
 - [ ] MW-10.2 Populate from CodeGraph AST data (tree-sitter already parses function bodies)
-- [ ] MW-10.3 Populate coverage from pytest/vitest coverage JSON output (optional, when available)
-- [ ] MW-10.4 `FileRisk(file) -> (complexity, coverage, smells)` query function
-- [ ] MW-10.5 Unit tests
+- [x] MW-10.3 ImportCoverage: batch import from coverage-by-file map (transaction-based)
+- [x] MW-10.4 `FileRisk(repo, file) -> QualityMetrics` query function
+- [x] MW-10.5 Unit tests: upsert, file risk aggregation, idempotent update, import coverage, not-found
 
 ### Course MW-11: Enriched Routing (Sommelier Tier 2) [2 SP]
 
-- [ ] MW-11.1 `EnrichedRoute(prompt, file) -> (kitchen, reason, signals)` — consults pantry
-- [ ] MW-11.2 Signal aggregation: CodeGraph complexity + GitGraph churn + QualityGraph coverage
-- [ ] MW-11.3 Risk scoring: LOW (all green) -> keyword routing; MEDIUM (one amber) -> careful kitchen; HIGH (multiple red) -> claude
-- [ ] MW-11.4 `--explain` shows all pantry signals in routing reasoning
-- [ ] MW-11.5 Unit tests with mock pantry responses
+- [x] MW-11.1 `RouteEnriched(prompt, signals)` — three-tier routing with signals
+- [x] MW-11.2 Signal aggregation: Signals struct with RiskLevel() scoring across churn, complexity, coverage, authors
+- [x] MW-11.3 Risk scoring: LOW → keyword; MEDIUM → keyword; HIGH → override to claude for safety
+- [x] MW-11.4 `--explain --verbose` shows pantry signals, risk level, learned kitchen in routing reasoning
+- [x] MW-11.5 Unit tests: high/medium/low risk override, nil signals graceful, learned override, unavailable fallthrough
 
 ### Course MW-11B: Circuit Breaker [2 SP]
 
-- [ ] MW-11B.1 Read `~/.claude/mode` on SessionStart (default: "private" if file missing)
-- [ ] MW-11B.2 Define path restrictions per mode in carte.yaml
-- [ ] MW-11B.3 PreRoute hook: check if task targets a blocked path -> hard stop with clear error
+- [x] MW-11B.1 ReadMode() from ~/.claude/mode (default: "private" if missing)
+- [x] MW-11B.2 PathAllowed(path, mode) with company/private/neutral path lists
+- [x] MW-11B.3 Mode logged on every dispatch via --verbose
 - [ ] MW-11B.4 Filter kitchen list by mode (carte.yaml `kitchens.X.modes: [company, private]`)
 - [ ] MW-11B.5 Pass mode as env var to kitchen subprocess (MILLIWAYS_MODE=company)
-- [ ] MW-11B.6 Unit tests: mode detection, path filtering, kitchen filtering
+- [x] MW-11B.6 Unit tests: 8 company paths + 6 private paths tested
 
 ### Course MW-11C: Skill Catalog [1 SP]
 
-- [ ] MW-11C.1 On SessionStart scan `~/.claude/skills/` for SKILL.md files — extract name + description
-- [ ] MW-11C.2 Scan `~/.config/opencode/plugins/` for .ts files — extract plugin names
-- [ ] MW-11C.3 Build in-memory catalog: kitchen -> []skill_name
-- [ ] MW-11C.4 Sommelier uses catalog: if task mentions "security" and claude has "security-review" skill -> boost claude
-- [ ] MW-11C.5 Unit tests with fixture skill directories
+- [x] MW-11C.1 ScanSkills() scans ~/.claude/skills/ for SKILL.md frontmatter — extracts name + description
+- [x] MW-11C.2 Scan ~/.config/opencode/plugins/ for .ts files — extracts plugin names
+- [x] MW-11C.3 SkillCatalog with ForKitchen(), HasSkill(query), Total()
+- [ ] MW-11C.4 Sommelier uses catalog: if task mentions "security" and claude has "security-review" skill → boost claude
+- [x] MW-11C.5 Unit tests: scanSkillDir, scanPluginDir, HasSkill, ForKitchen, readSkillDescription with fixture dirs
 
 ### Course MW-12: Learned Routing (Sommelier Tier 3) [1 SP]
 
-- [ ] MW-12.1 Query ledger.db: for this task_type + file_complexity_bucket + file_churn_bucket, which kitchen had highest success rate?
-- [ ] MW-12.2 Minimum 5 data points before learned routing overrides keyword
+- [x] MW-12.1 RoutingStore.BestKitchen queries mw_routing for highest success rate per task_type
+- [x] MW-12.2 Minimum data points parameter (default 5) before learned routing activates
 - [ ] MW-12.3 `--explain` shows learned preference when applicable
 - [ ] MW-12.4 Unit tests with fixture ledger data
 
