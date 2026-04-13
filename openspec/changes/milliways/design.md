@@ -7,25 +7,26 @@ $ milliways "refactor auth middleware to use JWT"
        │
        ▼
 ┌──────────────────────────────────────────────────────────────┐
-│                      MAÎTRE D' (Go binary)                    │
+│                      MAITRE D' (Go binary)                    │
 │                                                                │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐    │
-│  │ CLI      │  │Sommelier │  │ Recipe   │  │ Ledger   │    │
-│  │ Parser   │→ │ (router) │→ │ Engine   │→ │ Writer   │    │
+│  │ CLI      │  │Sommelier │  │ Recipe   │  │ PantryDB │    │
+│  │ Parser   │→ │ (router) │→ │ Engine   │→ │ (SQLite) │    │
 │  └──────────┘  └────┬─────┘  └──────────┘  └──────────┘    │
 │                      │                                        │
 │              ┌───────▼────────┐                               │
-│              │  PANTRY CLIENT │                               │
-│              │  (MCP + SQLite)│                               │
+│              │  HOOK CHAIN    │                               │
+│              │  (6 events)    │                               │
 │              └───────┬────────┘                               │
 │                      │                                        │
-│         ┌────────────┼────────────┬────────────┐             │
-│         ▼            ▼            ▼            ▼             │
-│    MemPalace    CodeGraph     GitGraph    QualityGraph       │
-│    (MCP)        (MCP)        (SQLite)    (SQLite)           │
+│         ┌────────────┼────────────┐                           │
+│         ▼            ▼            ▼                           │
+│    MemPalace    CodeGraph     milliways.db                   │
+│    (MCP)        (MCP)        (all mw_* tables)               │
 └──────────────────────────────────────────────────────────────┘
        │
        │  exec.Command() per kitchen
+       │  4 dispatch modes: sync | async | detached | recipe
        │
        ├──────────────────┬──────────────────┬─────────────────┐
        ▼                  ▼                  ▼                 ▼
@@ -36,6 +37,8 @@ $ milliways "refactor auth middleware to use JWT"
 │ stdout ────►│  │ stdout ─────►│  │ stdout ─────►│  │ stdout ──►│
 │ exit code   │  │ exit code    │  │ exit code    │  │ exit code │
 └─────────────┘  └──────────────┘  └──────────────┘  └──────────┘
+       │                                                        │
+       └───── Kitchen Opacity: black box, scored as unit ──────┘
 ```
 
 ## Module Structure
@@ -46,7 +49,7 @@ milliways/
 │   └── milliways/
 │       └── main.go              # CLI entry point (cobra)
 ├── internal/
-│   ├── maitre/                  # Maître d' — top-level orchestrator
+│   ├── maitre/                  # Maitre d' — top-level orchestrator
 │   │   ├── maitre.go            # Dispatch loop
 │   │   └── config.go            # Load carte.yaml
 │   │
@@ -54,7 +57,8 @@ milliways/
 │   │   ├── sommelier.go         # Route(task) → kitchen
 │   │   ├── keywords.go          # Keyword-based routing (fast path)
 │   │   ├── pantry_signals.go    # Consult knowledge graphs
-│   │   └── learned.go           # Historical success-based routing
+│   │   ├── learned.go           # Historical success-based routing
+│   │   └── skills.go            # Skill catalog awareness (D22)
 │   │
 │   ├── kitchen/                 # Kitchen adapters
 │   │   ├── kitchen.go           # Kitchen interface
@@ -65,29 +69,61 @@ milliways/
 │   │   ├── goose.go             # goose adapter
 │   │   └── cline.go             # cline -y --json adapter
 │   │
-│   ├── pantry/                  # Shared knowledge clients
+│   ├── pantry/                  # Unified data layer (milliways.db)
+│   │   ├── db.go                # PantryDB — single connection, typed accessors
+│   │   ├── migrations/          # Embedded SQL migration files
+│   │   │   └── 001_initial.sql
+│   │   ├── ledger.go            # LedgerStore
+│   │   ├── tickets.go           # TicketStore
+│   │   ├── gitgraph.go          # GitGraphStore
+│   │   ├── quality.go           # QualityStore
+│   │   ├── deps.go              # DepStore
+│   │   ├── routing.go           # RoutingStore
+│   │   ├── quotas.go            # QuotaStore
 │   │   ├── mempalace.go         # MCP client for MemPalace
-│   │   ├── codegraph.go         # MCP client for CodeGraph
-│   │   ├── gitgraph.go          # Direct SQLite for GitGraph
-│   │   ├── qualitygraph.go      # Direct SQLite for QualityGraph
-│   │   ├── depgraph.go          # Direct SQLite for DepGraph
-│   │   └── topology.go          # Direct SQLite for TopologyGraph
+│   │   └── codegraph.go         # MCP client for CodeGraph
+│   │
+│   ├── hooks/                   # Hook chain (6 events)
+│   │   ├── chain.go             # Hook registry and dispatcher
+│   │   ├── session.go           # SessionStart / SessionEnd
+│   │   ├── route.go             # PreRoute / PostRoute
+│   │   ├── dispatch.go          # PreDispatch / PostDispatch
+│   │   ├── circuit.go           # Circuit breaker (mode-aware)
+│   │   └── recovery.go          # Failure recovery strategies
 │   │
 │   ├── recipe/                  # Multi-course workflows
 │   │   ├── engine.go            # Execute recipe steps
 │   │   ├── context.go           # Context handoff between courses
 │   │   └── builtin.go           # Built-in recipes
 │   │
-│   ├── ledger/                  # Routing feedback log
-│   │   ├── writer.go            # Append ndjson
-│   │   └── reader.go            # Query for learned routing
+│   ├── dispatch/                # Dispatch mode management
+│   │   ├── modes.go             # sync / async / detached / recipe
+│   │   ├── tickets.go           # Ticket lifecycle for async mode
+│   │   └── detached.go          # Detached process management
+│   │
+│   ├── quotas/                  # Resource quota enforcement
+│   │   ├── enforcer.go          # PreDispatch quota check
+│   │   └── queue.go             # Queue when at limit
 │   │
 │   └── tui/                     # Bubble Tea interactive mode
 │       ├── app.go               # Main TUI model
 │       ├── input.go             # Task input component
 │       ├── output.go            # Streaming output viewport
 │       ├── ledger_panel.go      # Live ledger display
+│       ├── processmap.go        # Live process map (D12)
 │       └── styles.go            # Lipgloss theme
+│
+├── plugins/
+│   └── milliways.nvim/          # Neovim plugin (D20)
+│       ├── lua/
+│       │   └── milliways/
+│       │       ├── init.lua      # Plugin entry, setup(), commands
+│       │       ├── dispatch.lua  # jobstart() wrapper
+│       │       ├── context.lua   # Visual selection, LSP, git diff injection
+│       │       ├── window.lua    # Floating window with q/a/y/r actions
+│       │       └── config.lua    # User-configurable keybindings
+│       └── plugin/
+│           └── milliways.vim     # Autoload shim
 │
 ├── carte.yaml                   # Default kitchen configuration
 ├── go.mod
@@ -135,7 +171,7 @@ The user logs into each CLI tool independently, the way they normally would:
 - `goose` — user configures provider in `~/.config/goose/`
 - `cline` — user configures model/provider in `~/.cline/`
 
-Milliways is **not a proxy and not a gateway**. It's a maître d' that seats you at the right table — it doesn't cook, and it doesn't pay the bill.
+Milliways is **not a proxy and not a gateway**. It's a maitre d' that seats you at the right table — it doesn't cook, and it doesn't pay the bill.
 
 Why:
 - Each CLI brings its own auth, runtime, tools, MCP servers, hooks, context management
@@ -156,7 +192,7 @@ If a kitchen isn't installed or isn't authenticated, the sommelier skips it and 
 
 Trade-off: Less control over streaming granularity. Mitigated by reading stdout line-by-line via `bufio.Scanner`.
 
-### D3: Sommelier uses three-tier routing (fast → enriched → learned)
+### D3: Sommelier uses three-tier routing (fast -> enriched -> learned)
 
 ```
 Tier 1: Keyword match (< 1ms)
@@ -193,11 +229,11 @@ Why: Fast path handles 80% of tasks. Pantry consultation adds intelligence. Lear
 
 Next course receives: `--context /tmp/milliways-{id}-{n}.json` which the kitchen adapter injects into the prompt.
 
-Why: Pipes (stdout→stdin) lose structure. Temp files are inspectable, debuggable, and survive kitchen crashes. Cleaned up after recipe completes (or `--keep-context` to preserve).
+Why: Pipes (stdout->stdin) lose structure. Temp files are inspectable, debuggable, and survive kitchen crashes. Cleaned up after recipe completes (or `--keep-context` to preserve).
 
 ### D5: Pantry knowledge graphs are SQLite, not a graph DB
 
-**Chosen**: SQLite per graph (gitgraph.db, qualitygraph.db, depgraph.db, routing-ledger.db)
+**Chosen**: Single unified SQLite database (`milliways.db`) with `mw_` prefixed tables (see D13).
 
 Why:
 - Zero external dependencies (no Neo4j, no Postgres)
@@ -205,14 +241,15 @@ Why:
 - SQLite is already used by CodeGraph, TaskQueue, and MemPalace KG
 - Portable (copy the file, done)
 - `go-sqlite3` is battle-tested
+- Single `*sql.DB` connection avoids file lock contention
 
-### D6: Ledger is append-only ndjson + SQLite index
+### D6: Ledger is append-only ndjson + SQLite table
 
-**Chosen**: Dual write
+**Chosen**: Dual write — SQLite `mw_ledger` table is the source of truth for routing queries, ndjson kept as human-readable audit trail.
 
 ```
-~/.config/milliways/ledger.ndjson    (append-only, human-readable, jq-friendly)
-~/.config/milliways/ledger.db        (SQLite index for learned routing queries)
+~/.config/milliways/ledger.ndjson    (append-only, human-readable, jq-friendly, never read by Milliways)
+~/.config/milliways/milliways.db     (mw_ledger table — all routing queries hit this)
 ```
 
 Ledger record:
@@ -303,19 +340,10 @@ pantry:
   codegraph:
     type: mcp
     cmd: ["/opt/homebrew/bin/codegraph", "serve", "--mcp"]
-  gitgraph:
-    type: sqlite
-    path: ~/.config/milliways/gitgraph.db
-  qualitygraph:
-    type: sqlite
-    path: ~/.config/milliways/qualitygraph.db
-  depgraph:
-    type: sqlite
-    path: ~/.config/milliways/depgraph.db
 
 ledger:
   ndjson: ~/.config/milliways/ledger.ndjson
-  db: ~/.config/milliways/ledger.db
+  db: ~/.config/milliways/milliways.db
 
 recipes:
   implement-feature:
@@ -458,7 +486,7 @@ func (k *ClaudeKitchen) Status() KitchenStatus {
 | opencode | `brew install opencode` | None (uses Ollama) | N/A |
 | ollama | `brew install ollama && ollama serve` | None | N/A |
 | gemini | `npm i -g @anthropic-ai/gemini-cli` | `gcloud auth login` (opens browser) | OAuth browser |
-| aider | `pip install aider-chat` | Prompt for API key → write to `~/.aider.conf.yml` | API key in config |
+| aider | `pip install aider-chat` | Prompt for API key -> write to `~/.aider.conf.yml` | API key in config |
 | goose | `brew install goose` | `goose configure` (interactive wizard) | Interactive |
 | cline | `npm i -g @anthropic-ai/cline` | `cline --login` (opens browser) | OAuth browser |
 
@@ -536,10 +564,10 @@ kitchens:
 ```
 
 **Sommelier adapts routing to available kitchens**:
-- If only `opencode` is available → everything routes there (single-kitchen mode)
-- If `claude` + `opencode` → classic two-tier (think cloud, code local)
-- If `claude` + `opencode` + `gemini` → add free research capability
-- Full menu → sommelier has maximum routing flexibility
+- If only `opencode` is available -> everything routes there (single-kitchen mode)
+- If `claude` + `opencode` -> classic two-tier (think cloud, code local)
+- If `claude` + `opencode` + `gemini` -> add free research capability
+- Full menu -> sommelier has maximum routing flexibility
 
 **Minimum viable setup**: Just one kitchen. Milliways works (with reduced routing) even with a single local model via opencode. The value of Milliways scales with the number of available kitchens but never requires all of them.
 
@@ -556,7 +584,7 @@ $ milliways status
   goose       ✗ not installed     —                  —
   cline       ✗ not installed     —                  —
 
-  Pantry: MemPalace ✓ | CodeGraph ✓ | GitGraph ✓ | QualityGraph ○
+  Pantry: MemPalace ✓ | CodeGraph ✓ | milliways.db ✓ (8 tables)
   Ledger: 142 entries | Last: 3m ago
   
   3/6 kitchens ready. Run 'milliways --setup <kitchen>' to add more.
@@ -568,7 +596,7 @@ Default behavior: sequential execution. Only one kitchen subprocess at a time. W
 
 Exception: `--parallel` flag for independent courses (e.g., gemini research + opencode code on different files). But parallel requires both kitchens to be non-overlapping on Ollama (one cloud + one local is fine; two local models would swap).
 
-### D12: Live Process Map in TUI (top-right corner)
+### D12b: Live Process Map in TUI (top-right corner)
 
 The TUI always shows a minimap of the current state — what's happening, what's next, where we are in a recipe.
 
@@ -617,34 +645,530 @@ The TUI always shows a minimap of the current state — what's happening, what's
 [dispatch]  claude done (4.2s, exit=0)
 ```
 
+### D13: Unified milliways.db (single SQLite, shared components)
+
+**Chosen**: One SQLite file with WAL mode for all Milliways-owned state.
+
+Previous design (D5, D6) used separate `.db` files per graph and a separate `ledger.db`. This consolidates everything into a single `~/.config/milliways/milliways.db` with `mw_` prefixed tables.
+
+Why:
+- Single `*sql.DB` connection = ~2 MB overhead (vs ~2 MB per separate DB)
+- No file lock contention between components
+- Cross-table JOINs enable the Knowledge Graph routing brain (D23)
+- Migrations are atomic — one embedded migration set, applied on startup
+- Portable — one file to backup, move, or inspect
+
+**PantryDB struct with typed accessors**:
+```go
+type PantryDB struct {
+    db *sql.DB
+}
+
+func Open(path string) (*PantryDB, error)  // opens + migrates
+func (p *PantryDB) Ledger() *LedgerStore
+func (p *PantryDB) Tickets() *TicketStore
+func (p *PantryDB) GitGraph() *GitGraphStore
+func (p *PantryDB) Quality() *QualityStore
+func (p *PantryDB) Deps() *DepStore
+func (p *PantryDB) Routing() *RoutingStore
+func (p *PantryDB) Quotas() *QuotaStore
+func (p *PantryDB) Close() error
+```
+
+**Migrations embedded via `go:embed`**, versioned, applied on startup:
+```go
+//go:embed migrations/*.sql
+var migrationFS embed.FS
+```
+
+**MemPalace and CodeGraph stay external** — accessed via MCP (D8). They have their own data stores and their own lifecycle. Milliways does not own or manage their data.
+
+**ndjson ledger kept as human-readable audit trail** — append-only, never read by Milliways at runtime. Exists purely for `jq` queries, debugging, and manual inspection.
+
+**Full schema** (`001_initial.sql`):
+
+```sql
+-- milliways.db schema v1
+-- WAL mode set programmatically on connection open
+
+CREATE TABLE mw_schema (
+    version     INTEGER PRIMARY KEY,
+    applied_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE mw_ledger (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts            TEXT NOT NULL,
+    task_hash     TEXT NOT NULL,
+    task_type     TEXT NOT NULL DEFAULT '',
+    kitchen       TEXT NOT NULL,
+    station       TEXT NOT NULL DEFAULT '',
+    file          TEXT NOT NULL DEFAULT '',
+    duration_s    REAL NOT NULL DEFAULT 0,
+    exit_code     INTEGER NOT NULL DEFAULT 0,
+    cost_est_usd  REAL NOT NULL DEFAULT 0,
+    outcome       TEXT NOT NULL DEFAULT 'success',
+    session_id    TEXT,
+    parent_id     INTEGER,
+    dispatch_mode TEXT DEFAULT 'sync'
+);
+
+CREATE TABLE mw_tickets (
+    id            TEXT PRIMARY KEY,
+    kitchen       TEXT NOT NULL,
+    prompt        TEXT NOT NULL,
+    mode          TEXT NOT NULL,
+    pid           INTEGER,
+    status        TEXT NOT NULL DEFAULT 'running',
+    output_path   TEXT,
+    started_at    TEXT NOT NULL,
+    completed_at  TEXT,
+    exit_code     INTEGER,
+    ledger_id     INTEGER REFERENCES mw_ledger(id)
+);
+
+CREATE TABLE mw_gitgraph (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo          TEXT NOT NULL,
+    file_path     TEXT NOT NULL,
+    churn_30d     INTEGER NOT NULL DEFAULT 0,
+    churn_90d     INTEGER NOT NULL DEFAULT 0,
+    authors_30d   INTEGER NOT NULL DEFAULT 0,
+    last_author   TEXT,
+    last_changed  TEXT,
+    stability     TEXT NOT NULL DEFAULT 'unknown',
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(repo, file_path)
+);
+
+CREATE TABLE mw_quality (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo                  TEXT NOT NULL,
+    file_path             TEXT NOT NULL,
+    function_name         TEXT,
+    cyclomatic_complexity INTEGER,
+    cognitive_complexity  INTEGER,
+    coverage_pct          REAL,
+    smell_count           INTEGER NOT NULL DEFAULT 0,
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(repo, file_path, function_name)
+);
+
+CREATE TABLE mw_deps (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo            TEXT NOT NULL,
+    package         TEXT NOT NULL,
+    version         TEXT NOT NULL,
+    latest_version  TEXT,
+    cve_ids         TEXT,
+    lock_file       TEXT,
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(repo, package, lock_file)
+);
+
+CREATE TABLE mw_routing (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_type     TEXT NOT NULL,
+    file_profile  TEXT NOT NULL DEFAULT '',
+    kitchen       TEXT NOT NULL,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    avg_duration  REAL NOT NULL DEFAULT 0,
+    last_used     TEXT,
+    UNIQUE(task_type, file_profile, kitchen)
+);
+
+CREATE TABLE mw_quotas (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kitchen     TEXT NOT NULL,
+    date        TEXT NOT NULL,
+    dispatches  INTEGER NOT NULL DEFAULT 0,
+    total_sec   REAL NOT NULL DEFAULT 0,
+    failures    INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(kitchen, date)
+);
+
+-- Indexes for common query patterns
+CREATE INDEX idx_ledger_kitchen  ON mw_ledger(kitchen);
+CREATE INDEX idx_ledger_outcome  ON mw_ledger(outcome);
+CREATE INDEX idx_ledger_ts       ON mw_ledger(ts);
+CREATE INDEX idx_gitgraph_stability ON mw_gitgraph(stability);
+```
+
+### D14: Hook Chain (6 events with failure recovery)
+
+**Chosen**: Internal hook chain with 6 well-defined events. Not file-based hooks (like git hooks) — these are Go function chains registered at startup.
+
+**Events**:
+
+| Event | When | Responsibilities |
+|-------|------|------------------|
+| SessionStart | Binary starts | Read mode (`~/.claude/mode`), load config, diagnose kitchens, wake pantry (open DB) |
+| PreRoute | Before sommelier runs | Circuit breaker check (D16), inject pantry signals (gitgraph, quality, deps) |
+| PostRoute | After sommelier decides | Log routing decision, verify chosen kitchen is still available |
+| PreDispatch | Before exec.Command | Inject mode context, set `--dir` restrictions (D16), enforce quotas (D17) |
+| PostDispatch | After kitchen returns | Write ledger, update routing scores, check subdispatch log, validate output quality, execute recovery strategy on failure |
+| SessionEnd | Binary exits | Flush DB, generate session summary, write ndjson |
+
+**Recovery strategies** (configured per kitchen in `carte.yaml`):
+
+```yaml
+kitchens:
+  opencode:
+    recovery:
+      strategy: retry
+      max_retries: 1
+  claude:
+    recovery:
+      strategy: fallback
+      fallback_to: opencode
+  gemini:
+    recovery:
+      strategy: save-partial
+```
+
+| Strategy | Behavior |
+|----------|----------|
+| `retry` | Same kitchen, up to `max_retries` (default 1). Reuses same prompt. |
+| `fallback` | Route to `fallback_to` kitchen. Inject partial output as context so work isn't lost. |
+| `save-partial` | Write whatever output was captured to a file. Notify user. Do not retry. |
+| `abandon` | Log the failure, record in ledger, move on. Default for recipes (course failure stops recipe). |
+
+**PostDispatch failure flow**:
+```
+kitchen exits non-zero
+  → write ledger entry (outcome=failure)
+  → check recovery strategy for this kitchen
+  → retry?    re-dispatch to same kitchen (increment attempt counter)
+  → fallback? re-route via sommelier with kitchen excluded, inject partial output
+  → save?     write output to /tmp/milliways-partial-{id}.txt, print path
+  → abandon?  log and return error to caller
+```
+
+### D15: Four Dispatch Modes
+
+**Chosen**: Four modes that cover the full spectrum from interactive to fire-and-forget.
+
+| Mode | Flag | Behavior |
+|------|------|----------|
+| `sync` | (default) | Milliways waits, streams output line-by-line, blocks terminal until kitchen exits |
+| `async` | `--async` | Returns a ticket ID immediately. Kitchen runs in background. Check with `milliways ticket {id}` |
+| `detached` | `--detach` | Process survives Milliways exit. Output goes to log file. Check with `milliways ticket {id}` |
+| `recipe` | `--recipe {name}` | Multi-course sequential. Context handoff between courses via temp files (D4) |
+
+**Async flow**:
+```
+$ milliways --async "refactor auth middleware"
+Ticket: mw-a1b2c3
+Kitchen: opencode
+Status: running
+
+$ milliways ticket mw-a1b2c3
+Status: completed (14.2s)
+Exit: 0
+Output: ~/.config/milliways/tickets/mw-a1b2c3/output.txt
+```
+
+**Detached flow**:
+```
+$ milliways --detach "generate test suite for store.py"
+Ticket: mw-d4e5f6 (detached, PID 42891)
+Output: ~/.config/milliways/tickets/mw-d4e5f6/output.txt
+
+# Milliways can exit — the kitchen process keeps running
+# Later:
+$ milliways ticket mw-d4e5f6
+Status: completed (182.3s)
+```
+
+**Ticket storage**: `mw_tickets` table in milliways.db. Detached processes write a PID file so Milliways can check liveness on next invocation.
+
+### D16: Circuit Breaker Integration
+
+**Chosen**: Mode-aware path and kitchen restrictions, enforced at PreRoute and PreDispatch.
+
+**Mode file**: `~/.claude/mode` contains either `company` or `private`. Read once at SessionStart.
+
+| Mode | Available Kitchens | Allowed Paths |
+|------|-------------------|---------------|
+| `company` | Approved kitchens only (e.g., claude, opencode) | `~/dev/src/ghorg/`, `~/dev/src/docs_local/` |
+| `private` | All kitchens | `~/dev/src/pprojects/`, `~/dev/src/ai_local/` |
+
+**PreRoute enforcement**:
+- If task targets a file in a blocked path: **hard stop**. No retry, no fallback. Return error immediately.
+- If task targets an allowed path but kitchen is not approved for current mode: sommelier excludes it from candidates.
+
+**PreDispatch enforcement**:
+- Inject `--dir` flag (or equivalent) into kitchen command to restrict filesystem access.
+- Pass mode context to kitchen environment variable (`MILLIWAYS_MODE=company`) so kitchens with their own circuit breakers can align.
+
+```go
+func (h *CircuitHook) PreRoute(ctx context.Context, task *Task) error {
+    mode := h.currentMode()  // read from ~/.claude/mode
+    if !mode.AllowsPath(task.TargetPath) {
+        return fmt.Errorf("circuit breaker: path %s blocked in %s mode", task.TargetPath, mode)
+    }
+    task.ExcludeKitchens = mode.BlockedKitchens()
+    return nil
+}
+```
+
+### D17: Resource Quotas
+
+**Chosen**: Per-kitchen and global resource limits, enforced at PreDispatch.
+
+```yaml
+kitchens:
+  openhands:
+    quotas:
+      max_concurrent: 1
+      max_duration: 30m
+      max_memory_mb: 2048
+      max_cpu_pct: 50
+      cooldown_sec: 30
+
+quotas:
+  max_total_concurrent: 2
+  pause_if_memory_above: 85
+```
+
+**Enforcement** (PreDispatch hook):
+- Check `mw_quotas` table for today's usage against configured limits.
+- Check running ticket count against `max_concurrent`.
+- Check system memory via `/proc/meminfo` (Linux) or `sysctl hw.memsize` (macOS) against `pause_if_memory_above`.
+- If at limit: **queue**. Return a ticket in `queued` status. Dispatch when a slot opens.
+
+**Docker memory enforcement** (for container-based kitchens like OpenHands):
+```go
+func (k *OpenHandsKitchen) Exec(ctx context.Context, task Task) (Result, error) {
+    args := []string{"run", "--memory", fmt.Sprintf("%dm", k.quotas.MaxMemoryMB), ...}
+    cmd := exec.CommandContext(ctx, "docker", args...)
+    // ...
+}
+```
+
+**Quota tracking**: `mw_quotas` table accumulates daily per-kitchen: dispatch count, total seconds, failure count. Queryable via `milliways report --quotas`.
+
+### D18: Tiered-CLI Feedback Loop
+
+**Chosen**: Continuous measurement of which kitchen performs best for which task type, building toward a proof metric that multi-CLI routing outperforms any single CLI.
+
+**Task type classification** (by sommelier):
+- `think` — design, architecture, planning
+- `code` — implementation, feature work
+- `refactor` — restructuring without behavior change
+- `search` — information retrieval, research
+- `review` — code review, security audit
+- `test` — test generation, coverage improvement
+
+**Quality score**:
+- Initially: derived from `exit_code` (0 = success, non-zero = failure)
+- Future: user feedback via `milliways rate last good/bad` writes to `mw_ledger.outcome`
+
+**Routing accumulation** (`mw_routing` table):
+- Keyed by `(task_type, file_profile, kitchen)`
+- `file_profile` = stability bucket from gitgraph (stable/volatile/new)
+- Tracks `success_count`, `failure_count`, `avg_duration`
+
+**Tiered report** (`milliways report --tiered`):
+```
+Task Type    Best Kitchen    Success%    Avg Duration
+─────────    ────────────    ────────    ────────────
+think        claude          94%         3.2s
+code         opencode        87%         12.1s
+refactor     aider           91%         8.4s
+search       gemini          96%         2.1s
+review       claude          89%         5.7s
+test         opencode        83%         9.8s
+
+Composite (multi-CLI): 91.2% success, 6.8s avg
+Best single CLI (claude): 78.4% success, 7.2s avg
+
+Lift: +12.8% success rate via multi-CLI routing
+```
+
+**Proof metric**: Lift percentage = composite multi-CLI score vs best single-CLI score across all task types.
+
+### D19: Kitchen Opacity Principle
+
+**Chosen**: Kitchen is a black box. Milliways scores the kitchen, not the model inside.
+
+**Core principle**: When claude delegates to haiku internally, or when opencode calls delegate.sh, or when goose spawns sub-agents — that is the kitchen's business. Milliways sees:
+- Input: prompt sent to kitchen
+- Output: stdout, exit code, duration
+
+**Milliways does not**:
+- Inspect which model a kitchen used internally
+- Track token counts per sub-model
+- Override a kitchen's internal delegation strategy
+
+**Optional observation**: When kitchens participate in a tiered-agent-architecture (shared `subdispatch.ndjson` log), PostDispatch can read this log for richer scoring. But this is opt-in and non-essential.
+
+**Future**: Structured delegation protocol where kitchens can call back into Milliways:
+```
+milliways delegate --parent {ticket-id} --task "run tests" --kitchen opencode
+```
+This would let a kitchen explicitly request Milliways to handle a subtask with a different kitchen. Not in v1.
+
+### D20: Neovim Plugin Architecture
+
+**Chosen**: `milliways.nvim` — a Lua plugin that calls the milliways binary via `vim.fn.jobstart()`. No persistent process, no daemon, no socket.
+
+**Commands**:
+
+| Command | Behavior |
+|---------|----------|
+| `:Milliways {prompt}` | Dispatch prompt, show result in floating window |
+| `:MilliwaysExplain` | Send visual selection with "explain this" |
+| `:MilliwaysKitchen {name}` | Force-route to specific kitchen |
+| `:MilliwaysRecipe {name}` | Run a named recipe |
+| `:MilliwaysStatus` | Show kitchen status (like `milliways status`) |
+| `:MilliwaysDetached {prompt}` | Detached dispatch, show ticket ID |
+
+**Context injection** (automatic, based on editor state):
+
+| Source | Flag | When |
+|--------|------|------|
+| Visual selection | `--context-lines` | Text selected in visual mode |
+| Current file | `--context-file` | Always (current buffer path) |
+| LSP symbol | `--context-symbol` | Cursor on a function/class |
+| Git diff | `--context-diff` | Uncommitted changes in current file |
+
+**Floating window actions**:
+
+| Key | Action |
+|-----|--------|
+| `q` | Close window |
+| `a` | Apply changes (if output contains a diff) |
+| `y` | Yank output to clipboard |
+| `r` | Retry with same prompt |
+
+**Keybindings** (configurable):
+- `<leader>mm` — open prompt input
+- `<leader>me` — explain selection
+- `<leader>ms` — show status
+
+**Memory constraint**: < 1 MB overhead. No persistent process. The plugin spawns `milliways` on command and reads stdout. When the floating window closes, nothing remains in memory.
+
+### D21: Memory Budget
+
+**Chosen**: Strict memory targets to respect the 24 GB constraint (D12).
+
+| Component | Budget | Notes |
+|-----------|--------|-------|
+| Milliways binary (idle) | ~8 MB | Go runtime + loaded config |
+| Milliways binary (active) | < 20 MB | Including bufio buffers, SQL connection |
+| milliways.db connection | ~2 MB | Single `*sql.DB` with WAL mode |
+| MCP server pipe (each) | ~1 MB | stdio JSON-RPC, no buffering |
+| ndjson append | 0 MB | Write-only, never read into memory |
+| Kitchen subprocess | Varies | Owned by kitchen, not by Milliways |
+
+**Design rules from this budget**:
+- No in-memory caches — all state lives in milliways.db, queried on demand
+- No in-memory routing tables — sommelier queries `mw_routing` directly
+- MCP servers accessed via stdio pipes, not HTTP (avoids connection pooling overhead)
+- Ollama model state observed via API (`/api/tags`), not controlled
+- OpenHands container limits enforced via Docker `--memory` flag from quotas (D17)
+
+### D22: Skill Catalog Awareness
+
+**Chosen**: On SessionStart, scan known skill directories and build a transient catalog of which kitchen has which skills.
+
+**Scan paths**:
+- `~/.claude/skills/` (Claude Code custom skills)
+- `~/.config/opencode/plugins/` (OpenCode plugins)
+- Kitchen-specific skill directories as configured in `carte.yaml`
+
+**Catalog structure** (in-memory, not persisted):
+```go
+type SkillCatalog struct {
+    skills map[string][]string  // skill name → list of kitchens that have it
+}
+
+func (c *SkillCatalog) KitchensForSkill(skill string) []string
+func (c *SkillCatalog) SkillsForKitchen(kitchen string) []string
+```
+
+**Sommelier integration**: When a task matches a skill keyword (e.g., "security review"), the sommelier checks the catalog to prefer kitchens that have the matching skill installed.
+
+Example: "security review" matches the `security-review` skill. Catalog shows claude has it, opencode does not. Sommelier routes to claude even if keyword routing would suggest opencode.
+
+**Not persisted**: Catalog is rebuilt on every SessionStart. No stale data. No storage cost. Scan takes < 10ms (just `os.ReadDir` + filename matching).
+
+### D23: Knowledge Graph as Routing Brain (4 layers)
+
+**Chosen**: Four conceptual layers stored across existing `mw_*` tables. No separate graph database. Cross-table JOINs provide the graph traversal.
+
+**Layer 1: Task Graph** (what was asked)
+- Source: `mw_ledger` — `parent_id` links create depends_on / followed_by edges
+- Example: recipe course 2 has `parent_id` pointing to course 1's ledger entry
+
+**Layer 2: Outcome Graph** (what happened)
+- Source: `mw_ledger` + `mw_routing` — dispatched_to, produced, scored edges
+- Example: task X dispatched_to opencode, produced exit_code 0, scored success
+
+**Layer 3: Context Graph** (links to code knowledge)
+- Source: `mw_gitgraph` + `mw_quality` + `mw_deps` — touched files, complexity, churn, dependencies
+- Example: file store.py has churn_30d=18, cyclomatic_complexity=34, 2 CVEs in deps
+
+**Layer 4: Session Graph** (conversations across CLIs)
+- Source: `mw_ledger.session_id` — groups dispatches within a session
+- Edge types: context_for (output of dispatch A fed into dispatch B), invalidated_by (later dispatch superseded earlier)
+
+**Query example** — sommelier asks "what's the best kitchen for refactoring a high-churn Python file?":
+```sql
+SELECT r.kitchen, r.success_count, r.avg_duration
+FROM mw_routing r
+JOIN mw_gitgraph g ON g.file_path = ?
+WHERE r.task_type = 'refactor'
+  AND r.file_profile = g.stability
+ORDER BY r.success_count DESC, r.avg_duration ASC
+LIMIT 1;
+```
+
+One query, two tables, complete routing decision. No graph traversal library needed — relational JOINs on well-indexed tables serve the same purpose at this scale.
+
 ## Dependency Graph
 
 ```
-Service 1: Core + First Kitchen
+Service 1: Core + PantryDB + First Kitchen
   MW-1 (CLI skeleton) → MW-2 (kitchen interface) → MW-3 (claude adapter)
-  → MW-4 (ledger) → MW-5 (keyword router)
-  → 🍋 Palate Cleanser 1
+  → MW-4 (PantryDB + migrations) → MW-5 (LedgerStore) → MW-6 (keyword router)
+  → MW-7 (hook chain skeleton — SessionStart/SessionEnd)
+  → Palate Cleanser 1
 
-Service 2: Pantry + Sommelier
-  MW-6 (MCP client) → MW-7 (MemPalace integration) → MW-8 (CodeGraph integration)
-  → MW-9 (GitGraph) → MW-10 (QualityGraph)
-  → MW-11 (enriched routing) → MW-12 (learned routing)
-  → 🍋 Palate Cleanser 2
+Service 2: Hook Chain + Circuit Breaker + Dispatch Modes
+  MW-8 (PreRoute/PostRoute hooks) → MW-9 (PreDispatch/PostDispatch hooks)
+  → MW-10 (circuit breaker / mode reader) → MW-11 (recovery strategies)
+  → MW-12 (async dispatch + TicketStore) → MW-13 (detached dispatch)
+  → MW-14 (QuotaStore + enforcer)
+  → Palate Cleanser 2
 
-Service 3: All Kitchens + Recipes
-  MW-13 (opencode adapter) → MW-14 (gemini adapter)
-  → MW-15 (aider adapter) → MW-16 (goose adapter) → MW-17 (cline adapter)
-  → MW-18 (recipe engine) → MW-19 (context handoff)
-  → 🍋 Palate Cleanser 3
+Service 3: Pantry Intelligence + Sommelier
+  MW-15 (MCP client) → MW-16 (MemPalace integration) → MW-17 (CodeGraph integration)
+  → MW-18 (GitGraphStore) → MW-19 (QualityStore) → MW-20 (DepStore)
+  → MW-21 (enriched routing / pantry signals)
+  → MW-22 (RoutingStore + learned routing)
+  → MW-23 (skill catalog awareness)
+  → Palate Cleanser 3
 
-Service 4: TUI
-  MW-20 (Bubble Tea app) → MW-21 (input component) → MW-22 (output viewport)
-  → MW-23 (ledger panel) → MW-24 (kitchen selector)
-  → 🍋 Palate Cleanser 4
+Service 4: All Kitchens + Recipes + Feedback
+  MW-24 (opencode adapter) → MW-25 (gemini adapter)
+  → MW-26 (aider adapter) → MW-27 (goose adapter) → MW-28 (cline adapter)
+  → MW-29 (recipe engine) → MW-30 (context handoff)
+  → MW-31 (tiered-CLI feedback loop + report)
+  → Palate Cleanser 4
 
-Service 5: Full Pantry + Carte Integration
-  MW-25 (DepGraph) → MW-26 (TopologyGraph)
-  → MW-27 (carte.md parser) → MW-28 (opsx:apply integration)
-  → MW-29 (routing accuracy measurement)
-  → 🍋 Grand Finale
+Service 5: TUI + Neovim Plugin
+  MW-32 (Bubble Tea app) → MW-33 (input component) → MW-34 (output viewport)
+  → MW-35 (ledger panel) → MW-36 (process map) → MW-37 (kitchen selector)
+  → MW-38 (milliways.nvim plugin)
+  → Palate Cleanser 5
+
+Service 6: Full Pantry + Carte Integration + Knowledge Graph
+  MW-39 (carte.md parser) → MW-40 (opsx:apply integration)
+  → MW-41 (knowledge graph queries — 4 layers)
+  → MW-42 (routing accuracy measurement)
+  → MW-43 (tiered report + lift metric)
+  → Grand Finale
 ```
