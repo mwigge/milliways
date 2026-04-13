@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mwigge/milliways/internal/kitchen"
+	"github.com/mwigge/milliways/internal/ledger"
 	"github.com/mwigge/milliways/internal/pantry"
 )
 
@@ -68,7 +69,7 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 			Kitchen:      k.Name(),
 			DurationSec:  dur.Seconds(),
 			ExitCode:     exitCode,
-			Outcome:      outcomeStr(exitCode),
+			Outcome:      ledger.OutcomeFromExitCode(exitCode),
 			DispatchMode: "async",
 		}
 		if ledgerID, ledgerErr := d.pdb.Ledger().Insert(entry); ledgerErr == nil {
@@ -88,11 +89,4 @@ func (d *AsyncDispatcher) DispatchDetached(_ kitchen.Kitchen, _ string) (string,
 // Wait blocks until all async dispatches have completed.
 func (d *AsyncDispatcher) Wait() {
 	d.wg.Wait()
-}
-
-func outcomeStr(exitCode int) string {
-	if exitCode == 0 {
-		return "success"
-	}
-	return "failure"
 }

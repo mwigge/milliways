@@ -107,17 +107,40 @@ func TestSkillCatalog_HasSkill(t *testing.T) {
 		},
 	}
 
-	kitchen, skill := catalog.HasSkill("security")
-	if kitchen != "claude" {
-		t.Errorf("expected claude for 'security', got %q", kitchen)
+	// Whole word match on skill name
+	kitchenName, skill := catalog.HasSkill("security")
+	if kitchenName != "claude" {
+		t.Errorf("expected claude for 'security', got %q", kitchenName)
 	}
 	if skill == nil || skill.Name != "security-review" {
 		t.Errorf("expected security-review skill, got %v", skill)
 	}
 
-	kitchen, _ = catalog.HasSkill("nonexistent-xyz")
-	if kitchen != "" {
-		t.Errorf("expected empty for nonexistent skill, got %q", kitchen)
+	// "python" matches the word "python" in "python-patterns"
+	kitchenName, skill = catalog.HasSkill("python")
+	if kitchenName != "claude" {
+		t.Errorf("expected claude for 'python', got %q", kitchenName)
+	}
+	if skill == nil || skill.Name != "python-patterns" {
+		t.Errorf("expected python-patterns skill, got %v", skill)
+	}
+
+	// Short queries (< 3 chars) are rejected to avoid overly broad matches
+	kitchenName, _ = catalog.HasSkill("se")
+	if kitchenName != "" {
+		t.Errorf("expected empty for short query 'se', got %q", kitchenName)
+	}
+
+	// Nonexistent skill returns empty
+	kitchenName, _ = catalog.HasSkill("nonexistent-xyz")
+	if kitchenName != "" {
+		t.Errorf("expected empty for nonexistent skill, got %q", kitchenName)
+	}
+
+	// Substring of a word should not match (e.g., "sec" is not a whole word in "security")
+	kitchenName, _ = catalog.HasSkill("sec")
+	if kitchenName != "" {
+		t.Errorf("expected empty for partial word 'sec', got %q", kitchenName)
 	}
 }
 

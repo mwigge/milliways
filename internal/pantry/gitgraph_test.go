@@ -1,6 +1,9 @@
 package pantry
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -77,25 +80,56 @@ func TestGitGraphStore_UpsertAndQuery(t *testing.T) {
 	}
 }
 
-func TestGitGraphStore_Sync_RealRepo(t *testing.T) {
-	// This test uses the milliways repo itself — it's a real git repo.
-	// Skip if running in CI without git.
+func TestGitGraphStore_Sync_TempRepo(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
-	count, err := db.GitGraph().Sync(".")
-	if err != nil {
-		t.Skipf("Sync failed (no git repo at .): %v", err)
-	}
-	if count == 0 {
-		t.Skip("no files found in git log (new repo?)")
+	// Create a temporary git repo with known commits.
+	repoDir := t.TempDir()
+	for _, cmd := range [][]string{
+		{"git", "init"},
+		{"git", "config", "user.email", "test@example.com"},
+		{"git", "config", "user.name", "Test"},
+	} {
+		c := exec.Command(cmd[0], cmd[1:]...)
+		c.Dir = repoDir
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
 	}
 
-	// Verify at least one file was indexed
-	fs, err := db.GitGraph().IsHotspot(".", "internal/pantry/db.go")
+	// Create a file and commit it.
+	testFile := filepath.Join(repoDir, "hello.go")
+	if err := os.WriteFile(testFile, []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range [][]string{
+		{"git", "add", "hello.go"},
+		{"git", "commit", "-m", "initial"},
+	} {
+		c := exec.Command(cmd[0], cmd[1:]...)
+		c.Dir = repoDir
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+	}
+
+	count, err := db.GitGraph().Sync(repoDir)
+	if err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if count == 0 {
+		t.Fatal("expected at least 1 file synced, got 0")
+	}
+
+	fs, err := db.GitGraph().IsHotspot(repoDir, "hello.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// May or may not exist depending on git history, that's ok
-	_ = fs
+	if fs == nil {
+		t.Fatal("expected hello.go in gitgraph after sync")
+	}
+	if fs.Stability != "stable" {
+		t.Errorf("expected stability 'stable' for single commit, got %q", fs.Stability)
+	}
 }

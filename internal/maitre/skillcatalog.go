@@ -51,16 +51,36 @@ func (c *SkillCatalog) ForKitchen(kitchen string) []SkillEntry {
 }
 
 // HasSkill checks if any kitchen has a skill matching the query.
+// The query must be at least 3 characters and must match a whole word
+// in the skill name (not a substring of the description).
 // Returns the kitchen name and skill entry, or empty if not found.
 func (c *SkillCatalog) HasSkill(query string) (string, *SkillEntry) {
 	lower := strings.ToLower(query)
+	if len([]rune(lower)) < 3 {
+		return "", nil
+	}
 	for i, e := range c.entries {
-		if strings.Contains(strings.ToLower(e.Name), lower) ||
-			strings.Contains(strings.ToLower(e.Description), lower) {
+		if containsWholeWord(strings.ToLower(e.Name), lower) {
 			return e.Kitchen, &c.entries[i]
 		}
 	}
 	return "", nil
+}
+
+// containsWholeWord checks if target contains query as a whole word,
+// where word boundaries are defined by '-', '_', and spaces.
+func containsWholeWord(name, query string) bool {
+	// Split the skill name into words by common separators
+	words := strings.FieldsFunc(name, func(r rune) bool {
+		return r == '-' || r == '_' || r == ' '
+	})
+	for _, w := range words {
+		if w == query {
+			return true
+		}
+	}
+	// Also check if query matches the full name
+	return name == query
 }
 
 // Total returns the total number of skills across all kitchens.

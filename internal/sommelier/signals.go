@@ -1,6 +1,20 @@
 package sommelier
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
+
+// Risk and quality thresholds for signal scoring.
+const (
+	riskThresholdHigh   = 5
+	riskThresholdMedium = 2
+	complexityHigh      = 30
+	complexityMedium    = 15
+	coverageLow         = 40
+	coverageMedium      = 70
+	authorRiskThreshold = 3
+)
 
 // Signals holds pantry-derived routing signals for a task.
 // Coverage uses -1 as sentinel for "unknown" (zero-value float64 would be 0% which is meaningful).
@@ -42,30 +56,30 @@ func (s Signals) RiskLevel() string {
 	}
 
 	// Complexity risk
-	if s.Complexity > 30 {
+	if s.Complexity > complexityHigh {
 		score += 3
-	} else if s.Complexity > 15 {
+	} else if s.Complexity > complexityMedium {
 		score += 1
 	}
 
 	// Coverage risk (only count if known)
 	if s.Coverage >= 0 {
-		if s.Coverage < 40 {
+		if s.Coverage < coverageLow {
 			score += 3
-		} else if s.Coverage < 70 {
+		} else if s.Coverage < coverageMedium {
 			score += 1
 		}
 	}
 
 	// Multi-author risk (many hands = fragile)
-	if s.FileAuthors > 3 {
+	if s.FileAuthors > authorRiskThreshold {
 		score += 1
 	}
 
 	switch {
-	case score >= 5:
+	case score >= riskThresholdHigh:
 		return "high"
-	case score >= 2:
+	case score >= riskThresholdMedium:
 		return "medium"
 	default:
 		return "low"
@@ -96,12 +110,5 @@ func (s Signals) Summary() string {
 		return "no signals"
 	}
 
-	result := ""
-	for i, p := range parts {
-		if i > 0 {
-			result += " "
-		}
-		result += p
-	}
-	return result
+	return strings.Join(parts, " ")
 }

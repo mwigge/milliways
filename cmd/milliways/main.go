@@ -19,6 +19,12 @@ import (
 
 var version = "0.1.0"
 
+// dispatchOpts groups the parameters for the dispatch function.
+type dispatchOpts struct {
+	prompt, kitchenForce, configPath string
+	jsonOutput, explain, verbose     bool
+}
+
 // exitError wraps an error with a specific exit code.
 type exitError struct {
 	code int
@@ -80,7 +86,14 @@ based on what each tool does best.
 			if detachFlag {
 				return dispatchDetach(prompt, kitchenFlag, verbose, configPath)
 			}
-			return dispatch(prompt, kitchenFlag, jsonFlag, explainFlag, verbose, configPath)
+			return dispatch(dispatchOpts{
+				prompt:       prompt,
+				kitchenForce: kitchenFlag,
+				configPath:   configPath,
+				jsonOutput:   jsonFlag,
+				explain:      explainFlag,
+				verbose:      verbose,
+			})
 		},
 		SilenceUsage: true,
 	}
@@ -106,10 +119,19 @@ based on what each tool does best.
 	return cmd
 }
 
-func dispatch(prompt, kitchenForce string, jsonOutput, explain, verbose bool, configPath string) error {
-	cfg, err := maitre.LoadConfig(configPath)
+func dispatch(opts dispatchOpts) error {
+	cfg, err := maitre.LoadConfig(opts.configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
+	}
+
+	// Open PantryDB once — used for signals assembly and post-dispatch recording.
+	pdb, pdbErr := openPantryDB()
+	if pdbErr != nil && opts.verbose {
+		fmt.Fprintf(os.Stderr, "[pantry] warning: %v\n", pdbErr)
+	}
+	if pdb != nil {
+		defer func() { _ = pdb.Close() }()
 	}
 
 	reg := buildRegistry(cfg)
@@ -117,43 +139,40 @@ func dispatch(prompt, kitchenForce string, jsonOutput, explain, verbose bool, co
 
 	// Circuit breaker check
 	mode := maitre.ReadMode()
-	if verbose {
+	if opts.verbose {
 		fmt.Fprintf(os.Stderr, "[mode] %s\n", mode)
 	}
 
-	// Check prompt for absolute paths and enforce circuit breaker
-	if pathErr := checkPromptPaths(prompt, mode); pathErr != nil {
+	if pathErr := checkPromptPaths(opts.prompt, mode); pathErr != nil {
 		return pathErr
 	}
 
 	var decision sommelier.Decision
-	if kitchenForce != "" {
-		decision = som.ForceRoute(kitchenForce)
+	if opts.kitchenForce != "" {
+		decision = som.ForceRoute(opts.kitchenForce)
 	} else {
-		// Assemble pantry signals (best-effort, nil if pantry unavailable)
-		signals := assembleSignals(cfg, prompt, verbose)
+		signals := assembleSignals(cfg, pdb, opts.prompt, opts.verbose)
 
-		// Skill catalog hint (best-effort)
 		var skillHint *sommelier.SkillHint
 		catalog := maitre.ScanSkills()
 		if catalog.Total() > 0 {
-			if kitchenName, skill := catalog.HasSkill(prompt); skill != nil {
+			if kitchenName, skill := catalog.HasSkill(opts.prompt); skill != nil {
 				skillHint = &sommelier.SkillHint{Kitchen: kitchenName, SkillName: skill.Name}
-				if verbose {
-					fmt.Fprintf(os.Stderr, "[skills] %q matches skill %q in %s\n", prompt, skill.Name, kitchenName)
+				if opts.verbose {
+					fmt.Fprintf(os.Stderr, "[skills] %q matches skill %q in %s\n", opts.prompt, skill.Name, kitchenName)
 				}
 			}
 		}
 
-		decision = som.RouteEnriched(prompt, signals, skillHint)
+		decision = som.RouteEnriched(opts.prompt, signals, skillHint)
 	}
 
-	if verbose {
+	if opts.verbose {
 		fmt.Fprintf(os.Stderr, "[sommelier] %s (tier: %s, risk: %s)\n", decision.Reason, decision.Tier, decision.Risk)
 	}
 
-	if explain {
-		return printJSON(decision, jsonOutput)
+	if opts.explain {
+		return printJSON(decision, opts.jsonOutput)
 	}
 
 	if decision.Kitchen == "" {
@@ -173,16 +192,16 @@ func dispatch(prompt, kitchenForce string, jsonOutput, explain, verbose bool, co
 	defer cancel()
 
 	task := kitchen.Task{
-		Prompt: prompt,
+		Prompt: opts.prompt,
 		Env:    map[string]string{"MILLIWAYS_MODE": string(mode)},
 		OnLine: func(line string) {
-			if !jsonOutput {
+			if !opts.jsonOutput {
 				fmt.Println(line)
 			}
 		},
 	}
 
-	if verbose {
+	if opts.verbose {
 		fmt.Fprintf(os.Stderr, "[dispatch] %s streaming...\n", decision.Kitchen)
 	}
 
@@ -190,53 +209,17 @@ func dispatch(prompt, kitchenForce string, jsonOutput, explain, verbose bool, co
 	result, execErr := k.Exec(ctx, task)
 	duration := time.Since(start).Seconds()
 
-	if verbose {
+	if opts.verbose {
 		fmt.Fprintf(os.Stderr, "[dispatch] %s done (%.1fs, exit=%d)\n", decision.Kitchen, duration, result.ExitCode)
 	}
 
-	// PostDispatch: write to PantryDB + ndjson audit trail + routing feedback
-	taskType := sommelier.ClassifyTaskType(prompt)
-	outcome := outcomeFromExit(result.ExitCode)
-
-	dbPath := filepath.Join(maitre.DefaultConfigDir(), "milliways.db")
-	pdb, pdbErr := pantry.Open(dbPath)
-	if pdbErr != nil {
-		fmt.Fprintf(os.Stderr, "[pantry] warning: %v\n", pdbErr)
-	} else {
-		defer func() { _ = pdb.Close() }()
-		entry := pantry.LedgerEntry{
-			Timestamp:    time.Now().UTC().Format(time.RFC3339),
-			TaskHash:     ledger.HashPrompt(prompt),
-			TaskType:     taskType,
-			Kitchen:      decision.Kitchen,
-			DurationSec:  duration,
-			ExitCode:     result.ExitCode,
-			Outcome:      outcome,
-			DispatchMode: "sync",
-		}
-		if _, writeErr := pdb.Ledger().Insert(entry); writeErr != nil {
-			fmt.Fprintf(os.Stderr, "[pantry] ledger warning: %v\n", writeErr)
-		}
-		if quotaErr := pdb.Quotas().Increment(decision.Kitchen, duration, result.ExitCode != 0); quotaErr != nil {
-			fmt.Fprintf(os.Stderr, "[pantry] quota warning: %v\n", quotaErr)
-		}
-		// Routing feedback: record outcome for learned routing
-		if routeErr := pdb.Routing().RecordOutcome(taskType, "", decision.Kitchen, result.ExitCode == 0, duration); routeErr != nil {
-			fmt.Fprintf(os.Stderr, "[pantry] routing warning: %v\n", routeErr)
-		}
-	}
-	// ndjson audit trail (human-readable, never read by Milliways)
-	ndjsonEntry := ledger.NewEntry(prompt, decision.Kitchen, "", duration, result.ExitCode)
-	nw := ledger.NewWriter(cfg.Ledger.NDJSON)
-	if writeErr := nw.Write(ndjsonEntry); writeErr != nil {
-		fmt.Fprintf(os.Stderr, "[ledger] ndjson warning: %v\n", writeErr)
-	}
+	recordDispatch(cfg, pdb, opts.prompt, decision.Kitchen, duration, result.ExitCode)
 
 	if execErr != nil {
 		return fmt.Errorf("kitchen %s: %w", decision.Kitchen, execErr)
 	}
 
-	if jsonOutput {
+	if opts.jsonOutput {
 		out := map[string]any{
 			"kitchen":    decision.Kitchen,
 			"reason":     decision.Reason,
@@ -255,6 +238,40 @@ func dispatch(prompt, kitchenForce string, jsonOutput, explain, verbose bool, co
 	}
 
 	return nil
+}
+
+// recordDispatch writes to PantryDB + ndjson audit trail + routing feedback.
+func recordDispatch(cfg *maitre.Config, pdb *pantry.DB, prompt, kitchenName string, duration float64, exitCode int) {
+	taskType := sommelier.ClassifyTaskType(prompt)
+	outcome := ledger.OutcomeFromExitCode(exitCode)
+
+	if pdb != nil {
+		entry := pantry.LedgerEntry{
+			Timestamp:    time.Now().UTC().Format(time.RFC3339),
+			TaskHash:     ledger.HashPrompt(prompt),
+			TaskType:     taskType,
+			Kitchen:      kitchenName,
+			DurationSec:  duration,
+			ExitCode:     exitCode,
+			Outcome:      outcome,
+			DispatchMode: "sync",
+		}
+		if _, writeErr := pdb.Ledger().Insert(entry); writeErr != nil {
+			fmt.Fprintf(os.Stderr, "[pantry] ledger warning: %v\n", writeErr)
+		}
+		if quotaErr := pdb.Quotas().Increment(kitchenName, duration, exitCode != 0); quotaErr != nil {
+			fmt.Fprintf(os.Stderr, "[pantry] quota warning: %v\n", quotaErr)
+		}
+		if routeErr := pdb.Routing().RecordOutcome(taskType, "", kitchenName, exitCode == 0, duration); routeErr != nil {
+			fmt.Fprintf(os.Stderr, "[pantry] routing warning: %v\n", routeErr)
+		}
+	}
+
+	ndjsonEntry := ledger.NewEntry(prompt, kitchenName, "", duration, exitCode)
+	nw := ledger.NewWriter(cfg.Ledger.NDJSON)
+	if writeErr := nw.Write(ndjsonEntry); writeErr != nil {
+		fmt.Fprintf(os.Stderr, "[ledger] ndjson warning: %v\n", writeErr)
+	}
 }
 
 func printJSON(v any, asJSON bool) error {
@@ -276,20 +293,16 @@ func printJSON(v any, asJSON bool) error {
 	return nil
 }
 
-func assembleSignals(cfg *maitre.Config, prompt string, verbose bool) *sommelier.Signals {
-	dbPath := filepath.Join(maitre.DefaultConfigDir(), "milliways.db")
-	pdb, err := pantry.Open(dbPath)
-	if err != nil {
+func assembleSignals(_ *maitre.Config, pdb *pantry.DB, prompt string, verbose bool) *sommelier.Signals {
+	if pdb == nil {
 		if verbose {
-			fmt.Fprintf(os.Stderr, "[pantry] signals unavailable: %v\n", err)
+			fmt.Fprintf(os.Stderr, "[pantry] signals unavailable: no database\n")
 		}
 		return nil
 	}
-	defer func() { _ = pdb.Close() }()
 
 	signals := sommelier.NewSignals()
 
-	// Query learned routing history
 	taskType := sommelier.ClassifyTaskType(prompt)
 	best, rate, err := pdb.Routing().BestKitchen(taskType, "", 5)
 	if err == nil && best != "" {
@@ -301,16 +314,7 @@ func assembleSignals(cfg *maitre.Config, prompt string, verbose bool) *sommelier
 		fmt.Fprintf(os.Stderr, "[pantry] learned: %s@%.0f%% for task_type=%s\n", signals.LearnedKitchen, signals.LearnedRate, taskType)
 	}
 
-	// GitGraph signals would be assembled here when a file path is detected in the prompt
-	// For now, return whatever we have
 	return signals
-}
-
-func outcomeFromExit(exitCode int) string {
-	if exitCode == 0 {
-		return "success"
-	}
-	return "failure"
 }
 
 func openPantryDB() (*pantry.DB, error) {

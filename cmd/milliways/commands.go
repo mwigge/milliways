@@ -31,7 +31,7 @@ func runTUI(configPath string) error {
 		if kitchenForce != "" {
 			decision = som.ForceRoute(kitchenForce)
 		} else {
-			signals := assembleSignals(cfg, prompt, false)
+			signals := assembleSignals(cfg, nil, prompt, false)
 			catalog := maitre.ScanSkills()
 			var hint *sommelier.SkillHint
 			if catalog.Total() > 0 {
@@ -65,18 +65,13 @@ func dispatchRecipe(recipeName, prompt string, verbose bool, configPath string, 
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	steps, ok := cfg.Recipes[recipeName]
+	recipeSteps, ok := cfg.Recipes[recipeName]
 	if !ok {
 		return fmt.Errorf("unknown recipe %q — check carte.yaml", recipeName)
 	}
 
 	reg := buildRegistry(cfg)
 	eng := recipe.NewEngine(reg, keepContext)
-
-	recipeSteps := make([]recipe.Step, len(steps))
-	for i, s := range steps {
-		recipeSteps[i] = recipe.Step{Station: s.Station, Kitchen: s.Kitchen}
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
@@ -103,7 +98,7 @@ func dispatchRecipe(recipeName, prompt string, verbose bool, configPath string, 
 				Station:      r.Step.Station,
 				DurationSec:  r.Duration.Seconds(),
 				ExitCode:     r.Result.ExitCode,
-				Outcome:      outcomeFromExit(r.Result.ExitCode),
+				Outcome:      ledger.OutcomeFromExitCode(r.Result.ExitCode),
 				DispatchMode: "recipe",
 			}
 			_, _ = pdb.Ledger().Insert(entry)
@@ -113,7 +108,14 @@ func dispatchRecipe(recipeName, prompt string, verbose bool, configPath string, 
 	if execErr != nil {
 		return execErr
 	}
-	fmt.Fprintf(os.Stderr, "\nRecipe %q complete: %d/%d courses succeeded\n", recipeName, len(results), len(recipeSteps))
+
+	succeeded := 0
+	for _, r := range results {
+		if r.Error == nil && r.Result.ExitCode == 0 {
+			succeeded++
+		}
+	}
+	fmt.Fprintf(os.Stderr, "\nRecipe %q complete: %d/%d courses succeeded\n", recipeName, succeeded, len(recipeSteps))
 	return nil
 }
 

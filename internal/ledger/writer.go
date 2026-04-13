@@ -65,11 +65,6 @@ func (w *Writer) Path() string { return w.path }
 
 // NewEntry creates a ledger entry with computed fields.
 func NewEntry(prompt, kitchen, station string, durationSec float64, exitCode int) Entry {
-	outcome := "success"
-	if exitCode != 0 {
-		outcome = "failure"
-	}
-
 	return Entry{
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 		TaskHash:    HashPrompt(prompt),
@@ -77,16 +72,24 @@ func NewEntry(prompt, kitchen, station string, durationSec float64, exitCode int
 		Station:     station,
 		DurationSec: durationSec,
 		ExitCode:    exitCode,
-		Outcome:     outcome,
+		Outcome:     OutcomeFromExitCode(exitCode),
 	}
+}
+
+// OutcomeFromExitCode returns "success" for exit code 0 and "failure" otherwise.
+func OutcomeFromExitCode(exitCode int) string {
+	if exitCode == 0 {
+		return "success"
+	}
+	return "failure"
 }
 
 // HashPrompt returns a truncated SHA-256 hash of the prompt for deduplication.
 func HashPrompt(prompt string) string {
-	truncated := prompt
-	if len(truncated) > 200 {
-		truncated = truncated[:200]
+	runes := []rune(prompt)
+	if len(runes) > 200 {
+		prompt = string(runes[:200])
 	}
-	h := sha256.Sum256([]byte(truncated))
+	h := sha256.Sum256([]byte(prompt))
 	return fmt.Sprintf("sha256:%x", h[:8])
 }

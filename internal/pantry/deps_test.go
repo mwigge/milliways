@@ -95,13 +95,25 @@ func TestDepStore_SyncAuto(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
 
-	// Use the milliways repo itself (has go.mod)
-	count, err := db.Deps().SyncAuto(".")
-	if err != nil {
-		t.Skipf("SyncAuto: %v", err)
+	dir := t.TempDir()
+	gomod := `module github.com/test/auto
+
+go 1.22
+
+require (
+	github.com/spf13/cobra v1.10.2
+)
+`
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if count == 0 {
-		t.Skip("no deps found")
+
+	count, err := db.Deps().SyncAuto(dir)
+	if err != nil {
+		t.Fatalf("SyncAuto: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 dep from go.mod, got %d", count)
 	}
 }
 

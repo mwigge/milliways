@@ -110,9 +110,10 @@ func generateTicketID() string {
 	return "mw-" + hex.EncodeToString(b)
 }
 
-func truncatePrompt(s string, maxLen int) string {
-	if len(s) <= maxLen {
+func truncatePrompt(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
 		return s
 	}
-	return s[:maxLen]
+	return string(runes[:maxRunes])
 }

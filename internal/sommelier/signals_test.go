@@ -5,6 +5,20 @@ import (
 	"testing"
 )
 
+func TestNewSignals_DefaultCoverage(t *testing.T) {
+	t.Parallel()
+	s := NewSignals()
+	if s.Coverage != -1 {
+		t.Errorf("NewSignals().Coverage = %v, want -1 (unknown)", s.Coverage)
+	}
+	if s.RiskLevel() != "low" {
+		t.Errorf("NewSignals().RiskLevel() = %q, want 'low'", s.RiskLevel())
+	}
+	if s.Summary() != "no signals" {
+		t.Errorf("NewSignals().Summary() = %q, want 'no signals'", s.Summary())
+	}
+}
+
 func TestSignals_RiskLevel(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

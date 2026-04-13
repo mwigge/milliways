@@ -7,6 +7,7 @@ import (
 )
 
 func TestDefaultConfig(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig()
 
 	if len(cfg.Kitchens) != 6 {
@@ -33,6 +34,7 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestLoadConfig_FileNotFound(t *testing.T) {
+	t.Parallel()
 	cfg, err := LoadConfig("/tmp/nonexistent-milliways-carte.yaml")
 	if err != nil {
 		t.Fatalf("expected no error for missing file, got %v", err)
@@ -43,6 +45,7 @@ func TestLoadConfig_FileNotFound(t *testing.T) {
 }
 
 func TestLoadConfig_ValidYAML(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "carte.yaml")
 
@@ -89,6 +92,7 @@ routing:
 }
 
 func TestLoadConfig_InvalidYAML(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "carte.yaml")
 
@@ -103,6 +107,7 @@ func TestLoadConfig_InvalidYAML(t *testing.T) {
 }
 
 func TestKitchenConfig_IsEnabled(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		enabled *bool
@@ -115,6 +120,7 @@ func TestKitchenConfig_IsEnabled(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			kc := KitchenConfig{Enabled: tt.enabled}
 			if got := kc.IsEnabled(); got != tt.want {
 				t.Errorf("IsEnabled() = %v, want %v", got, tt.want)

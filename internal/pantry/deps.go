@@ -3,6 +3,7 @@ package pantry
 import (
 	"bufio"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -107,37 +108,28 @@ func (s *DepStore) SyncPackageJSON(repo, pkgPath string) (int, error) {
 		return 0, fmt.Errorf("reading package.json: %w", err)
 	}
 
-	// Simple line-based parser — avoids JSON dependency
+	var pkg struct {
+		Dependencies    map[string]string `json:"dependencies"`
+		DevDependencies map[string]string `json:"devDependencies"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return 0, fmt.Errorf("parsing package.json: %w", err)
+	}
+
 	count := 0
-	inDeps := false
-	for _, line := range strings.Split(string(data), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.Contains(trimmed, `"dependencies"`) || strings.Contains(trimmed, `"devDependencies"`) {
-			inDeps = true
-			continue
-		}
-		if inDeps && trimmed == "}" {
-			inDeps = false
-			continue
-		}
-		if !inDeps {
-			continue
-		}
-
-		// Parse `"package": "^1.2.3"`
-		trimmed = strings.TrimSuffix(trimmed, ",")
-		parts := strings.SplitN(trimmed, ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		pkg := strings.Trim(strings.TrimSpace(parts[0]), `"`)
-		ver := strings.Trim(strings.TrimSpace(parts[1]), `"`)
-		if pkg == "" || ver == "" {
-			continue
-		}
-
+	for name, ver := range pkg.Dependencies {
 		if err := s.Upsert(repo, DepInfo{
-			Package:  pkg,
+			Package:  name,
+			Version:  ver,
+			LockFile: "package.json",
+		}); err != nil {
+			return count, err
+		}
+		count++
+	}
+	for name, ver := range pkg.DevDependencies {
+		if err := s.Upsert(repo, DepInfo{
+			Package:  name,
 			Version:  ver,
 			LockFile: "package.json",
 		}); err != nil {

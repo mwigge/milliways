@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/mwigge/milliways/internal/recipe"
 	"gopkg.in/yaml.v3"
 )
 
@@ -13,7 +14,7 @@ type Config struct {
 	Kitchens map[string]KitchenConfig `yaml:"kitchens"`
 	Routing  RoutingConfig            `yaml:"routing"`
 	Ledger   LedgerConfig             `yaml:"ledger"`
-	Recipes  map[string][]RecipeStep  `yaml:"recipes"`
+	Recipes  map[string][]recipe.Step `yaml:"recipes"`
 }
 
 // KitchenConfig defines a kitchen's CLI command and capabilities.
@@ -47,11 +48,8 @@ type LedgerConfig struct {
 	DB     string `yaml:"db"`
 }
 
-// RecipeStep defines one course in a recipe.
-type RecipeStep struct {
-	Station string `yaml:"station"`
-	Kitchen string `yaml:"kitchen"`
-}
+// RecipeStep is a type alias for recipe.Step for backwards compatibility.
+type RecipeStep = recipe.Step
 
 // DefaultConfigDir returns ~/.config/milliways.
 func DefaultConfigDir() string {
@@ -176,7 +174,7 @@ func defaultConfig() *Config {
 			NDJSON: filepath.Join(DefaultConfigDir(), "ledger.ndjson"),
 			DB:     filepath.Join(DefaultConfigDir(), "ledger.db"),
 		},
-		Recipes: map[string][]RecipeStep{
+		Recipes: map[string][]recipe.Step{
 			"implement-feature": {
 				{Station: "think", Kitchen: "claude"},
 				{Station: "code", Kitchen: "opencode"},

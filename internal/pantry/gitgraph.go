@@ -92,12 +92,18 @@ func (s *GitGraphStore) IsHotspot(repo, filePath string) (*FileStats, error) {
 	return &fs, nil
 }
 
+// Stability thresholds for file churn classification.
+const (
+	stabilityActiveMin   = 3
+	stabilityVolatileMin = 16
+)
+
 // classifyStability categorizes file churn.
 func classifyStability(churn90d int) string {
 	switch {
-	case churn90d < 3:
+	case churn90d < stabilityActiveMin:
 		return "stable"
-	case churn90d <= 15:
+	case churn90d < stabilityVolatileMin:
 		return "active"
 	default:
 		return "volatile"
