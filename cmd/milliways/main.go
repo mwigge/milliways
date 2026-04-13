@@ -47,6 +47,7 @@ func rootCmd() *cobra.Command {
 		asyncFlag   bool
 		detachFlag  bool
 		keepContext bool
+		tuiFlag     bool
 	)
 
 	cmd := &cobra.Command{
@@ -61,8 +62,14 @@ based on what each tool does best.
   milliways "search for DORA-EU Article 25" → routes to gemini
   milliways --kitchen aider "refactor auth" → forces aider`,
 		Version: version,
-		Args:    cobra.MinimumNArgs(1),
+		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if tuiFlag {
+				return runTUI(configPath)
+			}
+			if len(args) == 0 {
+				return cmd.Help()
+			}
 			prompt := strings.Join(args, " ")
 			if recipeFlag != "" {
 				return dispatchRecipe(recipeFlag, prompt, verbose, configPath, keepContext)
@@ -87,6 +94,7 @@ based on what each tool does best.
 	cmd.Flags().BoolVar(&asyncFlag, "async", false, "Dispatch asynchronously, return ticket ID")
 	cmd.Flags().BoolVar(&detachFlag, "detach", false, "Dispatch detached (survives exit)")
 	cmd.Flags().BoolVar(&keepContext, "keep-context", false, "Keep recipe context files")
+	cmd.Flags().BoolVarP(&tuiFlag, "tui", "t", false, "Interactive TUI mode")
 
 	cmd.AddCommand(statusCmd(&configPath))
 	cmd.AddCommand(reportCmd(&configPath))

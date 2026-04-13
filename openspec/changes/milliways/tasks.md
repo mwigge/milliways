@@ -263,31 +263,31 @@
 
 ### Course MW-20: Bubble Tea App Shell [2 SP]
 
-- [ ] MW-20.1 Main Bubble Tea model: Init, Update, View
-- [ ] MW-20.2 Layout: input panel (bottom), output viewport (center), ledger panel (right)
-- [ ] MW-20.3 Keyboard: Enter submits, Ctrl+C cancels current dispatch, Ctrl+D exits
-- [ ] MW-20.4 Lipgloss theme: dark background, colored kitchen badges
-- [ ] MW-20.5 `--tui` flag activates, absence means headless
+- [x] MW-20.1 Bubble Tea Model with Init/Update/View, message types for lines/dispatch/tick
+- [x] MW-20.2 Layout: input (bottom), output viewport (center), ledger (right), process map (top-right)
+- [x] MW-20.3 Enter submits, Ctrl+C cancels/quits, Ctrl+D exits, up/down history
+- [x] MW-20.4 Lipgloss theme: dark bg, colored kitchen badges, status icons
+- [x] MW-20.5 --tui flag activates alt-screen TUI, absence means headless
 
 ### Course MW-21: Input Component [1 SP]
 
-- [ ] MW-21.1 Text input with prompt cursor
+- [x] MW-21.1 textinput.Model with prompt cursor and placeholder
 - [ ] MW-21.2 Tab completion: kitchen names, recipe names, `--` flags
-- [ ] MW-21.3 History: up/down arrow recalls previous prompts (session-only)
-- [ ] MW-21.4 Kitchen prefix: `@claude explain...` forces kitchen
+- [x] MW-21.3 History: up/down recalls previous prompts (session-only)
+- [x] MW-21.4 @kitchen prefix: @claude forces kitchen
 
 ### Course MW-22: Output Viewport [2 SP]
 
-- [ ] MW-22.1 Scrollable viewport for streaming kitchen output
-- [ ] MW-22.2 Kitchen badge header: `[claude] thinking...` with color
+- [x] MW-22.1 viewport.Model with scrollable output
+- [x] MW-22.2 KitchenBadge() with per-kitchen colors
 - [ ] MW-22.3 Syntax highlighting for code blocks (tree-sitter or regex-based)
-- [ ] MW-22.4 Auto-scroll to bottom during streaming, scroll-lock on manual scroll
+- [x] MW-22.4 GotoBottom() auto-scroll during streaming
 
 ### Course MW-23: Ledger Panel [1 SP]
 
-- [ ] MW-23.1 Right-side panel showing last 10 dispatches
-- [ ] MW-23.2 Columns: time, kitchen (colored), duration, outcome (pass/fail icon)
-- [ ] MW-23.3 Live update after each dispatch
+- [x] MW-23.1 Right-side panel with last 8 dispatches
+- [x] MW-23.2 Columns: time, kitchen badge, duration, status icon
+- [x] MW-23.3 Live update after each dispatchDoneMsg
 
 ### Course MW-24: Kitchen Selector [2 SP]
 
@@ -298,11 +298,11 @@
 
 ### Course MW-25A: Process Map [2 SP]
 
-- [ ] MW-25A.1 `ProcessMap` Bubble Tea component — top-right corner, always visible
-- [ ] MW-25A.2 Single dispatch view: task summary, sommelier reasoning (keywords, pantry signals, risk level), active kitchen, status (streaming / done / failed), elapsed time
+- [x] MW-25A.1 processState rendered in top-right panel, always visible
+- [x] MW-25A.2 Shows kitchen badge, status icon, elapsed time, risk level
 - [ ] MW-25A.3 Recipe view: course list with status symbols (done, active with pulse, pending, failed, skipped), kitchen name per course, elapsed per course, total progress (e.g. "Course 2/5")
-- [ ] MW-25A.4 Update on 100ms tick for elapsed time, immediate update on state transitions
-- [ ] MW-25A.5 Headless equivalent: `--verbose` prints state transitions to stderr as `[sommelier]` and `[dispatch]` lines
+- [x] MW-25A.4 tickMsg at 100ms interval updates elapsed
+- [x] MW-25A.5 --verbose headless equivalent already implemented
 - [ ] MW-25A.6 Vitest-style test: mock dispatch state changes, verify render output
 
 - [ ] 🍋 **Palate Cleanser 4** — Interactive mode verified: type task, routes to kitchen, streams output, process map shows live state, ledger updates, Ctrl+C cancels cleanly

@@ -13,8 +13,51 @@ import (
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/recipe"
 	"github.com/mwigge/milliways/internal/sommelier"
+	"github.com/mwigge/milliways/internal/tui"
 	"github.com/spf13/cobra"
 )
+
+func runTUI(configPath string) error {
+	cfg, err := maitre.LoadConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	reg := buildRegistry(cfg)
+	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, reg)
+
+	dispatchFn := func(ctx context.Context, prompt, kitchenForce string) (kitchen.Result, sommelier.Decision, error) {
+		var decision sommelier.Decision
+		if kitchenForce != "" {
+			decision = som.ForceRoute(kitchenForce)
+		} else {
+			signals := assembleSignals(cfg, prompt, false)
+			catalog := maitre.ScanSkills()
+			var hint *sommelier.SkillHint
+			if catalog.Total() > 0 {
+				if kn, sk := catalog.HasSkill(prompt); sk != nil {
+					hint = &sommelier.SkillHint{Kitchen: kn, SkillName: sk.Name}
+				}
+			}
+			decision = som.RouteEnriched(prompt, signals, hint)
+		}
+
+		if decision.Kitchen == "" {
+			return kitchen.Result{}, decision, fmt.Errorf("no kitchens available")
+		}
+
+		k, ok := reg.Get(decision.Kitchen)
+		if !ok || k.Status() != kitchen.Ready {
+			return kitchen.Result{}, decision, fmt.Errorf("kitchen %s not ready", decision.Kitchen)
+		}
+
+		task := kitchen.Task{Prompt: prompt}
+		result, err := k.Exec(ctx, task)
+		return result, decision, err
+	}
+
+	return tui.Run(dispatchFn)
+}
 
 func dispatchRecipe(recipeName, prompt string, verbose bool, configPath string, keepContext bool) error {
 	cfg, err := maitre.LoadConfig(configPath)
