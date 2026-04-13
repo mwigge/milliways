@@ -576,6 +576,33 @@ func pantryCmd() *cobra.Command {
 		},
 	}
 
+	depSyncCmd := &cobra.Command{
+		Use:   "deps [repo-path]",
+		Short: "Sync DepGraph from lock files (go.mod, package.json)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			repoPath := "."
+			if len(args) > 0 {
+				repoPath = args[0]
+			}
+
+			pdb, err := openPantryDB()
+			if err != nil {
+				return fmt.Errorf("opening pantry: %w", err)
+			}
+			defer func() { _ = pdb.Close() }()
+
+			count, err := pdb.Deps().SyncAuto(repoPath)
+			if err != nil {
+				return fmt.Errorf("syncing deps: %w", err)
+			}
+
+			fmt.Printf("DepGraph: synced %d dependencies from %s\n", count, repoPath)
+			return nil
+		},
+	}
+
 	cmd.AddCommand(syncCmd)
+	cmd.AddCommand(depSyncCmd)
 	return cmd
 }

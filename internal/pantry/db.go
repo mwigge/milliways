@@ -52,6 +52,9 @@ func (db *DB) GitGraph() *GitGraphStore { return &GitGraphStore{db: db.conn} }
 // Quality returns the quality metrics store (complexity and coverage).
 func (db *DB) Quality() *QualityStore { return &QualityStore{db: db.conn} }
 
+// Deps returns the dependency store (packages, versions, CVEs).
+func (db *DB) Deps() *DepStore { return &DepStore{db: db.conn} }
+
 // Path returns the database file path.
 func (db *DB) Path() string { return db.path }
 
