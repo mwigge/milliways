@@ -1,0 +1,36 @@
+# Override global gitignore for this repo
+!openspec/
+
+# OpenCode runtime
+opencode/
+
+# Go build artifacts
+bin/
+dist/
+*.exe
+/milliways
+
+# Dependencies
+vendor/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Test artifacts
+coverage.out
+coverage.html
+
+# Milliways runtime data (local only, not committed)
+ledger.ndjson
+ledger.db
+gitgraph.db
+qualitygraph.db
+depgraph.db
