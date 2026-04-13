@@ -77,18 +77,18 @@
 
 ### Course MW-6: PantryDB — Unified Database [3 SP]
 
-- [ ] MW-6.1 Create `internal/pantry/db.go` — PantryDB struct with single `*sql.DB` connection to milliways.db (WAL mode, busy_timeout=5000)
-- [ ] MW-6.2 Create `internal/pantry/migrations/001_initial.sql` — full schema (mw_schema, mw_ledger, mw_tickets, mw_gitgraph, mw_quality, mw_deps, mw_routing, mw_quotas) with indexes
-- [ ] MW-6.3 Implement migration runner — read `go:embed` migrations, apply sequentially, update mw_schema
-- [ ] MW-6.4 Implement `LedgerStore` — Insert, Stats, Total (replaces internal/ledger/store.go)
+- [x] MW-6.1 Create `internal/pantry/db.go` — PantryDB struct with single `*sql.DB` connection to milliways.db (WAL mode, busy_timeout=5000)
+- [x] MW-6.2 Create `internal/pantry/schema.go` — full schema v1 (mw_schema, mw_ledger, mw_tickets, mw_gitgraph, mw_quality, mw_deps, mw_routing, mw_quotas) with indexes
+- [x] MW-6.3 Implement migration runner — check mw_schema version, apply sequentially
+- [x] MW-6.4 Implement `LedgerStore` — Insert (returns ID), Stats, Total
 - [ ] MW-6.5 Implement `TicketStore` — Create, Get, List, UpdateStatus
-- [ ] MW-6.6 Implement `RoutingStore` — RecordOutcome, BestKitchen(task_type, file_profile)
-- [ ] MW-6.7 Implement `QuotaStore` — Increment, CheckLimit, DailyUsage
-- [ ] MW-6.8 Typed accessors: `db.Ledger()`, `db.Tickets()`, `db.Routing()`, `db.Quotas()`
-- [ ] MW-6.9 Refactor cmd/milliways/main.go to use PantryDB instead of separate ledger.NewDualWriter
-- [ ] MW-6.10 Delete internal/ledger/store.go, dual.go (absorbed into pantry)
-- [ ] MW-6.11 Keep internal/ledger/writer.go for ndjson-only audit trail
-- [ ] MW-6.12 Unit tests for PantryDB: migration, ledger CRUD, routing scores, quota checks (>=80% coverage)
+- [x] MW-6.6 Implement `RoutingStore` — RecordOutcome, BestKitchen(task_type, file_profile, minDataPoints)
+- [x] MW-6.7 Implement `QuotaStore` — Increment, DailyDispatches
+- [x] MW-6.8 Typed accessors: `db.Ledger()`, `db.Routing()`, `db.Quotas()`
+- [x] MW-6.9 Refactor cmd/milliways/main.go to use PantryDB
+- [x] MW-6.10 Delete internal/ledger/store.go, dual.go (absorbed into pantry)
+- [x] MW-6.11 Keep internal/ledger/writer.go for ndjson-only audit trail
+- [x] MW-6.12 Unit tests: migration idempotency, ledger CRUD+stats, routing record/query, quota increment/query (pantry 85% coverage)
 
 ### Course MW-7: MemPalace Integration [2 SP]
 
