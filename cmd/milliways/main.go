@@ -87,15 +87,23 @@ func dispatch(prompt, kitchenForce string, jsonOutput, explain, verbose bool, co
 	reg := buildRegistry(cfg)
 	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, reg)
 
+	// Circuit breaker check
+	mode := maitre.ReadMode()
+	if verbose {
+		fmt.Fprintf(os.Stderr, "[mode] %s\n", mode)
+	}
+
 	var decision sommelier.Decision
 	if kitchenForce != "" {
 		decision = som.ForceRoute(kitchenForce)
 	} else {
-		decision = som.Route(prompt)
+		// Assemble pantry signals (best-effort, nil if pantry unavailable)
+		signals := assembleSignals(cfg, prompt, verbose)
+		decision = som.RouteEnriched(prompt, signals)
 	}
 
 	if verbose {
-		fmt.Fprintf(os.Stderr, "[sommelier] %s (tier: %s)\n", decision.Reason, decision.Tier)
+		fmt.Fprintf(os.Stderr, "[sommelier] %s (tier: %s, risk: %s)\n", decision.Reason, decision.Tier, decision.Risk)
 	}
 
 	if explain {
@@ -139,7 +147,10 @@ func dispatch(prompt, kitchenForce string, jsonOutput, explain, verbose bool, co
 		fmt.Fprintf(os.Stderr, "[dispatch] %s done (%.1fs, exit=%d)\n", decision.Kitchen, duration, result.ExitCode)
 	}
 
-	// Write to unified PantryDB + ndjson audit trail (best-effort)
+	// PostDispatch: write to PantryDB + ndjson audit trail + routing feedback
+	taskType := sommelier.ClassifyTaskType(prompt)
+	outcome := outcomeFromExit(result.ExitCode)
+
 	dbPath := filepath.Join(maitre.DefaultConfigDir(), "milliways.db")
 	pdb, pdbErr := pantry.Open(dbPath)
 	if pdbErr != nil {
@@ -149,10 +160,11 @@ func dispatch(prompt, kitchenForce string, jsonOutput, explain, verbose bool, co
 		entry := pantry.LedgerEntry{
 			Timestamp:    time.Now().UTC().Format(time.RFC3339),
 			TaskHash:     ledger.HashPrompt(prompt),
+			TaskType:     taskType,
 			Kitchen:      decision.Kitchen,
 			DurationSec:  duration,
 			ExitCode:     result.ExitCode,
-			Outcome:      outcomeFromExit(result.ExitCode),
+			Outcome:      outcome,
 			DispatchMode: "sync",
 		}
 		if _, writeErr := pdb.Ledger().Insert(entry); writeErr != nil {
@@ -160,6 +172,10 @@ func dispatch(prompt, kitchenForce string, jsonOutput, explain, verbose bool, co
 		}
 		if quotaErr := pdb.Quotas().Increment(decision.Kitchen, duration, result.ExitCode != 0); quotaErr != nil {
 			fmt.Fprintf(os.Stderr, "[pantry] quota warning: %v\n", quotaErr)
+		}
+		// Routing feedback: record outcome for learned routing
+		if routeErr := pdb.Routing().RecordOutcome(taskType, "", decision.Kitchen, result.ExitCode == 0, duration); routeErr != nil {
+			fmt.Fprintf(os.Stderr, "[pantry] routing warning: %v\n", routeErr)
 		}
 	}
 	// ndjson audit trail (human-readable, never read by Milliways)
@@ -211,6 +227,36 @@ func printJSON(v any, asJSON bool) error {
 	}
 	fmt.Println(string(data))
 	return nil
+}
+
+func assembleSignals(cfg *maitre.Config, prompt string, verbose bool) *sommelier.Signals {
+	dbPath := filepath.Join(maitre.DefaultConfigDir(), "milliways.db")
+	pdb, err := pantry.Open(dbPath)
+	if err != nil {
+		if verbose {
+			fmt.Fprintf(os.Stderr, "[pantry] signals unavailable: %v\n", err)
+		}
+		return nil
+	}
+	defer func() { _ = pdb.Close() }()
+
+	signals := sommelier.NewSignals()
+
+	// Query learned routing history
+	taskType := sommelier.ClassifyTaskType(prompt)
+	best, rate, err := pdb.Routing().BestKitchen(taskType, "", 5)
+	if err == nil && best != "" {
+		signals.LearnedKitchen = best
+		signals.LearnedRate = rate
+	}
+
+	if verbose && signals.LearnedKitchen != "" {
+		fmt.Fprintf(os.Stderr, "[pantry] learned: %s@%.0f%% for task_type=%s\n", signals.LearnedKitchen, signals.LearnedRate, taskType)
+	}
+
+	// GitGraph signals would be assembled here when a file path is detected in the prompt
+	// For now, return whatever we have
+	return signals
 }
 
 func outcomeFromExit(exitCode int) string {
@@ -313,7 +359,9 @@ func setupCmd(configPath *string) *cobra.Command {
 }
 
 func reportCmd(_ *string) *cobra.Command {
-	return &cobra.Command{
+	var tiered bool
+
+	cmd := &cobra.Command{
 		Use:   "report",
 		Short: "Show routing stats from the ledger",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -345,7 +393,111 @@ func reportCmd(_ *string) *cobra.Command {
 				fmt.Printf("%-12s %10d  %11.0f%%\n", ks.Kitchen, ks.Dispatches, ks.SuccessRate)
 			}
 
+			if tiered {
+				fmt.Println()
+				printTieredReport(pdb)
+			}
+
 			return nil
 		},
+	}
+
+	cmd.Flags().BoolVar(&tiered, "tiered", false, "Show tiered-CLI performance analysis")
+	return cmd
+}
+
+func printTieredReport(pdb *pantry.DB) {
+	// Query per task_type × kitchen success rates
+	rows, err := pdb.Ledger().StatsDB().Query(`
+		SELECT task_type, kitchen,
+		       COUNT(*) as dispatches,
+		       SUM(CASE WHEN outcome = 'success' THEN 1 ELSE 0 END) as successes
+		FROM mw_ledger
+		WHERE task_type != ''
+		GROUP BY task_type, kitchen
+		ORDER BY task_type, successes DESC
+	`)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[report] tiered query failed: %v\n", err)
+		return
+	}
+	defer func() { _ = rows.Close() }()
+
+	type taskKitchenStat struct {
+		taskType   string
+		kitchen    string
+		dispatches int
+		successes  int
+		rate       float64
+	}
+
+	bestPerType := make(map[string]*taskKitchenStat)
+	kitchenTotals := make(map[string]struct{ dispatches, successes int })
+
+	for rows.Next() {
+		var s taskKitchenStat
+		if err := rows.Scan(&s.taskType, &s.kitchen, &s.dispatches, &s.successes); err != nil {
+			continue
+		}
+		if s.dispatches > 0 {
+			s.rate = float64(s.successes) / float64(s.dispatches) * 100
+		}
+		// Track best kitchen per task type
+		if best, ok := bestPerType[s.taskType]; !ok || s.rate > best.rate {
+			bestPerType[s.taskType] = &s
+		}
+
+		// Track overall per kitchen
+		totals := kitchenTotals[s.kitchen]
+		totals.dispatches += s.dispatches
+		totals.successes += s.successes
+		kitchenTotals[s.kitchen] = totals
+	}
+
+	if len(bestPerType) == 0 {
+		fmt.Println("Tiered-CLI: insufficient data (dispatch more tasks with varied types)")
+		return
+	}
+
+	fmt.Println("Tiered-CLI Performance")
+	fmt.Println("══════════════════════")
+	fmt.Println()
+	fmt.Println("Task Type    Best Kitchen   Success  Dispatches")
+	fmt.Println("─────────    ────────────   ───────  ──────────")
+
+	multiCLISuccess := 0
+	multiCLITotal := 0
+	for _, best := range bestPerType {
+		fmt.Printf("%-12s %-14s %5.0f%%   %d\n", best.taskType, best.kitchen, best.rate, best.dispatches)
+		multiCLISuccess += best.successes
+		multiCLITotal += best.dispatches
+	}
+
+	// Compute best single-CLI score
+	bestSingleRate := 0.0
+	bestSingleName := ""
+	for name, totals := range kitchenTotals {
+		if totals.dispatches > 0 {
+			rate := float64(totals.successes) / float64(totals.dispatches) * 100
+			if rate > bestSingleRate {
+				bestSingleRate = rate
+				bestSingleName = name
+			}
+		}
+	}
+
+	multiCLIRate := 0.0
+	if multiCLITotal > 0 {
+		multiCLIRate = float64(multiCLISuccess) / float64(multiCLITotal) * 100
+	}
+
+	fmt.Println()
+	fmt.Printf("Multi-CLI composite:  %.1f%%\n", multiCLIRate)
+	fmt.Printf("Best single-CLI:     %.1f%% (%s)\n", bestSingleRate, bestSingleName)
+	lift := multiCLIRate - bestSingleRate
+	if lift > 0 {
+		fmt.Printf("Tiered-CLI lift:     +%.1f%%\n", lift)
+	} else {
+		fmt.Printf("Tiered-CLI lift:     %.1f%% (need more data or varied tasks)\n", lift)
 	}
 }

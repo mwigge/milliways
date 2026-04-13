@@ -82,6 +82,11 @@ func (s *LedgerStore) Stats() ([]KitchenStats, error) {
 	return stats, rows.Err()
 }
 
+// StatsDB returns the underlying database connection for complex analytical queries.
+func (s *LedgerStore) StatsDB() *sql.DB {
+	return s.db
+}
+
 // Total returns the total number of ledger entries.
 func (s *LedgerStore) Total() (int, error) {
 	var count int
