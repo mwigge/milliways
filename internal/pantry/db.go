@@ -26,6 +26,7 @@ func Open(dbPath string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening db: %w", err)
 	}
+	conn.SetMaxOpenConns(1)
 
 	if err := migrate(conn); err != nil {
 		return nil, fmt.Errorf("migrating db: %w", err)
@@ -60,6 +61,11 @@ func (db *DB) Path() string { return db.path }
 
 // Close closes the database connection.
 func (db *DB) Close() error { return db.conn.Close() }
+
+// Ping verifies the database connection is still alive.
+func (db *DB) Ping() error {
+    return db.conn.Ping()
+}
 
 func migrate(conn *sql.DB) error {
 	// Check current schema version

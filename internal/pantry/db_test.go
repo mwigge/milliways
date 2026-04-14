@@ -217,3 +217,11 @@ func TestQuotas_NoPriorUsage(t *testing.T) {
 		t.Errorf("expected 0 for unused kitchen, got %d", count)
 	}
 }
+
+func TestDBPing(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	if err := db.Ping(); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+}
