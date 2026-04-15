@@ -9,70 +9,79 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/mwigge/milliways/internal/kitchen"
+	"github.com/mwigge/milliways/internal/conversation"
+	"github.com/mwigge/milliways/internal/kitchen/adapter"
+	"github.com/mwigge/milliways/internal/observability"
+	"github.com/mwigge/milliways/internal/orchestrator"
 	"github.com/mwigge/milliways/internal/pantry"
-	"github.com/mwigge/milliways/internal/sommelier"
+	"github.com/mwigge/milliways/internal/pipeline"
 )
 
-// DispatchFunc is the callback Milliways TUI uses to dispatch a task.
-type DispatchFunc func(ctx context.Context, prompt, kitchenForce string) (kitchen.Result, sommelier.Decision, error)
+// ProviderFactory creates provider adapters for orchestrated dispatch.
+type ProviderFactory = orchestrator.ProviderFactory
+
+// ConversationRecorder records completed conversations outside the TUI package.
+type ConversationRecorder func(prompt string, duration float64, exitCode int, conv *conversation.Conversation)
+
+// ConversationReplayer restores conversation state and activity from persisted runtime data.
+type ConversationReplayer func(conversationID, blockID, prompt string, exitCode int) (*conversation.Conversation, []observability.Event, error)
 
 // Model is the main Bubble Tea application model for the Milliways TUI.
 type Model struct {
-	input       textinput.Model
-	output      viewport.Model
-	width       int
-	height      int
-	outputLines []string
-	ledgerLog   []ledgerLine
-	processMap  processState
-	dispatching bool
-	cancelFn    context.CancelFunc
-	dispatchFn  DispatchFunc
-	history      []string
-	historyIdx   int
-	ready        bool
-	jobTickets   []pantry.Ticket  // nil = panel unavailable
-	ticketStore  *pantry.TicketStore
+	input      textinput.Model
+	output     viewport.Model
+	width      int
+	height     int
+	renderMode RenderMode
+
+	// Block-based dispatch.
+	blocks        []Block
+	focusedIdx    int
+	maxConcurrent int
+	activeCount   int
+	blockCounter  int
+
+	providerFactory ProviderFactory
+	hydrator        orchestrator.ContextHydrator
+	sink            observability.Sink
+	recorder        ConversationRecorder
+	replayer        ConversationReplayer
+	prog            **tea.Program
+
+	history    []string
+	historyIdx int
+	ready      bool
+
+	// Jobs panel (async tickets from pantry).
+	jobTickets  []pantry.Ticket
+	ticketStore *pantry.TicketStore
+
+	// Dialogue overlay.
+	overlayInput  textinput.Model
+	overlayActive bool
+	overlayMode   OverlayMode
+
+	// Task queue for overflow beyond maxConcurrent.
+	queue taskQueue
+
+	// Command palette state.
+	palette PaletteState
+	// Fuzzy history search state.
+	search SearchState
+
+	// Pipeline orchestration support.
+	planner        *pipeline.Planner
+	adapterFactory pipeline.AdapterFactory
+
+	// Kitchen status for status bar.
+	kitchenStates []KitchenState
+
+	// Structured runtime activity for transparency.
+	runtimeEvents []observability.Event
 }
-
-type ledgerLine struct {
-	time    string
-	kitchen string
-	dur     string
-	status  string
-}
-
-type processState struct {
-	active    bool
-	kitchen   string
-	risk      string
-	status    string // "streaming", "done", "failed"
-	elapsed   time.Duration
-	startedAt time.Time
-}
-
-// Line received from kitchen during streaming
-type lineMsg string
-
-// Dispatch completed
-type dispatchDoneMsg struct {
-	result   kitchen.Result
-	decision sommelier.Decision
-	err      error
-	duration time.Duration
-}
-
-// Tick for elapsed timer
-type tickMsg time.Time
-
-// jobsRefreshMsg carries a fresh slice of recent tickets.
-type jobsRefreshMsg []pantry.Ticket
 
 // NewModel creates the TUI model.
-// store may be nil — if so, the jobs panel renders "Jobs unavailable".
-func NewModel(dispatchFn DispatchFunc, store *pantry.TicketStore) Model {
+func NewModel(store *pantry.TicketStore) Model {
 	ti := textinput.New()
 	ti.Placeholder = "Type a task... (@kitchen to force, Ctrl+D to exit)"
 	ti.Focus()
@@ -86,41 +95,24 @@ func NewModel(dispatchFn DispatchFunc, store *pantry.TicketStore) Model {
 	vp.SetContent("")
 
 	return Model{
-		input:       ti,
-		output:      vp,
-		dispatchFn:  dispatchFn,
-		historyIdx:  -1,
-		ticketStore: store,
+		input:         ti,
+		output:        vp,
+		historyIdx:    -1,
+		ticketStore:   store,
+		prog:          new(*tea.Program),
+		maxConcurrent: defaultMaxConcurrent,
 	}
 }
 
-// jobsRefreshCmd fetches recent tickets and returns a jobsRefreshMsg.
-// If store is nil the command is a no-op (returns nil slice).
-func jobsRefreshCmd(store *pantry.TicketStore) tea.Cmd {
-	return func() tea.Msg {
-		if store == nil {
-			return jobsRefreshMsg(nil)
-		}
-		tickets, err := store.ListRecent(jobsPanelMaxRows)
-		if err != nil {
-			return jobsRefreshMsg(nil)
-		}
-		return jobsRefreshMsg(tickets)
-	}
-}
-
-// scheduleJobsRefresh returns a command that fires jobsRefreshCmd after 5 s.
-func scheduleJobsRefresh(store *pantry.TicketStore) tea.Cmd {
-	return tea.Tick(5*time.Second, func(_ time.Time) tea.Msg {
-		if store == nil {
-			return jobsRefreshMsg(nil)
-		}
-		tickets, err := store.ListRecent(jobsPanelMaxRows)
-		if err != nil {
-			return jobsRefreshMsg(nil)
-		}
-		return jobsRefreshMsg(tickets)
-	})
+// NewAdapterModel creates the TUI model with adapter-based dispatch.
+func NewAdapterModel(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator, sink observability.Sink, recorder ConversationRecorder, replayer ConversationReplayer, store *pantry.TicketStore) Model {
+	m := NewModel(store)
+	m.providerFactory = providerFactory
+	m.hydrator = hydrator
+	m.sink = sink
+	m.recorder = recorder
+	m.replayer = replayer
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
@@ -134,36 +126,438 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.output.Width = msg.Width - 30  // leave room for side panels
-		m.output.Height = msg.Height - 6 // leave room for input + borders
+		m.output.Width = msg.Width - 30
+		m.output.Height = msg.Height - 6
 		m.input.Width = msg.Width - 4
 		m.ready = true
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+d":
-			return m, tea.Quit
-		case "ctrl+c":
-			if m.dispatching {
-				if m.cancelFn != nil {
-					m.cancelFn()
+		cmds = append(cmds, m.handleKey(msg)...)
+
+	case blockRoutedMsg:
+		if b := m.findBlock(msg.BlockID); b != nil {
+			b.State = StateRouted
+			b.ActiveAdapter = msg.Adapt
+			b.Kitchen = msg.Decision.Kitchen
+			b.Decision = msg.Decision
+			b.ConversationID = msg.BlockID
+			if msg.Decision.Kitchen != "" && !containsProvider(b.ProviderChain, msg.Decision.Kitchen) {
+				b.ProviderChain = append(b.ProviderChain, msg.Decision.Kitchen)
+			}
+		}
+
+	case blockEventMsg:
+		if b := m.findBlock(msg.BlockID); b != nil {
+			b.AppendEvent(msg.Event)
+
+			switch msg.Event.Type {
+			case adapter.EventText, adapter.EventCodeBlock:
+				if b.State == StateRouted {
+					b.State = StateStreaming
 				}
-				m.dispatching = false
-				m.processMap.status = "cancelled"
-				return m, nil
+			case adapter.EventQuestion:
+				b.State = StateAwaiting
+				m.focusedIdx = m.blockIndex(msg.BlockID)
+				m.overlayActive = true
+				m.overlayMode = OverlayQuestion
+				m.overlayInput = textinput.New()
+				m.overlayInput.Placeholder = msg.Event.Text
+				m.overlayInput.Focus()
+				cmds = append(cmds, textinput.Blink)
+			case adapter.EventConfirm:
+				b.State = StateConfirming
+				m.focusedIdx = m.blockIndex(msg.BlockID)
 			}
-			return m, tea.Quit
-		case "enter":
-			if m.dispatching || m.input.Value() == "" {
-				return m, nil
+		}
+
+	case blockDoneMsg:
+		if b := m.findBlock(msg.BlockID); b != nil {
+			exitCode := msg.Result.ExitCode
+			if msg.Err != nil {
+				if exitCode == 0 {
+					exitCode = 1
+				}
 			}
-			return m, m.startDispatch()
-		case "up":
-			if len(m.history) > 0 && m.historyIdx < len(m.history)-1 {
-				m.historyIdx++
-				m.input.SetValue(m.history[len(m.history)-1-m.historyIdx])
+
+			var cost *adapter.CostInfo
+			if msg.Duration > 0 {
+				cost = &adapter.CostInfo{DurationMs: int(msg.Duration.Milliseconds())}
 			}
-		case "down":
+			b.Complete(exitCode, cost)
+			if msg.Conversation != nil {
+				b.Conversation = msg.Conversation
+				if b.ConversationID == "" {
+					b.ConversationID = msg.Conversation.ID
+				}
+			}
+			if m.recorder != nil && msg.Conversation != nil {
+				m.recorder(b.Prompt, b.elapsed().Seconds(), exitCode, msg.Conversation)
+			}
+			m.activeCount--
+			if m.activeCount < 0 {
+				m.activeCount = 0
+			}
+
+			// Dequeue next if we have capacity.
+			if task, ok := m.queue.Dequeue(); ok && m.activeCount < m.maxConcurrent {
+				_, cmd := m.startBlockDispatch(task.Prompt, task.KitchenForce)
+				cmds = append(cmds, cmd)
+			}
+		}
+
+	case tickMsg:
+		hasActive := false
+		for _, b := range m.blocks {
+			if b.IsActive() {
+				hasActive = true
+				break
+			}
+		}
+		if hasActive {
+			cmds = append(cmds, tickCmd())
+		}
+
+	case pipelineStepMsg:
+		if b := m.findBlock(msg.blockID); b != nil {
+			// Store pipeline steps as system lines for visibility.
+			b.AppendEvent(adapter.Event{
+				Type:    adapter.EventText,
+				Kitchen: "pipeline",
+				Text:    fmt.Sprintf("[step:%s] %s", msg.stepID, msg.status),
+			})
+		}
+
+	case pipelineEventMsg:
+		if b := m.findBlock(msg.blockID); b != nil {
+			evt := msg.event
+			evt.Kitchen = fmt.Sprintf("[%s] %s", msg.stepID, evt.Kitchen)
+			b.AppendEvent(evt)
+		}
+
+	case jobsRefreshMsg:
+		m.jobTickets = []pantry.Ticket(msg)
+		return m, tea.Batch(scheduleJobsRefresh(m.ticketStore))
+
+	case runtimeEventMsg:
+		m.runtimeEvents = append(m.runtimeEvents, msg.Event)
+		if len(m.runtimeEvents) > 100 {
+			m.runtimeEvents = append([]observability.Event(nil), m.runtimeEvents[len(m.runtimeEvents)-100:]...)
+		}
+	}
+
+	// Update input or overlay.
+	var inputCmd tea.Cmd
+	if m.overlayActive {
+		m.overlayInput, inputCmd = m.overlayInput.Update(msg)
+
+		// Live-filter palette/search as user types.
+		if m.overlayMode == OverlayPalette {
+			query := m.overlayInput.Value()
+			m.palette.Query = query
+			m.palette.Matches = FilterPalette(query)
+			if m.palette.Selected >= len(m.palette.Matches) {
+				m.palette.Selected = 0
+			}
+		}
+		if m.overlayMode == OverlaySearch {
+			query := m.overlayInput.Value()
+			m.search.Query = query
+			entries := BuildHistoryFromBlocks(m.blocks)
+			for i := len(m.history) - 1; i >= 0; i-- {
+				entries = append(entries, HistoryEntry{Prompt: m.history[i]})
+			}
+			m.search.Matches = FilterHistory(entries, query)
+			if m.search.Selected >= len(m.search.Matches) {
+				m.search.Selected = 0
+			}
+		}
+	} else {
+		m.input, inputCmd = m.input.Update(msg)
+
+		// Detect `/` at start to open command palette.
+		val := m.input.Value()
+		if val == "/" {
+			m.input.SetValue("")
+			m.palette = PaletteState{
+				Active:  true,
+				Matches: FilterPalette(""),
+			}
+			m.overlayActive = true
+			m.overlayMode = OverlayPalette
+			m.overlayInput = textinput.New()
+			m.overlayInput.Placeholder = "command..."
+			m.overlayInput.Focus()
+			cmds = append(cmds, textinput.Blink)
+		}
+	}
+	cmds = append(cmds, inputCmd)
+
+	// Update viewport.
+	var vpCmd tea.Cmd
+	m.output, vpCmd = m.output.Update(msg)
+	cmds = append(cmds, vpCmd)
+
+	return m, tea.Batch(cmds...)
+}
+
+// handleKey processes key messages and returns commands.
+func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
+	var cmds []tea.Cmd
+
+	switch msg.String() {
+	case "ctrl+d":
+		return []tea.Cmd{tea.Quit}
+
+	case "ctrl+c":
+		// Cancel focused block if active; otherwise quit.
+		if b := m.focusedBlock(); b != nil && b.IsActive() {
+			if b.CancelFn != nil {
+				b.CancelFn()
+			}
+			b.State = StateCancelled
+			return nil
+		}
+		return []tea.Cmd{tea.Quit}
+
+	case "enter":
+		// Palette selection.
+		if m.overlayActive && m.overlayMode == OverlayPalette {
+			if m.palette.Selected >= 0 && m.palette.Selected < len(m.palette.Matches) {
+				cmd := m.executePaletteCommand(m.palette.Matches[m.palette.Selected].Command)
+				m.overlayActive = false
+				m.overlayMode = OverlayNone
+				m.palette.Active = false
+				m.input.Focus()
+				if cmd != nil {
+					return []tea.Cmd{cmd}
+				}
+			}
+			return nil
+		}
+		// Search selection.
+		if m.overlayActive && m.overlayMode == OverlaySearch {
+			if m.search.Selected >= 0 && m.search.Selected < len(m.search.Matches) {
+				m.input.SetValue(m.search.Matches[m.search.Selected].Prompt)
+			}
+			m.overlayActive = false
+			m.overlayMode = OverlayNone
+			m.search.Active = false
+			m.input.Focus()
+			return nil
+		}
+		if m.overlayActive {
+			return []tea.Cmd{m.submitOverlay()}
+		}
+		prompt := m.input.Value()
+		if prompt == "" {
+			return nil
+		}
+		m.history = append(m.history, prompt)
+		m.historyIdx = -1
+		m.input.SetValue("")
+
+		// Parse @kitchen prefix.
+		kitchenForce, cleanPrompt := parseKitchenForce(prompt)
+
+		// Check for !pipeline prefix.
+		if strings.HasPrefix(prompt, "!pipeline ") && m.planner != nil {
+			pipelinePrompt := strings.TrimPrefix(prompt, "!pipeline ")
+			blockID, _ := m.startBlockDispatch(pipelinePrompt, "pipeline")
+			ctx, cancel := context.WithCancel(context.Background())
+			if b := m.findBlock(blockID); b != nil {
+				b.CancelFn = cancel
+			}
+			return []tea.Cmd{
+				m.startPipelineBlockDispatch(ctx, blockID, pipelinePrompt),
+				tickCmd(),
+			}
+		}
+
+		// Concurrent dispatch: start immediately or queue.
+		if m.activeCount < m.maxConcurrent {
+			_, cmd := m.startBlockDispatch(cleanPrompt, kitchenForce)
+			return []tea.Cmd{cmd}
+		}
+
+		// Queue overflow.
+		ok := m.queue.Enqueue(QueuedTask{
+			Prompt:       cleanPrompt,
+			KitchenForce: kitchenForce,
+			QueuedAt:     time.Now(),
+		})
+		if ok {
+			if b := m.focusedBlock(); b != nil {
+				b.AppendEvent(adapter.Event{
+					Type:    adapter.EventText,
+					Kitchen: "milliways",
+					Text:    fmt.Sprintf("[queued] position %d", m.queue.Len()),
+				})
+			}
+		} else {
+			// Queue full — append system message to last block.
+			if b := m.focusedBlock(); b != nil {
+				b.AppendEvent(adapter.Event{
+					Type:    adapter.EventText,
+					Kitchen: "milliways",
+					Text:    "[queue full] cannot queue more tasks (max 20)",
+				})
+			}
+		}
+		return nil
+
+	case "y":
+		if b := m.focusedBlock(); b != nil && b.State == StateConfirming {
+			b.State = StateStreaming
+			if b.ActiveAdapter != nil {
+				_ = b.ActiveAdapter.Send(context.Background(), "y")
+			}
+			return nil
+		}
+
+	case "n":
+		if b := m.focusedBlock(); b != nil && b.State == StateConfirming {
+			b.State = StateStreaming
+			if b.ActiveAdapter != nil {
+				_ = b.ActiveAdapter.Send(context.Background(), "n")
+			}
+			return nil
+		}
+
+	case "ctrl+i":
+		if b := m.focusedBlock(); b != nil && b.State == StateStreaming && !m.overlayActive {
+			m.overlayActive = true
+			m.overlayMode = OverlayContextInject
+			m.overlayInput = textinput.New()
+			m.overlayInput.Placeholder = "+ context:"
+			m.overlayInput.Focus()
+			return []tea.Cmd{textinput.Blink}
+		}
+
+	case "ctrl+f":
+		if !m.overlayActive && m.hasCompletedBlocks() {
+			m.overlayActive = true
+			m.overlayMode = OverlayFeedback
+			return nil
+		}
+
+	case "ctrl+s":
+		if !m.overlayActive {
+			m.overlayActive = true
+			m.overlayMode = OverlaySummary
+			return nil
+		}
+
+	case "g":
+		if m.overlayActive && m.overlayMode == OverlayFeedback {
+			m.rateLastDispatch(true)
+			m.overlayActive = false
+			m.overlayMode = OverlayNone
+			return nil
+		}
+	case "b":
+		if m.overlayActive && m.overlayMode == OverlayFeedback {
+			m.rateLastDispatch(false)
+			m.overlayActive = false
+			m.overlayMode = OverlayNone
+			return nil
+		}
+	case "s":
+		if m.overlayActive && m.overlayMode == OverlayFeedback {
+			m.overlayActive = false
+			m.overlayMode = OverlayNone
+			return nil
+		}
+	case "q":
+		if m.overlayActive && m.overlayMode == OverlaySummary {
+			m.overlayActive = false
+			m.overlayMode = OverlayNone
+			return nil
+		}
+
+	case "c":
+		// Toggle collapse on focused block.
+		if !m.overlayActive {
+			if b := m.focusedBlock(); b != nil {
+				b.ToggleCollapse()
+			}
+			return nil
+		}
+
+	case "tab":
+		// Cycle focus to next block.
+		if len(m.blocks) > 0 && !m.overlayActive {
+			m.focusedIdx = (m.focusedIdx + 1) % len(m.blocks)
+			return nil
+		}
+
+	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+		// Jump to block N.
+		idx := int(msg.String()[0]-'0') - 1
+		if idx < len(m.blocks) && !m.overlayActive {
+			m.focusedIdx = idx
+			return nil
+		}
+
+	case "ctrl+r":
+		// Fuzzy history search.
+		if !m.overlayActive {
+			entries := BuildHistoryFromBlocks(m.blocks)
+			// Also add from command history.
+			for i := len(m.history) - 1; i >= 0; i-- {
+				entries = append(entries, HistoryEntry{Prompt: m.history[i]})
+			}
+			m.search = SearchState{
+				Active:  true,
+				Matches: entries,
+			}
+			m.overlayActive = true
+			m.overlayMode = OverlaySearch
+			m.overlayInput = textinput.New()
+			m.overlayInput.Placeholder = "search history..."
+			m.overlayInput.Focus()
+			return []tea.Cmd{textinput.Blink}
+		}
+
+	case "ctrl+g":
+		if m.renderMode == RenderRaw {
+			m.renderMode = RenderGlamour
+		} else {
+			m.renderMode = RenderRaw
+		}
+
+	case "up":
+		// In palette/search, navigate up.
+		if m.overlayActive && m.overlayMode == OverlayPalette {
+			if m.palette.Selected > 0 {
+				m.palette.Selected--
+			}
+			return nil
+		}
+		if m.overlayActive && m.overlayMode == OverlaySearch {
+			if m.search.Selected > 0 {
+				m.search.Selected--
+			}
+			return nil
+		}
+		if !m.overlayActive && len(m.history) > 0 && m.historyIdx < len(m.history)-1 {
+			m.historyIdx++
+			m.input.SetValue(m.history[len(m.history)-1-m.historyIdx])
+		}
+	case "down":
+		// In palette/search, navigate down.
+		if m.overlayActive && m.overlayMode == OverlayPalette {
+			if m.palette.Selected < len(m.palette.Matches)-1 {
+				m.palette.Selected++
+			}
+			return nil
+		}
+		if m.overlayActive && m.overlayMode == OverlaySearch {
+			if m.search.Selected < len(m.search.Matches)-1 {
+				m.search.Selected++
+			}
+			return nil
+		}
+		if !m.overlayActive {
 			if m.historyIdx > 0 {
 				m.historyIdx--
 				m.input.SetValue(m.history[len(m.history)-1-m.historyIdx])
@@ -173,179 +567,293 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case lineMsg:
-		m.outputLines = append(m.outputLines, string(msg))
-		m.output.SetContent(strings.Join(m.outputLines, "\n"))
-		m.output.GotoBottom()
-
-	case dispatchDoneMsg:
-		m.dispatching = false
-		m.processMap.status = "done"
-		if msg.err != nil {
-			m.processMap.status = "failed"
+	case "pgup":
+		// Scroll focused block up.
+		if !m.overlayActive {
+			if b := m.focusedBlock(); b != nil {
+				b.ScrollUp(5)
+			}
+			return nil
 		}
-		m.processMap.elapsed = msg.duration
-		m.ledgerLog = append(m.ledgerLog, ledgerLine{
-			time:    time.Now().Format("15:04"),
-			kitchen: msg.decision.Kitchen,
-			dur:     fmt.Sprintf("%.1fs", msg.duration.Seconds()),
-			status:  m.processMap.status,
-		})
-
-	case tickMsg:
-		if m.dispatching {
-			m.processMap.elapsed = time.Since(m.processMap.startedAt)
-			return m, tickCmd()
+	case "pgdown":
+		// Scroll focused block down.
+		if !m.overlayActive {
+			if b := m.focusedBlock(); b != nil {
+				b.ScrollDown(5)
+			}
+			return nil
 		}
 
-	case jobsRefreshMsg:
-		m.jobTickets = []pantry.Ticket(msg)
-		return m, tea.Batch(scheduleJobsRefresh(m.ticketStore))
+	case "esc":
+		// Close any overlay.
+		if m.overlayActive {
+			m.overlayActive = false
+			m.overlayMode = OverlayNone
+			m.palette.Active = false
+			m.search.Active = false
+			m.input.Focus()
+			return nil
+		}
 	}
 
-	var inputCmd tea.Cmd
-	m.input, inputCmd = m.input.Update(msg)
-	cmds = append(cmds, inputCmd)
-
-	var vpCmd tea.Cmd
-	m.output, vpCmd = m.output.Update(msg)
-	cmds = append(cmds, vpCmd)
-
-	return m, tea.Batch(cmds...)
+	return cmds
 }
 
-func (m *Model) startDispatch() tea.Cmd {
-	prompt := m.input.Value()
-	m.history = append(m.history, prompt)
-	m.historyIdx = -1
-	m.input.SetValue("")
-	m.outputLines = nil
-	m.output.SetContent("")
-	m.dispatching = true
+// RunOpts configures the TUI run.
+type RunOpts struct {
+	ResumeSession string // session name to resume ("" = no resume, "last" = resume last)
+	SessionName   string // named session ("" = use "last")
+}
 
-	// Parse @kitchen prefix
-	kitchenForce := ""
+// Run starts the TUI with adapter-based dispatch.
+func Run(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator, sink observability.Sink, recorder ConversationRecorder, replayer ConversationReplayer, store *pantry.TicketStore) error {
+	return RunWithOpts(providerFactory, hydrator, sink, recorder, replayer, store, RunOpts{})
+}
+
+// RunWithOpts starts the TUI with adapter-based dispatch and options.
+func RunWithOpts(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator, sink observability.Sink, recorder ConversationRecorder, replayer ConversationReplayer, store *pantry.TicketStore, opts RunOpts) error {
+	m := NewAdapterModel(providerFactory, hydrator, sink, recorder, replayer, store)
+
+	// Resume session if requested.
+	sessionName := opts.SessionName
+	if sessionName == "" {
+		sessionName = "last"
+	}
+	if opts.ResumeSession != "" {
+		blocks, events, loadErr := m.loadSession(opts.ResumeSession)
+		if loadErr == nil && len(blocks) > 0 {
+			m.blocks = blocks
+			m.runtimeEvents = events
+			m.focusedIdx = len(blocks) - 1
+		}
+	}
+
+	p := tea.NewProgram(
+		m,
+		tea.WithAltScreen(),
+	)
+	*m.prog = p
+	finalModel, err := p.Run()
+
+	// Auto-save session on clean exit.
+	if fm, ok := finalModel.(Model); ok && len(fm.blocks) > 0 {
+		_ = SaveSession(sessionName, fm.blocks)
+	}
+
+	return err
+}
+
+func (m *Model) loadSession(name string) ([]Block, []observability.Event, error) {
+	blocks, err := LoadSession(name)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var events []observability.Event
+	for i := range blocks {
+		if blocks[i].ConversationID == "" || m.replayer == nil {
+			continue
+		}
+		conv, replayEvents, replayErr := m.replayer(blocks[i].ConversationID, blocks[i].ID, blocks[i].Prompt, blocks[i].ExitCode)
+		if replayErr != nil {
+			continue
+		}
+		if conv != nil {
+			blocks[i].Conversation = conv
+			if len(blocks[i].ProviderChain) == 0 {
+				for _, seg := range conv.Segments {
+					if seg.Provider != "" && !containsProvider(blocks[i].ProviderChain, seg.Provider) {
+						blocks[i].ProviderChain = append(blocks[i].ProviderChain, seg.Provider)
+					}
+				}
+			}
+		}
+		events = append(events, replayEvents...)
+	}
+
+	return blocks, events, nil
+}
+
+// SetKitchenStates updates the status bar kitchen states.
+func (m *Model) SetKitchenStates(states []KitchenState) {
+	m.kitchenStates = states
+}
+
+// SetPipelineSupport enables pipeline orchestration on the model.
+func (m *Model) SetPipelineSupport(planner *pipeline.Planner, factory pipeline.AdapterFactory) {
+	m.planner = planner
+	m.adapterFactory = factory
+}
+
+// SetMaxConcurrent sets the maximum number of concurrent dispatches.
+func (m *Model) SetMaxConcurrent(n int) {
+	if n < 1 {
+		n = 1
+	}
+	m.maxConcurrent = n
+}
+
+// --- Block helpers ---
+
+func (m *Model) nextBlockID() string {
+	m.blockCounter++
+	return fmt.Sprintf("b%d", m.blockCounter)
+}
+
+func (m *Model) findBlock(id string) *Block {
+	for i := range m.blocks {
+		if m.blocks[i].ID == id {
+			return &m.blocks[i]
+		}
+	}
+	return nil
+}
+
+func (m *Model) blockIndex(id string) int {
+	for i, b := range m.blocks {
+		if b.ID == id {
+			return i
+		}
+	}
+	return m.focusedIdx
+}
+
+func (m *Model) focusedBlock() *Block {
+	if m.focusedIdx >= 0 && m.focusedIdx < len(m.blocks) {
+		return &m.blocks[m.focusedIdx]
+	}
+	return nil
+}
+
+func containsProvider(chain []string, provider string) bool {
+	for _, name := range chain {
+		if name == provider {
+			return true
+		}
+	}
+	return false
+}
+
+// executePaletteCommand runs a palette command and returns an optional tea.Cmd.
+func (m *Model) executePaletteCommand(command string) tea.Cmd {
+	switch command {
+	case "cancel":
+		if b := m.focusedBlock(); b != nil && b.IsActive() {
+			if b.CancelFn != nil {
+				b.CancelFn()
+			}
+			b.State = StateCancelled
+		}
+	case "collapse":
+		if b := m.focusedBlock(); b != nil {
+			b.Collapsed = true
+		}
+	case "expand":
+		if b := m.focusedBlock(); b != nil {
+			b.Collapsed = false
+		}
+	case "collapse all":
+		for i := range m.blocks {
+			m.blocks[i].Collapsed = true
+		}
+	case "expand all":
+		for i := range m.blocks {
+			m.blocks[i].Collapsed = false
+		}
+	case "summary":
+		m.overlayActive = true
+		m.overlayMode = OverlaySummary
+	case "history":
+		entries := BuildHistoryFromBlocks(m.blocks)
+		for i := len(m.history) - 1; i >= 0; i-- {
+			entries = append(entries, HistoryEntry{Prompt: m.history[i]})
+		}
+		m.search = SearchState{Active: true, Matches: entries}
+		m.overlayActive = true
+		m.overlayMode = OverlaySearch
+		m.overlayInput = textinput.New()
+		m.overlayInput.Placeholder = "search history..."
+		m.overlayInput.Focus()
+		return textinput.Blink
+	case "session save":
+		if err := SaveLastSession(m.blocks); err != nil {
+			if b := m.focusedBlock(); b != nil {
+				b.AppendEvent(adapter.Event{
+					Type:    adapter.EventText,
+					Kitchen: "milliways",
+					Text:    "[session save] error: " + err.Error(),
+				})
+			}
+		} else {
+			if b := m.focusedBlock(); b != nil {
+				b.AppendEvent(adapter.Event{
+					Type:    adapter.EventText,
+					Kitchen: "milliways",
+					Text:    "[session save] saved to last.json",
+				})
+			}
+		}
+	case "session load":
+		blocks, events, err := m.loadSession("last")
+		if err != nil {
+			if b := m.focusedBlock(); b != nil {
+				b.AppendEvent(adapter.Event{
+					Type:    adapter.EventText,
+					Kitchen: "milliways",
+					Text:    "[session load] error: " + err.Error(),
+				})
+			}
+		} else {
+			m.blocks = append(m.blocks, blocks...)
+			m.runtimeEvents = append(m.runtimeEvents, events...)
+			if b := m.focusedBlock(); b != nil {
+				b.AppendEvent(adapter.Event{
+					Type:    adapter.EventText,
+					Kitchen: "milliways",
+					Text:    fmt.Sprintf("[session load] loaded %d blocks", len(blocks)),
+				})
+			}
+		}
+	case "status", "report":
+		// These would normally trigger external commands — placeholder.
+		if b := m.focusedBlock(); b != nil {
+			b.AppendEvent(adapter.Event{
+				Type:    adapter.EventText,
+				Kitchen: "milliways",
+				Text:    "[" + command + "] not yet implemented in TUI palette",
+			})
+		}
+	}
+	return nil
+}
+
+func (m *Model) hasCompletedBlocks() bool {
+	for _, b := range m.blocks {
+		if b.isDone() {
+			return true
+		}
+	}
+	return false
+}
+
+// parseKitchenForce extracts @kitchen prefix from a prompt.
+func parseKitchenForce(prompt string) (kitchenForce, cleanPrompt string) {
 	if strings.HasPrefix(prompt, "@") {
 		parts := strings.SplitN(prompt, " ", 2)
 		kitchenForce = strings.TrimPrefix(parts[0], "@")
 		if len(parts) > 1 {
-			prompt = parts[1]
+			cleanPrompt = parts[1]
 		}
+		return kitchenForce, cleanPrompt
 	}
-
-	m.processMap = processState{
-		active:    true,
-		kitchen:   kitchenForce,
-		status:    "routing",
-		startedAt: time.Now(),
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	m.cancelFn = cancel
-
-	return tea.Batch(
-		func() tea.Msg {
-			start := time.Now()
-			result, decision, err := m.dispatchFn(ctx, prompt, kitchenForce)
-			dur := time.Since(start)
-			return dispatchDoneMsg{result: result, decision: decision, err: err, duration: dur}
-		},
-		tickCmd(),
-	)
+	return "", prompt
 }
 
-func tickCmd() tea.Cmd {
-	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
-		return tickMsg(t)
-	})
-}
-
-func (m Model) View() string {
-	if !m.ready {
-		return "Loading..."
+// truncateQueue shortens a string for queue display.
+func truncateQueue(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
 	}
-
-	// Process map (top-right)
-	processMap := m.renderProcessMap()
-
-	// Output viewport (center)
-	outputPanel := panelBorder.
-		Width(m.width - 28).
-		Height(m.height - 6).
-		Render(m.output.View())
-
-	// Ledger panel (right)
-	ledgerPanel := panelBorder.
-		Width(24).
-		Height((m.height - 6) / 2).
-		Render(m.renderLedger())
-
-	// Jobs panel (right, below ledger)
-	jobsPanel := RenderJobsPanel(m.jobTickets, 24)
-
-	// Combine output + process map + ledger + jobs
-	mainArea := lipgloss.JoinHorizontal(lipgloss.Top,
-		outputPanel,
-		lipgloss.JoinVertical(lipgloss.Left, processMap, ledgerPanel, jobsPanel),
-	)
-
-	// Input at bottom
-	inputBar := panelBorder.Width(m.width - 2).Render(m.input.View())
-
-	// Title
-	title := titleStyle.Width(m.width).Render("Milliways — The Restaurant at the End of the Universe")
-
-	return lipgloss.JoinVertical(lipgloss.Left, title, mainArea, inputBar)
-}
-
-func (m Model) renderProcessMap() string {
-	if !m.processMap.active {
-		return panelBorder.Width(24).Height(6).Render(mutedStyle.Render("No active dispatch"))
-	}
-
-	lines := []string{}
-	if m.processMap.kitchen != "" {
-		lines = append(lines, KitchenBadge(m.processMap.kitchen))
-	}
-	lines = append(lines, StatusIcon(m.processMap.status)+" "+m.processMap.status)
-	lines = append(lines, mutedStyle.Render(fmt.Sprintf("%.1fs", m.processMap.elapsed.Seconds())))
-
-	if m.processMap.risk != "" {
-		lines = append(lines, "Risk: "+m.processMap.risk)
-	}
-
-	return panelBorder.Width(24).Height(6).Render(strings.Join(lines, "\n"))
-}
-
-func (m Model) renderLedger() string {
-	if len(m.ledgerLog) == 0 {
-		return mutedStyle.Render("No dispatches yet")
-	}
-
-	lines := []string{mutedStyle.Render("Ledger")}
-	start := 0
-	if len(m.ledgerLog) > 8 {
-		start = len(m.ledgerLog) - 8
-	}
-
-	for _, l := range m.ledgerLog[start:] {
-		lines = append(lines, fmt.Sprintf("%s %s %s %s",
-			mutedStyle.Render(l.time),
-			KitchenBadge(l.kitchen),
-			l.dur,
-			StatusIcon(l.status),
-		))
-	}
-	return strings.Join(lines, "\n")
-}
-
-// Run starts the TUI with an optional ticket store for the jobs panel.
-// Pass nil for store to disable jobs panel.
-func Run(dispatchFn DispatchFunc, store *pantry.TicketStore) error {
-	p := tea.NewProgram(
-		NewModel(dispatchFn, store),
-		tea.WithAltScreen(),
-	)
-	_, err := p.Run()
-	return err
+	return string(runes[:max-1]) + "…"
 }

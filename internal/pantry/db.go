@@ -56,6 +56,15 @@ func (db *DB) Quality() *QualityStore { return &QualityStore{db: db.conn} }
 // Deps returns the dependency store (packages, versions, CVEs).
 func (db *DB) Deps() *DepStore { return &DepStore{db: db.conn} }
 
+// RuntimeEvents returns the runtime event store.
+func (db *DB) RuntimeEvents() *RuntimeEventStore { return &RuntimeEventStore{db: db.conn} }
+
+// Checkpoints returns the checkpoint store.
+func (db *DB) Checkpoints() *CheckpointStore { return &CheckpointStore{db: db.conn} }
+
+// MemoryItems returns the durable memory item store.
+func (db *DB) MemoryItems() *MemoryItemStore { return &MemoryItemStore{db: db.conn} }
+
 // Path returns the database file path.
 func (db *DB) Path() string { return db.path }
 
@@ -64,7 +73,7 @@ func (db *DB) Close() error { return db.conn.Close() }
 
 // Ping verifies the database connection is still alive.
 func (db *DB) Ping() error {
-    return db.conn.Ping()
+	return db.conn.Ping()
 }
 
 func migrate(conn *sql.DB) error {
@@ -79,6 +88,26 @@ func migrate(conn *sql.DB) error {
 	if version < 1 {
 		if _, err := conn.Exec(schemaV1); err != nil {
 			return fmt.Errorf("applying schema v1: %w", err)
+		}
+	}
+	if version < 2 {
+		if _, err := conn.Exec(schemaV2); err != nil {
+			return fmt.Errorf("applying schema v2: %w", err)
+		}
+	}
+	if version < 3 {
+		if _, err := conn.Exec(schemaV3); err != nil {
+			return fmt.Errorf("applying schema v3: %w", err)
+		}
+	}
+	if version < 4 {
+		if _, err := conn.Exec(schemaV4); err != nil {
+			return fmt.Errorf("applying schema v4: %w", err)
+		}
+	}
+	if version < 5 {
+		if _, err := conn.Exec(schemaV5); err != nil {
+			return fmt.Errorf("applying schema v5: %w", err)
 		}
 	}
 

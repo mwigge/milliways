@@ -3,6 +3,7 @@ package pantry
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -48,4 +49,87 @@ func (s *QuotaStore) DailyDispatches(kitchen string) (int, error) {
 		return 0, fmt.Errorf("querying daily dispatches: %w", err)
 	}
 	return count, nil
+}
+
+// IsExhausted checks if a kitchen has exceeded its daily limit or been externally rate-limited.
+// Returns false if dailyLimit is 0 (unlimited) and no external override exists.
+func (s *QuotaStore) IsExhausted(kitchen string, dailyLimit int) (bool, error) {
+	// Check external rate-limit override first
+	var resetsAtStr string
+	err := s.db.QueryRow(
+		"SELECT resets_at FROM mw_quota_overrides WHERE kitchen = ?",
+		kitchen,
+	).Scan(&resetsAtStr)
+	if err == nil {
+		resetsAt, parseErr := time.Parse(time.RFC3339, resetsAtStr)
+		if parseErr == nil && time.Now().Before(resetsAt) {
+			return true, nil
+		}
+		// Override expired — clean it up
+		_, _ = s.db.Exec("DELETE FROM mw_quota_overrides WHERE kitchen = ?", kitchen)
+	}
+
+	// Check daily limit
+	if dailyLimit <= 0 {
+		return false, nil
+	}
+
+	dispatches, err := s.DailyDispatches(kitchen)
+	if err != nil {
+		return false, err
+	}
+
+	return dispatches >= dailyLimit, nil
+}
+
+// MarkExhausted records that a kitchen has been externally rate-limited.
+// resetsAt is the time the kitchen reported it will accept requests again.
+func (s *QuotaStore) MarkExhausted(kitchen string, resetsAt time.Time) error {
+	_, err := s.db.Exec(`
+		INSERT INTO mw_quota_overrides (kitchen, resets_at)
+		VALUES (?, ?)
+		ON CONFLICT(kitchen) DO UPDATE SET resets_at = ?
+	`, kitchen, resetsAt.Format(time.RFC3339), resetsAt.Format(time.RFC3339))
+	if err != nil {
+		return fmt.Errorf("marking kitchen exhausted: %w", err)
+	}
+	return nil
+}
+
+// ResetsAt returns the time when a kitchen's quota resets.
+// For externally rate-limited kitchens, returns the override time.
+// For daily-limit kitchens, returns midnight UTC of the next day.
+func (s *QuotaStore) ResetsAt(kitchen string) (time.Time, error) {
+	// Check external override first
+	var resetsAtStr string
+	err := s.db.QueryRow(
+		"SELECT resets_at FROM mw_quota_overrides WHERE kitchen = ?",
+		kitchen,
+	).Scan(&resetsAtStr)
+	if err == nil {
+		resetsAt, parseErr := time.Parse(time.RFC3339, resetsAtStr)
+		if parseErr == nil && time.Now().Before(resetsAt) {
+			return resetsAt, nil
+		}
+	}
+
+	// Default: midnight UTC tomorrow
+	now := time.Now().UTC()
+	midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+	return midnight, nil
+}
+
+// UsageRatio returns the dispatches/dailyLimit ratio (0.0-1.0).
+// Returns 0.0 if dailyLimit is 0 (unlimited).
+func (s *QuotaStore) UsageRatio(kitchen string, dailyLimit int) (float64, error) {
+	if dailyLimit <= 0 {
+		return 0.0, nil
+	}
+
+	dispatches, err := s.DailyDispatches(kitchen)
+	if err != nil {
+		return 0.0, err
+	}
+
+	return math.Min(float64(dispatches)/float64(dailyLimit), 1.0), nil
 }

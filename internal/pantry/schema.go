@@ -104,5 +104,80 @@ CREATE TABLE IF NOT EXISTS mw_quotas (
     UNIQUE(kitchen, date)
 );
 
+CREATE TABLE IF NOT EXISTS mw_quota_overrides (
+    kitchen   TEXT PRIMARY KEY,
+    resets_at TEXT NOT NULL
+);
+
 INSERT OR IGNORE INTO mw_schema (version) VALUES (1);
+`
+
+const schemaV2 = `
+ALTER TABLE mw_ledger ADD COLUMN conversation_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE mw_ledger ADD COLUMN segment_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE mw_ledger ADD COLUMN segment_index INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE mw_ledger ADD COLUMN end_reason TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_mw_ledger_conversation_id ON mw_ledger(conversation_id);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (2);
+`
+
+const schemaV3 = `
+CREATE TABLE IF NOT EXISTS mw_runtime_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL DEFAULT '',
+    block_id        TEXT NOT NULL DEFAULT '',
+    segment_id      TEXT NOT NULL DEFAULT '',
+    kind            TEXT NOT NULL,
+    provider        TEXT NOT NULL DEFAULT '',
+    text            TEXT NOT NULL DEFAULT '',
+    at              TEXT NOT NULL,
+    fields_json     TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_runtime_events_conversation_id ON mw_runtime_events(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_mw_runtime_events_kind ON mw_runtime_events(kind);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (3);
+`
+
+const schemaV4 = `
+CREATE TABLE IF NOT EXISTS mw_checkpoints (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    checkpoint_id   TEXT NOT NULL,
+    block_id        TEXT NOT NULL DEFAULT '',
+    segment_id      TEXT NOT NULL DEFAULT '',
+    provider        TEXT NOT NULL DEFAULT '',
+    reason          TEXT NOT NULL DEFAULT '',
+    taken_at        TEXT NOT NULL,
+    snapshot_json   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_checkpoints_conversation_id ON mw_checkpoints(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_mw_checkpoints_taken_at ON mw_checkpoints(taken_at);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (4);
+`
+
+const schemaV5 = `
+CREATE TABLE IF NOT EXISTS mw_memory_items (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL DEFAULT '',
+    memory_type    TEXT NOT NULL,
+    source_kind    TEXT NOT NULL DEFAULT '',
+    scope          TEXT NOT NULL DEFAULT '',
+    text           TEXT NOT NULL,
+    confidence     REAL NOT NULL DEFAULT 0,
+    status         TEXT NOT NULL DEFAULT 'active',
+    valid_until    TEXT NOT NULL DEFAULT '',
+    created_at     TEXT NOT NULL,
+    invalidated_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_memory_items_type_status ON mw_memory_items(memory_type, status);
+CREATE INDEX IF NOT EXISTS idx_mw_memory_items_conversation_id ON mw_memory_items(conversation_id);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (5);
 `

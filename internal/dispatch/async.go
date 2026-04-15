@@ -60,7 +60,9 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 		}
 
 		// Update ticket
-		_ = d.pdb.Tickets().UpdateStatus(ticketID, status, exitCode, nil)
+		if updateErr := d.pdb.Tickets().UpdateStatus(ticketID, status, exitCode, nil); updateErr != nil {
+			fmt.Fprintf(os.Stderr, "[async] ticket update warning: %v\n", updateErr)
+		}
 
 		// Write ledger entry
 		entry := pantry.LedgerEntry{
@@ -73,7 +75,9 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 			DispatchMode: "async",
 		}
 		if ledgerID, ledgerErr := d.pdb.Ledger().Insert(entry); ledgerErr == nil {
-			_ = d.pdb.Tickets().UpdateStatus(ticketID, status, exitCode, &ledgerID)
+			if updateErr := d.pdb.Tickets().UpdateStatus(ticketID, status, exitCode, &ledgerID); updateErr != nil {
+				fmt.Fprintf(os.Stderr, "[async] ticket update warning: %v\n", updateErr)
+			}
 		}
 	}()
 

@@ -6,10 +6,14 @@ import (
 	"os"
 	"time"
 
+	"github.com/mwigge/milliways/internal/conversation"
 	asyncdispatch "github.com/mwigge/milliways/internal/dispatch"
 	"github.com/mwigge/milliways/internal/kitchen"
+	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/ledger"
 	"github.com/mwigge/milliways/internal/maitre"
+	"github.com/mwigge/milliways/internal/observability"
+	"github.com/mwigge/milliways/internal/orchestrator"
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/recipe"
 	"github.com/mwigge/milliways/internal/sommelier"
@@ -17,7 +21,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func runTUI(configPath string) error {
+func runTUI(configPath string, tuiOpts tui.RunOpts) error {
 	cfg, err := maitre.LoadConfig(configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -26,44 +30,212 @@ func runTUI(configPath string) error {
 	reg := buildRegistry(cfg)
 	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, reg)
 
-	dispatchFn := func(ctx context.Context, prompt, kitchenForce string) (kitchen.Result, sommelier.Decision, error) {
-		var decision sommelier.Decision
-		if kitchenForce != "" {
-			decision = som.ForceRoute(kitchenForce)
-		} else {
-			signals := assembleSignals(cfg, nil, prompt, false)
-			catalog := maitre.ScanSkills()
-			var hint *sommelier.SkillHint
-			if catalog.Total() > 0 {
-				if kn, sk := catalog.HasSkill(prompt); sk != nil {
-					hint = &sommelier.SkillHint{Kitchen: kn, SkillName: sk.Name}
-				}
-			}
-			decision = som.RouteEnriched(prompt, signals, hint)
-		}
+	// Wire quota checking if pantry is available
+	pdb, pdbErr := openPantryDB()
+	if pdbErr == nil {
+		defer func() { _ = pdb.Close() }()
+		som.SetQuotaChecker(pdb.Quotas(), nil)
+	}
 
+	providerFactory := makeProviderFactory(cfg, reg, som, pdb, false)
+	hydrator := makeConversationHydrator(pdb, "")
+	sink := makeRuntimeSink(pdb)
+	recorder := makeConversationRecorder(cfg, pdb)
+	replayer := makeConversationReplayer(pdb)
+
+	// Open ticket store for the jobs panel (best-effort — nil disables panel).
+	var ticketStore *pantry.TicketStore
+	if pdbErr == nil {
+		ticketStore = pdb.Tickets()
+	}
+
+	return tui.RunWithOpts(providerFactory, hydrator, sink, recorder, replayer, ticketStore, tuiOpts)
+}
+
+func makeRuntimeSink(pdb *pantry.DB) observability.Sink {
+	if pdb == nil {
+		return observability.NopSink{}
+	}
+	return observability.FuncSink(func(evt observability.Event) {
+		_, _ = pdb.RuntimeEvents().Insert(pantry.RuntimeEventRecord{
+			ConversationID: evt.ConversationID,
+			BlockID:        evt.BlockID,
+			SegmentID:      evt.SegmentID,
+			Kind:           evt.Kind,
+			Provider:       evt.Provider,
+			Text:           evt.Text,
+			At:             evt.At.UTC().Format(time.RFC3339),
+			Fields:         evt.Fields,
+		})
+	})
+}
+
+func makeConversationRecorder(cfg *maitre.Config, pdb *pantry.DB) tui.ConversationRecorder {
+	return func(prompt string, duration float64, exitCode int, conv *conversation.Conversation) {
+		if conv == nil {
+			return
+		}
+		lastKitchen := ""
+		if len(conv.Segments) > 0 {
+			lastKitchen = conv.Segments[len(conv.Segments)-1].Provider
+		}
+		recordConversationDispatch(cfg, pdb, prompt, lastKitchen, duration, exitCode, conv)
+	}
+}
+
+func makeConversationReplayer(pdb *pantry.DB) tui.ConversationReplayer {
+	if pdb == nil {
+		return nil
+	}
+	return func(conversationID, blockID, prompt string, exitCode int) (*conversation.Conversation, []observability.Event, error) {
+		if ckpt, err := pdb.Checkpoints().LatestByConversation(conversationID); err == nil && ckpt != nil {
+			return pdb.RuntimeEvents().ReconstructConversationFromCheckpoint(ckpt, exitCode)
+		}
+		return pdb.RuntimeEvents().ReconstructConversation(conversationID, blockID, prompt, exitCode)
+	}
+}
+
+func makeProviderFactory(cfg *maitre.Config, reg *kitchen.Registry, som *sommelier.Sommelier, pdb *pantry.DB, verbose bool) orchestrator.ProviderFactory {
+	return func(ctx context.Context, prompt string, exclude map[string]bool, kitchenForce string, resumeSessionIDs map[string]string) (orchestrator.RouteResult, error) {
+		decision := selectDecision(cfg, reg, som, pdb, prompt, kitchenForce, exclude)
 		if decision.Kitchen == "" {
-			return kitchen.Result{}, decision, fmt.Errorf("no kitchens available")
+			return orchestrator.RouteResult{Decision: decision}, fmt.Errorf("no kitchens available")
 		}
 
 		k, ok := reg.Get(decision.Kitchen)
 		if !ok || k.Status() != kitchen.Ready {
-			return kitchen.Result{}, decision, fmt.Errorf("kitchen %s not ready", decision.Kitchen)
+			return orchestrator.RouteResult{Decision: decision}, fmt.Errorf("kitchen %s not ready", decision.Kitchen)
 		}
 
-		task := kitchen.Task{Prompt: prompt}
-		result, err := k.Exec(ctx, task)
-		return result, decision, err
+		resumeSessionID := ""
+		if resumeSessionIDs != nil {
+			resumeSessionID = resumeSessionIDs[decision.Kitchen]
+		}
+		adapt, err := adapter.AdapterFor(k, adapter.AdapterOpts{
+			ResumeSessionID: resumeSessionID,
+			Verbose:         verbose,
+		})
+		if err != nil {
+			return orchestrator.RouteResult{Decision: decision}, fmt.Errorf("creating adapter for %s: %w", decision.Kitchen, err)
+		}
+
+		return orchestrator.RouteResult{
+			Decision: decision,
+			Adapter:  adapt,
+		}, nil
+	}
+}
+
+func selectDecision(cfg *maitre.Config, reg *kitchen.Registry, som *sommelier.Sommelier, pdb *pantry.DB, prompt, kitchenForce string, exclude map[string]bool) sommelier.Decision {
+	if kitchenForce != "" && !exclude[kitchenForce] {
+		return som.ForceRoute(kitchenForce)
 	}
 
-	// Open ticket store for the jobs panel (best-effort — nil disables panel).
-	var ticketStore *pantry.TicketStore
-	if pdb, pdbErr := openPantryDB(); pdbErr == nil {
-		ticketStore = pdb.Tickets()
-		// pdb stays open for the lifetime of the TUI; GC/OS will close it on exit.
+	var decision sommelier.Decision
+	signals := assembleSignals(cfg, pdb, prompt, false)
+	catalog := maitre.ScanSkills()
+	var hint *sommelier.SkillHint
+	if catalog.Total() > 0 {
+		if kn, sk := catalog.HasSkill(prompt); sk != nil {
+			hint = &sommelier.SkillHint{Kitchen: kn, SkillName: sk.Name}
+		}
+	}
+	decision = som.RouteEnriched(prompt, signals, hint)
+
+	if decision.Kitchen != "" && !exclude[decision.Kitchen] {
+		if k, ok := reg.Get(decision.Kitchen); ok && k.Status() == kitchen.Ready {
+			if len(exclude) > 0 {
+				bestKitchen, bestCaps := bestContinuationKitchen(reg, exclude)
+				if bestKitchen != "" {
+					decisionCaps := capabilitiesForKitchen(reg, decision.Kitchen)
+					if continuityScore(bestCaps) > continuityScore(decisionCaps) {
+						return sommelier.Decision{
+							Kitchen: bestKitchen,
+							Reason:  fmt.Sprintf("continuation preferred %s for stronger continuity support", bestKitchen),
+							Tier:    "continuation",
+						}
+					}
+				}
+			}
+			return decision
+		}
 	}
 
-	return tui.Run(dispatchFn, ticketStore)
+	if len(exclude) > 0 {
+		bestKitchen, _ := bestContinuationKitchen(reg, exclude)
+		if bestKitchen != "" {
+			return sommelier.Decision{
+				Kitchen: bestKitchen,
+				Reason:  fmt.Sprintf("continuation fallback → %s", bestKitchen),
+				Tier:    "continuation",
+			}
+		}
+	}
+
+	for _, k := range reg.Ready() {
+		if exclude[k.Name()] {
+			continue
+		}
+		return sommelier.Decision{
+			Kitchen: k.Name(),
+			Reason:  fmt.Sprintf("continuation fallback → %s", k.Name()),
+			Tier:    "fallback",
+		}
+	}
+
+	return sommelier.Decision{
+		Kitchen: "",
+		Reason:  "no kitchens available",
+		Tier:    "fallback",
+	}
+}
+
+func bestContinuationKitchen(reg *kitchen.Registry, exclude map[string]bool) (string, adapter.Capabilities) {
+	bestKitchen := ""
+	bestCaps := adapter.Capabilities{}
+	bestScore := -1
+	for _, k := range reg.Ready() {
+		if exclude[k.Name()] {
+			continue
+		}
+		caps := capabilitiesForKitchen(reg, k.Name())
+		score := continuityScore(caps)
+		if score > bestScore {
+			bestKitchen = k.Name()
+			bestCaps = caps
+			bestScore = score
+		}
+	}
+	return bestKitchen, bestCaps
+}
+
+func capabilitiesForKitchen(reg *kitchen.Registry, kitchenName string) adapter.Capabilities {
+	k, ok := reg.Get(kitchenName)
+	if !ok {
+		return adapter.Capabilities{}
+	}
+	adapt, err := adapter.AdapterFor(k, adapter.AdapterOpts{})
+	if err != nil {
+		return adapter.Capabilities{}
+	}
+	return adapt.Capabilities()
+}
+
+func continuityScore(caps adapter.Capabilities) int {
+	score := 0
+	if caps.NativeResume {
+		score += 4
+	}
+	if caps.StructuredEvents {
+		score += 3
+	}
+	if caps.ExhaustionDetection != "" && caps.ExhaustionDetection != "none" {
+		score += 2
+	}
+	if caps.InteractiveSend {
+		score++
+	}
+	return score
 }
 
 func dispatchRecipe(recipeName, prompt string, verbose bool, configPath string, keepContext bool) error {

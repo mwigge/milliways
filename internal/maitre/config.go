@@ -19,12 +19,23 @@ type Config struct {
 
 // KitchenConfig defines a kitchen's CLI command and capabilities.
 type KitchenConfig struct {
-	Cmd      string            `yaml:"cmd"`
-	Args     []string          `yaml:"args"`
-	Stations []string          `yaml:"stations"`
-	CostTier string            `yaml:"cost_tier"`
-	Enabled  *bool             `yaml:"enabled"`
-	Env      map[string]string `yaml:"env"`
+	Cmd           string            `yaml:"cmd"`
+	Args          []string          `yaml:"args"`
+	Stations      []string          `yaml:"stations"`
+	CostTier      string            `yaml:"cost_tier"`
+	Enabled       *bool             `yaml:"enabled"`
+	Env           map[string]string `yaml:"env"`
+	DailyLimit    int               `yaml:"daily_limit"`    // max dispatches per day (0 = unlimited)
+	DailyMinutes  float64           `yaml:"daily_minutes"`  // max total minutes per day (0 = unlimited)
+	WarnThreshold float64           `yaml:"warn_threshold"` // warning at this fraction of limit (default 0.8)
+}
+
+// EffectiveWarnThreshold returns the warn threshold, defaulting to 0.8.
+func (kc KitchenConfig) EffectiveWarnThreshold() float64 {
+	if kc.WarnThreshold > 0 {
+		return kc.WarnThreshold
+	}
+	return 0.8
 }
 
 // IsEnabled returns true if the kitchen is enabled (default: true).

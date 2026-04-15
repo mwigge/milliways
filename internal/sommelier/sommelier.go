@@ -23,12 +23,20 @@ type keywordRule struct {
 	kitchen string
 }
 
+// QuotaChecker is an interface for checking kitchen quota exhaustion.
+// This decouples the sommelier from the pantry package.
+type QuotaChecker interface {
+	IsExhausted(kitchen string, dailyLimit int) (bool, error)
+}
+
 // Sommelier picks the right kitchen for a task.
 type Sommelier struct {
 	rules          []keywordRule
 	defaultKitchen string
 	fallback       string
 	registry       *kitchen.Registry
+	quotaChecker   QuotaChecker
+	quotaLimits    map[string]int // kitchen name → daily limit
 }
 
 // New creates a sommelier with keyword routing rules.
@@ -51,6 +59,32 @@ func New(keywords map[string]string, defaultKitchen, fallback string, reg *kitch
 		fallback:       fallback,
 		registry:       reg,
 	}
+}
+
+// SetQuotaChecker enables quota-gated routing.
+// Pass nil to disable quota checking (the default).
+func (s *Sommelier) SetQuotaChecker(checker QuotaChecker, limits map[string]int) {
+	s.quotaChecker = checker
+	s.quotaLimits = limits
+}
+
+// isAvailable checks if a kitchen is both ready and not quota-exhausted.
+func (s *Sommelier) isAvailable(kitchenName string) bool {
+	k, ok := s.registry.Get(kitchenName)
+	if !ok || k.Status() != kitchen.Ready {
+		return false
+	}
+	if s.quotaChecker != nil {
+		limit := 0
+		if s.quotaLimits != nil {
+			limit = s.quotaLimits[kitchenName]
+		}
+		exhausted, err := s.quotaChecker.IsExhausted(kitchenName, limit)
+		if err == nil && exhausted {
+			return false
+		}
+	}
+	return true
 }
 
 // Route determines which kitchen should handle a prompt using keyword matching only (Tier 1).
@@ -79,7 +113,7 @@ func (s *Sommelier) RouteEnriched(prompt string, signals *Signals, skillHint *Sk
 
 	// Tier 3: learned routing (if sufficient data, overrides keyword)
 	if signals != nil && signals.LearnedKitchen != "" {
-		if k, ok := s.registry.Get(signals.LearnedKitchen); ok && k.Status() == kitchen.Ready {
+		if s.isAvailable(signals.LearnedKitchen) {
 			return Decision{
 				Kitchen: signals.LearnedKitchen,
 				Reason:  fmt.Sprintf("learned: %s succeeded %.0f%% for this task type (%s)", signals.LearnedKitchen, signals.LearnedRate, signals.Summary()),
@@ -92,7 +126,7 @@ func (s *Sommelier) RouteEnriched(prompt string, signals *Signals, skillHint *Sk
 
 	// Tier 2b: skill-based boost (if a kitchen has a matching skill, prefer it)
 	if skillHint != nil && skillHint.Kitchen != "" {
-		if k, ok := s.registry.Get(skillHint.Kitchen); ok && k.Status() == kitchen.Ready {
+		if s.isAvailable(skillHint.Kitchen) {
 			return Decision{
 				Kitchen: skillHint.Kitchen,
 				Reason:  fmt.Sprintf("skill %q available in %s", skillHint.SkillName, skillHint.Kitchen),
@@ -106,7 +140,7 @@ func (s *Sommelier) RouteEnriched(prompt string, signals *Signals, skillHint *Sk
 	// Tier 2: enriched routing (high risk overrides keyword → route to careful kitchen)
 	if signals != nil && signals.RiskLevel() == "high" {
 		// High risk: prefer claude (deep reasoning) over keyword match
-		if k, ok := s.registry.Get("claude"); ok && k.Status() == kitchen.Ready {
+		if s.isAvailable("claude") {
 			keywordMatch := s.keywordMatch(lower)
 			if keywordMatch != "claude" {
 				return Decision{
@@ -123,7 +157,7 @@ func (s *Sommelier) RouteEnriched(prompt string, signals *Signals, skillHint *Sk
 	// Tier 1: keyword scan (longest match first, deterministic order)
 	for _, rule := range s.rules {
 		if strings.Contains(lower, rule.keyword) {
-			if k, ok := s.registry.Get(rule.kitchen); ok && k.Status() == kitchen.Ready {
+			if s.isAvailable(rule.kitchen) {
 				d := Decision{
 					Kitchen: rule.kitchen,
 					Reason:  fmt.Sprintf("keyword %q matched → %s", rule.keyword, rule.kitchen),
@@ -182,7 +216,7 @@ func (s *Sommelier) fallbackRoute(signals *Signals) Decision {
 		risk = signals.RiskLevel()
 	}
 
-	if k, ok := s.registry.Get(s.defaultKitchen); ok && k.Status() == kitchen.Ready {
+	if s.isAvailable(s.defaultKitchen) {
 		return Decision{
 			Kitchen: s.defaultKitchen,
 			Reason:  fmt.Sprintf("no keyword matched → default %s", s.defaultKitchen),
@@ -192,7 +226,7 @@ func (s *Sommelier) fallbackRoute(signals *Signals) Decision {
 		}
 	}
 
-	if k, ok := s.registry.Get(s.fallback); ok && k.Status() == kitchen.Ready {
+	if s.isAvailable(s.fallback) {
 		return Decision{
 			Kitchen: s.fallback,
 			Reason:  fmt.Sprintf("default %s unavailable → fallback %s", s.defaultKitchen, s.fallback),
@@ -202,6 +236,9 @@ func (s *Sommelier) fallbackRoute(signals *Signals) Decision {
 	}
 
 	for _, k := range s.registry.Ready() {
+		if !s.isAvailable(k.Name()) {
+			continue
+		}
 		return Decision{
 			Kitchen: k.Name(),
 			Reason:  fmt.Sprintf("all preferred unavailable → first ready: %s", k.Name()),

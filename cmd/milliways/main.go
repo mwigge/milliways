@@ -3,17 +3,24 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/mwigge/milliways/internal/conversation"
 	"github.com/mwigge/milliways/internal/kitchen"
+	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/ledger"
 	"github.com/mwigge/milliways/internal/maitre"
+	"github.com/mwigge/milliways/internal/orchestrator"
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/sommelier"
+	"github.com/mwigge/milliways/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -23,6 +30,7 @@ var version = "0.1.0"
 type dispatchOpts struct {
 	prompt, kitchenForce, configPath string
 	jsonOutput, explain, verbose     bool
+	timeout                          time.Duration
 }
 
 // exitError wraps an error with a specific exit code.
@@ -35,7 +43,8 @@ func (e *exitError) Error() string { return e.err.Error() }
 
 func main() {
 	if err := rootCmd().Execute(); err != nil {
-		if ee, ok := err.(*exitError); ok {
+		var ee *exitError
+		if errors.As(err, &ee) {
 			os.Exit(ee.code)
 		}
 		os.Exit(1)
@@ -54,6 +63,9 @@ func rootCmd() *cobra.Command {
 		detachFlag  bool
 		keepContext bool
 		tuiFlag     bool
+		resumeFlag  bool
+		sessionName string
+		timeoutDur  time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -71,7 +83,15 @@ based on what each tool does best.
 		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if tuiFlag {
-				return runTUI(configPath)
+				opts := tui.RunOpts{SessionName: sessionName}
+				if resumeFlag {
+					resume := sessionName
+					if resume == "" {
+						resume = "last"
+					}
+					opts.ResumeSession = resume
+				}
+				return runTUI(configPath, opts)
 			}
 			if len(args) == 0 {
 				return cmd.Help()
@@ -93,6 +113,7 @@ based on what each tool does best.
 				jsonOutput:   jsonFlag,
 				explain:      explainFlag,
 				verbose:      verbose,
+				timeout:      timeoutDur,
 			})
 		},
 		SilenceUsage: true,
@@ -108,6 +129,9 @@ based on what each tool does best.
 	cmd.Flags().BoolVar(&detachFlag, "detach", false, "Dispatch detached (survives exit)")
 	cmd.Flags().BoolVar(&keepContext, "keep-context", false, "Keep recipe context files")
 	cmd.Flags().BoolVarP(&tuiFlag, "tui", "t", false, "Interactive TUI mode")
+	cmd.Flags().BoolVar(&resumeFlag, "resume", false, "Resume last TUI session")
+	cmd.Flags().StringVar(&sessionName, "session", "", "Named TUI session")
+	cmd.Flags().DurationVar(&timeoutDur, "timeout", 5*time.Minute, "Dispatch timeout for headless mode")
 
 	cmd.AddCommand(statusCmd(&configPath))
 	cmd.AddCommand(reportCmd(&configPath))
@@ -115,6 +139,7 @@ based on what each tool does best.
 	cmd.AddCommand(pantryCmd())
 	cmd.AddCommand(ticketCmd())
 	cmd.AddCommand(ticketsCmd())
+	cmd.AddCommand(rateCmd())
 
 	return cmd
 }
@@ -188,76 +213,172 @@ func dispatch(opts dispatchOpts) error {
 		return fmt.Errorf("kitchen %q is %s — run 'milliways --setup %s' to fix", decision.Kitchen, k.Status(), decision.Kitchen)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(sigCtx, opts.timeout)
 	defer cancel()
 
-	task := kitchen.Task{
-		Prompt: opts.prompt,
-		Env:    map[string]string{"MILLIWAYS_MODE": string(mode)},
-		OnLine: func(line string) {
-			if !opts.jsonOutput {
-				fmt.Println(line)
-			}
-		},
-	}
-
 	if opts.verbose {
+		fmt.Fprintf(os.Stderr, "[routed] %s\n", decision.Kitchen)
 		fmt.Fprintf(os.Stderr, "[dispatch] %s streaming...\n", decision.Kitchen)
 	}
 
+	providerFactory := makeProviderFactory(cfg, reg, som, pdb, opts.verbose)
+	orch := orchestrator.Orchestrator{
+		Factory: providerFactory,
+		Hydrate: makeConversationHydrator(pdb, opts.prompt),
+		Sink:    makeRuntimeSink(pdb),
+	}
+
 	start := time.Now()
-	result, execErr := k.Exec(ctx, task)
+	var output strings.Builder
+	var costInfo *adapter.CostInfo
+	exitCode := 0
+	lastKitchen := decision.Kitchen
+
+	conv, runErr := orch.Run(ctx, orchestrator.RunRequest{
+		ConversationID: fmt.Sprintf("sync-%d", time.Now().UnixNano()),
+		BlockID:        "sync",
+		Prompt:         opts.prompt,
+		KitchenForce:   opts.kitchenForce,
+	}, func(res orchestrator.RouteResult) {
+		lastKitchen = res.Decision.Kitchen
+		if opts.verbose {
+			fmt.Fprintf(os.Stderr, "[routed] %s\n", res.Decision.Kitchen)
+		}
+	}, func(evt adapter.Event) {
+		switch evt.Type {
+		case adapter.EventText:
+			if !opts.jsonOutput {
+				fmt.Println(evt.Text)
+			}
+			output.WriteString(evt.Text)
+			output.WriteString("\n")
+		case adapter.EventCodeBlock:
+			if !opts.jsonOutput {
+				fmt.Printf("```%s\n%s\n```\n", evt.Language, evt.Code)
+			}
+			output.WriteString(evt.Code)
+			output.WriteString("\n")
+		case adapter.EventCost:
+			costInfo = evt.Cost
+			if opts.verbose {
+				fmt.Fprintf(os.Stderr, "[cost] $%.4f\n", evt.Cost.USD)
+			}
+		case adapter.EventRateLimit:
+			if opts.verbose {
+				fmt.Fprintf(os.Stderr, "[rate_limit] %s: %s (resets %s)\n", evt.Kitchen, evt.RateLimit.Status, evt.RateLimit.ResetsAt.Format("15:04"))
+			}
+			// Record rate limit in quota store
+			if pdb != nil && evt.RateLimit != nil && evt.RateLimit.Status == "exhausted" {
+				_ = pdb.Quotas().MarkExhausted(evt.Kitchen, evt.RateLimit.ResetsAt)
+			}
+		case adapter.EventDone:
+			exitCode = evt.ExitCode
+		case adapter.EventError:
+			if opts.verbose {
+				fmt.Fprintf(os.Stderr, "[error] %s: %s\n", evt.Kitchen, evt.Text)
+			}
+		}
+	})
+	if runErr != nil {
+		return runErr
+	}
+
 	duration := time.Since(start).Seconds()
+	_ = costInfo // used in verbose/json output below
 
 	if opts.verbose {
-		fmt.Fprintf(os.Stderr, "[dispatch] %s done (%.1fs, exit=%d)\n", decision.Kitchen, duration, result.ExitCode)
+		fmt.Fprintf(os.Stderr, "[dispatch] %s done (%.1fs, exit=%d)\n", lastKitchen, duration, exitCode)
 	}
 
-	recordDispatch(cfg, pdb, opts.prompt, decision.Kitchen, duration, result.ExitCode)
-
-	if execErr != nil {
-		return fmt.Errorf("kitchen %s: %w", decision.Kitchen, execErr)
-	}
+	recordConversationDispatch(cfg, pdb, opts.prompt, lastKitchen, duration, exitCode, conv)
 
 	if opts.jsonOutput {
 		out := map[string]any{
-			"kitchen":    decision.Kitchen,
+			"kitchen":    lastKitchen,
 			"reason":     decision.Reason,
 			"tier":       decision.Tier,
-			"exit_code":  result.ExitCode,
+			"exit_code":  exitCode,
 			"duration_s": duration,
-			"output":     result.Output,
+			"output":     output.String(),
+		}
+		if costInfo != nil {
+			out["cost_usd"] = costInfo.USD
 		}
 		if err := printJSON(out, true); err != nil {
 			return err
 		}
 	}
 
-	if result.ExitCode != 0 {
-		return &exitError{code: result.ExitCode, err: fmt.Errorf("kitchen %s exited with code %d", decision.Kitchen, result.ExitCode)}
+	if exitCode != 0 {
+		return &exitError{code: exitCode, err: fmt.Errorf("kitchen %s exited with code %d", decision.Kitchen, exitCode)}
 	}
 
 	return nil
 }
 
 // recordDispatch writes to PantryDB + ndjson audit trail + routing feedback.
-func recordDispatch(cfg *maitre.Config, pdb *pantry.DB, prompt, kitchenName string, duration float64, exitCode int) {
+func recordConversationDispatch(cfg *maitre.Config, pdb *pantry.DB, prompt, kitchenName string, duration float64, exitCode int, conv *conversation.Conversation) {
 	taskType := sommelier.ClassifyTaskType(prompt)
 	outcome := ledger.OutcomeFromExitCode(exitCode)
 
 	if pdb != nil {
-		entry := pantry.LedgerEntry{
-			Timestamp:    time.Now().UTC().Format(time.RFC3339),
-			TaskHash:     ledger.HashPrompt(prompt),
-			TaskType:     taskType,
-			Kitchen:      kitchenName,
-			DurationSec:  duration,
-			ExitCode:     exitCode,
-			Outcome:      outcome,
-			DispatchMode: "sync",
-		}
-		if _, writeErr := pdb.Ledger().Insert(entry); writeErr != nil {
-			fmt.Fprintf(os.Stderr, "[pantry] ledger warning: %v\n", writeErr)
+		if conv != nil && len(conv.Segments) > 0 {
+			for _, ckpt := range conv.Checkpoints {
+				if _, writeErr := pdb.Checkpoints().Insert(ckpt); writeErr != nil {
+					fmt.Fprintf(os.Stderr, "[pantry] checkpoint warning: %v\n", writeErr)
+				}
+			}
+			for i, seg := range conv.Segments {
+				segDuration := duration
+				if seg.EndedAt != nil {
+					if d := seg.EndedAt.Sub(seg.StartedAt).Seconds(); d > 0 {
+						segDuration = d
+					}
+				}
+				segExitCode := 0
+				segOutcome := "success"
+				switch seg.Status {
+				case conversation.SegmentExhausted:
+					segExitCode = 1
+					segOutcome = "failure"
+				case conversation.SegmentFailed:
+					segExitCode = 1
+					segOutcome = "failure"
+				}
+				entry := pantry.LedgerEntry{
+					Timestamp:      time.Now().UTC().Format(time.RFC3339),
+					TaskHash:       ledger.HashPrompt(prompt),
+					TaskType:       taskType,
+					Kitchen:        seg.Provider,
+					DurationSec:    segDuration,
+					ExitCode:       segExitCode,
+					Outcome:        segOutcome,
+					DispatchMode:   "sync",
+					ConversationID: conv.ID,
+					SegmentID:      seg.ID,
+					SegmentIndex:   i + 1,
+					EndReason:      seg.EndReason,
+				}
+				if _, writeErr := pdb.Ledger().Insert(entry); writeErr != nil {
+					fmt.Fprintf(os.Stderr, "[pantry] ledger warning: %v\n", writeErr)
+				}
+			}
+		} else {
+			entry := pantry.LedgerEntry{
+				Timestamp:    time.Now().UTC().Format(time.RFC3339),
+				TaskHash:     ledger.HashPrompt(prompt),
+				TaskType:     taskType,
+				Kitchen:      kitchenName,
+				DurationSec:  duration,
+				ExitCode:     exitCode,
+				Outcome:      outcome,
+				DispatchMode: "sync",
+			}
+			if _, writeErr := pdb.Ledger().Insert(entry); writeErr != nil {
+				fmt.Fprintf(os.Stderr, "[pantry] ledger warning: %v\n", writeErr)
+			}
 		}
 		if quotaErr := pdb.Quotas().Increment(kitchenName, duration, exitCode != 0); quotaErr != nil {
 			fmt.Fprintf(os.Stderr, "[pantry] quota warning: %v\n", quotaErr)
@@ -272,6 +393,184 @@ func recordDispatch(cfg *maitre.Config, pdb *pantry.DB, prompt, kitchenName stri
 	if writeErr := nw.Write(ndjsonEntry); writeErr != nil {
 		fmt.Fprintf(os.Stderr, "[ledger] ndjson warning: %v\n", writeErr)
 	}
+}
+
+func makeConversationHydrator(pdb *pantry.DB, prompt string) orchestrator.ContextHydrator {
+	return func(ctx context.Context, conv *conversation.Conversation) error {
+		if conv == nil || pdb == nil {
+			return nil
+		}
+		task := prompt
+		if task == "" {
+			task = conv.Prompt
+		}
+		service := conversation.RetrievalService{
+			Plan: conversation.DefaultRetrievalPlan(),
+			Backend: conversation.RetrievalBackend{
+				FetchProcedural: func(ctx context.Context, _ string) ([]string, error) {
+					items, _ := pdb.MemoryItems().ListActiveByType(conversation.MemoryProcedural, "project")
+					items = append(items,
+						"openspec/changes/milliways-provider-continuity/specs/provider-continuity/spec.md",
+						"openspec/changes/milliways-provider-continuity/specs/exhaustion-detection/spec.md",
+						"openspec/changes/milliways-provider-continuity/specs/memory-architecture/spec.md",
+					)
+					return items, nil
+				},
+				FetchSemantic: func(ctx context.Context, task string) (string, error) {
+					if items, _ := pdb.MemoryItems().ListActiveByType(conversation.MemorySemantic, "project"); len(items) > 0 {
+						return strings.Join(items, "\n"), nil
+					}
+					return fetchMemPalaceContext(ctx, task), nil
+				},
+				FetchRepo: func(ctx context.Context, task string) (string, error) {
+					return fetchCodeGraphContext(ctx, task), nil
+				},
+			},
+		}
+		if _, err := service.Hydrate(ctx, conv, task); err != nil {
+			return err
+		}
+		if conv.Memory.WorkingSummary == "" {
+			conv.Memory.WorkingSummary = fmt.Sprintf("Continue the in-progress task %q from the preserved Milliways transcript and context.", task)
+		}
+		if conv.Memory.NextAction == "" {
+			conv.Memory.NextAction = fmt.Sprintf("Continue executing %q from the current preserved state without restarting completed work.", task)
+		}
+		if invalidated, err := invalidateExpiredMemory(pdb); err == nil {
+			conv.Context.InvalidatedMemoryCount = int(invalidated)
+		}
+		_ = promoteProceduralMemory(ctx, pdb, conv)
+		_ = promoteSemanticMemory(ctx, pdb, conv)
+		return nil
+	}
+}
+
+func promoteProceduralMemory(ctx context.Context, pdb *pantry.DB, conv *conversation.Conversation) error {
+	if conv == nil || pdb == nil || len(conv.Context.SpecRefs) == 0 {
+		return nil
+	}
+	existing, _ := pdb.MemoryItems().ListActiveByType(conversation.MemoryProcedural, "project")
+	cmd := os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD")
+	var client *pantry.MemPalaceClient
+	if cmd != "" {
+		args := splitEnvArgs(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS"))
+		var err error
+		client, err = pantry.NewMemPalaceClient(cmd, args...)
+		if err == nil {
+			defer func() { _ = client.Close() }()
+		}
+	}
+
+	now := time.Now()
+	for _, ref := range conv.Context.SpecRefs {
+		candidate := conversation.MemoryCandidate{
+			SourceKind: "spec",
+			MemoryType: conversation.MemoryProcedural,
+			Text:       ref,
+			Scope:      "project",
+			Confidence: 1.0,
+		}
+		decision := conversation.EvaluateMemoryCandidate(candidate, existing, now)
+		if !decision.Accept {
+			continue
+		}
+		if _, err := pdb.MemoryItems().Insert(candidate, conv.ID); err == nil {
+			existing = append(existing, ref)
+		}
+		if client != nil {
+			_ = client.AddDrawer(ctx, pantry.AddDrawerRequest{
+				Wing:       "milliways",
+				Room:       "procedural-memory",
+				Content:    ref,
+				AddedBy:    "milliways",
+				SourceFile: ref,
+			})
+		}
+	}
+	return nil
+}
+
+func promoteSemanticMemory(ctx context.Context, pdb *pantry.DB, conv *conversation.Conversation) error {
+	if conv == nil || pdb == nil || conv.Context.MemPalaceText == "" {
+		return nil
+	}
+	existing, _ := pdb.MemoryItems().ListActiveByType(conversation.MemorySemantic, "project")
+	candidate := conversation.MemoryCandidate{
+		SourceKind: "accepted_fact",
+		MemoryType: conversation.MemorySemantic,
+		Text:       conv.Context.MemPalaceText,
+		Scope:      "project",
+		Confidence: 0.9,
+	}
+	decision := conversation.EvaluateMemoryCandidate(candidate, existing, time.Now())
+	if !decision.Accept {
+		return nil
+	}
+	_, err := pdb.MemoryItems().Insert(candidate, conv.ID)
+	return err
+}
+
+func invalidateExpiredMemory(pdb *pantry.DB) (int64, error) {
+	if pdb == nil {
+		return 0, nil
+	}
+	return pdb.MemoryItems().InvalidateExpired(time.Now())
+}
+
+func fetchCodeGraphContext(ctx context.Context, task string) string {
+	cmd := os.Getenv("MILLIWAYS_CODEGRAPH_MCP_CMD")
+	if cmd == "" {
+		return "CodeGraph unavailable: set MILLIWAYS_CODEGRAPH_MCP_CMD to enable live context hydration."
+	}
+	args := splitEnvArgs(os.Getenv("MILLIWAYS_CODEGRAPH_MCP_ARGS"))
+	client, err := pantry.NewCodeGraphClient(cmd, args...)
+	if err != nil {
+		return fmt.Sprintf("CodeGraph unavailable: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	text, err := client.Context(cctx, task)
+	if err != nil {
+		return fmt.Sprintf("CodeGraph unavailable: %v", err)
+	}
+	return text
+}
+
+func fetchMemPalaceContext(ctx context.Context, task string) string {
+	cmd := os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD")
+	if cmd == "" {
+		return "MemPalace unavailable: set MILLIWAYS_MEMPALACE_MCP_CMD to enable live memory hydration."
+	}
+	args := splitEnvArgs(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS"))
+	client, err := pantry.NewMemPalaceClient(cmd, args...)
+	if err != nil {
+		return fmt.Sprintf("MemPalace unavailable: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	drawers, err := client.Search(cctx, task, "", 3)
+	if err != nil {
+		return fmt.Sprintf("MemPalace unavailable: %v", err)
+	}
+	if len(drawers) == 0 {
+		return "MemPalace recall: no relevant memories found."
+	}
+	var lines []string
+	for _, drawer := range drawers {
+		lines = append(lines, fmt.Sprintf("[%s/%s] %s", drawer.Wing, drawer.Room, drawer.Text))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func splitEnvArgs(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	return strings.Fields(raw)
 }
 
 func printJSON(v any, asJSON bool) error {
@@ -473,6 +772,8 @@ func reportCmd(_ *string) *cobra.Command {
 				printTieredReport(pdb)
 			}
 
+			printContinuityReport(pdb)
+
 			return nil
 		},
 	}
@@ -512,6 +813,7 @@ func printTieredReport(pdb *pantry.DB) {
 
 	fmt.Println("Tiered-CLI Performance")
 	fmt.Println("══════════════════════")
+	fmt.Println("Note: tiered stats summarize completed dispatch outcomes. Continuity/failover support is reported separately below.")
 	fmt.Println()
 	fmt.Println("Task Type    Best Kitchen   Success  Dispatches")
 	fmt.Println("─────────    ────────────   ───────  ──────────")
@@ -550,6 +852,79 @@ func printTieredReport(pdb *pantry.DB) {
 		fmt.Printf("Tiered-CLI lift:     +%.1f%%\n", lift)
 	} else {
 		fmt.Printf("Tiered-CLI lift:     %.1f%% (need more data or varied tasks)\n", lift)
+	}
+}
+
+func printContinuityReport(pdb *pantry.DB) {
+	chains, err := pdb.Ledger().FailoverChains(5)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[report] continuity query failed: %v\n", err)
+		return
+	}
+	if len(chains) == 0 {
+		fmt.Println()
+		fmt.Println("Continuity: no multi-provider conversations recorded yet")
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("Continuity Chains")
+	fmt.Println("═════════════════")
+	fmt.Println("Conversation  Segments  Failovers  Providers")
+	fmt.Println("────────────  ────────  ─────────  ─────────")
+	for _, chain := range chains {
+		label := chain.ConversationID
+		if len(label) > 12 {
+			label = label[:12]
+		}
+		fmt.Printf("%-12s %8d %10d  %s\n", label, chain.Segments, chain.Failovers, chain.Providers)
+	}
+}
+
+func rateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "rate <good|bad>",
+		Short: "Rate the most recent dispatch as good or bad",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			rating := args[0]
+			if rating != "good" && rating != "bad" {
+				return fmt.Errorf("rating must be 'good' or 'bad', got %q", rating)
+			}
+
+			pdb, err := openPantryDB()
+			if err != nil {
+				return fmt.Errorf("opening pantry: %w", err)
+			}
+			defer func() { _ = pdb.Close() }()
+
+			entry, err := pdb.Ledger().Last()
+			if err != nil {
+				return fmt.Errorf("no ledger entries found — dispatch a task first")
+			}
+
+			outcome := "success"
+			if rating == "bad" {
+				outcome = "failure"
+			}
+
+			if err := pdb.Ledger().UpdateOutcome(entry.ID, outcome); err != nil {
+				return err
+			}
+
+			// Also update routing feedback
+			success := rating == "good"
+			if routeErr := pdb.Routing().RecordOutcome(entry.TaskType, "", entry.Kitchen, success, entry.DurationSec); routeErr != nil {
+				fmt.Fprintf(os.Stderr, "[rate] routing update warning: %v\n", routeErr)
+			}
+
+			prompt := entry.TaskHash
+			if len(prompt) > 20 {
+				prompt = prompt[:20] + "..."
+			}
+			fmt.Printf("Rated last dispatch (kitchen: %s, hash: %s) as %s\n", entry.Kitchen, prompt, rating)
+			return nil
+		},
 	}
 }
 

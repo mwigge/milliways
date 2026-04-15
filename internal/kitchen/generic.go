@@ -3,12 +3,22 @@ package kitchen
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
+
+// IsCmdAllowed returns true if the command (or its basename) is in the allowlist.
+func IsCmdAllowed(cmd string) bool {
+	if allowedCmds[cmd] {
+		return true
+	}
+	return allowedCmds[filepath.Base(cmd)]
+}
 
 // allowedCmds is the set of CLI tools Milliways will execute.
 var allowedCmds = map[string]bool{
@@ -52,6 +62,9 @@ func NewGeneric(cfg GenericConfig) *GenericKitchen {
 	return &GenericKitchen{cfg: cfg}
 }
 
+// Config returns a copy of the kitchen's configuration.
+func (k *GenericKitchen) Config() GenericConfig { return k.cfg }
+
 func (k *GenericKitchen) Name() string       { return k.cfg.Name }
 func (k *GenericKitchen) CostTier() CostTier { return k.cfg.Tier }
 func (k *GenericKitchen) InstallCmd() string { return k.cfg.InstallCmd }
@@ -91,12 +104,7 @@ func (k *GenericKitchen) Exec(ctx context.Context, task Task) (Result, error) {
 	if task.Dir != "" {
 		cmd.Dir = task.Dir
 	}
-	if len(task.Env) > 0 {
-		cmd.Env = os.Environ()
-		for envKey, v := range task.Env {
-			cmd.Env = append(cmd.Env, envKey+"="+v)
-		}
-	}
+	cmd.Env = safeEnvKitchen(task.Env)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -128,7 +136,8 @@ func (k *GenericKitchen) Exec(ctx context.Context, task Task) (Result, error) {
 
 	exitCode := 0
 	if waitErr != nil {
-		if exitErr, ok := waitErr.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		} else {
 			return Result{ExitCode: 1, Duration: duration}, fmt.Errorf("waiting for %s: %w", k.cfg.Name, waitErr)
@@ -140,4 +149,32 @@ func (k *GenericKitchen) Exec(ctx context.Context, task Task) (Result, error) {
 		Output:   output.String(),
 		Duration: duration,
 	}, nil
+}
+
+// safeEnvKeys is the set of environment variables passed to subprocess execution.
+var safeEnvKeys = map[string]bool{
+	"PATH": true, "HOME": true, "USER": true, "SHELL": true,
+	"TERM": true, "LANG": true, "LC_ALL": true, "LC_CTYPE": true,
+	"TMPDIR": true, "XDG_CONFIG_HOME": true, "XDG_DATA_HOME": true,
+	"ANTHROPIC_API_KEY": true, "OPENAI_API_KEY": true,
+	"GOOGLE_API_KEY": true, "GEMINI_API_KEY": true,
+	"OLLAMA_HOST": true, "OPENCODE_MODEL": true,
+}
+
+// safeEnvKitchen returns a filtered environment for subprocess execution.
+func safeEnvKitchen(extra map[string]string) []string {
+	var env []string
+	for _, e := range os.Environ() {
+		key := e
+		if idx := strings.IndexByte(e, '='); idx >= 0 {
+			key = e[:idx]
+		}
+		if safeEnvKeys[key] {
+			env = append(env, e)
+		}
+	}
+	for k, v := range extra {
+		env = append(env, k+"="+v)
+	}
+	return env
 }

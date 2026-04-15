@@ -21,6 +21,15 @@ type Drawer struct {
 	FiledAt string  `json:"filed_at"`
 }
 
+// AddDrawerRequest is the payload for promoting durable memory into MemPalace.
+type AddDrawerRequest struct {
+	Wing       string `json:"wing"`
+	Room       string `json:"room"`
+	Content    string `json:"content"`
+	AddedBy    string `json:"added_by,omitempty"`
+	SourceFile string `json:"source_file,omitempty"`
+}
+
 // NewMemPalaceClient creates a MemPalace client backed by an MCP server.
 func NewMemPalaceClient(command string, args ...string) (*MemPalaceClient, error) {
 	mcp, err := StartMCP(command, args...)
@@ -57,6 +66,14 @@ type KGTriple struct {
 	ValidTo   string `json:"valid_to"`
 }
 
+// KGInvalidateRequest invalidates a temporal fact in MemPalace.
+type KGInvalidateRequest struct {
+	Subject   string `json:"subject"`
+	Predicate string `json:"predicate"`
+	Object    string `json:"object"`
+	Ended     string `json:"ended,omitempty"`
+}
+
 // KGQuery queries the MemPalace temporal knowledge graph.
 func (c *MemPalaceClient) KGQuery(ctx context.Context, subject, predicate string) ([]KGTriple, error) {
 	args := map[string]any{}
@@ -73,6 +90,43 @@ func (c *MemPalaceClient) KGQuery(ctx context.Context, subject, predicate string
 	}
 
 	return parseToolContent[[]KGTriple](result)
+}
+
+// KGInvalidate invalidates a temporal fact in MemPalace.
+func (c *MemPalaceClient) KGInvalidate(ctx context.Context, req KGInvalidateRequest) error {
+	args := map[string]any{
+		"subject":   req.Subject,
+		"predicate": req.Predicate,
+		"object":    req.Object,
+	}
+	if req.Ended != "" {
+		args["ended"] = req.Ended
+	}
+	_, err := c.mcp.CallTool(ctx, "mempalace_kg_invalidate", args)
+	if err != nil {
+		return fmt.Errorf("mempalace_kg_invalidate: %w", err)
+	}
+	return nil
+}
+
+// AddDrawer stores verbatim content in MemPalace.
+func (c *MemPalaceClient) AddDrawer(ctx context.Context, req AddDrawerRequest) error {
+	args := map[string]any{
+		"wing":    req.Wing,
+		"room":    req.Room,
+		"content": req.Content,
+	}
+	if req.AddedBy != "" {
+		args["added_by"] = req.AddedBy
+	}
+	if req.SourceFile != "" {
+		args["source_file"] = req.SourceFile
+	}
+	_, err := c.mcp.CallTool(ctx, "mempalace_add_drawer", args)
+	if err != nil {
+		return fmt.Errorf("mempalace_add_drawer: %w", err)
+	}
+	return nil
 }
 
 // Close terminates the MCP server.

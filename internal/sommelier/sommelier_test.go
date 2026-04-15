@@ -197,3 +197,74 @@ func TestRouteEnriched_NilSkillHint(t *testing.T) {
 		t.Errorf("nil hint: expected opencode, got %q", d.Kitchen)
 	}
 }
+
+// mockQuotaChecker implements QuotaChecker for testing.
+type mockQuotaChecker struct {
+	exhausted map[string]bool
+}
+
+func (m *mockQuotaChecker) IsExhausted(kitchen string, _ int) (bool, error) {
+	return m.exhausted[kitchen], nil
+}
+
+func TestRoute_QuotaExhausted_SkipsToFallback(t *testing.T) {
+	t.Parallel()
+
+	keywords := map[string]string{"explain": "claude", "code": "opencode"}
+	s := New(keywords, "claude", "opencode", newTestRegistry())
+	s.SetQuotaChecker(&mockQuotaChecker{exhausted: map[string]bool{"claude": true}}, nil)
+
+	d := s.Route("explain the auth flow")
+	// claude is exhausted, should fall back
+	if d.Kitchen == "claude" {
+		t.Error("should not route to exhausted claude")
+	}
+	if d.Kitchen == "" {
+		t.Error("should find a fallback kitchen")
+	}
+}
+
+func TestRoute_QuotaExhausted_AllExhausted(t *testing.T) {
+	t.Parallel()
+
+	keywords := map[string]string{"explain": "claude"}
+	s := New(keywords, "claude", "opencode", newTestRegistry())
+	s.SetQuotaChecker(&mockQuotaChecker{exhausted: map[string]bool{
+		"claude":   true,
+		"opencode": true,
+		"gemini":   true,
+	}}, nil)
+
+	d := s.Route("explain something")
+	if d.Kitchen != "" {
+		t.Errorf("all exhausted: expected empty kitchen, got %q", d.Kitchen)
+	}
+}
+
+func TestRoute_QuotaNotSet_NoEffect(t *testing.T) {
+	t.Parallel()
+
+	keywords := map[string]string{"explain": "claude"}
+	s := New(keywords, "claude", "opencode", newTestRegistry())
+	// No SetQuotaChecker call — nil checker
+
+	d := s.Route("explain the flow")
+	if d.Kitchen != "claude" {
+		t.Errorf("with nil checker: expected claude, got %q", d.Kitchen)
+	}
+}
+
+func TestRoute_QuotaLimitsFromConfig(t *testing.T) {
+	t.Parallel()
+
+	keywords := map[string]string{"explain": "claude"}
+	s := New(keywords, "claude", "opencode", newTestRegistry())
+	// Checker that checks limits
+	checker := &mockQuotaChecker{exhausted: map[string]bool{"claude": true}}
+	s.SetQuotaChecker(checker, map[string]int{"claude": 50})
+
+	d := s.Route("explain something")
+	if d.Kitchen == "claude" {
+		t.Error("should skip exhausted claude")
+	}
+}
