@@ -46,6 +46,8 @@ func (m Model) View() string {
 	// Input at bottom — overlay-aware.
 	var inputBar string
 	switch {
+	case m.overlayActive && m.overlayMode == OverlayRunIn:
+		inputBar = RenderRunTargetChooser(m.runTargets, m.runTargetSelected, m.pendingPrompt, m.width)
 	case m.overlayActive && m.overlayMode == OverlayFeedback:
 		feedbackBorder := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).

@@ -6,15 +6,15 @@ import "time"
 type DispatchState int
 
 const (
-	StateIdle       DispatchState = iota
+	StateIdle DispatchState = iota
 	StateRouting
 	StateRouted
 	StateStreaming
 	StateDone
 	StateFailed
 	StateCancelled
-	StateAwaiting    // blocked on kitchen question
-	StateConfirming  // blocked on kitchen confirm/deny
+	StateAwaiting   // blocked on kitchen question
+	StateConfirming // blocked on kitchen confirm/deny
 )
 
 // stateIcon returns a visual indicator for a dispatch state.
@@ -73,7 +73,8 @@ func stateLabel(s DispatchState) string {
 type OverlayMode int
 
 const (
-	OverlayNone    OverlayMode = iota
+	OverlayNone OverlayMode = iota
+	OverlayRunIn
 	OverlayQuestion
 	OverlayConfirm
 	OverlayContextInject
@@ -86,9 +87,18 @@ const (
 // KitchenState represents a kitchen's availability for the status bar.
 type KitchenState struct {
 	Name       string
-	Status     string // "ready", "exhausted", "warning", "not-installed", "disabled"
-	ResetsAt   string // "HH:MM" for exhausted kitchens
+	Status     string  // "ready", "exhausted", "warning", "not-installed", "disabled"
+	ResetsAt   string  // "HH:MM" for exhausted kitchens
 	UsageRatio float64 // 0.0-1.0 for warning display
+}
+
+// RunTargetOption represents a selectable launch target in the Run In chooser.
+type RunTargetOption struct {
+	Label      string
+	Kitchen    string
+	Status     string
+	Reason     string
+	Selectable bool
 }
 
 type pipelineStep struct {

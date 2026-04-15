@@ -182,19 +182,28 @@ func (s *LedgerStore) FailoverChains(limit int) ([]FailoverChain, error) {
 	defer func() { _ = rows.Close() }()
 
 	var chains []FailoverChain
+	var ids []string
 	for rows.Next() {
 		var chain FailoverChain
 		if err := rows.Scan(&chain.ConversationID, &chain.Segments, &chain.Failovers); err != nil {
 			return nil, fmt.Errorf("scanning failover chain: %w", err)
 		}
-		providers, err := s.providersForConversation(chain.ConversationID)
+		chains = append(chains, chain)
+		ids = append(ids, chain.ConversationID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	_ = rows.Close()
+
+	for i, conversationID := range ids {
+		providers, err := s.providersForConversation(conversationID)
 		if err != nil {
 			return nil, err
 		}
-		chain.Providers = strings.Join(providers, " -> ")
-		chains = append(chains, chain)
+		chains[i].Providers = strings.Join(providers, " -> ")
 	}
-	return chains, rows.Err()
+	return chains, nil
 }
 
 func (s *LedgerStore) providersForConversation(conversationID string) ([]string, error) {

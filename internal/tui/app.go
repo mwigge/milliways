@@ -78,6 +78,12 @@ type Model struct {
 
 	// Structured runtime activity for transparency.
 	runtimeEvents []observability.Event
+
+	// Run target chooser state.
+	runTargets          []RunTargetOption
+	runTargetSelected   int
+	pendingPrompt       string
+	pendingKitchenForce string
 }
 
 // NewModel creates the TUI model.
@@ -248,7 +254,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Update input or overlay.
 	var inputCmd tea.Cmd
 	if m.overlayActive {
-		m.overlayInput, inputCmd = m.overlayInput.Update(msg)
+		if m.overlayMode != OverlayRunIn {
+			m.overlayInput, inputCmd = m.overlayInput.Update(msg)
+		}
 
 		// Live-filter palette/search as user types.
 		if m.overlayMode == OverlayPalette {
@@ -320,6 +328,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 		return []tea.Cmd{tea.Quit}
 
 	case "enter":
+		if m.overlayActive && m.overlayMode == OverlayRunIn {
+			return m.handleRunTargetSelection()
+		}
 		// Palette selection.
 		if m.overlayActive && m.overlayMode == OverlayPalette {
 			if m.palette.Selected >= 0 && m.palette.Selected < len(m.palette.Matches) {
@@ -352,12 +363,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 		if prompt == "" {
 			return nil
 		}
-		m.history = append(m.history, prompt)
-		m.historyIdx = -1
-		m.input.SetValue("")
 
 		// Parse @kitchen prefix.
 		kitchenForce, cleanPrompt := parseKitchenForce(prompt)
+		if kitchenForce == "" && !strings.HasPrefix(prompt, "!pipeline ") {
+			m.openRunTargetChooser(cleanPrompt)
+			m.input.SetValue("")
+			return nil
+		}
+		m.history = append(m.history, prompt)
+		m.historyIdx = -1
+		m.input.SetValue("")
 
 		// Check for !pipeline prefix.
 		if strings.HasPrefix(prompt, "!pipeline ") && m.planner != nil {
@@ -526,6 +542,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 		}
 
 	case "up":
+		if m.overlayActive && m.overlayMode == OverlayRunIn {
+			m.moveRunTargetSelection(-1)
+			return nil
+		}
 		// In palette/search, navigate up.
 		if m.overlayActive && m.overlayMode == OverlayPalette {
 			if m.palette.Selected > 0 {
@@ -544,6 +564,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 			m.input.SetValue(m.history[len(m.history)-1-m.historyIdx])
 		}
 	case "down":
+		if m.overlayActive && m.overlayMode == OverlayRunIn {
+			m.moveRunTargetSelection(1)
+			return nil
+		}
 		// In palette/search, navigate down.
 		if m.overlayActive && m.overlayMode == OverlayPalette {
 			if m.palette.Selected < len(m.palette.Matches)-1 {
@@ -591,6 +615,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 			m.overlayMode = OverlayNone
 			m.palette.Active = false
 			m.search.Active = false
+			m.pendingPrompt = ""
+			m.pendingKitchenForce = ""
 			m.input.Focus()
 			return nil
 		}
@@ -599,10 +625,90 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 	return cmds
 }
 
+func (m *Model) openRunTargetChooser(prompt string) {
+	m.pendingPrompt = prompt
+	m.pendingKitchenForce = ""
+	m.runTargets = buildRunTargetOptions(m.kitchenStates)
+	m.runTargetSelected = 0
+	m.overlayActive = true
+	m.overlayMode = OverlayRunIn
+	m.input.Blur()
+}
+
+func (m *Model) moveRunTargetSelection(delta int) {
+	if len(m.runTargets) == 0 || delta == 0 {
+		return
+	}
+	idx := m.runTargetSelected
+	for range len(m.runTargets) {
+		idx = (idx + delta + len(m.runTargets)) % len(m.runTargets)
+		if m.runTargets[idx].Selectable {
+			m.runTargetSelected = idx
+			return
+		}
+	}
+}
+
+func (m *Model) handleRunTargetSelection() []tea.Cmd {
+	if len(m.runTargets) == 0 {
+		m.overlayActive = false
+		m.overlayMode = OverlayNone
+		m.input.Focus()
+		return nil
+	}
+	choice := m.runTargets[m.runTargetSelected]
+	if !choice.Selectable {
+		return nil
+	}
+	prompt := m.pendingPrompt
+	kitchenForce := choice.Kitchen
+	rawPrompt := prompt
+	if kitchenForce != "" {
+		rawPrompt = "@" + kitchenForce + " " + prompt
+	}
+	m.history = append(m.history, rawPrompt)
+	m.historyIdx = -1
+	m.overlayActive = false
+	m.overlayMode = OverlayNone
+	m.input.Focus()
+	m.pendingPrompt = ""
+	m.pendingKitchenForce = ""
+
+	if m.activeCount < m.maxConcurrent {
+		_, cmd := m.startBlockDispatch(prompt, kitchenForce)
+		return []tea.Cmd{cmd}
+	}
+
+	ok := m.queue.Enqueue(QueuedTask{
+		Prompt:       prompt,
+		KitchenForce: kitchenForce,
+		QueuedAt:     time.Now(),
+	})
+	if ok {
+		if b := m.focusedBlock(); b != nil {
+			b.AppendEvent(adapter.Event{
+				Type:    adapter.EventText,
+				Kitchen: "milliways",
+				Text:    fmt.Sprintf("[queued] position %d", m.queue.Len()),
+			})
+		}
+	} else {
+		if b := m.focusedBlock(); b != nil {
+			b.AppendEvent(adapter.Event{
+				Type:    adapter.EventText,
+				Kitchen: "milliways",
+				Text:    "[queue full] cannot queue more tasks (max 20)",
+			})
+		}
+	}
+	return nil
+}
+
 // RunOpts configures the TUI run.
 type RunOpts struct {
 	ResumeSession string // session name to resume ("" = no resume, "last" = resume last)
 	SessionName   string // named session ("" = use "last")
+	KitchenStates []KitchenState
 }
 
 // Run starts the TUI with adapter-based dispatch.
@@ -613,6 +719,7 @@ func Run(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator,
 // RunWithOpts starts the TUI with adapter-based dispatch and options.
 func RunWithOpts(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator, sink observability.Sink, recorder ConversationRecorder, replayer ConversationReplayer, store *pantry.TicketStore, opts RunOpts) error {
 	m := NewAdapterModel(providerFactory, hydrator, sink, recorder, replayer, store)
+	m.SetKitchenStates(opts.KitchenStates)
 
 	// Resume session if requested.
 	sessionName := opts.SessionName

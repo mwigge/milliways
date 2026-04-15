@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/mwigge/milliways/internal/conversation"
@@ -48,8 +49,42 @@ func runTUI(configPath string, tuiOpts tui.RunOpts) error {
 	if pdbErr == nil {
 		ticketStore = pdb.Tickets()
 	}
+	tuiOpts.KitchenStates = buildKitchenStates(cfg, reg, pdb)
 
 	return tui.RunWithOpts(providerFactory, hydrator, sink, recorder, replayer, ticketStore, tuiOpts)
+}
+
+func buildKitchenStates(cfg *maitre.Config, reg *kitchen.Registry, pdb *pantry.DB) []tui.KitchenState {
+	names := make([]string, 0, len(cfg.Kitchens))
+	for name := range cfg.Kitchens {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	states := make([]tui.KitchenState, 0, len(names))
+	for _, name := range names {
+		state := tui.KitchenState{Name: name}
+		k, ok := reg.Get(name)
+		if !ok {
+			state.Status = "not-installed"
+			states = append(states, state)
+			continue
+		}
+		state.Status = k.Status().String()
+		if pdb != nil {
+			if resetsAt, err := pdb.Quotas().ResetsAt(name); err == nil && !resetsAt.IsZero() && resetsAt.After(time.Now()) {
+				state.Status = "exhausted"
+				state.ResetsAt = resetsAt.In(time.Local).Format("15:04")
+			} else if limit := cfg.Kitchens[name].DailyLimit; limit > 0 {
+				if ratio, err := pdb.Quotas().UsageRatio(name, limit); err == nil && ratio >= cfg.Kitchens[name].EffectiveWarnThreshold() && ratio < 1.0 && state.Status == "ready" {
+					state.Status = "warning"
+					state.UsageRatio = ratio
+				}
+			}
+		}
+		states = append(states, state)
+	}
+	return states
 }
 
 func makeRuntimeSink(pdb *pantry.DB) observability.Sink {
