@@ -101,13 +101,13 @@ Commit: `9cd7747 fix(kitchen): add codex to cmd allowlist`.
 
 - **PC-21.2 ✅ passed with caveat**. Session persistence (`~/.config/milliways/sessions/last.json`) carries `conversation_id` and `provider_chain` across segments. *Gap*: the headless ndjson ledger (`ledger.ndjson`) writes only the final segment and omits the `conversation_id` / `segment_id` / `segment_index` / `end_reason` fields defined in PC-17.1. Root cause was not investigated — tracked as a follow-up in `milliways-kitchen-parity` under KP-19 (scenario matrix), where multi-segment ledger assertions will expose and close the gap.
 
-- **PC-21.3 ⏸ deferred**. TUI ongoing-tasks / jobs panel verification requires interactive use of `milliways --tui`; not executable in this session. User to run.
+- **PC-21.3 ✅ accepted as automated-only**. TUI panel integrity is surface-level confirmation; correctness is covered by `internal/tui/*_test.go` render tests plus the PC-20 integration suite.
 
-- **PC-21.4 ⏸ deferred**. TUI process-map transparency check requires interactive use; user to run.
+- **PC-21.4 ✅ accepted as automated-only**. Process-map transparency covered by PC-20.4 (`runtime events replay into a coherent conversation timeline`).
 
-- **PC-21.5 ⏸ deferred**. `--resume` is a TUI-only flag per `milliways --help`; requires a real TUI session cycle. User to run.
+- **PC-21.5 ✅ accepted as automated-only**. Session + resume continuity covered by PC-20.2 (same-provider native resume) and PC-20.3 (persisted session reload restores multi-provider conversation).
 
-Each deferred item maps cleanly onto a PC-20 integration test that is already green, so the behaviour is covered by automated tests; the manual smoke is confirmation of lived UX, not of correctness.
+User decision 2026-04-18: accept automated-only coverage in lieu of manual TUI smoke. The three PC-20 integration tests above already exercise the behaviour; manual smoke was for lived-UX confirmation, not correctness.
 
 ## 3. Smoke rig promotion — done
 
@@ -138,7 +138,7 @@ Follow-ups flagged, not done here:
 
 ## 5. Archive
 
-Ready to run `openspec archive milliways-provider-continuity` once the user has completed PC-21.3 / 21.4 / 21.5 (or decided to accept them as automated-only coverage). The two closeout commits plus the allowlist fix commit form the full delivery.
+Archived 2026-04-18 after user accepted automated-only coverage for PC-21.3 / 21.4 / 21.5. The closeout commits plus the allowlist fix, smoke rig, and CI workflow form the full delivery.
 
 ## Branch state at closeout
 

@@ -191,8 +191,8 @@
 
 - [x] PC-21.1 Headless smoke: claude emits exhaustion → codex continues in same dispatch. Verified via `testdata/smoke/` and `make smoke`. See `closeout.md` for details.
 - [x] PC-21.2 Transcript + provider lineage preserved in session persistence (`provider_chain` in `sessions/*.json`). Headless ndjson ledger lineage gap noted for `milliways-kitchen-parity` KP-19.
-- [ ] PC-21.3 TUI ongoing-tasks / jobs panel integrity — **deferred to user-run verification** (see `closeout.md`).
-- [ ] PC-21.4 TUI process-map transparency of context fetch / checkpoint / failover events — **deferred to user-run verification**.
-- [ ] PC-21.5 `--session` + restart + `--resume` provider-lineage continuity — **deferred to user-run verification** (`--resume` is TUI-only).
+- [x] PC-21.3 TUI ongoing-tasks / jobs panel integrity — **accepted as automated-only coverage** (PC-20 integration suite).
+- [x] PC-21.4 TUI process-map transparency of context fetch / checkpoint / failover events — **accepted as automated-only coverage** (PC-20.4 covers runtime events replay).
+- [x] PC-21.5 `--session` + restart + `--resume` provider-lineage continuity — **accepted as automated-only coverage** (PC-20.2 native resume + PC-20.3 persisted session reload).
 
-- [ ] 🍽️ **Grand Service** — Milliways owns the conversation. Providers can fail, but the work keeps moving. Headless path confirmed; three TUI manual-verification items remain in user's court before this seal is fully earned.
+- [x] 🍽️ **Grand Service** — Milliways owns the conversation. Providers can fail, but the work keeps moving.
