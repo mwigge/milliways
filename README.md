@@ -98,6 +98,18 @@ milliways report
 milliways report --tiered
 ```
 
+## Kitchen Switching
+
+You can switch kitchens mid-conversation without losing the thread. Milliways carries conversation state forward in continuation payloads, so the next kitchen picks up with the existing context instead of starting over.
+
+Every switch is reversible with `/back`, and sticky mode lets you temporarily opt out of automatic rerouting when you want to stay with the current kitchen.
+
+- `/switch <kitchen>` — move the current conversation to a different kitchen.
+- `/back` — undo the most recent switch and return to the previous kitchen.
+- `/stick` — toggle sticky mode to prevent automatic kitchen switching.
+- `/kitchens` — list available kitchens and show their current status.
+- `--switch-to <kitchen>` — headless CLI flag to continue in a specific kitchen.
+
 ## Configuration
 
 Milliways reads `~/.config/milliways/carte.yaml`:
