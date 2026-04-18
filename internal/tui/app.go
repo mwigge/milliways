@@ -382,6 +382,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 			ctx, cancel := context.WithCancel(context.Background())
 			if b := m.findBlock(blockID); b != nil {
 				b.CancelFn = cancel
+			} else {
+				cancel()
 			}
 			return []tea.Cmd{
 				m.startPipelineBlockDispatch(ctx, blockID, pipelinePrompt),

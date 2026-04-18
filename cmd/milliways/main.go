@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,9 +19,11 @@ import (
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/ledger"
 	"github.com/mwigge/milliways/internal/maitre"
+	"github.com/mwigge/milliways/internal/migration"
 	"github.com/mwigge/milliways/internal/orchestrator"
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/sommelier"
+	"github.com/mwigge/milliways/internal/substrate"
 	"github.com/mwigge/milliways/internal/tui"
 	"github.com/spf13/cobra"
 )
@@ -30,6 +34,7 @@ var version = "0.1.0"
 type dispatchOpts struct {
 	prompt, kitchenForce, configPath string
 	jsonOutput, explain, verbose     bool
+	useLegacyConversation            bool
 	timeout                          time.Duration
 }
 
@@ -53,19 +58,20 @@ func main() {
 
 func rootCmd() *cobra.Command {
 	var (
-		kitchenFlag string
-		jsonFlag    bool
-		explainFlag bool
-		configPath  string
-		verbose     bool
-		recipeFlag  string
-		asyncFlag   bool
-		detachFlag  bool
-		keepContext bool
-		tuiFlag     bool
-		resumeFlag  bool
-		sessionName string
-		timeoutDur  time.Duration
+		kitchenFlag           string
+		jsonFlag              bool
+		explainFlag           bool
+		configPath            string
+		verbose               bool
+		recipeFlag            string
+		asyncFlag             bool
+		detachFlag            bool
+		keepContext           bool
+		tuiFlag               bool
+		resumeFlag            bool
+		useLegacyConversation bool
+		sessionName           string
+		timeoutDur            time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -107,13 +113,14 @@ based on what each tool does best.
 				return dispatchDetach(prompt, kitchenFlag, verbose, configPath)
 			}
 			return dispatch(dispatchOpts{
-				prompt:       prompt,
-				kitchenForce: kitchenFlag,
-				configPath:   configPath,
-				jsonOutput:   jsonFlag,
-				explain:      explainFlag,
-				verbose:      verbose,
-				timeout:      timeoutDur,
+				prompt:                prompt,
+				kitchenForce:          kitchenFlag,
+				configPath:            configPath,
+				jsonOutput:            jsonFlag,
+				explain:               explainFlag,
+				verbose:               verbose,
+				useLegacyConversation: useLegacyConversation,
+				timeout:               timeoutDur,
 			})
 		},
 		SilenceUsage: true,
@@ -131,6 +138,7 @@ based on what each tool does best.
 	cmd.Flags().BoolVarP(&tuiFlag, "tui", "t", false, "Interactive TUI mode")
 	cmd.Flags().BoolVar(&resumeFlag, "resume", false, "Resume last TUI session")
 	cmd.Flags().StringVar(&sessionName, "session", "", "Named TUI session")
+	cmd.Flags().BoolVar(&useLegacyConversation, "use-legacy-conversation", false, "Use pantry conversation storage instead of substrate")
 	cmd.Flags().DurationVar(&timeoutDur, "timeout", 5*time.Minute, "Dispatch timeout for headless mode")
 
 	cmd.AddCommand(statusCmd(&configPath))
@@ -156,7 +164,47 @@ func dispatch(opts dispatchOpts) error {
 		fmt.Fprintf(os.Stderr, "[pantry] warning: %v\n", pdbErr)
 	}
 	if pdb != nil {
-		defer func() { _ = pdb.Close() }()
+		pantryDB := pdb
+		defer func() { _ = pantryDB.Close() }()
+	}
+
+	var recordLegacyConversation = true
+	var hydrator orchestrator.ContextHydrator = makeConversationHydrator(pdb, opts.prompt)
+	var sink = makeRuntimeSink(pdb)
+	var substrateReader substrate.Reader
+
+	if !opts.useLegacyConversation {
+		substrateClient, err := openSubstrateClient()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = substrateClient.Close() }()
+
+		if pdb != nil {
+			legacyDB, err := openLegacyConversationDB(pdb.Path())
+			if err != nil {
+				return err
+			}
+			defer func() { _ = legacyDB.Close() }()
+
+			if err := migration.MigrateOnce(context.Background(), legacyDB, substrateClient); err != nil {
+				return err
+			}
+			rowsMigrated, err := countLegacyConversationRows(legacyDB)
+			if err != nil {
+				return err
+			}
+			if _, err := legacyDB.Exec(`PRAGMA query_only = ON`); err != nil {
+				return fmt.Errorf("setting legacy conversation db read-only: %w", err)
+			}
+			slog.Info("legacy-conversation-migration-complete", "rows_migrated", rowsMigrated)
+		}
+
+		recordLegacyConversation = false
+		pdb = nil
+		hydrator = nil
+		sink = nil
+		substrateReader = substrate.NewCachedReader(substrateClient)
 	}
 
 	reg := buildRegistry(cfg)
@@ -226,8 +274,9 @@ func dispatch(opts dispatchOpts) error {
 	providerFactory := makeProviderFactory(cfg, reg, som, pdb, opts.verbose)
 	orch := orchestrator.Orchestrator{
 		Factory: providerFactory,
-		Hydrate: makeConversationHydrator(pdb, opts.prompt),
-		Sink:    makeRuntimeSink(pdb),
+		Hydrate: hydrator,
+		Sink:    sink,
+		Reader:  substrateReader,
 	}
 
 	start := time.Now()
@@ -292,7 +341,9 @@ func dispatch(opts dispatchOpts) error {
 		fmt.Fprintf(os.Stderr, "[dispatch] %s done (%.1fs, exit=%d)\n", lastKitchen, duration, exitCode)
 	}
 
-	recordConversationDispatch(cfg, pdb, opts.prompt, lastKitchen, duration, exitCode, conv)
+	if recordLegacyConversation {
+		recordConversationDispatch(cfg, pdb, opts.prompt, lastKitchen, duration, exitCode, conv)
+	}
 
 	if opts.jsonOutput {
 		out := map[string]any{
@@ -619,6 +670,42 @@ func assembleSignals(_ *maitre.Config, pdb *pantry.DB, prompt string, verbose bo
 func openPantryDB() (*pantry.DB, error) {
 	dbPath := filepath.Join(maitre.DefaultConfigDir(), "milliways.db")
 	return pantry.Open(dbPath)
+}
+
+func openSubstrateClient() (*substrate.Client, error) {
+	cmd := os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD")
+	if cmd == "" {
+		return nil, errors.New("opening substrate client: MILLIWAYS_MEMPALACE_MCP_CMD is not set")
+	}
+	client, err := substrate.New(cmd, splitEnvArgs(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS"))...)
+	if err != nil {
+		return nil, fmt.Errorf("opening substrate client: %w", err)
+	}
+	return client, nil
+}
+
+func openLegacyConversationDB(dbPath string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		return nil, fmt.Errorf("opening legacy conversation db: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	return db, nil
+}
+
+func countLegacyConversationRows(db *sql.DB) (int, error) {
+	if db == nil {
+		return 0, nil
+	}
+	var checkpoints int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM mw_checkpoints`).Scan(&checkpoints); err != nil {
+		return 0, fmt.Errorf("counting legacy checkpoints: %w", err)
+	}
+	var events int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM mw_runtime_events`).Scan(&events); err != nil {
+		return 0, fmt.Errorf("counting legacy runtime events: %w", err)
+	}
+	return checkpoints + events, nil
 }
 
 // checkPromptPaths scans for absolute paths in the prompt and enforces
