@@ -16,6 +16,13 @@ type fakeSearcher struct {
 
 	queries []string
 	limits  []int
+
+	resolveHit   conversation.ProjectHit
+	resolveErr   error
+	resolveCalls []conversation.ProjectRef
+
+	verifyErr   error
+	verifyCalls []conversation.ProjectRef
 }
 
 func (f *fakeSearcher) SearchProjectContext(_ context.Context, query string, limit int) ([]conversation.ProjectHit, error) {
@@ -25,6 +32,19 @@ func (f *fakeSearcher) SearchProjectContext(_ context.Context, query string, lim
 		return nil, f.err
 	}
 	return f.hits, nil
+}
+
+func (f *fakeSearcher) ResolveProjectRef(_ context.Context, ref conversation.ProjectRef) (conversation.ProjectHit, error) {
+	f.resolveCalls = append(f.resolveCalls, ref)
+	if f.resolveErr != nil {
+		return conversation.ProjectHit{}, f.resolveErr
+	}
+	return f.resolveHit, nil
+}
+
+func (f *fakeSearcher) VerifyProjectRef(_ context.Context, ref conversation.ProjectRef) error {
+	f.verifyCalls = append(f.verifyCalls, ref)
+	return f.verifyErr
 }
 
 func (f *fakeSearcher) Close() error { return nil }
@@ -172,6 +192,117 @@ func TestInjectProjectContextAddsHitsAndRefs(t *testing.T) {
 	}
 }
 
+func TestPalaceResolver_CanRead_CanWrite(t *testing.T) {
+	t.Parallel()
+
+	activePalace := "/workspace/active/.mempalace"
+	otherPalace := "/workspace/other/.mempalace"
+	lockedPalace := "/workspace/locked/.mempalace"
+
+	registry := &Registry{
+		projects: map[string]ProjectAccess{
+			"workspace": {
+				Paths:  []string{"/workspace/other"},
+				Access: AccessRules{Read: "project", Write: "project"},
+			},
+			"locked": {
+				Paths:  []string{"/workspace/locked"},
+				Access: AccessRules{Read: "none", Write: "none"},
+			},
+		},
+		defaults: AccessRules{Read: "all", Write: "project"},
+	}
+
+	tests := []struct {
+		name      string
+		palace    string
+		wantRead  bool
+		wantWrite bool
+	}{
+		{name: "active palace uses project writes", palace: activePalace, wantRead: true, wantWrite: true},
+		{name: "other palace denied by project read", palace: otherPalace, wantRead: false, wantWrite: false},
+		{name: "locked palace denied", palace: lockedPalace, wantRead: false, wantWrite: false},
+		{name: "unmatched palace uses defaults", palace: "/workspace/free/.mempalace", wantRead: true, wantWrite: false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			resolver := NewPalaceResolver(activePalace, registry)
+			resolver.AddCitedPalace(tt.palace)
+
+			if got := resolver.CanRead(tt.palace); got != tt.wantRead {
+				t.Fatalf("CanRead(%q) = %v, want %v", tt.palace, got, tt.wantRead)
+			}
+			if got := resolver.CanWrite(tt.palace); got != tt.wantWrite {
+				t.Fatalf("CanWrite(%q) = %v, want %v", tt.palace, got, tt.wantWrite)
+			}
+
+			cited := resolver.GetCitedPalaces()
+			if len(cited) != 1 || cited[0] != tt.palace {
+				t.Fatalf("cited palaces = %#v, want [%q]", cited, tt.palace)
+			}
+		})
+	}
+}
+
+func TestResolveCitation_WithAccessDenied(t *testing.T) {
+	t.Parallel()
+
+	activePalace := "/workspace/active/.mempalace"
+	otherPalace := "/workspace/other/.mempalace"
+	client := &fakeSearcher{resolveHit: conversation.ProjectHit{Content: "secret"}}
+	b := NewForClient(&project.ProjectContext{RepoName: "repo", PalacePath: &activePalace}, 1, client)
+	b.resolver = NewPalaceResolver(activePalace, &Registry{
+		projects: map[string]ProjectAccess{
+			"workspace": {
+				Paths:  []string{"/workspace/other"},
+				Access: AccessRules{Read: "project", Write: "project"},
+			},
+		},
+		defaults: AccessRules{Read: "all", Write: "project"},
+	})
+
+	_, err := b.ResolveCitation(context.Background(), conversation.ProjectRef{DrawerID: "drawer-1", PalacePath: otherPalace})
+	if !errors.Is(err, ErrCitationAccessDenied) {
+		t.Fatalf("ResolveCitation error = %v, want ErrCitationAccessDenied", err)
+	}
+	if len(client.resolveCalls) != 0 {
+		t.Fatalf("resolve calls = %#v, want none", client.resolveCalls)
+	}
+}
+
+func TestVerifyCitation_ValidDrawer(t *testing.T) {
+	t.Parallel()
+
+	activePalace := "/workspace/active/.mempalace"
+	client := &fakeSearcher{}
+	b := NewForClient(&project.ProjectContext{RepoName: "repo", PalacePath: &activePalace}, 1, client)
+
+	ref := conversation.ProjectRef{DrawerID: "drawer-1", PalacePath: activePalace}
+	if err := b.VerifyCitation(context.Background(), ref); err != nil {
+		t.Fatalf("VerifyCitation: %v", err)
+	}
+	if len(client.verifyCalls) != 1 || client.verifyCalls[0].DrawerID != "drawer-1" {
+		t.Fatalf("verify calls = %#v", client.verifyCalls)
+	}
+}
+
+func TestVerifyCitation_StaleDrawer(t *testing.T) {
+	t.Parallel()
+
+	activePalace := "/workspace/active/.mempalace"
+	client := &fakeSearcher{verifyErr: ErrCitationStale}
+	b := NewForClient(&project.ProjectContext{RepoName: "repo", PalacePath: &activePalace}, 1, client)
+
+	err := b.VerifyCitation(context.Background(), conversation.ProjectRef{DrawerID: "drawer-1", PalacePath: activePalace})
+	if !errors.Is(err, ErrCitationStale) {
+		t.Fatalf("VerifyCitation error = %v, want ErrCitationStale", err)
+	}
+}
+
 func contains(items []string, want string) bool {
 	for _, item := range items {
 		if item == want {
@@ -182,3 +313,4 @@ func contains(items []string, want string) bool {
 }
 
 var _ SearchClient = (*fakeSearcher)(nil)
+var _ CitationClient = (*fakeSearcher)(nil)

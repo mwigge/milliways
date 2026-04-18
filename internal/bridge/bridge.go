@@ -15,6 +15,13 @@ import (
 
 const defaultProjectContextLimit = 3
 
+var (
+	// ErrCitationAccessDenied indicates the resolver disallowed citation access.
+	ErrCitationAccessDenied = errors.New("citation access denied")
+	// ErrCitationStale indicates the cited drawer no longer exists or moved.
+	ErrCitationStale = errors.New("citation is stale")
+)
+
 // ContextHit describes a recalled project memory hit.
 type ContextHit = conversation.ProjectHit
 
@@ -27,12 +34,19 @@ type SearchClient interface {
 	Close() error
 }
 
+// CitationClient resolves and verifies project citations.
+type CitationClient interface {
+	ResolveProjectRef(ctx context.Context, ref conversation.ProjectRef) (conversation.ProjectHit, error)
+	VerifyProjectRef(ctx context.Context, ref conversation.ProjectRef) error
+}
+
 // ProjectBridge handles project palace integration with the orchestrator.
 type ProjectBridge struct {
 	projectCtx *project.ProjectContext
 	palacePath string
 	palaceID   string
 	client     SearchClient
+	resolver   *PalaceResolver
 	limit      int
 }
 
@@ -42,6 +56,10 @@ func New(projectCtx *project.ProjectContext, limit int) (*ProjectBridge, error) 
 	if projectCtx == nil || projectCtx.PalacePath == nil || strings.TrimSpace(*projectCtx.PalacePath) == "" {
 		return nil, nil
 	}
+	registry, err := LoadRegistry()
+	if err != nil {
+		return nil, fmt.Errorf("project bridge: %w", err)
+	}
 	cmd := strings.TrimSpace(os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD"))
 	if cmd == "" {
 		return nil, errors.New("project bridge: MILLIWAYS_MEMPALACE_MCP_CMD is not set")
@@ -50,11 +68,15 @@ func New(projectCtx *project.ProjectContext, limit int) (*ProjectBridge, error) 
 	if err != nil {
 		return nil, fmt.Errorf("project bridge: %w", err)
 	}
-	return NewForClient(projectCtx, limit, client), nil
+	return newForClient(projectCtx, limit, client, registry), nil
 }
 
 // NewForClient creates a bridge backed by a caller-provided search client.
 func NewForClient(projectCtx *project.ProjectContext, limit int, client SearchClient) *ProjectBridge {
+	return newForClient(projectCtx, limit, client, nil)
+}
+
+func newForClient(projectCtx *project.ProjectContext, limit int, client SearchClient, registry *Registry) *ProjectBridge {
 	effectiveLimit := limit
 	if effectiveLimit <= 0 {
 		effectiveLimit = defaultProjectContextLimit
@@ -72,6 +94,7 @@ func NewForClient(projectCtx *project.ProjectContext, limit int, client SearchCl
 		palacePath: palacePath,
 		palaceID:   palaceID,
 		client:     client,
+		resolver:   NewPalaceResolver(palacePath, registry),
 		limit:      effectiveLimit,
 	}
 }
@@ -105,6 +128,46 @@ func (b *ProjectBridge) Close() error {
 		return nil
 	}
 	return b.client.Close()
+}
+
+// ResolveCitation resolves a ProjectRef to its content.
+func (b *ProjectBridge) ResolveCitation(ctx context.Context, ref ProjectRef) (string, error) {
+	if b == nil {
+		return "", nil
+	}
+	if !b.canReadCitation(ref.PalacePath) {
+		return "", fmt.Errorf("resolve citation %q: %w", ref.DrawerID, ErrCitationAccessDenied)
+	}
+	resolver, ok := b.client.(CitationClient)
+	if !ok {
+		return "", errors.New("resolve citation: client does not support citations")
+	}
+	hit, err := resolver.ResolveProjectRef(ctx, ref)
+	if err != nil {
+		return "", fmt.Errorf("resolve citation %q: %w", ref.DrawerID, err)
+	}
+	return hit.Content, nil
+}
+
+// VerifyCitation checks if a ProjectRef still points to valid content.
+func (b *ProjectBridge) VerifyCitation(ctx context.Context, ref ProjectRef) error {
+	if b == nil {
+		return nil
+	}
+	if !b.canReadCitation(ref.PalacePath) {
+		return fmt.Errorf("verify citation %q: %w", ref.DrawerID, ErrCitationAccessDenied)
+	}
+	resolver, ok := b.client.(CitationClient)
+	if !ok {
+		return errors.New("verify citation: client does not support citations")
+	}
+	if err := resolver.VerifyProjectRef(ctx, ref); err != nil {
+		if errors.Is(err, substrate.ErrProjectRefNotFound) {
+			return fmt.Errorf("verify citation %q: %w", ref.DrawerID, ErrCitationStale)
+		}
+		return fmt.Errorf("verify citation %q: %w", ref.DrawerID, err)
+	}
+	return nil
 }
 
 // BuildProjectRefs converts context hits into lightweight turn citations.
@@ -178,6 +241,17 @@ func setLatestUserRefs(conv *conversation.Conversation, refs []ProjectRef) {
 		conv.Transcript[i].ProjectRefs = refs
 		return
 	}
+}
+
+func (b *ProjectBridge) canReadCitation(palacePath string) bool {
+	if b == nil {
+		return false
+	}
+	if b.resolver == nil {
+		b.resolver = NewPalaceResolver(b.palacePath, nil)
+	}
+	b.resolver.AddCitedPalace(palacePath)
+	return b.resolver.CanRead(palacePath)
 }
 
 func truncate(value string, limit int) string {

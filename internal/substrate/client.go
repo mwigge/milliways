@@ -39,6 +39,9 @@ type ConnectionError struct {
 	Err error
 }
 
+// ErrProjectRefNotFound indicates a cited project drawer could not be found.
+var ErrProjectRefNotFound = errors.New("project ref not found")
+
 func (e *ConnectionError) Error() string {
 	return fmt.Sprintf("substrate connection %s: %v", e.Op, e.Err)
 }
@@ -563,6 +566,62 @@ func (c *Client) SearchProjectContext(ctx context.Context, query string, limit i
 		})
 	}
 	return hits, nil
+}
+
+// ResolveProjectRef fetches drawer content for a cited project reference.
+func (c *Client) ResolveProjectRef(ctx context.Context, ref conversation.ProjectRef) (conversation.ProjectHit, error) {
+	args := map[string]any{
+		"query": ref.DrawerID,
+		"limit": 20,
+	}
+	if ref.Wing != "" {
+		args["wing"] = ref.Wing
+	}
+	raw, err := c.mcp.CallTool(ctx, "mempalace_search", args)
+	if err != nil {
+		return conversation.ProjectHit{}, fmt.Errorf("substrate: resolve project ref %q: %w", ref.DrawerID, err)
+	}
+	type drawer struct {
+		ID      string  `json:"id"`
+		Text    string  `json:"text"`
+		Wing    string  `json:"wing"`
+		Room    string  `json:"room"`
+		Score   float64 `json:"score"`
+		FiledAt string  `json:"filed_at"`
+	}
+	drawers, err := parseContent[[]drawer](raw)
+	if err != nil {
+		return conversation.ProjectHit{}, fmt.Errorf("substrate: parse resolved project ref %q: %w", ref.DrawerID, err)
+	}
+	for _, item := range drawers {
+		if item.ID != ref.DrawerID {
+			continue
+		}
+		if ref.Room != "" && item.Room != ref.Room {
+			continue
+		}
+		return conversation.ProjectHit{
+			PalaceID:    ref.PalaceID,
+			PalacePath:  ref.PalacePath,
+			DrawerID:    item.ID,
+			Wing:        item.Wing,
+			Room:        item.Room,
+			Content:     item.Text,
+			FactSummary: ref.FactSummary,
+			Relevance:   item.Score,
+			CapturedAt:  item.FiledAt,
+		}, nil
+	}
+	return conversation.ProjectHit{}, ErrProjectRefNotFound
+}
+
+// VerifyProjectRef checks whether a cited project reference still resolves.
+func (c *Client) VerifyProjectRef(ctx context.Context, ref conversation.ProjectRef) error {
+	_, err := c.ResolveProjectRef(ctx, ref)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // --- internal helpers ---
