@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -134,11 +135,8 @@ based on what each tool does best.
 				}
 
 				// Try to fetch palace stats via MCP.
-				opts.ProjectState = fetchPalaceStatsForTUI(
-					opts.ProjectState,
-					os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD"),
-					splitEnvArgs(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS")),
-				)
+				mcpCmd, mcpArgs := detectMempalaceMCP(opts.ProjectState.PalacePath)
+				opts.ProjectState = fetchPalaceStatsForTUI(opts.ProjectState, mcpCmd, mcpArgs)
 
 				return runTUI(configPath, opts)
 			}
@@ -923,6 +921,42 @@ func splitEnvArgs(raw string) []string {
 		return nil
 	}
 	return strings.Fields(raw)
+}
+
+// detectMempalaceMCP tries to find the mempalace MCP server command and args.
+// It checks in order:
+//  1. MILLIWAYS_MEMPALACE_MCP_CMD env var (if set)
+//  2. "mempalace" in PATH
+//  3. ~/dev/src/pprojects/mempalace-milliways/.venv/bin/python
+//
+// Returns (cmd, args). If not found, returns ("", nil).
+func detectMempalaceMCP(palacePath string) (string, []string) {
+	// 1. Env var override.
+	if cmd := os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD"); cmd != "" {
+		return cmd, splitEnvArgs(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS"))
+	}
+
+	// 2. "mempalace" CLI in PATH.
+	if cmdPath, err := exec.LookPath("mempalace"); err == nil {
+		if palacePath != "" {
+			return cmdPath, []string{"--palace", palacePath}
+		}
+		return cmdPath, nil
+	}
+
+	// 3. Known venv location.
+	home, err := os.UserHomeDir()
+	if err == nil {
+		venvPython := filepath.Join(home, "dev/src/pprojects/mempalace-milliways/.venv/bin/python")
+		if _, err := os.Stat(venvPython); err == nil {
+			if palacePath != "" {
+				return venvPython, []string{"-m", "mempalace.mcp_server", "--palace", palacePath}
+			}
+			return venvPython, []string{"-m", "mempalace.mcp_server"}
+		}
+	}
+
+	return "", nil
 }
 
 func printJSON(v any, asJSON bool) error {
