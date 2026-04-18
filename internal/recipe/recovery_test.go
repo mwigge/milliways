@@ -2,6 +2,10 @@ package recipe
 
 import (
 	"context"
+	"log/slog"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -48,6 +52,7 @@ func TestHandleFailure_SkipCourse(t *testing.T) {
 func TestHandleFailure_Stop(t *testing.T) {
 	t.Parallel()
 	reg := kitchen.NewRegistry()
+	capture := installRecoveryTestLogger(t)
 	failed := CourseResult{
 		Step:   Step{Station: "fail", Kitchen: "test"},
 		Index:  0,
@@ -57,6 +62,24 @@ func TestHandleFailure_Stop(t *testing.T) {
 	shouldContinue, _ := HandleFailure(context.Background(), StrategyStop, failed, reg, nil)
 	if shouldContinue {
 		t.Error("stop should not continue")
+	}
+
+	records := capture.records()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 log record, got %d", len(records))
+	}
+	if records[0].Level != slog.LevelInfo {
+		t.Fatalf("log level = %v, want %v", records[0].Level, slog.LevelInfo)
+	}
+	if records[0].Message != "recipe partial output saved" {
+		t.Fatalf("log message = %q, want %q", records[0].Message, "recipe partial output saved")
+	}
+	path, ok := records[0].Attrs["path"].(string)
+	if !ok {
+		t.Fatalf("path attr type = %T, want string", records[0].Attrs["path"])
+	}
+	if !strings.Contains(path, filepath.Join("milliways-partial", "course-1-fail.txt")) {
+		t.Fatalf("path attr = %q, want partial output path", path)
 	}
 }
 
@@ -100,4 +123,57 @@ func TestHandleFailure_RetryCourse_KitchenUnavailable(t *testing.T) {
 	if shouldContinue {
 		t.Error("retry with missing kitchen should not continue")
 	}
+}
+
+var recoveryTestLoggerMu sync.Mutex
+
+type recoveryTestLogRecord struct {
+	Level   slog.Level
+	Message string
+	Attrs   map[string]any
+}
+
+type recoveryTestLogCapture struct {
+	mu      sync.Mutex
+	entries []recoveryTestLogRecord
+}
+
+func installRecoveryTestLogger(t *testing.T) *recoveryTestLogCapture {
+	t.Helper()
+	recoveryTestLoggerMu.Lock()
+	capture := &recoveryTestLogCapture{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(capture))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+		recoveryTestLoggerMu.Unlock()
+	})
+	return capture
+}
+
+func (c *recoveryTestLogCapture) Enabled(context.Context, slog.Level) bool { return true }
+
+func (c *recoveryTestLogCapture) Handle(_ context.Context, record slog.Record) error {
+	attrs := make(map[string]any, record.NumAttrs())
+	record.Attrs(func(attr slog.Attr) bool {
+		attrs[attr.Key] = attr.Value.Any()
+		return true
+	})
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = append(c.entries, recoveryTestLogRecord{Level: record.Level, Message: record.Message, Attrs: attrs})
+	return nil
+}
+
+func (c *recoveryTestLogCapture) WithAttrs(_ []slog.Attr) slog.Handler { return c }
+
+func (c *recoveryTestLogCapture) WithGroup(string) slog.Handler { return c }
+
+func (c *recoveryTestLogCapture) records() []recoveryTestLogRecord {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	clone := make([]recoveryTestLogRecord, len(c.entries))
+	copy(clone, c.entries)
+	return clone
 }

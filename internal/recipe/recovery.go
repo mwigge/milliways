@@ -3,6 +3,7 @@ package recipe
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -103,5 +104,5 @@ func savePartial(result CourseResult) {
 		result.Result.ExitCode, result.Result.Output)
 	_ = os.WriteFile(path, []byte(content), 0o600)
 
-	fmt.Fprintf(os.Stderr, "[recipe] partial output saved to %s\n", path)
+	slog.Info("recipe partial output saved", "path", path)
 }
