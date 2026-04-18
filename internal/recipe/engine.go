@@ -85,6 +85,7 @@ func (e *Engine) Execute(ctx context.Context, steps []Step, prompt string, onLin
 		// Build prompt with context from previous course
 		coursePrompt := prompt
 		if prevContext != "" {
+			prevContext = sanitizePromptInjection(prevContext)
 			coursePrompt = fmt.Sprintf("Previous course (%s) output:\n%s\n\nTask: %s", steps[i-1].Station, prevContext, prompt)
 		}
 

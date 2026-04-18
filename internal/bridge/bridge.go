@@ -115,7 +115,7 @@ func (b *ProjectBridge) Search(ctx context.Context, query string) ([]ContextHit,
 	for _, hit := range hits {
 		hit.PalaceID = b.palaceID
 		hit.PalacePath = b.palacePath
-		hit.Content = truncate(hit.Content, 280)
+		hit.Content = sanitizePromptInjection(truncate(hit.Content, 280))
 		hit.FactSummary = truncate(hit.FactSummary, 100)
 		out = append(out, hit)
 	}
