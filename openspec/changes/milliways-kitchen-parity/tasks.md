@@ -181,6 +181,6 @@
 
 - [x] KP-23.1 Update `README.md` with switch commands, sticky mode, substrate dependency
 - [x] KP-23.2 Add `FORK.md` in `mempalace-milliways` documenting delta and rebase process
-- [ ] KP-23.3 Add release notes describing the upgrade path and MemPalace dependency
+- [x] KP-23.3 Add release notes describing the upgrade path and MemPalace dependency
 
 - [ ] 🍽️ **Grand Service** — Any kitchen, any time, same memory. The conversation is MemPalace's, the orchestrator is Milliways', and the user is always in control of which kitchen cooks.
