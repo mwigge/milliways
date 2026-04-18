@@ -2,12 +2,14 @@ package orchestrator
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/mwigge/milliways/internal/conversation"
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
+	"github.com/mwigge/milliways/internal/observability"
 	"github.com/mwigge/milliways/internal/sommelier"
 	"github.com/mwigge/milliways/internal/substrate"
 )
@@ -313,6 +315,73 @@ func TestOrchestratorEvaluatesAfterEachUserTurn(t *testing.T) {
 	last := conv.Transcript[len(conv.Transcript)-1]
 	if last.Role != conversation.RoleUser || last.Text != evaluations[1] {
 		t.Fatalf("last transcript turn = %#v, want appended continuation user turn", last)
+	}
+}
+
+func TestOrchestratorAutoSwitchEmitsReversibleSwitchEvent(t *testing.T) {
+	t.Parallel()
+
+	first := &stubAdapter{events: []adapter.Event{
+		{Type: adapter.EventText, Kitchen: "claude", Text: "starting here"},
+		{Type: adapter.EventRateLimit, Kitchen: "claude", RateLimit: &adapter.RateLimitInfo{Status: "exhausted", IsExhaustion: true}},
+		{Type: adapter.EventDone, Kitchen: "claude", ExitCode: 1},
+	}}
+	second := &stubAdapter{events: []adapter.Event{
+		{Type: adapter.EventText, Kitchen: "gemini", Text: "continuing after auto-switch"},
+		{Type: adapter.EventDone, Kitchen: "gemini", ExitCode: 0},
+	}}
+
+	var runtimeEvents []observability.Event
+	o := &Orchestrator{
+		Factory: func(_ context.Context, _ string, exclude map[string]bool, _ string, _ map[string]string) (RouteResult, error) {
+			if !exclude["claude"] {
+				return RouteResult{Decision: sommelier.Decision{Kitchen: "claude", Tier: "keyword", Reason: "initial route"}, Adapter: first}, nil
+			}
+			return RouteResult{Decision: sommelier.Decision{Kitchen: "gemini", Tier: "auto-switch", Reason: `task mentioned "search the web" (hard signal)`}, Adapter: second}, nil
+		},
+		Sink: observability.FuncSink(func(evt observability.Event) {
+			runtimeEvents = append(runtimeEvents, evt)
+		}),
+	}
+
+	var outputs []string
+	conv, err := o.Run(context.Background(), RunRequest{ConversationID: "conv-auto", BlockID: "b1", Prompt: "search the web for the incident"}, nil, func(evt adapter.Event) {
+		if evt.Text != "" {
+			outputs = append(outputs, evt.Text)
+		}
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if conv.Status != conversation.StatusDone {
+		t.Fatalf("status = %q, want %q", conv.Status, conversation.StatusDone)
+	}
+
+	var switchEvent *observability.Event
+	for i := range runtimeEvents {
+		if runtimeEvents[i].Kind == "switch" {
+			switchEvent = &runtimeEvents[i]
+			break
+		}
+	}
+	if switchEvent == nil {
+		t.Fatalf("runtime events = %#v, want switch event", runtimeEvents)
+	}
+	for key, want := range map[string]string{"from": "claude", "to": "gemini", "reason": `task mentioned "search the web" (hard signal)`} {
+		if got := switchEvent.Fields[key]; got != want {
+			t.Fatalf("switch field %q = %q, want %q", key, got, want)
+		}
+	}
+
+	foundHint := false
+	for _, output := range outputs {
+		if strings.Contains(output, "Use /back to return") && strings.Contains(output, "task mentioned \"search the web\"") {
+			foundHint = true
+			break
+		}
+	}
+	if !foundHint {
+		t.Fatalf("outputs = %#v, want visible auto-switch line with /back hint", outputs)
 	}
 }
 

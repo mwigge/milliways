@@ -95,7 +95,32 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 			return conv, err
 		}
 
+		fromKitchen, autoSwitch := autoSwitchSource(conv, route.Decision)
 		seg := conv.StartSegment(route.Decision.Kitchen)
+		if autoSwitch {
+			switchText := formatSwitchSystemLine(fromKitchen, route.Decision.Kitchen, route.Decision.Reason)
+			sink.Emit(observability.Event{
+				ConversationID: conv.ID,
+				BlockID:        conv.BlockID,
+				SegmentID:      seg.ID,
+				Kind:           "switch",
+				Provider:       route.Decision.Kitchen,
+				Text:           formatSwitchRuntimeText(fromKitchen, route.Decision.Kitchen, route.Decision.Reason),
+				At:             time.Now(),
+				Fields: map[string]string{
+					"from":   fromKitchen,
+					"to":     route.Decision.Kitchen,
+					"reason": route.Decision.Reason,
+				},
+			})
+			if onEvent != nil {
+				onEvent(adapter.Event{
+					Type:    adapter.EventText,
+					Kitchen: "milliways",
+					Text:    switchText,
+				})
+			}
+		}
 		sink.Emit(observability.Event{
 			ConversationID: conv.ID,
 			BlockID:        conv.BlockID,
@@ -422,6 +447,26 @@ func memoryTypes(types []conversation.MemoryType) []string {
 		out = append(out, string(typ))
 	}
 	return out
+}
+
+func autoSwitchSource(conv *conversation.Conversation, decision sommelier.Decision) (string, bool) {
+	if conv == nil || decision.Tier != "auto-switch" || len(conv.Segments) == 0 {
+		return "", false
+	}
+	fromKitchen := strings.TrimSpace(conv.Segments[len(conv.Segments)-1].Provider)
+	toKitchen := strings.TrimSpace(decision.Kitchen)
+	if fromKitchen == "" || toKitchen == "" || fromKitchen == toKitchen {
+		return "", false
+	}
+	return fromKitchen, true
+}
+
+func formatSwitchSystemLine(fromKitchen, toKitchen, reason string) string {
+	return fmt.Sprintf("switch: %s -> %s | reason: %s | Use /back to return", fromKitchen, toKitchen, reason)
+}
+
+func formatSwitchRuntimeText(fromKitchen, toKitchen, reason string) string {
+	return fmt.Sprintf("switch %s -> %s (%s)", fromKitchen, toKitchen, reason)
 }
 
 func emitMemoryPromotionEvents(sink observability.Sink, conv *conversation.Conversation, segmentID string) {

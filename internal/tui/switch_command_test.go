@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -8,7 +9,11 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mwigge/milliways/internal/conversation"
+	"github.com/mwigge/milliways/internal/kitchen"
+	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/observability"
+	"github.com/mwigge/milliways/internal/orchestrator"
+	"github.com/mwigge/milliways/internal/sommelier"
 )
 
 func TestHandleKey_EnterExecutesSwitchPaletteCommandWithArgument(t *testing.T) {
@@ -455,6 +460,89 @@ func TestExecutePaletteCommand_BackReversesMostRecentSwitch(t *testing.T) {
 	}
 }
 
+func TestExecutePaletteCommand_BackReversesAutoSwitch(t *testing.T) {
+	t.Parallel()
+
+	claude := &switchTestAdapter{events: []adapter.Event{
+		{Type: adapter.EventText, Kitchen: "claude", Text: "Checking local context first."},
+		{Type: adapter.EventRateLimit, Kitchen: "claude", RateLimit: &adapter.RateLimitInfo{Status: "exhausted", IsExhaustion: true}},
+		{Type: adapter.EventDone, Kitchen: "claude", ExitCode: 1},
+	}}
+	gemini := &switchTestAdapter{events: []adapter.Event{
+		{Type: adapter.EventText, Kitchen: "gemini", Text: "Searching the web now."},
+		{Type: adapter.EventDone, Kitchen: "gemini", ExitCode: 0},
+	}}
+
+	var runtimeEvents []observability.Event
+	orch := orchestrator.Orchestrator{
+		Factory: func(_ context.Context, _ string, exclude map[string]bool, _ string, _ map[string]string) (orchestrator.RouteResult, error) {
+			if !exclude["claude"] {
+				return orchestrator.RouteResult{
+					Decision: sommelier.Decision{Kitchen: "claude", Tier: "keyword", Reason: "initial"},
+					Adapter:  claude,
+				}, nil
+			}
+			return orchestrator.RouteResult{
+				Decision: sommelier.Decision{Kitchen: "gemini", Tier: "auto-switch", Reason: `task mentioned "search the web" (hard signal)`},
+				Adapter:  gemini,
+			}, nil
+		},
+		Sink: observability.FuncSink(func(evt observability.Event) {
+			runtimeEvents = append(runtimeEvents, evt)
+		}),
+	}
+
+	m := NewModel(nil)
+	m.kitchenStates = []KitchenState{{Name: "claude", Status: "ready"}, {Name: "gemini", Status: "ready"}}
+
+	block := Block{ID: "b1", Prompt: "search the web for the latest incident notes", StartedAt: time.Now(), State: StateStreaming}
+	conv, err := orch.Run(context.Background(), orchestrator.RunRequest{
+		ConversationID: "conv-auto-back",
+		BlockID:        block.ID,
+		Prompt:         block.Prompt,
+	}, func(res orchestrator.RouteResult) {
+		block.ConversationID = "conv-auto-back"
+		block.Kitchen = res.Decision.Kitchen
+		block.Decision = res.Decision
+		if !containsProvider(block.ProviderChain, res.Decision.Kitchen) {
+			block.ProviderChain = append(block.ProviderChain, res.Decision.Kitchen)
+		}
+	}, func(evt adapter.Event) {
+		block.AppendEvent(evt)
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	block.Conversation = conv
+	if len(block.Conversation.Segments) == 0 {
+		t.Fatal("expected conversation segments for auto-switch test")
+	}
+	last := &block.Conversation.Segments[len(block.Conversation.Segments)-1]
+	last.Status = conversation.SegmentActive
+	last.EndedAt = nil
+	last.EndReason = ""
+	block.Conversation.ActiveSegmentID = last.ID
+	block.Conversation.Status = conversation.StatusActive
+	m.runtimeEvents = runtimeEvents
+	m.blocks = []Block{block}
+	m.focusedIdx = 0
+
+	body := m.blocks[0].RenderBody(100, RenderRaw)
+	if !strings.Contains(body, "Use /back to return") {
+		t.Fatalf("body = %q, want auto-switch reversal hint", body)
+	}
+
+	m.executePaletteCommand("back")
+
+	updated := m.blocks[0]
+	if updated.Kitchen != "claude" {
+		t.Fatalf("kitchen = %q, want claude", updated.Kitchen)
+	}
+	if got := updated.Lines[len(updated.Lines)-1].Text; !strings.Contains(got, "reversing most recent switch") || !strings.Contains(got, "Use /back to return") {
+		t.Fatalf("last line = %q, want reversal confirmation with hint", got)
+	}
+}
+
 func TestRuntimeActivityLines_RenderSwitchAndRuntimeEventsInOrder(t *testing.T) {
 	t.Parallel()
 
@@ -560,5 +648,29 @@ func TestRenderPalette_IncludesBackCommand(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "Reverse the most recent") || !strings.Contains(rendered, "switch") {
 		t.Fatalf("rendered palette = %q, want back description", rendered)
+	}
+}
+
+type switchTestAdapter struct {
+	events []adapter.Event
+}
+
+func (s *switchTestAdapter) Exec(_ context.Context, _ kitchen.Task) (<-chan adapter.Event, error) {
+	ch := make(chan adapter.Event, len(s.events))
+	for _, evt := range s.events {
+		ch <- evt
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (s *switchTestAdapter) Send(context.Context, string) error { return nil }
+func (s *switchTestAdapter) SupportsResume() bool               { return false }
+func (s *switchTestAdapter) SessionID() string                  { return "" }
+func (s *switchTestAdapter) Capabilities() adapter.Capabilities {
+	return adapter.Capabilities{
+		StructuredEvents:    true,
+		InteractiveSend:     true,
+		ExhaustionDetection: "structured",
 	}
 }
