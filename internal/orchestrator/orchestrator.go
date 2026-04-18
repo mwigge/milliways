@@ -11,6 +11,7 @@ import (
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/observability"
 	"github.com/mwigge/milliways/internal/sommelier"
+	"github.com/mwigge/milliways/internal/substrate"
 )
 
 // RouteResult contains the selected kitchen decision and a ready adapter.
@@ -44,6 +45,9 @@ type Orchestrator struct {
 	Factory ProviderFactory
 	Sink    observability.Sink
 	Hydrate ContextHydrator
+	// Reader, when set, is consulted before local hydration on each provider
+	// failover to pre-populate conversation state from substrate.
+	Reader substrate.Reader
 }
 
 // Run executes a logical conversation with provider failover on exhaustion.
@@ -179,6 +183,11 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 					Kitchen: "milliways",
 					Text:    fmt.Sprintf("[milliways] %s exhausted, continuing with the next provider", route.Decision.Kitchen),
 				})
+			}
+			if o.Reader != nil {
+				if rec, err := o.Reader.GetConversation(ctx, conv.ID); err == nil {
+					applySubstrateState(conv, rec)
+				}
 			}
 			if o.Hydrate != nil {
 				if err := o.Hydrate(ctx, conv); err == nil {
@@ -435,5 +444,28 @@ func emitMemoryPromotionEvents(sink observability.Sink, conv *conversation.Conve
 				"reason":      decision.Reason,
 			},
 		})
+	}
+}
+
+// applySubstrateState merges fields from a substrate ConversationRecord into a
+// local Conversation, filling gaps only — locally-set values are never overwritten.
+func applySubstrateState(conv *conversation.Conversation, rec substrate.ConversationRecord) {
+	if conv.Memory.WorkingSummary == "" {
+		conv.Memory.WorkingSummary = rec.Memory.WorkingSummary
+	}
+	if conv.Memory.NextAction == "" {
+		conv.Memory.NextAction = rec.Memory.NextAction
+	}
+	if len(conv.Memory.ActiveGoals) == 0 {
+		conv.Memory.ActiveGoals = rec.Memory.ActiveGoals
+	}
+	if len(conv.Context.SpecRefs) == 0 {
+		conv.Context.SpecRefs = rec.Context.SpecRefs
+	}
+	if conv.Context.CodeGraphText == "" {
+		conv.Context.CodeGraphText = rec.Context.CodeGraphText
+	}
+	if conv.Context.MemPalaceText == "" {
+		conv.Context.MemPalaceText = rec.Context.MemPalaceText
 	}
 }
