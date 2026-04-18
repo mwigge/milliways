@@ -162,7 +162,10 @@ func (m Model) runtimeActivityLines(limit int) []string {
 
 	// Filter out noisy event types that have dedicated rendering elsewhere.
 	skipKinds := map[string]bool{
-		"provider_output": true,
+		"provider_output":       true, // too noisy, has dedicated block rendering
+		"provider_output_start": true, // same
+		"provider_output_end":   true, // same
+		"token_usage":           true, // too frequent, shown in telemetry
 	}
 	var filtered []observability.Event
 	if b := m.focusedBlock(); b != nil && b.ConversationID != "" {
