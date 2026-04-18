@@ -152,6 +152,22 @@ func (c *Conversation) AppendTurn(role TurnRole, provider, text string) {
 	c.UpdatedAt = now
 }
 
+// AppendTurnWithContext records a transcript turn with repo access and project ref metadata.
+func (c *Conversation) AppendTurnWithContext(role TurnRole, provider, text string, reposAccessed []string, projectRefs []ProjectRef) {
+	if c == nil || text == "" {
+		return
+	}
+	now := time.Now()
+	c.Transcript = append(c.Transcript, Turn{
+		Role:        role,
+		Provider:    provider,
+		Text:        text,
+		ProjectRefs: projectRefs,
+		At:          now,
+	})
+	c.UpdatedAt = now
+}
+
 // StartSegment adds and activates a provider segment.
 func (c *Conversation) StartSegment(provider string, repoContext *RepoContext) ProviderSegment {
 	now := time.Now()

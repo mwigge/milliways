@@ -20,8 +20,8 @@ import (
 // field pattern below.
 type convWriter interface {
 	Begin(ctx context.Context, convID, blockID, provider, prompt string) error
-	StartSegment(ctx context.Context, provider string) error
-	AppendTurn(ctx context.Context, role conversation.TurnRole, provider, text string) error
+	StartSegment(ctx context.Context, provider string, repoContext *conversation.RepoContext) error
+	AppendTurn(ctx context.Context, role conversation.TurnRole, provider, text string, reposAccessed []string, projectRefs []conversation.ProjectRef) error
 	EndSegment(ctx context.Context, status, reason string) error
 	CheckpointOnExhaustion(ctx context.Context, reason string) (substrate.CheckpointResponse, error)
 	Finish(ctx context.Context, status, reason string) error
@@ -75,7 +75,7 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 			if err := sw.Begin(ctx, ticketID, "", k.Name(), prompt); err != nil {
 				fmt.Fprintf(os.Stderr, "[async] substrate Begin warning: %v\n", err)
 			}
-			if err := sw.StartSegment(ctx, k.Name()); err != nil {
+			if err := sw.StartSegment(ctx, k.Name(), nil); err != nil {
 				fmt.Fprintf(os.Stderr, "[async] substrate StartSegment warning: %v\n", err)
 			}
 		}
@@ -87,7 +87,7 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 
 		// Substrate: append assistant turn.
 		if sw != nil && result.Output != "" {
-			if err := sw.AppendTurn(ctx, conversation.RoleAssistant, k.Name(), result.Output); err != nil {
+			if err := sw.AppendTurn(ctx, conversation.RoleAssistant, k.Name(), result.Output, nil, nil); err != nil {
 				fmt.Fprintf(os.Stderr, "[async] substrate AppendTurn warning: %v\n", err)
 			}
 		}

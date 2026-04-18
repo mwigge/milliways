@@ -245,8 +245,10 @@ func (c *Client) ConversationList(ctx context.Context) ([]ConversationSummary, e
 
 // AppendTurnRequest is the input for ConversationAppendTurn.
 type AppendTurnRequest struct {
-	ConversationID string            `json:"conversation_id"`
-	Turn           conversation.Turn `json:"turn"`
+	ConversationID string                    `json:"conversation_id"`
+	Turn           conversation.Turn         `json:"turn"`
+	ReposAccessed  []string                  `json:"repos_accessed,omitempty"`
+	ProjectRefs    []conversation.ProjectRef `json:"project_refs,omitempty"`
 }
 
 // ConversationAppendTurn appends a single transcript turn.
@@ -256,6 +258,20 @@ func (c *Client) ConversationAppendTurn(ctx context.Context, req AppendTurnReque
 		"role":            string(req.Turn.Role),
 		"provider":        req.Turn.Provider,
 		"text":            req.Turn.Text,
+	}
+	if len(req.ReposAccessed) > 0 {
+		raJSON, err := json.Marshal(req.ReposAccessed)
+		if err != nil {
+			return fmt.Errorf("substrate: marshal repos_accessed: %w", err)
+		}
+		args["repos_accessed"] = json.RawMessage(raJSON)
+	}
+	if len(req.ProjectRefs) > 0 {
+		prJSON, err := json.Marshal(req.ProjectRefs)
+		if err != nil {
+			return fmt.Errorf("substrate: marshal project_refs: %w", err)
+		}
+		args["project_refs"] = json.RawMessage(prJSON)
 	}
 	_, err := c.mcp.CallTool(ctx, "mempalace_conversation_append_turn", args)
 	if err != nil {
@@ -268,8 +284,9 @@ func (c *Client) ConversationAppendTurn(ctx context.Context, req AppendTurnReque
 
 // StartSegmentRequest is the input for ConversationStartSegment.
 type StartSegmentRequest struct {
-	ConversationID string `json:"conversation_id"`
-	Provider       string `json:"provider"`
+	ConversationID string                    `json:"conversation_id"`
+	Provider       string                    `json:"provider"`
+	RepoContext    *conversation.RepoContext `json:"repo_context,omitempty"`
 }
 
 // StartSegmentResponse is returned by ConversationStartSegment.
@@ -283,6 +300,13 @@ func (c *Client) ConversationStartSegment(ctx context.Context, req StartSegmentR
 	args := map[string]any{
 		"conversation_id": req.ConversationID,
 		"provider":        req.Provider,
+	}
+	if req.RepoContext != nil {
+		rcJSON, err := json.Marshal(req.RepoContext)
+		if err != nil {
+			return StartSegmentResponse{}, fmt.Errorf("substrate: marshal repo_context: %w", err)
+		}
+		args["repo_context"] = json.RawMessage(rcJSON)
 	}
 	raw, err := c.mcp.CallTool(ctx, "mempalace_conversation_start_segment", args)
 	if err != nil {

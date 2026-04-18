@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -73,6 +74,8 @@ type Orchestrator struct {
 	Bridge *bridge.ProjectBridge
 	// ProjectContext is captured at segment start for repo tracking.
 	ProjectContext *project.ProjectContext
+	// reposAccessed tracks repository roots visited during the conversation.
+	reposAccessed map[string]bool
 }
 
 // Run executes a logical conversation with provider failover on exhaustion.
@@ -84,6 +87,8 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 	if sink == nil {
 		sink = observability.NopSink{}
 	}
+
+	o.reposAccessed = make(map[string]bool)
 
 	conv := conversation.New(req.ConversationID, req.BlockID, req.Prompt)
 	if err := bridge.InjectProjectContext(ctx, o.Bridge, conv, req.Prompt); err != nil {
@@ -106,6 +111,9 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 		}
 
 		fromKitchen, autoSwitch := autoSwitchSource(conv, route.Decision)
+		if rc := buildRepoContext(o.ProjectContext); rc != nil && rc.RepoRoot != "" {
+			o.reposAccessed[rc.RepoRoot] = true
+		}
 		seg := conv.StartSegment(route.Decision.Kitchen, buildRepoContext(o.ProjectContext))
 		if autoSwitch {
 			switchText := formatSwitchSystemLine(fromKitchen, route.Decision.Kitchen, route.Decision.Reason)
@@ -167,7 +175,12 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 			if sessionID := route.Adapter.SessionID(); sessionID != "" {
 				conv.SetNativeSessionID(route.Decision.Kitchen, sessionID)
 			}
-			o.captureTurn(conv, evt)
+			var reposKeys []string
+			for k := range o.reposAccessed {
+				reposKeys = append(reposKeys, k)
+			}
+			slices.Sort(reposKeys)
+			o.captureTurn(conv, evt, reposKeys, bridge.BuildProjectRefs(conv.Context.ProjectHits))
 			if onEvent != nil {
 				onEvent(evt)
 			}
@@ -400,18 +413,18 @@ func (o *Orchestrator) evaluate(ctx context.Context, conv *conversation.Conversa
 	return nil
 }
 
-func (o *Orchestrator) captureTurn(conv *conversation.Conversation, evt adapter.Event) {
+func (o *Orchestrator) captureTurn(conv *conversation.Conversation, evt adapter.Event, reposAccessed []string, projectRefs []conversation.ProjectRef) {
 	switch evt.Type {
 	case adapter.EventText:
 		role := conversation.RoleAssistant
 		if evt.Kitchen == "milliways" {
 			role = conversation.RoleSystem
 		}
-		conv.AppendTurn(role, evt.Kitchen, evt.Text)
+		conv.AppendTurnWithContext(role, evt.Kitchen, evt.Text, reposAccessed, projectRefs)
 	case adapter.EventCodeBlock:
-		conv.AppendTurn(conversation.RoleAssistant, evt.Kitchen, evt.Code)
+		conv.AppendTurnWithContext(conversation.RoleAssistant, evt.Kitchen, evt.Code, reposAccessed, projectRefs)
 	case adapter.EventError:
-		conv.AppendTurn(conversation.RoleSystem, evt.Kitchen, evt.Text)
+		conv.AppendTurnWithContext(conversation.RoleSystem, evt.Kitchen, evt.Text, reposAccessed, projectRefs)
 	}
 }
 

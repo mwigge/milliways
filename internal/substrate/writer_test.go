@@ -118,7 +118,7 @@ func TestSessionWriter_StartSegment_CallsStartSegmentAndStoresID(t *testing.T) {
 	w := NewSessionWriter(NewWithCaller(mc))
 	w.convID = "conv-1"
 
-	if err := w.StartSegment(context.Background(), "claude"); err != nil {
+	if err := w.StartSegment(context.Background(), "claude", nil); err != nil {
 		t.Fatalf("StartSegment: %v", err)
 	}
 	if w.segmentID != "seg-42" {
@@ -143,7 +143,7 @@ func TestSessionWriter_AppendTurn_CallsAppendTurnTool(t *testing.T) {
 	w := NewSessionWriter(NewWithCaller(mc))
 	w.convID = "conv-1"
 
-	err := w.AppendTurn(context.Background(), conversation.RoleAssistant, "claude", "here is my answer")
+	err := w.AppendTurn(context.Background(), conversation.RoleAssistant, "claude", "here is my answer", nil, nil)
 	if err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
@@ -289,10 +289,10 @@ func TestSessionWriter_FullWritePath_OrderIsPreserved(t *testing.T) {
 	if err := w.Begin(ctx, "conv-full", "blk-full", "claude", "build it"); err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
-	if err := w.StartSegment(ctx, "claude"); err != nil {
+	if err := w.StartSegment(ctx, "claude", nil); err != nil {
 		t.Fatalf("StartSegment: %v", err)
 	}
-	if err := w.AppendTurn(ctx, conversation.RoleAssistant, "claude", "working on it"); err != nil {
+	if err := w.AppendTurn(ctx, conversation.RoleAssistant, "claude", "working on it", nil, nil); err != nil {
 		t.Fatalf("AppendTurn: %v", err)
 	}
 	ckpt, err := w.CheckpointOnExhaustion(ctx, "context-limit")

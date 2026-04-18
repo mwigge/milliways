@@ -14,8 +14,8 @@ import (
 // do not interrupt the caller's own state management.
 type Writer interface {
 	Begin(ctx context.Context, convID, blockID, provider, prompt string) error
-	StartSegment(ctx context.Context, provider string) error
-	AppendTurn(ctx context.Context, role conversation.TurnRole, provider, text string) error
+	StartSegment(ctx context.Context, provider string, repoContext *conversation.RepoContext) error
+	AppendTurn(ctx context.Context, role conversation.TurnRole, provider, text string, reposAccessed []string, projectRefs []conversation.ProjectRef) error
 	EndSegment(ctx context.Context, status, reason string) error
 	CheckpointOnExhaustion(ctx context.Context, reason string) (CheckpointResponse, error)
 	Finish(ctx context.Context, status, reason string) error
@@ -58,10 +58,11 @@ func (w *SessionWriter) Begin(ctx context.Context, convID, blockID, provider, pr
 
 // StartSegment opens a new provider segment on substrate. The returned segment
 // ID is retained and used by subsequent EndSegment / CheckpointOnExhaustion calls.
-func (w *SessionWriter) StartSegment(ctx context.Context, provider string) error {
+func (w *SessionWriter) StartSegment(ctx context.Context, provider string, repoContext *conversation.RepoContext) error {
 	resp, err := w.client.ConversationStartSegment(ctx, StartSegmentRequest{
 		ConversationID: w.convID,
 		Provider:       provider,
+		RepoContext:    repoContext,
 	})
 	if err != nil {
 		return fmt.Errorf("substrate writer StartSegment: %w", err)
@@ -71,7 +72,7 @@ func (w *SessionWriter) StartSegment(ctx context.Context, provider string) error
 }
 
 // AppendTurn mirrors one transcript turn to substrate.
-func (w *SessionWriter) AppendTurn(ctx context.Context, role conversation.TurnRole, provider, text string) error {
+func (w *SessionWriter) AppendTurn(ctx context.Context, role conversation.TurnRole, provider, text string, reposAccessed []string, projectRefs []conversation.ProjectRef) error {
 	return w.client.ConversationAppendTurn(ctx, AppendTurnRequest{
 		ConversationID: w.convID,
 		Turn: conversation.Turn{
@@ -79,7 +80,14 @@ func (w *SessionWriter) AppendTurn(ctx context.Context, role conversation.TurnRo
 			Provider: provider,
 			Text:     text,
 		},
+		ReposAccessed: reposAccessed,
+		ProjectRefs:   projectRefs,
 	})
+}
+
+// AppendTurnWithContext calls AppendTurn with the provided reposAccessed and projectRefs.
+func (w *SessionWriter) AppendTurnWithContext(ctx context.Context, role conversation.TurnRole, provider, text string, reposAccessed []string, projectRefs []conversation.ProjectRef) error {
+	return w.AppendTurn(ctx, role, provider, text, reposAccessed, projectRefs)
 }
 
 // EndSegment closes the active provider segment with the given status
