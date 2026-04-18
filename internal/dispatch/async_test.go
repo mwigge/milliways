@@ -175,6 +175,66 @@ func TestDispatchAsync_LogsStructuredCheckpointWarning(t *testing.T) {
 	}
 }
 
+func TestDispatchAsync_RecoversKitchenExecPanic(t *testing.T) {
+	t.Parallel()
+	pdb := openTestPantry(t)
+	d := NewAsyncDispatcher(pdb)
+
+	ticketID, err := d.DispatchAsync(context.Background(), panicKitchen{name: "panic-kitchen"}, "hello async")
+	if err != nil {
+		t.Fatalf("DispatchAsync: %v", err)
+	}
+
+	waitForDispatcher(t, d)
+
+	ticket, err := pdb.Tickets().Get(ticketID)
+	if err != nil {
+		t.Fatalf("Get ticket: %v", err)
+	}
+	if ticket == nil {
+		t.Fatal("ticket not found")
+	}
+	if ticket.Status != "failed" {
+		t.Fatalf("expected status failed, got %q", ticket.Status)
+	}
+	if ticket.ExitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", ticket.ExitCode)
+	}
+}
+
+func TestDispatchAsync_RecoversOuterGoroutinePanic(t *testing.T) {
+	pdb := openTestPantry(t)
+	d := NewAsyncDispatcher(pdb)
+	capture := installTestLogger(t)
+	d.WithSubstrateClient(func() convWriter { return panicConvWriter{} })
+
+	ticketID, err := d.DispatchAsync(context.Background(), stubKitchen{
+		name:   "stub-kitchen",
+		result: kitchen.Result{ExitCode: 0, Output: "hello"},
+	}, "hello async")
+	if err != nil {
+		t.Fatalf("DispatchAsync: %v", err)
+	}
+
+	waitForDispatcher(t, d)
+
+	ticket, err := pdb.Tickets().Get(ticketID)
+	if err != nil {
+		t.Fatalf("Get ticket: %v", err)
+	}
+	if ticket == nil {
+		t.Fatal("ticket not found")
+	}
+	if ticket.Status != "panicked" {
+		t.Fatalf("expected status panicked, got %q", ticket.Status)
+	}
+	if ticket.ExitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", ticket.ExitCode)
+	}
+	assertAttrValue(t, capture.records(), "dispatch async goroutine panicked", "ticket", ticketID)
+	assertAttrValue(t, capture.records(), "dispatch async goroutine panicked", "panic", "substrate begin panic")
+}
+
 type stubKitchen struct {
 	name   string
 	result kitchen.Result
@@ -192,6 +252,22 @@ func (k stubKitchen) Stations() []string { return nil }
 func (k stubKitchen) CostTier() kitchen.CostTier { return kitchen.Free }
 
 func (k stubKitchen) Status() kitchen.Status { return kitchen.Ready }
+
+type panicKitchen struct {
+	name string
+}
+
+func (k panicKitchen) Name() string { return k.name }
+
+func (k panicKitchen) Exec(context.Context, kitchen.Task) (kitchen.Result, error) {
+	panic("kitchen exec panic")
+}
+
+func (k panicKitchen) Stations() []string { return nil }
+
+func (k panicKitchen) CostTier() kitchen.CostTier { return kitchen.Free }
+
+func (k panicKitchen) Status() kitchen.Status { return kitchen.Ready }
 
 type stubConvWriter struct {
 	beginErr        error
@@ -221,6 +297,28 @@ func (w *stubConvWriter) CheckpointOnExhaustion(context.Context, string) (substr
 }
 
 func (w *stubConvWriter) Finish(context.Context, string, string) error { return w.finishErr }
+
+type panicConvWriter struct{}
+
+func (panicConvWriter) Begin(context.Context, string, string, string, string) error {
+	panic("substrate begin panic")
+}
+
+func (panicConvWriter) StartSegment(context.Context, string, *conversation.RepoContext) error {
+	return nil
+}
+
+func (panicConvWriter) AppendTurn(context.Context, conversation.TurnRole, string, string, []string, []conversation.ProjectRef) error {
+	return nil
+}
+
+func (panicConvWriter) EndSegment(context.Context, string, string) error { return nil }
+
+func (panicConvWriter) CheckpointOnExhaustion(context.Context, string) (substrate.CheckpointResponse, error) {
+	return substrate.CheckpointResponse{}, nil
+}
+
+func (panicConvWriter) Finish(context.Context, string, string) error { return nil }
 
 var testLoggerMu sync.Mutex
 
@@ -308,4 +406,19 @@ func assertAttrValue(t *testing.T, records []testLogRecord, message, key string,
 		return
 	}
 	t.Fatalf("log %q not found", message)
+}
+
+func waitForDispatcher(t *testing.T, d *AsyncDispatcher) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		d.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for async dispatcher")
+	}
 }

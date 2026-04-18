@@ -75,6 +75,12 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
+		defer func() {
+			if p := recover(); p != nil {
+				slog.Error("dispatch async goroutine panicked", "panic", p, "ticket", ticketID)
+				_ = d.pdb.Tickets().UpdateStatus(ticketID, "panicked", 1, nil)
+			}
+		}()
 
 		// Respect parent cancellation: if the dispatch is cancelled (process interrupt,
 		// timeout, etc.) before or during execution, abort early instead of letting
@@ -103,8 +109,14 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 		execCtx := ctx
 		doneCh := make(chan struct{})
 		go func() {
+			defer close(doneCh)
+			defer func() {
+				if p := recover(); p != nil {
+					result = kitchen.Result{ExitCode: 1}
+					execErr = fmt.Errorf("kitchen exec panicked: %v", p)
+				}
+			}()
 			result, execErr = k.Exec(execCtx, task)
-			close(doneCh)
 		}()
 		select {
 		case <-doneCh:
