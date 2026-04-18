@@ -367,7 +367,14 @@ func TestOrchestratorAutoSwitchEmitsReversibleSwitchEvent(t *testing.T) {
 	if switchEvent == nil {
 		t.Fatalf("runtime events = %#v, want switch event", runtimeEvents)
 	}
-	for key, want := range map[string]string{"from": "claude", "to": "gemini", "reason": `task mentioned "search the web" (hard signal)`} {
+	for key, want := range map[string]string{
+		"from":          "claude",
+		"to":            "gemini",
+		"reason":        `task mentioned "search the web" (hard signal)`,
+		"trigger":       "hard-signal",
+		"tier":          "auto-switch",
+		"reversal_hint": "/back",
+	} {
 		if got := switchEvent.Fields[key]; got != want {
 			t.Fatalf("switch field %q = %q, want %q", key, got, want)
 		}

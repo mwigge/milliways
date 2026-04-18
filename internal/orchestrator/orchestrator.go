@@ -107,11 +107,7 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 				Provider:       route.Decision.Kitchen,
 				Text:           formatSwitchRuntimeText(fromKitchen, route.Decision.Kitchen, route.Decision.Reason),
 				At:             time.Now(),
-				Fields: map[string]string{
-					"from":   fromKitchen,
-					"to":     route.Decision.Kitchen,
-					"reason": route.Decision.Reason,
-				},
+				Fields:         autoSwitchFields(fromKitchen, route.Decision),
 			})
 			if onEvent != nil {
 				onEvent(adapter.Event{
@@ -467,6 +463,32 @@ func formatSwitchSystemLine(fromKitchen, toKitchen, reason string) string {
 
 func formatSwitchRuntimeText(fromKitchen, toKitchen, reason string) string {
 	return fmt.Sprintf("switch %s -> %s (%s)", fromKitchen, toKitchen, reason)
+}
+
+func autoSwitchFields(fromKitchen string, decision sommelier.Decision) map[string]string {
+	fields := map[string]string{
+		"from":          fromKitchen,
+		"to":            decision.Kitchen,
+		"reason":        decision.Reason,
+		"reversal_hint": "/back",
+	}
+	if decision.Tier != "" {
+		fields["tier"] = decision.Tier
+	}
+	if trigger := deriveAutoSwitchTrigger(decision.Reason); trigger != "" {
+		fields["trigger"] = trigger
+	}
+	return fields
+}
+
+func deriveAutoSwitchTrigger(reason string) string {
+	normalized := strings.ToLower(strings.TrimSpace(reason))
+	switch {
+	case strings.Contains(normalized, "hard signal"), strings.Contains(normalized, "hard-signal"):
+		return "hard-signal"
+	default:
+		return ""
+	}
 }
 
 func emitMemoryPromotionEvents(sink observability.Sink, conv *conversation.Conversation, segmentID string) {
