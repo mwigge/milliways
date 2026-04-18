@@ -259,11 +259,21 @@ Add `make smoke` to the existing CI workflow after `go test`. Failure blocks mer
 3. One release later: remove the escape hatch, delete the legacy SQLite tables.
 4. Existing users on upgrade: milliways auto-migrates in-flight conversations once, then logs completion.
 
-## D7: Out of scope — collaborative TUI
+## D7: Collab — delegated to ecosystem tools
 
-Explicitly not designed here. The substrate *enables* collab (two milliways instances can point at the same MemPalace drawer), but the actual collab UX — cursor presence, input-buffer OT/CRDT, session join/leave — is a separate project. Anticipated name: `milliways-collab` or similar. It depends on this change but ships independently.
+No custom collaboration layer is built here, and none is planned for a future milliways change. The substrate *enables* co-presence (two milliways instances pointing at the same MemPalace drawer see the same live conversation, read-only), and that is the entire extent of first-party collab work.
 
-Read-only co-presence (second instance reads the live conversation) is a free side effect of the substrate and can be demonstrated as part of this change's verification.
+Richer pair-programming is delegated:
+
+| Collab need | Sanctioned path | milliways responsibility |
+|---|---|---|
+| Share tmux session over a URL | `tmate` (tmux fork) | none — install `tmate`, run milliways inside it |
+| Share a specific nvim buffer | `live-share.nvim` | none — for users on the nvim plugin path |
+| Read the same conversation from a second machine | read-only substrate co-presence | MemPalace drawer is MCP-exposed; a second milliways instance reads it |
+
+This delegation matches the terminal-first, tmux-pane-per-tool shape of the user workflow milliways is designed for. It also removes months of CRDT/OT work from the milliways critical path without denying users any practical collab capability.
+
+No future `milliways-collab` change is planned. Anyone asking for "VSCode Live Share for milliways" should be pointed at `tmate` (session-level) or `live-share.nvim` (buffer-level).
 
 ## D8: Risks and open questions
 

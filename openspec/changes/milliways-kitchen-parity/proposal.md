@@ -32,7 +32,9 @@ Under this frame:
 Two further decisions taken in exploration:
 
 - **Substrate = MemPalace, forked.** MemPalace already solves persistent memory, semantic recall, and MCP surfacing. It does not yet have a live-conversation primitive. We fork, add the primitive, and live with the fork-maintenance cost because the alternative (reinventing MemPalace inside Milliways) is worse.
-- **Focus = TUI.** Headless `milliways "..."` keeps working, but continuity indicators, switching, and collaborative features target the TUI. Neovim plugin is a bonus, not a requirement.
+- **Focus = TUI as a tmux pane.** The canonical UX is a bubble-tea TUI that lives alongside nvim, lazygit, yazi, and a server pane in a tmux session — matching the terminal-first, keyboard-driven, tmux-pane-per-tool workflow that defines the category. Headless `milliways "..."` keeps working for scripting.
+- **Collab = `tmate`, not custom.** Pair-programming is covered by sharing the tmux session via `tmate`. No custom CRDT, OT, or live-share project is on the milliways roadmap. Users on the nvim plugin can additionally layer `live-share.nvim` for finer-grained buffer co-editing. Milliways' own collab contribution is the substrate — two milliways processes can point at the same MemPalace drawer, which is read-only co-presence.
+- **Nvim plugin evolution is out of scope here.** The existing thin wrapper keeps working. A future deepening to context-aware L2 (hydrate current buffer, selection, cursor, LSP diagnostics into dispatches) is anticipated as a separate change — not bundled into this one.
 
 ## What Changes
 
@@ -100,7 +102,7 @@ This closes the gap that let the `codex` allowlist bug reach manual verification
 
 ## Explicit Non-Goals
 
-- **Collaborative TUI.** Multi-user live editing of a block (VSCode Live Share style) is a separate project built on top of milliways + MemPalace substrate. Not in this change. The substrate lands here; the collab project consumes it later.
+- **Custom collab layer (CRDT / OT / live-share clone).** Not built. Not on the roadmap. Pair programming and co-presence are delivered by `tmate` (tmux session sharing) and optionally `live-share.nvim` (for nvim-plugin users). Milliways contributes read-only substrate co-presence — two milliways instances pointing at the same MemPalace drawer — and that is the extent of first-party collab work.
 - **New kitchens.** This change does not add adapter implementations for previously-unsupported CLIs. Existing kitchens and the generic adapter are sufficient.
 - **LLM-based routing.** Routing stays cheap (keywords + pantry + learned history). A future tiny-model tier has an interface slot but is not implemented here.
 - **Native-resume expansion.** The existing native-resume support from `milliways-provider-continuity` is preserved but not extended to more providers in this change.
@@ -144,7 +146,7 @@ Milliways is successful on this change when:
 
 1. A conversation started in `claude` can be switched to `codex` by typing `/switch codex` in the TUI, and the codex segment begins with the full transcript, working memory, and context available.
 2. The same conversation survives milliways restart — on resume, it reads from MemPalace and continues from the exact last state, including provider lineage.
-3. A second milliways instance connected to the same MemPalace drawer can read the live conversation (sets up the collab project downstream — read-only is enough to prove the substrate).
+3. A second milliways instance connected to the same MemPalace drawer can read the live conversation — read-only co-presence is proof the substrate is sound. Any richer collab (cursors, co-editing) is delivered by `tmate` for tmux-pane users or `live-share.nvim` for nvim users, not by milliways itself.
 4. Continuous routing can suggest a kitchen switch mid-conversation; the user can accept, reject, or silence via `/stick`.
 5. `testdata/smoke/` runs in CI and would catch the class of bug that blocked PC-21.1.
 6. The `milliways-provider-continuity` closeout is archived and no behaviour it delivered is regressed.
