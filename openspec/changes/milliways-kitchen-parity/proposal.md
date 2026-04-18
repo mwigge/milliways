@@ -4,6 +4,14 @@
 > The table, the order, the notes, and the memory are MemPalace's.
 > The user picks who cooks, whenever they like, for whatever reason.
 
+## Positioning
+
+Milliways is the **maitre d'** of your AI workflow: a terminal-first, keyboard-driven router that seats your task at the right kitchen, remembers what happened across the meal, and keeps the conversation alive when any single kitchen runs out of steam.
+
+Every AI CLI — `claude`, `codex`, `gemini`, `opencode`, `aider`, `goose`, `cline` — is a **kitchen**. Milliways doesn't cook. It decides where to send each course, carries the conversation between courses, and never touches your subscriptions, tokens, or credentials.
+
+Category shorthand: a light, terminal-native AI workspace in the `OpenCode`/`Claude Code` tradition — narrower surface, no subscription management, no hosted sync, no web UI. Multi-kitchen routing and shared conversation memory are the differentiators.
+
 ## Why
 
 `milliways-provider-continuity` solved one question: *how does the conversation survive when a provider runs out of tokens?* The answer — canonical Milliways-owned conversation, exhaustion detection, same-block continuation — still stands.
