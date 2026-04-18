@@ -224,7 +224,7 @@
 - [ ] WS-23.4 Manual smoke: Ctrl+F rates dispatch → confirm via `milliways report`
 - [ ] WS-23.5 Manual smoke: Ctrl+S shows session summary
 - [ ] WS-23.6 Manual smoke: exhaust a kitchen (or mock rate limit) → next dispatch routes to different kitchen → status bar shows exhausted with reset time
-- [ ] WS-23.7 Manual smoke: headless `milliways --verbose "prompt"` shows [routed] and [cost] on stderr
+- [x] WS-23.7 Manual smoke: headless `milliways --verbose "prompt"` shows [routed] and [cost] on stderr
 
 - [ ] 🍽️ **Grand Service** — The restaurant has a window, a conversation, and a memory. You see what's cooking, you talk to the chef, and you know when it's time to try a different table. `milliways --tui` is a workspace, not a void.
 
