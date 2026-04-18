@@ -3,7 +3,9 @@ package substrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -544,5 +546,209 @@ func TestParseContent_MCPWrapper(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Name != "wrapped" {
 		t.Errorf("unexpected result: %+v", got)
+	}
+}
+
+// --- Connection management ---
+
+// fakeCloser tracks whether Close was called.
+type fakeCloser struct {
+	closed int
+	err    error
+}
+
+func (f *fakeCloser) Close() error {
+	f.closed++
+	return f.err
+}
+
+// fakeDialResult is the outcome the fakeDialer will return on next call.
+type fakeDialResult struct {
+	caller Caller
+	closer io.Closer
+	err    error
+}
+
+// fakeDial is a controllable dial function for reconnect tests.
+type fakeDial struct {
+	results []fakeDialResult
+	calls   int
+}
+
+func (fd *fakeDial) dial(command string, args ...string) (Caller, io.Closer, error) {
+	if fd.calls >= len(fd.results) {
+		return nil, nil, fmt.Errorf("fakeDial: no result configured for call %d", fd.calls)
+	}
+	r := fd.results[fd.calls]
+	fd.calls++
+	return r.caller, r.closer, r.err
+}
+
+func TestClose_CallsCloser(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCaller{result: json.RawMessage(`{}`)}
+	cl := &fakeCloser{}
+	c := &Client{mcp: fc, closer: cl}
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if cl.closed != 1 {
+		t.Errorf("expected closer called once, got %d", cl.closed)
+	}
+}
+
+func TestClose_Idempotent(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCaller{result: json.RawMessage(`{}`)}
+	cl := &fakeCloser{}
+	c := &Client{mcp: fc, closer: cl}
+
+	_ = c.Close()
+	if err := c.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if cl.closed != 1 {
+		t.Errorf("closer must be called exactly once; got %d", cl.closed)
+	}
+}
+
+func TestClose_NoCloser_NoError(t *testing.T) {
+	t.Parallel()
+
+	// NewWithCaller produces a client without a closer (test-only path).
+	c := NewWithCaller(&fakeCaller{result: json.RawMessage(`{}`)})
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close with no closer: %v", err)
+	}
+}
+
+func TestPing_Success(t *testing.T) {
+	t.Parallel()
+
+	summaries := []ConversationSummary{}
+	fc := &fakeCaller{result: mustJSON(summaries)}
+	c := NewWithCaller(fc)
+
+	if err := c.Ping(context.Background()); err != nil {
+		t.Fatalf("Ping: %v", err)
+	}
+	if fc.lastCall().toolName != "mempalace_conversation_list" {
+		t.Errorf("expected mempalace_conversation_list, got %q", fc.lastCall().toolName)
+	}
+}
+
+func TestPing_Error_WrapsAsConnectionError(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCaller{err: fmt.Errorf("transport error")}
+	c := NewWithCaller(fc)
+
+	err := c.Ping(context.Background())
+	if err == nil {
+		t.Fatal("expected error from Ping, got nil")
+	}
+	var ce *ConnectionError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *ConnectionError, got %T: %v", err, err)
+	}
+	if ce.Op != "ping" {
+		t.Errorf("expected op=ping, got %q", ce.Op)
+	}
+}
+
+func TestReconnect_Success_SwapsCaller(t *testing.T) {
+	t.Parallel()
+
+	firstCaller := &fakeCaller{result: json.RawMessage(`{}`), err: fmt.Errorf("dead")}
+	firstCloser := &fakeCloser{}
+
+	newCaller := &fakeCaller{result: mustJSON(StartResponse{ConversationID: "conv-new", Status: "active", CreatedAt: time.Now()})}
+	newCloser := &fakeCloser{}
+
+	fd := &fakeDial{results: []fakeDialResult{
+		{caller: newCaller, closer: newCloser, err: nil},
+	}}
+
+	c := &Client{
+		mcp:     firstCaller,
+		closer:  firstCloser,
+		command: "fake-server",
+		cmdArgs: []string{"--arg"},
+		dial:    fd.dial,
+	}
+
+	if err := c.Reconnect(context.Background()); err != nil {
+		t.Fatalf("Reconnect: %v", err)
+	}
+	if firstCloser.closed != 1 {
+		t.Errorf("old closer must be called once; got %d", firstCloser.closed)
+	}
+	if fd.calls != 1 {
+		t.Errorf("dial must be called once; got %d", fd.calls)
+	}
+	// After reconnect the new caller is active — verify via ConversationStart.
+	got, err := c.ConversationStart(context.Background(), StartRequest{ConversationID: "conv-new"})
+	if err != nil {
+		t.Fatalf("ConversationStart after reconnect: %v", err)
+	}
+	if got.ConversationID != "conv-new" {
+		t.Errorf("expected conv-new, got %q", got.ConversationID)
+	}
+}
+
+func TestReconnect_DialFailure_ReturnsConnectionError(t *testing.T) {
+	t.Parallel()
+
+	fd := &fakeDial{results: []fakeDialResult{
+		{err: fmt.Errorf("process refused to start")},
+	}}
+	c := &Client{
+		command: "bad-server",
+		dial:    fd.dial,
+	}
+
+	err := c.Reconnect(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var ce *ConnectionError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *ConnectionError, got %T: %v", err, err)
+	}
+	if ce.Op != "reconnect" {
+		t.Errorf("expected op=reconnect, got %q", ce.Op)
+	}
+}
+
+func TestReconnect_NoDialFn_ReturnsConnectionError(t *testing.T) {
+	t.Parallel()
+
+	// Client created via NewWithCaller has no dial function.
+	c := NewWithCaller(&fakeCaller{})
+
+	err := c.Reconnect(context.Background())
+	if err == nil {
+		t.Fatal("expected error for client without dial function")
+	}
+	var ce *ConnectionError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected *ConnectionError, got %T: %v", err, err)
+	}
+	if ce.Op != "reconnect" {
+		t.Errorf("expected op=reconnect, got %q", ce.Op)
+	}
+}
+
+func TestConnectionError_Unwrap(t *testing.T) {
+	t.Parallel()
+
+	sentinel := fmt.Errorf("root cause")
+	ce := &ConnectionError{Op: "ping", Err: sentinel}
+
+	if !errors.Is(ce, sentinel) {
+		t.Errorf("errors.Is should find sentinel through ConnectionError")
 	}
 }

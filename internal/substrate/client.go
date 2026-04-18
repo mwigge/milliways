@@ -6,7 +6,10 @@ package substrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"sync"
 	"time"
 
 	"github.com/mwigge/milliways/internal/conversation"
@@ -18,23 +21,117 @@ type Caller interface {
 	CallTool(ctx context.Context, toolName string, args map[string]any) (json.RawMessage, error)
 }
 
+// dialFunc dials an MCP server and returns a Caller, an optional closer, and any error.
+type dialFunc func(command string, args ...string) (Caller, io.Closer, error)
+
+// defaultDial is the production dial implementation using pantry.StartMCP.
+func defaultDial(command string, args ...string) (Caller, io.Closer, error) {
+	mcp, err := pantry.StartMCP(command, args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	return mcp, mcp, nil
+}
+
+// ConnectionError wraps a substrate MCP connection failure with the operation context.
+type ConnectionError struct {
+	Op  string // "start", "ping", or "reconnect"
+	Err error
+}
+
+func (e *ConnectionError) Error() string {
+	return fmt.Sprintf("substrate connection %s: %v", e.Op, e.Err)
+}
+
+func (e *ConnectionError) Unwrap() error { return e.Err }
+
 // Client translates typed conversation operations into MemPalace MCP calls.
 type Client struct {
-	mcp Caller
+	mcp     Caller
+	closer  io.Closer  // non-nil when client owns an MCP subprocess
+	command string     // original command, used for reconnect
+	cmdArgs []string   // original args, used for reconnect
+	dial    dialFunc   // non-nil for clients created via New
+	mu      sync.Mutex // guards mcp, closer, closed during reconnect / close
+	closed  bool
 }
 
 // New creates a Client that dials an MCP server via stdio.
+// The client owns the subprocess; call Close when done.
 func New(command string, args ...string) (*Client, error) {
-	mcp, err := pantry.StartMCP(command, args...)
+	return newWithDial(command, defaultDial, args...)
+}
+
+// newWithDial creates a Client using the provided dial function (package-level; used in tests).
+func newWithDial(command string, fn dialFunc, args ...string) (*Client, error) {
+	caller, closer, err := fn(command, args...)
 	if err != nil {
-		return nil, fmt.Errorf("substrate: starting MCP: %w", err)
+		return nil, &ConnectionError{Op: "start", Err: fmt.Errorf("starting MCP: %w", err)}
 	}
-	return &Client{mcp: mcp}, nil
+	return &Client{
+		mcp:     caller,
+		closer:  closer,
+		command: command,
+		cmdArgs: args,
+		dial:    fn,
+	}, nil
 }
 
 // NewWithCaller creates a Client backed by an existing Caller (useful in tests).
 func NewWithCaller(caller Caller) *Client {
 	return &Client{mcp: caller}
+}
+
+// --- Connection management ---
+
+// Ping verifies that the MemPalace MCP server is reachable by issuing a
+// lightweight list call. Returns a *ConnectionError on failure.
+func (c *Client) Ping(ctx context.Context) error {
+	_, err := c.mcp.CallTool(ctx, "mempalace_conversation_list", map[string]any{})
+	if err != nil {
+		return &ConnectionError{Op: "ping", Err: err}
+	}
+	return nil
+}
+
+// Close shuts down the underlying MCP subprocess, if the client owns one.
+// It is safe to call Close more than once; subsequent calls are no-ops.
+func (c *Client) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return nil
+	}
+	c.closed = true
+	if c.closer != nil {
+		return c.closer.Close()
+	}
+	return nil
+}
+
+// Reconnect restarts the underlying MCP subprocess. It is only supported for
+// clients created via New. Reconnect must not be called concurrently with
+// in-flight tool calls; callers are responsible for quiescing activity first.
+func (c *Client) Reconnect(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dial == nil {
+		return &ConnectionError{
+			Op:  "reconnect",
+			Err: errors.New("no dial function; client was not created via New"),
+		}
+	}
+	if c.closer != nil {
+		_ = c.closer.Close()
+	}
+	caller, closer, err := c.dial(c.command, c.cmdArgs...)
+	if err != nil {
+		return &ConnectionError{Op: "reconnect", Err: fmt.Errorf("restarting MCP: %w", err)}
+	}
+	c.mcp = caller
+	c.closer = closer
+	c.closed = false
+	return nil
 }
 
 // --- Conversation lifecycle ---
