@@ -40,6 +40,41 @@ func TestHandleKey_EnterExecutesSwitchPaletteCommandWithArgument(t *testing.T) {
 	}
 }
 
+func TestHandleKey_EnterExecutesStickPaletteCommand(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil)
+	conv := conversation.New("conv-1", "b1", "finish the task")
+	m.blocks = []Block{{
+		ID:             "b1",
+		ConversationID: conv.ID,
+		Prompt:         "finish the task",
+		Kitchen:        "claude",
+		State:          StateStreaming,
+		StartedAt:      conv.CreatedAt,
+		Conversation:   conv,
+	}}
+	m.focusedIdx = 0
+	m.overlayActive = true
+	m.overlayMode = OverlayPalette
+	m.overlayInput = textinput.New()
+	m.overlayInput.SetValue("stick")
+
+	cmds := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if len(cmds) != 0 {
+		t.Fatalf("expected no dispatch command, got %d", len(cmds))
+	}
+	if m.overlayActive {
+		t.Fatal("palette overlay should close after command execution")
+	}
+	if got := m.blocks[0].Conversation.Memory.StickyKitchen; got != "claude" {
+		t.Fatalf("StickyKitchen = %q, want claude", got)
+	}
+	if got := m.blocks[0].Lines[len(m.blocks[0].Lines)-1].Text; !strings.Contains(got, "sticky mode enabled") {
+		t.Fatalf("last line = %q, want sticky enabled message", got)
+	}
+}
+
 func TestHandleSwitchCommand_TransitionsConversationAndRendersSwitchState(t *testing.T) {
 	t.Parallel()
 
@@ -142,6 +177,97 @@ func TestHandleSwitchCommand_TransitionsConversationAndRendersSwitchState(t *tes
 	activity := m.runtimeActivityLines(6)
 	if len(activity) != 1 || !strings.Contains(activity[0], "switch") || !strings.Contains(activity[0], "gpt") {
 		t.Fatalf("activity lines = %#v", activity)
+	}
+}
+
+func TestHandleStickCommand_TogglesConversationWorkingMemory(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil)
+	conv := conversation.New("conv-1", "b1", "finish the task")
+	m.blocks = []Block{{
+		ID:             "b1",
+		ConversationID: conv.ID,
+		Prompt:         "finish the task",
+		Kitchen:        "claude",
+		State:          StateStreaming,
+		StartedAt:      conv.CreatedAt,
+		Conversation:   conv,
+	}}
+	m.focusedIdx = 0
+
+	m.executePaletteCommand("stick")
+
+	b := m.blocks[0]
+	if got := b.Conversation.Memory.StickyKitchen; got != "claude" {
+		t.Fatalf("StickyKitchen = %q, want claude", got)
+	}
+	if got := b.Lines[len(b.Lines)-1].Text; !strings.Contains(got, "sticky mode enabled for kitchen \"claude\"") {
+		t.Fatalf("last line = %q, want sticky enabled message", got)
+	}
+
+	m.executePaletteCommand("stick")
+
+	b = m.blocks[0]
+	if got := b.Conversation.Memory.StickyKitchen; got != "" {
+		t.Fatalf("StickyKitchen = %q, want empty", got)
+	}
+	if got := b.Lines[len(b.Lines)-1].Text; !strings.Contains(got, "sticky mode off") {
+		t.Fatalf("last line = %q, want sticky disabled message", got)
+	}
+}
+
+func TestHandleStickCommand_MissingConversationStateShowsHelpfulMessage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		setup     func(*Model)
+		wantBlock bool
+	}{
+		{
+			name:      "no focused block",
+			setup:     func(*Model) {},
+			wantBlock: true,
+		},
+		{
+			name: "no conversation",
+			setup: func(m *Model) {
+				m.blocks = []Block{{ID: "b1", Prompt: "task", Kitchen: "claude", State: StateStreaming}}
+				m.focusedIdx = 0
+			},
+		},
+		{
+			name: "no kitchen",
+			setup: func(m *Model) {
+				conv := conversation.New("conv-1", "b1", "task")
+				m.blocks = []Block{{ID: "b1", ConversationID: conv.ID, Prompt: "task", State: StateStreaming, Conversation: conv}}
+				m.focusedIdx = 0
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tc := tt
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := NewModel(nil)
+			tc.setup(&m)
+
+			m.executePaletteCommand("stick")
+
+			if tc.wantBlock {
+				if len(m.blocks) != 1 {
+					t.Fatalf("blocks = %d, want 1", len(m.blocks))
+				}
+			}
+
+			b := m.blocks[m.focusedIdx]
+			if got := b.Lines[len(b.Lines)-1].Text; !strings.Contains(got, "cannot toggle sticky mode") {
+				t.Fatalf("last line = %q, want sticky error message", got)
+			}
+		})
 	}
 }
 

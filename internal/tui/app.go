@@ -854,6 +854,9 @@ func (m *Model) executePaletteCommand(command string) tea.Cmd {
 	case command == "switch":
 		m.appendCommandFeedback("/switch", "usage: /switch <kitchen>")
 		return nil
+	case command == "stick":
+		m.handleStickCommand()
+		return nil
 	case command == "back":
 		m.handleBackCommand()
 		return nil
@@ -1019,6 +1022,32 @@ func (m *Model) handleSwitchCommand(kitchen string) {
 	})
 }
 
+func (m *Model) handleStickCommand() {
+	b := m.focusedBlock()
+	if b == nil {
+		m.appendCommandFeedback("/stick", "cannot toggle sticky mode: no focused block")
+		return
+	}
+	if b.Conversation == nil {
+		b.appendSystemLine("cannot toggle sticky mode: focused block has no active conversation")
+		return
+	}
+	kitchen := strings.TrimSpace(b.Kitchen)
+	if kitchen == "" {
+		b.appendSystemLine("cannot toggle sticky mode: focused block has no current kitchen")
+		return
+	}
+
+	if b.Conversation.Memory.StickyKitchen == kitchen {
+		b.Conversation.Memory.StickyKitchen = ""
+		b.appendSystemLine("sticky mode off")
+		return
+	}
+
+	b.Conversation.Memory.StickyKitchen = kitchen
+	b.appendSystemLine(fmt.Sprintf("sticky mode enabled for kitchen %q", kitchen))
+}
+
 func (m *Model) handleBackCommand() {
 	targetKitchen, ok := m.mostRecentSwitchSource()
 	if !ok {
@@ -1095,7 +1124,7 @@ func resolvePaletteCommand(input, fallback string) string {
 	if input == "" {
 		return fallback
 	}
-	if input == "back" || input == "kitchens" || input == "switch" || strings.HasPrefix(input, "switch ") {
+	if input == "back" || input == "kitchens" || input == "stick" || input == "switch" || strings.HasPrefix(input, "switch ") {
 		return input
 	}
 	for _, item := range paletteItems {
