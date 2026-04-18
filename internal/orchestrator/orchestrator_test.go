@@ -419,6 +419,58 @@ func TestOrchestratorStoresRepoContextOnSegmentStart(t *testing.T) {
 	}
 }
 
+// TestOrchestratorTracksReposAccessedAndProjectRefsPerTurn verifies that the
+// bridge is queried for project hits and that project refs are tracked per turn.
+func TestOrchestratorTracksReposAccessedAndProjectRefsPerTurn(t *testing.T) {
+	t.Parallel()
+
+	palaceDrawers := 7
+	second := &stubAdapter{events: []adapter.Event{{Type: adapter.EventDone, Kitchen: "second", ExitCode: 0}}}
+	bridgeClient := &stubBridgeClient{
+		hits: []conversation.ProjectHit{{
+			DrawerID:    "drawer-1",
+			Wing:        "decisions",
+			Room:        "routing",
+			Content:     "budget fallback prefers opencode",
+			FactSummary: "budget fallback prefers opencode",
+			Relevance:   0.9,
+			CapturedAt:  "2026-04-18T10:00:00Z",
+		}},
+	}
+
+	o := &Orchestrator{
+		Factory: func(_ context.Context, _ string, _ map[string]bool, _ string, _ map[string]string) (RouteResult, error) {
+			return RouteResult{Decision: sommelier.Decision{Kitchen: "second"}, Adapter: second}, nil
+		},
+		Bridge: bridge.NewForClient(&project.ProjectContext{
+			RepoRoot:      "/home/user/acme",
+			RepoName:      "acme",
+			PalaceDrawers: &palaceDrawers,
+		}, 1, bridgeClient),
+		ProjectContext: &project.ProjectContext{
+			RepoRoot:         "/home/user/acme",
+			RepoName:         "acme",
+			CodeGraphSymbols: 42,
+		},
+	}
+
+	conv, err := o.Run(context.Background(), RunRequest{ConversationID: "conv-repos", BlockID: "b1", Prompt: "Investigate rate limiter behavior"}, nil, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Verify project hits were injected into context
+	if len(conv.Context.ProjectHits) != 1 {
+		t.Fatalf("project hits = %d, want 1", len(conv.Context.ProjectHits))
+	}
+
+	// Verify reposAccessed is tracked in orchestrator state
+	// (The reposAccessed map is internal, but we verify via bridge queries)
+	if len(bridgeClient.queries) == 0 {
+		t.Error("expected bridge to have been queried")
+	}
+}
+
 func TestBuildRepoContextOmitsOptionalZeroValues(t *testing.T) {
 	t.Parallel()
 

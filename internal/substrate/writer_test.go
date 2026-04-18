@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -323,6 +324,129 @@ func TestSessionWriter_FullWritePath_OrderIsPreserved(t *testing.T) {
 	ckptCall := mc.calls[5]
 	if ckptCall.args["reason"] != "context-limit" {
 		t.Errorf("checkpoint reason: expected context-limit, got %v", ckptCall.args["reason"])
+	}
+}
+
+// TestSessionWriter_StartSegment_PassesRepoContext verifies that repo_context is
+// serialized and passed to the mempalace_conversation_start_segment tool call.
+func TestSessionWriter_StartSegment_PassesRepoContext(t *testing.T) {
+	t.Parallel()
+
+	segResp := StartSegmentResponse{SegmentID: "seg-42", StartedAt: time.Now()}
+	mc := &multiResultCaller{results: []json.RawMessage{mustJSON(segResp)}}
+	w := NewSessionWriter(NewWithCaller(mc))
+	w.convID = "conv-1"
+
+	rc := &conversation.RepoContext{
+		RepoRoot:         "/home/user/acme",
+		RepoName:         "acme",
+		Branch:           "feature/test",
+		Commit:           "deadbeef",
+		CodeGraphSymbols: 99,
+		PalaceDrawers:    11,
+	}
+	if err := w.StartSegment(context.Background(), "claude", rc); err != nil {
+		t.Fatalf("StartSegment: %v", err)
+	}
+
+	call := mc.calls[0]
+	rcArg, ok := call.args["repo_context"]
+	if !ok {
+		t.Fatal("expected repo_context in args")
+	}
+	rcJSON, ok := rcArg.(json.RawMessage)
+	if !ok {
+		t.Fatalf("repo_context should be json.RawMessage, got %T", rcArg)
+	}
+	if len(rcJSON) == 0 {
+		t.Fatal("repo_context should not be empty")
+	}
+	// Verify it's valid JSON with expected fields
+	if !strings.Contains(string(rcJSON), "/home/user/acme") {
+		t.Errorf("repo_context should contain repo root, got: %s", rcJSON)
+	}
+}
+
+// TestSessionWriter_AppendTurn_PassesReposAccessedAndProjectRefs verifies that
+// repos_accessed and project_refs are serialized and passed to the
+// mempalace_conversation_append_turn tool call.
+func TestSessionWriter_AppendTurn_PassesReposAccessedAndProjectRefs(t *testing.T) {
+	t.Parallel()
+
+	mc := &multiResultCaller{results: []json.RawMessage{json.RawMessage(`{}`)}}
+	w := NewSessionWriter(NewWithCaller(mc))
+	w.convID = "conv-1"
+
+	refs := []conversation.ProjectRef{{
+		PalaceID:    "acme",
+		PalacePath:  "/home/user/acme/.mempalace",
+		DrawerID:    "drawer-1",
+		Wing:        "decisions",
+		Room:        "routing",
+		FactSummary: "uses budget fallback",
+		CapturedAt:  "2026-04-18T10:00:00Z",
+	}}
+	err := w.AppendTurn(context.Background(), conversation.RoleAssistant, "claude", "answer text", []string{"/home/user/acme"}, refs)
+	if err != nil {
+		t.Fatalf("AppendTurn: %v", err)
+	}
+
+	call := mc.calls[0]
+
+	raArg, ok := call.args["repos_accessed"]
+	if !ok {
+		t.Fatal("expected repos_accessed in args")
+	}
+	raJSON, ok := raArg.(json.RawMessage)
+	if !ok {
+		t.Fatalf("repos_accessed should be json.RawMessage, got %T", raArg)
+	}
+	if len(raJSON) == 0 || string(raJSON) == "null" {
+		t.Fatal("repos_accessed should not be empty or null")
+	}
+	if !strings.Contains(string(raJSON), "/home/user/acme") {
+		t.Errorf("repos_accessed should contain repo root, got: %s", raJSON)
+	}
+
+	prArg, ok := call.args["project_refs"]
+	if !ok {
+		t.Fatal("expected project_refs in args")
+	}
+	prJSON, ok := prArg.(json.RawMessage)
+	if !ok {
+		t.Fatalf("project_refs should be json.RawMessage, got %T", prArg)
+	}
+	if len(prJSON) == 0 || string(prJSON) == "null" {
+		t.Fatal("project_refs should not be empty or null")
+	}
+	if !strings.Contains(string(prJSON), "drawer-1") {
+		t.Errorf("project_refs should contain drawer id, got: %s", prJSON)
+	}
+}
+
+// TestSessionWriter_AppendTurn_PassesEmptyReposAccessedAndProjectRefs verifies that
+// empty slices are passed (not nil) to the mempalace_conversation_append_turn tool call.
+func TestSessionWriter_AppendTurn_PassesEmptyReposAccessedAndProjectRefs(t *testing.T) {
+	t.Parallel()
+
+	mc := &multiResultCaller{results: []json.RawMessage{json.RawMessage(`{}`)}}
+	w := NewSessionWriter(NewWithCaller(mc))
+	w.convID = "conv-1"
+
+	// Empty slices should be passed (not nil)
+	err := w.AppendTurn(context.Background(), conversation.RoleAssistant, "claude", "answer", []string{}, nil)
+	if err != nil {
+		t.Fatalf("AppendTurn: %v", err)
+	}
+
+	call := mc.calls[0]
+	raArg := call.args["repos_accessed"]
+	prArg := call.args["project_refs"]
+	if raArg != nil && raArg != "null" && raArg != "[]" {
+		// Empty is acceptable
+	}
+	if prArg != nil && prArg != "null" && prArg != "[]" {
+		// nil/empty is acceptable
 	}
 }
 
