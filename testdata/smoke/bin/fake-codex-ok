@@ -1,0 +1,8 @@
+#!/bin/sh
+# Fake codex kitchen that emits a single item.completed JSONL event
+# and exits 0. Used by scripts/smoke.sh as the fallback provider for
+# the PC-21.1 scenario.
+cat <<'EVENTS'
+{"type":"item.completed","item":{"item_type":"assistant_message","text":"continuing work from checkpoint"}}
+EVENTS
+exit 0

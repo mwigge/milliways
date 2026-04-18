@@ -5,7 +5,7 @@
 opencode/
 
 # Go build artifacts
-bin/
+/bin/
 dist/
 *.exe
 /milliways

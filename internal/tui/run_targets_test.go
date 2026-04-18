@@ -23,11 +23,14 @@ func TestBuildRunTargetOptions(t *testing.T) {
 	if options[1].Kitchen != "alpha" || !options[1].Selectable {
 		t.Fatalf("alpha option = %#v", options[1])
 	}
-	if options[2].Kitchen != "beta" || options[2].Selectable {
+	if options[2].Kitchen != "beta" || !options[2].Selectable {
 		t.Fatalf("beta option = %#v", options[2])
 	}
 	if options[3].Kitchen != "gamma" || !options[3].Selectable {
 		t.Fatalf("gamma option = %#v", options[3])
+	}
+	if options[2].Reason == "" || options[2].Reason == "exhausted until 22:00" {
+		t.Fatalf("expected override hint in exhausted reason, got %q", options[2].Reason)
 	}
 }
 

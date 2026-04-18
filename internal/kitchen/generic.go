@@ -23,6 +23,7 @@ func IsCmdAllowed(cmd string) bool {
 // allowedCmds is the set of CLI tools Milliways will execute.
 var allowedCmds = map[string]bool{
 	"claude":   true,
+	"codex":    true,
 	"opencode": true,
 	"gemini":   true,
 	"aider":    true,
