@@ -926,8 +926,8 @@ func splitEnvArgs(raw string) []string {
 // detectMempalaceMCP tries to find the mempalace MCP server command and args.
 // It checks in order:
 //  1. MILLIWAYS_MEMPALACE_MCP_CMD env var (if set)
-//  2. "mempalace" in PATH
-//  3. ~/dev/src/pprojects/mempalace-milliways/.venv/bin/python
+//  2. python3 -m mempalace.mcp_server (system Python with mempalace installed)
+//  3. ~/dev/src/pprojects/mempalace-milliways/.venv/bin/python -m mempalace.mcp_server
 //
 // Returns (cmd, args). If not found, returns ("", nil).
 func detectMempalaceMCP(palacePath string) (string, []string) {
@@ -936,12 +936,13 @@ func detectMempalaceMCP(palacePath string) (string, []string) {
 		return cmd, splitEnvArgs(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS"))
 	}
 
-	// 2. "mempalace" CLI in PATH.
-	if cmdPath, err := exec.LookPath("mempalace"); err == nil {
+	// 2. System python3 with mempalace package.
+	if cmdPath, err := exec.LookPath("python3"); err == nil {
+		args := []string{"-m", "mempalace.mcp_server"}
 		if palacePath != "" {
-			return cmdPath, []string{"--palace", palacePath}
+			args = append(args, "--palace", palacePath)
 		}
-		return cmdPath, nil
+		return cmdPath, args
 	}
 
 	// 3. Known venv location.
@@ -949,10 +950,11 @@ func detectMempalaceMCP(palacePath string) (string, []string) {
 	if err == nil {
 		venvPython := filepath.Join(home, "dev/src/pprojects/mempalace-milliways/.venv/bin/python")
 		if _, err := os.Stat(venvPython); err == nil {
+			args := []string{"-m", "mempalace.mcp_server"}
 			if palacePath != "" {
-				return venvPython, []string{"-m", "mempalace.mcp_server", "--palace", palacePath}
+				args = append(args, "--palace", palacePath)
 			}
-			return venvPython, []string{"-m", "mempalace.mcp_server"}
+			return venvPython, args
 		}
 	}
 
