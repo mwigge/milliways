@@ -104,12 +104,15 @@ func (c *MCPClient) Call(ctx context.Context, method string, params any) (json.R
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Apply default timeout if no deadline is set
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
+	// Apply default timeout if no deadline is set; always use a derived context
+	// so that defer cancel() fires at the right scope regardless of which branch runs.
+	var cancel context.CancelFunc
+	if _, hasDeadline := ctx.Deadline(); hasDeadline {
+		ctx, cancel = context.WithCancel(ctx)
+	} else {
 		ctx, cancel = context.WithTimeout(ctx, mcpDefaultTimeout)
-		defer cancel()
 	}
+	defer cancel()
 
 	id := c.nextID.Add(1)
 

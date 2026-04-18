@@ -66,9 +66,24 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 		sw = d.substrateNewFn()
 	}
 
+	// Declare result and execErr in the outer scope so the cancellation guard
+	// goroutine can assign to them.
+	var result kitchen.Result
+	var execErr error
+
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
+
+		// Respect parent cancellation: if the dispatch is cancelled (process interrupt,
+		// timeout, etc.) before or during execution, abort early instead of letting
+		// the goroutine run to completion.
+		select {
+		case <-ctx.Done():
+			d.pdb.Tickets().UpdateStatus(ticketID, "cancelled", 130, nil)
+			return
+		default:
+		}
 
 		// Substrate: conversation start + initial user turn + segment start.
 		if sw != nil {
@@ -82,7 +97,23 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 
 		task := kitchen.Task{Prompt: prompt}
 		start := time.Now()
-		result, execErr := k.Exec(ctx, task)
+
+		// Guard k.Exec with ctx.Done() to allow early abort when parent cancels.
+		execCtx := ctx
+		doneCh := make(chan struct{})
+		go func() {
+			result, execErr = k.Exec(execCtx, task)
+			close(doneCh)
+		}()
+		select {
+		case <-doneCh:
+			// k.Exec returned normally.
+		case <-ctx.Done():
+			// Parent cancelled — k.Exec may still be running but will respect
+			// its own context deadline. We record cancellation and exit.
+			d.pdb.Tickets().UpdateStatus(ticketID, "cancelled", 130, nil)
+			return
+		}
 		dur := time.Since(start)
 
 		// Substrate: append assistant turn.

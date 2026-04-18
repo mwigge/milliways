@@ -180,7 +180,7 @@ func (m *Model) startPipelineBlockDispatch(ctx context.Context, blockID, prompt 
 				(*m.prog).Send(msg)
 			}
 
-			if summarizeStep != nil && stepID != "summarize" && status == pipeline.StatusDone || status == pipeline.StatusFailed {
+			if summarizeStep != nil && stepID != "summarize" && (status == pipeline.StatusDone || status == pipeline.StatusFailed) {
 				allDone := true
 				var fanOutSteps []*pipeline.Step
 				for _, s := range pipe.Steps {

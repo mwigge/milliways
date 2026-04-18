@@ -74,8 +74,6 @@ type Orchestrator struct {
 	Bridge *bridge.ProjectBridge
 	// ProjectContext is captured at segment start for repo tracking.
 	ProjectContext *project.ProjectContext
-	// reposAccessed tracks repository roots visited during the conversation.
-	reposAccessed map[string]bool
 }
 
 // Run executes a logical conversation with provider failover on exhaustion.
@@ -88,7 +86,7 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 		sink = observability.NopSink{}
 	}
 
-	o.reposAccessed = make(map[string]bool)
+	reposAccessed := make(map[string]bool)
 
 	conv := conversation.New(req.ConversationID, req.BlockID, req.Prompt)
 	if err := bridge.InjectProjectContext(ctx, o.Bridge, conv, req.Prompt); err != nil {
@@ -112,7 +110,7 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 
 		fromKitchen, autoSwitch := autoSwitchSource(conv, route.Decision)
 		if rc := buildRepoContext(o.ProjectContext); rc != nil && rc.RepoRoot != "" {
-			o.reposAccessed[rc.RepoRoot] = true
+			reposAccessed[rc.RepoRoot] = true
 		}
 		seg := conv.StartSegment(route.Decision.Kitchen, buildRepoContext(o.ProjectContext))
 		if autoSwitch {
@@ -176,7 +174,7 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 				conv.SetNativeSessionID(route.Decision.Kitchen, sessionID)
 			}
 			var reposKeys []string
-			for k := range o.reposAccessed {
+			for k := range reposAccessed {
 				reposKeys = append(reposKeys, k)
 			}
 			slices.Sort(reposKeys)
