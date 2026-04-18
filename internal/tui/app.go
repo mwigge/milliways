@@ -333,8 +333,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 		}
 		// Palette selection.
 		if m.overlayActive && m.overlayMode == OverlayPalette {
-			if m.palette.Selected >= 0 && m.palette.Selected < len(m.palette.Matches) {
-				cmd := m.executePaletteCommand(m.palette.Matches[m.palette.Selected].Command)
+			command := resolvePaletteCommand(strings.TrimSpace(m.overlayInput.Value()), "")
+			if command == "" && m.palette.Selected >= 0 && m.palette.Selected < len(m.palette.Matches) {
+				command = m.palette.Matches[m.palette.Selected].Command
+			}
+			if command != "" {
+				cmd := m.executePaletteCommand(command)
 				m.overlayActive = false
 				m.overlayMode = OverlayNone
 				m.palette.Active = false
@@ -845,6 +849,19 @@ func containsProvider(chain []string, provider string) bool {
 
 // executePaletteCommand runs a palette command and returns an optional tea.Cmd.
 func (m *Model) executePaletteCommand(command string) tea.Cmd {
+	command = strings.TrimSpace(command)
+	switch {
+	case command == "switch":
+		m.appendCommandFeedback("/switch", "usage: /switch <kitchen>")
+		return nil
+	case strings.HasPrefix(command, "switch "):
+		m.handleSwitchCommand(strings.TrimSpace(strings.TrimPrefix(command, "switch ")))
+		return nil
+	case command == "kitchens":
+		m.appendCommandFeedback("/kitchens", formatKitchenStates(m.kitchenStates))
+		return nil
+	}
+
 	switch command {
 	case "cancel":
 		if b := m.focusedBlock(); b != nil && b.IsActive() {
@@ -934,6 +951,108 @@ func (m *Model) executePaletteCommand(command string) tea.Cmd {
 		}
 	}
 	return nil
+}
+
+func (m *Model) handleSwitchCommand(kitchen string) {
+	kitchen = strings.TrimSpace(kitchen)
+	if kitchen == "" {
+		m.appendCommandFeedback("/switch", "usage: /switch <kitchen>")
+		return
+	}
+
+	state, ok := findKitchenState(m.kitchenStates, kitchen)
+	if !ok {
+		m.appendCommandFeedback("/switch "+kitchen, fmt.Sprintf("kitchen %q is unavailable. Ready kitchens: %s", kitchen, formatReadyKitchens(m.kitchenStates)))
+		return
+	}
+	if state.Status != "ready" {
+		m.appendCommandFeedback("/switch "+kitchen, fmt.Sprintf("kitchen %q is unavailable (%s). Ready kitchens: %s", kitchen, kitchenAvailabilityLabel(state), formatReadyKitchens(m.kitchenStates)))
+		return
+	}
+
+	m.appendCommandFeedback("/switch "+kitchen, fmt.Sprintf("switch to %q accepted; pending orchestration handoff in a later slice", kitchen))
+}
+
+func (m *Model) appendCommandFeedback(prompt, text string) {
+	block := Block{
+		ID:        m.nextBlockID(),
+		Prompt:    prompt,
+		Kitchen:   "milliways",
+		State:     StateRouted,
+		StartedAt: time.Now(),
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		block.Lines = append(block.Lines, OutputLine{Kitchen: "milliways", Type: LineSystem, Text: line})
+	}
+	m.blocks = append(m.blocks, block)
+	m.focusedIdx = len(m.blocks) - 1
+}
+
+func resolvePaletteCommand(input, fallback string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return fallback
+	}
+	if input == "kitchens" || input == "switch" || strings.HasPrefix(input, "switch ") {
+		return input
+	}
+	for _, item := range paletteItems {
+		if input == item.Command {
+			return input
+		}
+	}
+	return fallback
+}
+
+func findKitchenState(states []KitchenState, name string) (KitchenState, bool) {
+	for _, state := range states {
+		if state.Name == name {
+			return state, true
+		}
+	}
+	return KitchenState{}, false
+}
+
+func formatReadyKitchens(states []KitchenState) string {
+	var ready []string
+	for _, state := range states {
+		if state.Status == "ready" {
+			ready = append(ready, state.Name)
+		}
+	}
+	if len(ready) == 0 {
+		return "none"
+	}
+	return strings.Join(ready, ", ")
+}
+
+func formatKitchenStates(states []KitchenState) string {
+	if len(states) == 0 {
+		return "Kitchens: none available"
+	}
+	parts := make([]string, 0, len(states))
+	for _, state := range states {
+		parts = append(parts, fmt.Sprintf("%s [%s]", state.Name, kitchenAvailabilityLabel(state)))
+	}
+	return "Kitchens: " + strings.Join(parts, ", ")
+}
+
+func kitchenAvailabilityLabel(state KitchenState) string {
+	switch state.Status {
+	case "exhausted":
+		if state.ResetsAt != "" {
+			return "exhausted until " + state.ResetsAt
+		}
+		return "exhausted"
+	case "warning":
+		return fmt.Sprintf("warning %.0f%%", state.UsageRatio*100)
+	default:
+		return state.Status
+	}
 }
 
 func (m *Model) hasCompletedBlocks() bool {
