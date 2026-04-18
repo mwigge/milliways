@@ -140,7 +140,7 @@ routing:
 	conv := conversation.New("conv-1", "b1", "original prompt")
 	conv.Memory.WorkingSummary = "Keep existing context"
 	conv.AppendTurn(conversation.RoleAssistant, "claude", "paused answer")
-	conv.StartSegment("claude")
+	conv.StartSegment("claude", nil)
 	conv.SetNativeSessionID("claude", "claude-session-1")
 
 	if err := tui.SaveSession("paused", []tui.Block{{

@@ -371,6 +371,71 @@ func TestOrchestratorInjectsProjectContextIntoUserTurn(t *testing.T) {
 	}
 }
 
+func TestOrchestratorStoresRepoContextOnSegmentStart(t *testing.T) {
+	t.Parallel()
+
+	palaceDrawers := 11
+	second := &stubAdapter{events: []adapter.Event{{Type: adapter.EventDone, Kitchen: "second", ExitCode: 0}}}
+	o := &Orchestrator{
+		Factory: func(_ context.Context, _ string, _ map[string]bool, _ string, _ map[string]string) (RouteResult, error) {
+			return RouteResult{Decision: sommelier.Decision{Kitchen: "second"}, Adapter: second}, nil
+		},
+		ProjectContext: &project.ProjectContext{
+			RepoRoot:         "/tmp/repo",
+			RepoName:         "repo",
+			Branch:           "feature/test",
+			Commit:           "deadbeef",
+			CodeGraphSymbols: 99,
+			PalaceDrawers:    &palaceDrawers,
+		},
+	}
+
+	conv, err := o.Run(context.Background(), RunRequest{ConversationID: "conv-project-context", BlockID: "b1", Prompt: "do work"}, nil, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(conv.Segments) != 1 {
+		t.Fatalf("segments = %d, want 1", len(conv.Segments))
+	}
+	got := conv.Segments[0].RepoContext
+	if got == nil {
+		t.Fatal("repo context = nil, want populated context")
+	}
+	if got.RepoRoot != "/tmp/repo" || got.RepoName != "repo" || got.Branch != "feature/test" || got.Commit != "deadbeef" {
+		t.Fatalf("repo identity = %#v", got)
+	}
+	if got.CodeGraphSymbols != 99 || got.PalaceDrawers != 11 {
+		t.Fatalf("repo metrics = %#v", got)
+	}
+	got.RepoName = "changed"
+	if o.ProjectContext.RepoName != "repo" {
+		t.Fatalf("project context mutated = %#v", o.ProjectContext)
+	}
+	if conv.Segments[0].RepoContext.RepoName != "changed" {
+		t.Fatalf("segment repo context should remain mutable copy, got %#v", conv.Segments[0].RepoContext)
+	}
+	if rebuilt := buildRepoContext(nil); rebuilt != nil {
+		t.Fatalf("buildRepoContext(nil) = %#v, want nil", rebuilt)
+	}
+}
+
+func TestBuildRepoContextOmitsOptionalZeroValues(t *testing.T) {
+	t.Parallel()
+
+	got := buildRepoContext(&project.ProjectContext{
+		RepoRoot: "/tmp/repo",
+		RepoName: "repo",
+		Branch:   "main",
+		Commit:   "abc123",
+	})
+	if got == nil {
+		t.Fatal("buildRepoContext returned nil")
+	}
+	if got.CodeGraphSymbols != 0 || got.PalaceDrawers != 0 {
+		t.Fatalf("optional metrics = %#v, want zero values", got)
+	}
+}
+
 func TestOrchestratorAutoSwitchEmitsReversibleSwitchEvent(t *testing.T) {
 	t.Parallel()
 

@@ -308,11 +308,12 @@ func dispatch(opts dispatchOpts) error {
 
 	providerFactory := makeProviderFactory(cfg, reg, som, pdb, opts.verbose)
 	orch := orchestrator.Orchestrator{
-		Factory: providerFactory,
-		Hydrate: hydrator,
-		Sink:    sink,
-		Reader:  substrateReader,
-		Bridge:  projectBridge,
+		Factory:        providerFactory,
+		Hydrate:        hydrator,
+		Sink:           sink,
+		Reader:         substrateReader,
+		Bridge:         projectBridge,
+		ProjectContext: projectContext,
 	}
 
 	start := time.Now()
@@ -551,7 +552,7 @@ func prepareHeadlessSwitch(block *tui.Block, nextKitchen, userPrompt string) (st
 
 	fromKitchen := active.Provider
 	block.Conversation.EndActiveSegment(conversation.SegmentDone, "user_switch")
-	block.Conversation.StartSegment(nextKitchen)
+	block.Conversation.StartSegment(nextKitchen, nil)
 	block.ContinuationPrompt = conversation.BuildContinuationPrompt(conversation.ContinueInput{
 		Conversation: block.Conversation,
 		NextProvider: nextKitchen,

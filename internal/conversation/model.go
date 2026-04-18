@@ -93,6 +93,17 @@ type ProviderSegment struct {
 	StartedAt       time.Time     `json:"started_at"`
 	EndedAt         *time.Time    `json:"ended_at,omitempty"`
 	EndReason       string        `json:"end_reason,omitempty"`
+	RepoContext     *RepoContext  `json:"repo_context,omitempty"`
+}
+
+// RepoContext holds repository metadata captured at segment start.
+type RepoContext struct {
+	RepoRoot         string `json:"repo_root"`
+	RepoName         string `json:"repo_name"`
+	Branch           string `json:"branch"`
+	Commit           string `json:"commit"`
+	CodeGraphSymbols int    `json:"codegraph_symbols"`
+	PalaceDrawers    int    `json:"palace_drawers"`
 }
 
 // Conversation is the canonical Milliways-owned task state.
@@ -142,18 +153,27 @@ func (c *Conversation) AppendTurn(role TurnRole, provider, text string) {
 }
 
 // StartSegment adds and activates a provider segment.
-func (c *Conversation) StartSegment(provider string) ProviderSegment {
+func (c *Conversation) StartSegment(provider string, repoContext *RepoContext) ProviderSegment {
 	now := time.Now()
 	seg := ProviderSegment{
-		ID:        fmt.Sprintf("%s-seg-%d", c.ID, len(c.Segments)+1),
-		Provider:  provider,
-		Status:    SegmentActive,
-		StartedAt: now,
+		ID:          fmt.Sprintf("%s-seg-%d", c.ID, len(c.Segments)+1),
+		Provider:    provider,
+		Status:      SegmentActive,
+		StartedAt:   now,
+		RepoContext: cloneRepoContext(repoContext),
 	}
 	c.Segments = append(c.Segments, seg)
 	c.ActiveSegmentID = seg.ID
 	c.UpdatedAt = now
 	return seg
+}
+
+func cloneRepoContext(repoContext *RepoContext) *RepoContext {
+	if repoContext == nil {
+		return nil
+	}
+	clone := *repoContext
+	return &clone
 }
 
 // EndActiveSegment finalizes the current provider segment.

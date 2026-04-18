@@ -88,7 +88,7 @@ func TestHandleSwitchCommand_TransitionsConversationAndRendersSwitchState(t *tes
 
 	conv := conversation.New("conv-1", "b1", "finish the task")
 	conv.AppendTurn(conversation.RoleAssistant, "claude", "working on it")
-	ended := conv.StartSegment("claude")
+	ended := conv.StartSegment("claude", nil)
 
 	m.blocks = []Block{{
 		ID:             "b1",
@@ -406,9 +406,9 @@ func TestExecutePaletteCommand_BackReversesMostRecentSwitch(t *testing.T) {
 
 	conv := conversation.New("conv-1", "b1", "finish the task")
 	conv.AppendTurn(conversation.RoleAssistant, "claude", "working on it")
-	conv.StartSegment("claude")
+	conv.StartSegment("claude", nil)
 	conv.EndActiveSegment(conversation.SegmentDone, "user_switch")
-	switchedSegment := conv.StartSegment("gpt")
+	switchedSegment := conv.StartSegment("gpt", nil)
 
 	m.blocks = []Block{{
 		ID:             "b1",

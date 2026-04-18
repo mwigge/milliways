@@ -10,9 +10,20 @@ func TestConversationSegmentLifecycle(t *testing.T) {
 		t.Fatalf("expected initial user turn, got %d", len(c.Transcript))
 	}
 
-	seg := c.StartSegment("claude")
+	repoContext := &RepoContext{
+		RepoRoot:         "/tmp/repo",
+		RepoName:         "repo",
+		Branch:           "main",
+		Commit:           "abc123",
+		CodeGraphSymbols: 42,
+		PalaceDrawers:    7,
+	}
+	seg := c.StartSegment("claude", repoContext)
 	if seg.Provider != "claude" {
 		t.Fatalf("provider = %q", seg.Provider)
+	}
+	if seg.RepoContext == nil || seg.RepoContext.RepoName != "repo" {
+		t.Fatalf("repo context = %#v", seg.RepoContext)
 	}
 	c.SetNativeSessionID("claude", "sess-1")
 	c.EndActiveSegment(SegmentExhausted, "limit")
@@ -26,16 +37,19 @@ func TestConversationSegmentLifecycle(t *testing.T) {
 	if got := c.Segments[0].Status; got != SegmentExhausted {
 		t.Fatalf("status = %q", got)
 	}
+	if got := c.Segments[0].RepoContext; got == nil || got.Commit != "abc123" {
+		t.Fatalf("stored repo context = %#v", got)
+	}
 }
 
 func TestConversationNativeSessionIDs(t *testing.T) {
 	t.Parallel()
 
 	c := New("conv-1", "b1", "fix auth")
-	c.StartSegment("claude")
+	c.StartSegment("claude", nil)
 	c.SetNativeSessionID("claude", "sess-1")
 	c.EndActiveSegment(SegmentDone, "done")
-	c.StartSegment("codex")
+	c.StartSegment("codex", nil)
 
 	got := c.NativeSessionIDs()
 	if got["claude"] != "sess-1" {
@@ -50,7 +64,7 @@ func TestConversationSnapshot(t *testing.T) {
 	c.Memory.WorkingSummary = "inspected routing"
 	c.Memory.NextAction = "continue in codex"
 	c.Context.SpecRefs = []string{"spec-1"}
-	c.StartSegment("claude")
+	c.StartSegment("claude", nil)
 
 	ckpt := c.Snapshot("provider exhausted")
 	if ckpt.ConversationID != "conv-1" || ckpt.BlockID != "b1" {

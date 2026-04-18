@@ -11,6 +11,7 @@ import (
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/observability"
+	"github.com/mwigge/milliways/internal/project"
 	"github.com/mwigge/milliways/internal/sommelier"
 	"github.com/mwigge/milliways/internal/substrate"
 )
@@ -70,6 +71,8 @@ type Orchestrator struct {
 	Reader substrate.Reader
 	// Bridge, when set, injects project memory into user turns.
 	Bridge *bridge.ProjectBridge
+	// ProjectContext is captured at segment start for repo tracking.
+	ProjectContext *project.ProjectContext
 }
 
 // Run executes a logical conversation with provider failover on exhaustion.
@@ -103,7 +106,7 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 		}
 
 		fromKitchen, autoSwitch := autoSwitchSource(conv, route.Decision)
-		seg := conv.StartSegment(route.Decision.Kitchen)
+		seg := conv.StartSegment(route.Decision.Kitchen, buildRepoContext(o.ProjectContext))
 		if autoSwitch {
 			switchText := formatSwitchSystemLine(fromKitchen, route.Decision.Kitchen, route.Decision.Reason)
 			sink.Emit(observability.Event{
@@ -561,6 +564,25 @@ func emitMemoryPromotionEvents(sink observability.Sink, conv *conversation.Conve
 			},
 		})
 	}
+}
+
+func buildRepoContext(pc *project.ProjectContext) *conversation.RepoContext {
+	if pc == nil {
+		return nil
+	}
+	ctx := &conversation.RepoContext{
+		RepoRoot: pc.RepoRoot,
+		RepoName: pc.RepoName,
+		Branch:   pc.Branch,
+		Commit:   pc.Commit,
+	}
+	if pc.CodeGraphSymbols > 0 {
+		ctx.CodeGraphSymbols = pc.CodeGraphSymbols
+	}
+	if pc.PalaceDrawers != nil {
+		ctx.PalaceDrawers = *pc.PalaceDrawers
+	}
+	return ctx
 }
 
 // applySubstrateState merges fields from a substrate ConversationRecord into a

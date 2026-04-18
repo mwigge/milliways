@@ -1022,7 +1022,7 @@ func (m *Model) executeSwitch(kitchen, reason string) {
 
 	fromKitchen := active.Provider
 	b.Conversation.EndActiveSegment(conversation.SegmentDone, "user_switch")
-	segment := b.Conversation.StartSegment(kitchen)
+	segment := b.Conversation.StartSegment(kitchen, nil)
 	b.ContinuationPrompt = conversation.BuildContinuationPrompt(conversation.ContinueInput{
 		Conversation: b.Conversation,
 		NextProvider: kitchen,
