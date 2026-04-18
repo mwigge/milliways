@@ -37,4 +37,8 @@ depgraph.db
 
 # MemPalace per-project files (issue #185)
 mempalace.yaml
+.mempalace/
 entities.json
+
+# CodeGraph
+.codegraph/
