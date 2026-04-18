@@ -70,15 +70,15 @@ func (m Model) View() string {
 		inputBar = panelBorder.Width(m.width - 2).Render(m.input.View())
 	}
 
-	// Title with status bar.
-	statusBar := m.renderStatusBar()
-	titleText := "Milliways"
-	if statusBar != "" {
-		titleText += "  " + statusBar
+	// Title with project and kitchen status.
+	title := titleStyle.Width(m.width).Render("Milliways")
+	sections := []string{title}
+	if header := m.renderProjectHeader(); header != "" {
+		sections = append(sections, header)
 	}
-	title := titleStyle.Width(m.width).Render(titleText)
+	sections = append(sections, mainArea, inputBar)
 
-	return lipgloss.JoinVertical(lipgloss.Left, title, mainArea, inputBar)
+	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
 // renderBlockStack renders all blocks as a vertical stack.
@@ -254,6 +254,34 @@ func (m Model) renderStatusBar() string {
 	}
 
 	return strings.Join(parts, "  ")
+}
+
+func (m Model) renderProjectHeader() string {
+	if m.projectState.RepoName == "" {
+		return ""
+	}
+
+	if m.width >= projectStatusCompactWidth {
+		parts := []string{RenderProjectHeader(m.projectState)}
+		if status := m.renderStatusBar(); status != "" {
+			parts = append(parts, "Kitchen: "+status)
+		}
+		return panelBorder.Width(m.width - 2).Render(strings.Join(parts, "\n"))
+	}
+
+	activeKitchen := ""
+	if b := m.focusedBlock(); b != nil {
+		if sticky := b.stickyKitchen(); sticky != "" {
+			activeKitchen = sticky + " (sticky)"
+		} else {
+			activeKitchen = b.Kitchen
+		}
+	}
+	compact := RenderCompactStatus(m.projectState, activeKitchen, len(m.recentRepos.List()))
+	if status := m.renderStatusBar(); status != "" {
+		compact += "  " + status
+	}
+	return panelBorder.Width(m.width - 2).Render(compact)
 }
 
 // rateLastDispatch records a good/bad rating for the most recent completed block.

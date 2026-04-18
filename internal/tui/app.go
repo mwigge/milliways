@@ -75,6 +75,8 @@ type Model struct {
 
 	// Kitchen status for status bar.
 	kitchenStates []KitchenState
+	projectState  ProjectState
+	recentRepos   RecentRepos
 
 	// Structured runtime activity for transparency.
 	runtimeEvents []observability.Event
@@ -792,6 +794,17 @@ func (m *Model) SetKitchenStates(states []KitchenState) {
 	m.kitchenStates = states
 }
 
+// SetProjectState updates the active project context for the TUI.
+func (m *Model) SetProjectState(state ProjectState) {
+	m.projectState = state
+	m.AddRecentRepo(state.RepoName)
+}
+
+// AddRecentRepo records a repository as accessed in this session.
+func (m *Model) AddRecentRepo(repoName string) {
+	m.recentRepos.Add(repoName)
+}
+
 // SetPipelineSupport enables pipeline orchestration on the model.
 func (m *Model) SetPipelineSupport(planner *pipeline.Planner, factory pipeline.AdapterFactory) {
 	m.planner = planner
@@ -865,6 +878,9 @@ func (m *Model) executePaletteCommand(command string) tea.Cmd {
 		return nil
 	case command == "kitchens":
 		m.appendCommandFeedback("/kitchens", formatKitchenStates(m.kitchenStates))
+		return nil
+	case command == "repos":
+		m.appendCommandFeedback("/repos", RenderReposList(m.recentRepos.List(), m.projectState.RepoName))
 		return nil
 	}
 
@@ -1130,7 +1146,7 @@ func resolvePaletteCommand(input, fallback string) string {
 	if input == "" {
 		return fallback
 	}
-	if input == "back" || input == "kitchens" || input == "stick" || input == "switch" || strings.HasPrefix(input, "switch ") {
+	if input == "back" || input == "kitchens" || input == "repos" || input == "stick" || input == "switch" || strings.HasPrefix(input, "switch ") {
 		return input
 	}
 	for _, item := range paletteItems {

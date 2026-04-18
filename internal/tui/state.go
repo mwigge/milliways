@@ -92,6 +92,46 @@ type KitchenState struct {
 	UsageRatio float64 // 0.0-1.0 for warning display
 }
 
+// ProjectState represents the active project context for the TUI.
+type ProjectState struct {
+	RepoRoot         string
+	RepoName         string
+	Branch           string
+	PalacePath       string
+	PalaceDrawers    int
+	PalaceExists     bool
+	CodeGraphExists  bool
+	CodeGraphSymbols int
+	LastAccessed     string
+}
+
+// RecentRepos tracks repositories accessed during the current TUI session.
+type RecentRepos struct {
+	repos []string
+}
+
+// Add records repoName as recently accessed and moves it to the front.
+func (r *RecentRepos) Add(repoName string) {
+	if repoName == "" {
+		return
+	}
+
+	next := make([]string, 0, len(r.repos)+1)
+	next = append(next, repoName)
+	for _, existing := range r.repos {
+		if existing == repoName {
+			continue
+		}
+		next = append(next, existing)
+	}
+	r.repos = next
+}
+
+// List returns the tracked repositories in most-recent-first order.
+func (r RecentRepos) List() []string {
+	return append([]string(nil), r.repos...)
+}
+
 // RunTargetOption represents a selectable launch target in the Run In chooser.
 type RunTargetOption struct {
 	Label      string

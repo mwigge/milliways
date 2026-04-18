@@ -24,6 +24,7 @@ var paletteItems = []PaletteItem{
 	{"collapse all", "Collapse all blocks"},
 	{"expand all", "Expand all blocks"},
 	{"history", "Search dispatch history"},
+	{"repos", "Show repositories accessed this session"},
 	{"session save", "Save session to file"},
 	{"session load", "Load a saved session"},
 	{"summary", "Show session summary"},
