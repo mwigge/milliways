@@ -130,8 +130,9 @@ func buildKitchenStates(cfg *maitre.Config, reg *kitchen.Registry, pdb *pantry.D
 }
 
 func makeRuntimeSink(pdb *pantry.DB) observability.Sink {
+	otelSink, _ := observability.NewOTelSink()
 	if pdb == nil {
-		return observability.NopSink{}
+		return observability.MultiSink{otelSink}
 	}
 	runtimeSink := observability.FuncSink(func(evt observability.Event) {
 		_, _ = pdb.RuntimeEvents().Insert(pantry.RuntimeEventRecord{
@@ -146,7 +147,7 @@ func makeRuntimeSink(pdb *pantry.DB) observability.Sink {
 		})
 	})
 	ledgerSink := ledger.NewLedgerSink(pdb)
-	return observability.MultiSink{runtimeSink, ledgerSink}
+	return observability.MultiSink{runtimeSink, ledgerSink, otelSink}
 }
 
 func makeConversationRecorder(cfg *maitre.Config, pdb *pantry.DB) tui.ConversationRecorder {

@@ -13,6 +13,7 @@ import (
 	"github.com/mwigge/milliways/internal/conversation"
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/maitre"
+	"github.com/mwigge/milliways/internal/observability"
 	"github.com/mwigge/milliways/internal/sommelier"
 	"github.com/mwigge/milliways/internal/tui"
 )
@@ -105,6 +106,22 @@ func TestRootCmd_RegistersProjectRootFlag(t *testing.T) {
 	}
 	if flag.DefValue != "" {
 		t.Fatalf("expected empty default value, got %q", flag.DefValue)
+	}
+}
+
+func TestMakeRuntimeSinkIncludesOTelWithoutPantryDB(t *testing.T) {
+	t.Parallel()
+
+	sink := makeRuntimeSink(nil)
+	multi, ok := sink.(observability.MultiSink)
+	if !ok {
+		t.Fatalf("sink type = %T, want observability.MultiSink", sink)
+	}
+	if len(multi) != 1 {
+		t.Fatalf("sink count = %d, want 1", len(multi))
+	}
+	if _, ok := multi[0].(*observability.OTelSink); !ok {
+		t.Fatalf("sink[0] type = %T, want *observability.OTelSink", multi[0])
 	}
 }
 
