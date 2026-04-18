@@ -174,6 +174,63 @@ Tier:    learned
 Risk:    high
 ```
 
+## Project Memory (CodeGraph + MemPalace)
+
+Milliways can optionally use CodeGraph (code structure search) and MemPalace (project memory) to inject relevant context before routing.
+
+### Setup
+
+**MemPalace** — project-specific memory store:
+
+```bash
+# Install mempalace CLI
+pip install mempalace
+
+# Initialize a palace in your project (creates .mempalace/)
+cd ~/dev/src/projects/myproject
+mempalace init .mempalace
+
+# Mine project files into the palace
+mempalace mine .
+
+# Search your palace
+mempalace search "why did we switch to GraphQL"
+```
+
+**CodeGraph** — semantic code search (optional):
+
+```bash
+# Install codegraph CLI
+npm install -g @opencode/codegraph
+
+# Initialize in your project
+cd ~/dev/src/projects/myproject
+codegraph init
+```
+
+### Environment Variables
+
+When MemPalace and/or CodeGraph are available in your project, set the MCP server commands:
+
+```bash
+export MILLIWAYS_MEMPALACE_MCP_CMD="python3 -m mempalace.mcp_server"
+export MILLIWAYS_MEMPALACE_MCP_ARGS="--palace /path/to/project/.mempalace"
+export MILLIWAYS_CODEGRAPH_MCP_CMD="codegraph"
+export MILLIWAYS_CODEGRAPH_MCP_ARGS="mcp"
+```
+
+Or put them in your shell profile (`~/.zshrc`, `~/.bashrc`) for persistence.
+
+### How It Works
+
+With project memory enabled:
+1. Milliways detects `.mempalace/` and `.codegraph/` in your repo root
+2. On each turn, relevant memories are injected into the context bundle
+3. Citations to project facts are tracked per-turn and stored with the conversation
+4. `/project`, `/repos`, `/palace`, `/codegraph` commands show project state
+
+Without these directories, milliways operates without project context (graceful degradation).
+
 ## Circuit Breaker
 
 Milliways respects the company/private mode from `~/.claude/mode`:
