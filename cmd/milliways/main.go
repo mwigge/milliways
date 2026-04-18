@@ -22,6 +22,7 @@ import (
 	"github.com/mwigge/milliways/internal/migration"
 	"github.com/mwigge/milliways/internal/orchestrator"
 	"github.com/mwigge/milliways/internal/pantry"
+	"github.com/mwigge/milliways/internal/project"
 	"github.com/mwigge/milliways/internal/sommelier"
 	"github.com/mwigge/milliways/internal/substrate"
 	"github.com/mwigge/milliways/internal/tui"
@@ -32,10 +33,10 @@ var version = "0.1.0"
 
 // dispatchOpts groups the parameters for the dispatch function.
 type dispatchOpts struct {
-	prompt, kitchenForce, configPath, switchTo, sessionName string
-	jsonOutput, explain, verbose                            bool
-	useLegacyConversation                                   bool
-	timeout                                                 time.Duration
+	prompt, kitchenForce, configPath, switchTo, sessionName, projectRoot string
+	jsonOutput, explain, verbose                                         bool
+	useLegacyConversation                                                bool
+	timeout                                                              time.Duration
 }
 
 // exitError wraps an error with a specific exit code.
@@ -72,6 +73,7 @@ func rootCmd() *cobra.Command {
 		useLegacyConversation bool
 		sessionName           string
 		switchToKitchen       string
+		projectRoot           string
 		timeoutDur            time.Duration
 	)
 
@@ -106,6 +108,13 @@ based on what each tool does best.
 			if switchToKitchen != "" && sessionName == "" {
 				return fmt.Errorf("--switch-to requires --session")
 			}
+			projectContext, err := project.ResolveProject(projectRoot)
+			if err != nil {
+				return err
+			}
+			if verbose {
+				fmt.Fprintf(os.Stderr, "[project] root=%s repo=%s read=%s write=%s\n", projectContext.RepoRoot, projectContext.RepoName, projectContext.AccessRules.Read, projectContext.AccessRules.Write)
+			}
 			prompt := strings.Join(args, " ")
 			if recipeFlag != "" {
 				return dispatchRecipe(recipeFlag, prompt, verbose, configPath, keepContext)
@@ -122,6 +131,7 @@ based on what each tool does best.
 				configPath:            configPath,
 				switchTo:              switchToKitchen,
 				sessionName:           sessionName,
+				projectRoot:           projectRoot,
 				jsonOutput:            jsonFlag,
 				explain:               explainFlag,
 				verbose:               verbose,
@@ -145,6 +155,7 @@ based on what each tool does best.
 	cmd.Flags().BoolVar(&resumeFlag, "resume", false, "Resume last TUI session")
 	cmd.Flags().StringVar(&sessionName, "session", "", "Named TUI session")
 	cmd.Flags().StringVar(&switchToKitchen, "switch-to", "", "Switch an existing session to a kitchen in headless mode")
+	cmd.Flags().StringVar(&projectRoot, "project-root", "", "Override project repository root")
 	cmd.Flags().BoolVar(&useLegacyConversation, "use-legacy-conversation", false, "Use pantry conversation storage instead of substrate")
 	cmd.Flags().DurationVar(&timeoutDur, "timeout", 5*time.Minute, "Dispatch timeout for headless mode")
 

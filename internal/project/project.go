@@ -2,6 +2,7 @@ package project
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -57,4 +58,56 @@ func FindRepoRoot(startDir string) (string, error) {
 
 		currentDir = parentDir
 	}
+}
+
+// ResolveProject resolves the active project context from an override or the current working directory.
+func ResolveProject(overrideRoot string) (*ProjectContext, error) {
+	if overrideRoot != "" {
+		repoRoot, err := filepath.Abs(overrideRoot)
+		if err != nil {
+			return nil, err
+		}
+
+		info, err := os.Stat(repoRoot)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("Project root does not exist: %s", repoRoot)
+			}
+			return nil, err
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("No git repository at %s", repoRoot)
+		}
+
+		gitDir := filepath.Join(repoRoot, ".git")
+		gitInfo, err := os.Stat(gitDir)
+		if err != nil || !gitInfo.IsDir() {
+			return nil, fmt.Errorf("No git repository at %s", repoRoot)
+		}
+
+		return &ProjectContext{
+			RepoRoot:    repoRoot,
+			RepoName:    filepath.Base(repoRoot),
+			AccessRules: DefaultAccessRules(),
+		}, nil
+	}
+
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+
+	repoRoot, err := FindRepoRoot(workingDir)
+	if err != nil {
+		if errors.Is(err, ErrNoRepository) {
+			return nil, errors.New("No project repository found. Run from within a git repo or specify --project-root")
+		}
+		return nil, err
+	}
+
+	return &ProjectContext{
+		RepoRoot:    repoRoot,
+		RepoName:    filepath.Base(repoRoot),
+		AccessRules: DefaultAccessRules(),
+	}, nil
 }

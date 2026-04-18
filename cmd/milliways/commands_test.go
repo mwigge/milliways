@@ -95,6 +95,19 @@ func TestRootCmd_SwitchToRequiresSession(t *testing.T) {
 	}
 }
 
+func TestRootCmd_RegistersProjectRootFlag(t *testing.T) {
+	t.Parallel()
+
+	cmd := rootCmd()
+	flag := cmd.Flags().Lookup("project-root")
+	if flag == nil {
+		t.Fatal("expected project-root flag to be registered")
+	}
+	if flag.DefValue != "" {
+		t.Fatalf("expected empty default value, got %q", flag.DefValue)
+	}
+}
+
 func TestRootCmd_HeadlessSwitchContinuesPausedSession(t *testing.T) {
 	configHome := t.TempDir()
 	binDir := t.TempDir()
