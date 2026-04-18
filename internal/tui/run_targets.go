@@ -28,7 +28,7 @@ func buildRunTargetOptions(states []KitchenState) []RunTargetOption {
 			Label:      state.Name,
 			Kitchen:    state.Name,
 			Status:     state.Status,
-			Selectable: state.Status == "ready" || state.Status == "warning",
+			Selectable: state.Status == "ready" || state.Status == "warning" || state.Status == "exhausted",
 		}
 		switch state.Status {
 		case "ready":
@@ -37,9 +37,9 @@ func buildRunTargetOptions(states []KitchenState) []RunTargetOption {
 			option.Reason = fmt.Sprintf("near limit %.0f%%", state.UsageRatio*100)
 		case "exhausted":
 			if state.ResetsAt != "" {
-				option.Reason = "exhausted until " + state.ResetsAt
+				option.Reason = "exhausted until " + state.ResetsAt + " · manual override"
 			} else {
-				option.Reason = "exhausted"
+				option.Reason = "exhausted · manual override"
 			}
 		case "needs-auth":
 			option.Reason = "needs auth"
