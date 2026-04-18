@@ -32,10 +32,10 @@ var version = "0.1.0"
 
 // dispatchOpts groups the parameters for the dispatch function.
 type dispatchOpts struct {
-	prompt, kitchenForce, configPath string
-	jsonOutput, explain, verbose     bool
-	useLegacyConversation            bool
-	timeout                          time.Duration
+	prompt, kitchenForce, configPath, switchTo, sessionName string
+	jsonOutput, explain, verbose                            bool
+	useLegacyConversation                                   bool
+	timeout                                                 time.Duration
 }
 
 // exitError wraps an error with a specific exit code.
@@ -71,6 +71,7 @@ func rootCmd() *cobra.Command {
 		resumeFlag            bool
 		useLegacyConversation bool
 		sessionName           string
+		switchToKitchen       string
 		timeoutDur            time.Duration
 	)
 
@@ -102,6 +103,9 @@ based on what each tool does best.
 			if len(args) == 0 {
 				return cmd.Help()
 			}
+			if switchToKitchen != "" && sessionName == "" {
+				return fmt.Errorf("--switch-to requires --session")
+			}
 			prompt := strings.Join(args, " ")
 			if recipeFlag != "" {
 				return dispatchRecipe(recipeFlag, prompt, verbose, configPath, keepContext)
@@ -116,6 +120,8 @@ based on what each tool does best.
 				prompt:                prompt,
 				kitchenForce:          kitchenFlag,
 				configPath:            configPath,
+				switchTo:              switchToKitchen,
+				sessionName:           sessionName,
 				jsonOutput:            jsonFlag,
 				explain:               explainFlag,
 				verbose:               verbose,
@@ -138,6 +144,7 @@ based on what each tool does best.
 	cmd.Flags().BoolVarP(&tuiFlag, "tui", "t", false, "Interactive TUI mode")
 	cmd.Flags().BoolVar(&resumeFlag, "resume", false, "Resume last TUI session")
 	cmd.Flags().StringVar(&sessionName, "session", "", "Named TUI session")
+	cmd.Flags().StringVar(&switchToKitchen, "switch-to", "", "Switch an existing session to a kitchen in headless mode")
 	cmd.Flags().BoolVar(&useLegacyConversation, "use-legacy-conversation", false, "Use pantry conversation storage instead of substrate")
 	cmd.Flags().DurationVar(&timeoutDur, "timeout", 5*time.Minute, "Dispatch timeout for headless mode")
 
@@ -158,6 +165,8 @@ func dispatch(opts dispatchOpts) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
+	reg := buildRegistry(cfg)
+
 	// Open PantryDB once — used for signals assembly and post-dispatch recording.
 	pdb, pdbErr := openPantryDB()
 	if pdbErr != nil && opts.verbose {
@@ -166,6 +175,10 @@ func dispatch(opts dispatchOpts) error {
 	if pdb != nil {
 		pantryDB := pdb
 		defer func() { _ = pantryDB.Close() }()
+	}
+
+	if opts.switchTo != "" {
+		return dispatchHeadlessSwitch(reg, opts)
 	}
 
 	var recordLegacyConversation = true
@@ -207,7 +220,6 @@ func dispatch(opts dispatchOpts) error {
 		substrateReader = substrate.NewCachedReader(substrateClient)
 	}
 
-	reg := buildRegistry(cfg)
 	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, reg)
 
 	// Circuit breaker check
@@ -367,6 +379,206 @@ func dispatch(opts dispatchOpts) error {
 	}
 
 	return nil
+}
+
+func dispatchHeadlessSwitch(reg *kitchen.Registry, opts dispatchOpts) error {
+	blocks, blockIndex, err := loadHeadlessSessionBlock(opts.sessionName)
+	if err != nil {
+		return err
+	}
+
+	block := &blocks[blockIndex]
+	prompt, fromKitchen, err := prepareHeadlessSwitch(block, opts.switchTo, opts.prompt)
+	if err != nil {
+		return err
+	}
+
+	k, ok := reg.Get(opts.switchTo)
+	if !ok {
+		return fmt.Errorf("kitchen %q not found in registry", opts.switchTo)
+	}
+	if k.Status() != kitchen.Ready {
+		return fmt.Errorf("kitchen %q is %s — run 'milliways --setup %s' to fix", opts.switchTo, k.Status(), opts.switchTo)
+	}
+
+	if opts.verbose {
+		fmt.Fprintf(os.Stderr, "[switch] session=%s %s -> %s\n", opts.sessionName, fromKitchen, opts.switchTo)
+	}
+
+	adapt, err := adapter.AdapterFor(k, adapter.AdapterOpts{Verbose: opts.verbose})
+	if err != nil {
+		return fmt.Errorf("creating adapter for %s: %w", opts.switchTo, err)
+	}
+
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(sigCtx, opts.timeout)
+	defer cancel()
+
+	start := time.Now()
+	block.StartedAt = start
+	block.Duration = 0
+	block.ExitCode = 0
+	block.Cost = nil
+	block.State = tui.StateStreaming
+
+	eventCh, err := adapt.Exec(ctx, kitchen.Task{Prompt: prompt})
+	if err != nil {
+		block.Conversation.EndActiveSegment(conversation.SegmentFailed, err.Error())
+		block.Complete(1, nil)
+		return fmt.Errorf("executing switched dispatch: %w", err)
+	}
+
+	var output strings.Builder
+	var costInfo *adapter.CostInfo
+	exitCode := 0
+	for evt := range eventCh {
+		if sessionID := adapt.SessionID(); sessionID != "" {
+			block.Conversation.SetNativeSessionID(opts.switchTo, sessionID)
+		}
+		captureConversationTurn(block.Conversation, evt)
+		block.AppendEvent(evt)
+
+		switch evt.Type {
+		case adapter.EventText:
+			if !opts.jsonOutput {
+				fmt.Println(evt.Text)
+			}
+			output.WriteString(evt.Text)
+			output.WriteString("\n")
+		case adapter.EventCodeBlock:
+			if !opts.jsonOutput {
+				fmt.Printf("```%s\n%s\n```\n", evt.Language, evt.Code)
+			}
+			output.WriteString(evt.Code)
+			output.WriteString("\n")
+		case adapter.EventCost:
+			costInfo = evt.Cost
+			if opts.verbose && evt.Cost != nil {
+				fmt.Fprintf(os.Stderr, "[cost] $%.4f\n", evt.Cost.USD)
+			}
+		case adapter.EventRateLimit:
+			if opts.verbose && evt.RateLimit != nil {
+				fmt.Fprintf(os.Stderr, "[rate_limit] %s: %s (resets %s)\n", evt.Kitchen, evt.RateLimit.Status, evt.RateLimit.ResetsAt.Format("15:04"))
+			}
+		case adapter.EventDone:
+			exitCode = evt.ExitCode
+		case adapter.EventError:
+			if opts.verbose {
+				fmt.Fprintf(os.Stderr, "[error] %s: %s\n", evt.Kitchen, evt.Text)
+			}
+		}
+	}
+
+	if exitCode == 0 {
+		block.Conversation.EndActiveSegment(conversation.SegmentDone, "completed")
+	} else {
+		block.Conversation.EndActiveSegment(conversation.SegmentFailed, "provider failed")
+	}
+	block.Complete(exitCode, costInfo)
+
+	if err := tui.SaveSession(opts.sessionName, blocks); err != nil {
+		return fmt.Errorf("saving session %q: %w", opts.sessionName, err)
+	}
+
+	if opts.jsonOutput {
+		out := map[string]any{
+			"kitchen":    opts.switchTo,
+			"exit_code":  exitCode,
+			"duration_s": time.Since(start).Seconds(),
+			"output":     output.String(),
+		}
+		if costInfo != nil {
+			out["cost_usd"] = costInfo.USD
+		}
+		if err := printJSON(out, true); err != nil {
+			return err
+		}
+	}
+
+	if exitCode != 0 {
+		return &exitError{code: exitCode, err: fmt.Errorf("kitchen %s exited with code %d", opts.switchTo, exitCode)}
+	}
+
+	return nil
+}
+
+func loadHeadlessSessionBlock(sessionName string) ([]tui.Block, int, error) {
+	blocks, err := tui.LoadSession(sessionName)
+	if err != nil {
+		return nil, 0, fmt.Errorf("loading session %q: %w", sessionName, err)
+	}
+	for i := len(blocks) - 1; i >= 0; i-- {
+		if blocks[i].Conversation != nil {
+			return blocks, i, nil
+		}
+	}
+	return nil, 0, fmt.Errorf("session %q has no persisted conversation", sessionName)
+}
+
+func prepareHeadlessSwitch(block *tui.Block, nextKitchen, userPrompt string) (string, string, error) {
+	if block == nil || block.Conversation == nil {
+		return "", "", fmt.Errorf("focused block has no active conversation")
+	}
+	active := block.Conversation.ActiveSegment()
+	if active == nil {
+		return "", "", fmt.Errorf("conversation has no active segment")
+	}
+
+	fromKitchen := active.Provider
+	block.Conversation.EndActiveSegment(conversation.SegmentDone, "user_switch")
+	block.Conversation.StartSegment(nextKitchen)
+	block.ContinuationPrompt = conversation.BuildContinuationPrompt(conversation.ContinueInput{
+		Conversation: block.Conversation,
+		NextProvider: nextKitchen,
+		Reason:       "user requested",
+	})
+	block.Conversation.AppendTurn(conversation.RoleSystem, "milliways", fmt.Sprintf("Prepared continuation payload for user-requested switch from %s to %s.\n%s", fromKitchen, nextKitchen, block.ContinuationPrompt))
+	if strings.TrimSpace(userPrompt) != "" {
+		block.Conversation.AppendTurn(conversation.RoleUser, "user", userPrompt)
+	}
+	block.Kitchen = nextKitchen
+	if !providerChainContains(block.ProviderChain, nextKitchen) {
+		block.ProviderChain = append(block.ProviderChain, nextKitchen)
+	}
+	block.Lines = append(block.Lines, tui.OutputLine{
+		Kitchen: "milliways",
+		Type:    tui.LineSystem,
+		Text:    fmt.Sprintf("switch executed: %s -> %s (%s)", fromKitchen, nextKitchen, "user requested"),
+	})
+
+	return buildHeadlessSwitchPrompt(block.ContinuationPrompt, userPrompt), fromKitchen, nil
+}
+
+func buildHeadlessSwitchPrompt(continuationPrompt, userPrompt string) string {
+	if strings.TrimSpace(userPrompt) == "" {
+		return continuationPrompt
+	}
+	return continuationPrompt + "\n\nNew user message:\n" + userPrompt
+}
+
+func captureConversationTurn(conv *conversation.Conversation, evt adapter.Event) {
+	switch evt.Type {
+	case adapter.EventText:
+		role := conversation.RoleAssistant
+		if evt.Kitchen == "milliways" {
+			role = conversation.RoleSystem
+		}
+		conv.AppendTurn(role, evt.Kitchen, evt.Text)
+	case adapter.EventCodeBlock:
+		conv.AppendTurn(conversation.RoleAssistant, evt.Kitchen, evt.Code)
+	case adapter.EventError:
+		conv.AppendTurn(conversation.RoleSystem, evt.Kitchen, evt.Text)
+	}
+}
+
+func providerChainContains(chain []string, kitchenName string) bool {
+	for _, item := range chain {
+		if item == kitchenName {
+			return true
+		}
+	}
+	return false
 }
 
 // recordDispatch writes to PantryDB + ndjson audit trail + routing feedback.
