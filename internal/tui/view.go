@@ -179,20 +179,38 @@ func (m Model) runtimeActivityLines(limit int) []string {
 
 	var lines []string
 	for _, evt := range filtered {
-		label := evt.Kind
-		if evt.Provider != "" && evt.Provider != "milliways" {
-			label = evt.Provider + " " + evt.Kind
-		}
-		text := evt.Text
-		if text == "" {
-			text = evt.Kind
-		}
+		label, text := formatRuntimeActivityEvent(evt)
 		lines = append(lines, fmt.Sprintf("%s %s",
 			mutedStyle.Render(evt.At.Format("15:04:05")),
 			truncate(label+": "+text, 40),
 		))
 	}
 	return lines
+}
+
+func formatRuntimeActivityEvent(evt observability.Event) (string, string) {
+	if evt.Kind == "switch" {
+		fromKitchen := strings.TrimSpace(evt.Fields["from"])
+		toKitchen := strings.TrimSpace(evt.Fields["to"])
+		reason := strings.TrimSpace(evt.Fields["reason"])
+		if fromKitchen != "" && toKitchen != "" {
+			text := fromKitchen + " → " + toKitchen
+			if reason != "" {
+				text += " (" + reason + ")"
+			}
+			return "switch", text
+		}
+	}
+
+	label := evt.Kind
+	if evt.Provider != "" && evt.Provider != "milliways" {
+		label = evt.Provider + " " + evt.Kind
+	}
+	text := evt.Text
+	if text == "" {
+		text = evt.Kind
+	}
+	return label, text
 }
 
 // renderStatusBar renders kitchen availability in the title bar.

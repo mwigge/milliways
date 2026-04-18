@@ -118,12 +118,30 @@ func TestHandleSwitchCommand_TransitionsConversationAndRendersSwitchState(t *tes
 	if !strings.Contains(b.ContinuationPrompt, "Continue from the current state in gpt.") {
 		t.Fatalf("continuation prompt = %q", b.ContinuationPrompt)
 	}
-	if len(b.Lines) == 0 || !strings.Contains(b.Lines[len(b.Lines)-1].Text, "switch executed") {
-		t.Fatalf("last line = %+v, want switch execution confirmation", b.Lines)
+	if len(b.Lines) == 0 {
+		t.Fatalf("lines = %+v, want switch execution confirmation", b.Lines)
+	}
+	lastLine := b.Lines[len(b.Lines)-1].Text
+	for _, want := range []string{"switch: claude -> gpt", "reason: user requested", "Use /back to return"} {
+		if !strings.Contains(lastLine, want) {
+			t.Fatalf("last line = %q, want substring %q", lastLine, want)
+		}
 	}
 	rendered := b.RenderBody(80, RenderRaw)
-	if !strings.Contains(rendered, "[milliways] switch executed") {
-		t.Fatalf("rendered body = %q", rendered)
+	for _, want := range []string{"[milliways] switch: claude -> gpt", "reason: user requested", "Use /back to return"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered body = %q, want substring %q", rendered, want)
+		}
+	}
+
+	activity := m.runtimeActivityLines(6)
+	if len(activity) != 1 {
+		t.Fatalf("activity lines = %#v, want one line", activity)
+	}
+	for _, want := range []string{"switch", "claude → gpt", "user requested"} {
+		if !strings.Contains(activity[0], want) {
+			t.Fatalf("activity line = %q, want substring %q", activity[0], want)
+		}
 	}
 
 	if len(b.Conversation.Segments) != 2 {
@@ -173,10 +191,6 @@ func TestHandleSwitchCommand_TransitionsConversationAndRendersSwitchState(t *tes
 		if got := evt.Fields[key]; got != want {
 			t.Fatalf("event field %q = %q, want %q", key, got, want)
 		}
-	}
-	activity := m.runtimeActivityLines(6)
-	if len(activity) != 1 || !strings.Contains(activity[0], "switch") || !strings.Contains(activity[0], "gpt") {
-		t.Fatalf("activity lines = %#v", activity)
 	}
 }
 
@@ -424,20 +438,67 @@ func TestExecutePaletteCommand_BackReversesMostRecentSwitch(t *testing.T) {
 	if b.Kitchen != "claude" {
 		t.Fatalf("kitchen = %q, want claude", b.Kitchen)
 	}
-	if len(b.Lines) < 2 {
-		t.Fatalf("lines = %+v, want switch and reversal messages", b.Lines)
+	if len(b.Lines) < 1 {
+		t.Fatalf("lines = %+v, want reversal message", b.Lines)
 	}
-	if got := b.Lines[len(b.Lines)-1].Text; !strings.Contains(got, "reversal") || !strings.Contains(got, "gpt -> claude") {
-		t.Fatalf("last line = %q, want reversal confirmation", got)
+	if got := b.Lines[len(b.Lines)-1].Text; !strings.Contains(got, "reason: reversing most recent switch") || !strings.Contains(got, "Use /back to return") {
+		t.Fatalf("last line = %q, want reversal confirmation with hint", got)
 	}
 	if len(m.runtimeEvents) != 2 {
 		t.Fatalf("runtime events = %d, want 2", len(m.runtimeEvents))
 	}
 	lastEvent := m.runtimeEvents[len(m.runtimeEvents)-1]
-	for key, want := range map[string]string{"from": "gpt", "to": "claude", "reason": "user requested"} {
+	for key, want := range map[string]string{"from": "gpt", "to": "claude", "reason": "reversing most recent switch"} {
 		if got := lastEvent.Fields[key]; got != want {
 			t.Fatalf("event field %q = %q, want %q", key, got, want)
 		}
+	}
+}
+
+func TestRuntimeActivityLines_RenderSwitchAndRuntimeEventsInOrder(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil)
+	now := time.Now()
+	m.runtimeEvents = []observability.Event{
+		{
+			Kind:     "status",
+			Provider: "milliways",
+			Text:     "dispatch queued",
+			At:       now.Add(-3 * time.Second),
+		},
+		{
+			Kind:     "switch",
+			Provider: "gpt",
+			At:       now.Add(-2 * time.Second),
+			Fields: map[string]string{
+				"from":   "claude",
+				"to":     "gpt",
+				"reason": "user requested",
+			},
+		},
+		{
+			Kind:     "status",
+			Provider: "gpt",
+			Text:     "continuing work",
+			At:       now.Add(-1 * time.Second),
+		},
+	}
+
+	lines := m.runtimeActivityLines(10)
+	if len(lines) != 3 {
+		t.Fatalf("activity lines = %#v, want 3", lines)
+	}
+	if !strings.Contains(lines[0], "dispatch queued") {
+		t.Fatalf("first activity line = %q, want queued status", lines[0])
+	}
+	for _, want := range []string{"switch", "claude → gpt", "user requested"} {
+		if !strings.Contains(lines[1], want) {
+			t.Fatalf("switch activity line = %q, want substring %q", lines[1], want)
+		}
+	}
+	if !strings.Contains(lines[2], "continuing work") {
+		t.Fatalf("third activity line = %q, want trailing runtime status", lines[2])
 	}
 }
 

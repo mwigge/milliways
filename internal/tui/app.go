@@ -960,6 +960,10 @@ func (m *Model) executePaletteCommand(command string) tea.Cmd {
 }
 
 func (m *Model) handleSwitchCommand(kitchen string) {
+	m.executeSwitch(kitchen, "user requested")
+}
+
+func (m *Model) executeSwitch(kitchen, reason string) {
 	kitchen = strings.TrimSpace(kitchen)
 	if kitchen == "" {
 		m.appendCommandFeedback("/switch", "usage: /switch <kitchen>")
@@ -999,12 +1003,12 @@ func (m *Model) handleSwitchCommand(kitchen string) {
 		NextProvider: kitchen,
 		Reason:       "user requested",
 	})
-	b.Conversation.AppendTurn(conversation.RoleSystem, "milliways", fmt.Sprintf("Prepared continuation payload for user-requested switch from %s to %s.\n%s", fromKitchen, kitchen, b.ContinuationPrompt))
+	b.Conversation.AppendTurn(conversation.RoleSystem, "milliways", fmt.Sprintf("Prepared continuation payload for switch from %s to %s (%s).\n%s", fromKitchen, kitchen, reason, b.ContinuationPrompt))
 	b.Kitchen = kitchen
 	if !containsProvider(b.ProviderChain, kitchen) {
 		b.ProviderChain = append(b.ProviderChain, kitchen)
 	}
-	b.appendSystemLine(fmt.Sprintf("switch executed: %s -> %s (%s)", fromKitchen, kitchen, "user requested"))
+	b.appendSystemLine(formatSwitchSystemLine(fromKitchen, kitchen, reason))
 	m.appendRuntimeEvent(observability.Event{
 		ID:             fmt.Sprintf("switch-%s-%d", b.ID, time.Now().UnixNano()),
 		ConversationID: b.Conversation.ID,
@@ -1012,12 +1016,12 @@ func (m *Model) handleSwitchCommand(kitchen string) {
 		SegmentID:      segment.ID,
 		Kind:           "switch",
 		Provider:       kitchen,
-		Text:           fmt.Sprintf("switch %s -> %s (user requested)", fromKitchen, kitchen),
+		Text:           formatSwitchRuntimeText(fromKitchen, kitchen, reason),
 		At:             time.Now(),
 		Fields: map[string]string{
 			"from":   fromKitchen,
 			"to":     kitchen,
-			"reason": "user requested",
+			"reason": reason,
 		},
 	})
 }
@@ -1056,12 +1060,8 @@ func (m *Model) handleBackCommand() {
 	}
 
 	beforeBlockCount := len(m.blocks)
-	previousKitchen := ""
-	if b := m.focusedBlock(); b != nil {
-		previousKitchen = b.Kitchen
-	}
 
-	m.executePaletteCommand("switch " + targetKitchen)
+	m.executeSwitch(targetKitchen, "reversing most recent switch")
 
 	if len(m.blocks) != beforeBlockCount {
 		return
@@ -1071,8 +1071,14 @@ func (m *Model) handleBackCommand() {
 	if b == nil || b.Kitchen != targetKitchen {
 		return
 	}
+}
 
-	b.appendSystemLine(fmt.Sprintf("switch reversal executed: %s -> %s", previousKitchen, targetKitchen))
+func formatSwitchSystemLine(fromKitchen, toKitchen, reason string) string {
+	return fmt.Sprintf("switch: %s -> %s | reason: %s | Use /back to return", fromKitchen, toKitchen, reason)
+}
+
+func formatSwitchRuntimeText(fromKitchen, toKitchen, reason string) string {
+	return fmt.Sprintf("switch %s -> %s (%s)", fromKitchen, toKitchen, reason)
 }
 
 func (m *Model) mostRecentSwitchSource() (string, bool) {
