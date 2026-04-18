@@ -1,6 +1,6 @@
 // Package substrate provides a typed MCP client wrapper for MemPalace conversation
 // operations. It is a pure translation layer: it maps typed Go requests/responses to
-// MemPalace MCP tool calls and does not contain business logic.
+// MemPalace conversation MCP tool calls and does not contain business logic.
 package substrate
 
 import (
@@ -21,8 +21,6 @@ type Caller interface {
 // Client translates typed conversation operations into MemPalace MCP calls.
 type Client struct {
 	mcp Caller
-	// wing is the MemPalace wing used for conversation storage.
-	wing string
 }
 
 // New creates a Client that dials an MCP server via stdio.
@@ -31,176 +29,261 @@ func New(command string, args ...string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("substrate: starting MCP: %w", err)
 	}
-	return &Client{mcp: mcp, wing: "milliways"}, nil
+	return &Client{mcp: mcp}, nil
 }
 
 // NewWithCaller creates a Client backed by an existing Caller (useful in tests).
-func NewWithCaller(caller Caller, wing string) *Client {
-	return &Client{mcp: caller, wing: wing}
+func NewWithCaller(caller Caller) *Client {
+	return &Client{mcp: caller}
 }
 
-// --- Conversation ---
+// --- Conversation lifecycle ---
 
-// ConversationRecord is the MemPalace serialised form of a canonical Conversation.
-type ConversationRecord struct {
-	ConversationID string                                `json:"conversation_id"`
-	BlockID        string                                `json:"block_id"`
-	Prompt         string                                `json:"prompt"`
-	Status         string                                `json:"status"`
-	CreatedAt      time.Time                             `json:"created_at"`
-	UpdatedAt      time.Time                             `json:"updated_at"`
-	Transcript     []conversation.Turn                   `json:"transcript"`
-	Memory         conversation.MemoryState              `json:"memory"`
-	Context        conversation.ContextBundle            `json:"context"`
-	Segments       []conversation.ProviderSegment        `json:"segments"`
-	Checkpoints    []conversation.ConversationCheckpoint `json:"checkpoints,omitempty"`
+// StartRequest is the input for ConversationStart.
+type StartRequest struct {
+	ConversationID string `json:"conversation_id"`
+	BlockID        string `json:"block_id"`
+	Prompt         string `json:"prompt"`
 }
 
-// SaveConversation persists (or updates) a Conversation into MemPalace.
-func (c *Client) SaveConversation(ctx context.Context, conv *conversation.Conversation) error {
-	rec := ConversationRecord{
-		ConversationID: conv.ID,
-		BlockID:        conv.BlockID,
-		Prompt:         conv.Prompt,
-		Status:         string(conv.Status),
-		CreatedAt:      conv.CreatedAt,
-		UpdatedAt:      conv.UpdatedAt,
-		Transcript:     conv.Transcript,
-		Memory:         conv.Memory,
-		Context:        conv.Context,
-		Segments:       conv.Segments,
-		Checkpoints:    conv.Checkpoints,
-	}
-	content, err := json.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("substrate: marshal conversation: %w", err)
-	}
+// StartResponse is returned by ConversationStart.
+type StartResponse struct {
+	ConversationID string    `json:"conversation_id"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+// ConversationStart creates a new conversation record in MemPalace.
+func (c *Client) ConversationStart(ctx context.Context, req StartRequest) (StartResponse, error) {
 	args := map[string]any{
-		"wing":     c.wing,
-		"room":     "conversations",
-		"content":  string(content),
-		"added_by": "milliways",
+		"conversation_id": req.ConversationID,
+		"block_id":        req.BlockID,
+		"prompt":          req.Prompt,
 	}
-	_, err = c.mcp.CallTool(ctx, "mempalace_add_drawer", args)
+	raw, err := c.mcp.CallTool(ctx, "mempalace_conversation_start", args)
 	if err != nil {
-		return fmt.Errorf("substrate: save conversation %s: %w", conv.ID, err)
+		return StartResponse{}, fmt.Errorf("substrate: conversation_start %s: %w", req.ConversationID, err)
+	}
+	return parseContent[StartResponse](raw)
+}
+
+// EndRequest is the input for ConversationEnd.
+type EndRequest struct {
+	ConversationID string `json:"conversation_id"`
+	Status         string `json:"status"` // "done" | "failed"
+	Reason         string `json:"reason,omitempty"`
+}
+
+// ConversationEnd finalises a conversation.
+func (c *Client) ConversationEnd(ctx context.Context, req EndRequest) error {
+	args := map[string]any{
+		"conversation_id": req.ConversationID,
+		"status":          req.Status,
+		"reason":          req.Reason,
+	}
+	_, err := c.mcp.CallTool(ctx, "mempalace_conversation_end", args)
+	if err != nil {
+		return fmt.Errorf("substrate: conversation_end %s: %w", req.ConversationID, err)
 	}
 	return nil
 }
 
-// GetConversation retrieves the latest persisted state for a conversation by ID.
-func (c *Client) GetConversation(ctx context.Context, conversationID string) (*ConversationRecord, error) {
-	args := map[string]any{
-		"query": "conversation_id:" + conversationID,
-		"wing":  c.wing,
-		"room":  "conversations",
-		"limit": 1,
-	}
-	raw, err := c.mcp.CallTool(ctx, "mempalace_search", args)
-	if err != nil {
-		return nil, fmt.Errorf("substrate: get conversation %s: %w", conversationID, err)
-	}
-	drawers, err := parseContent[[]drawerResult](raw)
-	if err != nil {
-		return nil, fmt.Errorf("substrate: parse drawers for %s: %w", conversationID, err)
-	}
-	for i := range drawers {
-		var rec ConversationRecord
-		if err := json.Unmarshal([]byte(drawers[i].Content), &rec); err != nil {
-			continue
-		}
-		if rec.ConversationID == conversationID {
-			return &rec, nil
-		}
-	}
-	return nil, fmt.Errorf("substrate: conversation %s not found", conversationID)
+// ConversationRecord is the MemPalace-side representation of a conversation.
+type ConversationRecord struct {
+	ConversationID  string                                `json:"conversation_id"`
+	BlockID         string                                `json:"block_id"`
+	Prompt          string                                `json:"prompt"`
+	Status          string                                `json:"status"`
+	CreatedAt       time.Time                             `json:"created_at"`
+	UpdatedAt       time.Time                             `json:"updated_at"`
+	Transcript      []conversation.Turn                   `json:"transcript"`
+	Memory          conversation.MemoryState              `json:"memory"`
+	Context         conversation.ContextBundle            `json:"context"`
+	Segments        []conversation.ProviderSegment        `json:"segments"`
+	Checkpoints     []conversation.ConversationCheckpoint `json:"checkpoints,omitempty"`
+	ActiveSegmentID string                                `json:"active_segment_id,omitempty"`
 }
 
-// ListConversations returns conversation IDs stored under the given wing.
-func (c *Client) ListConversations(ctx context.Context, limit int) ([]string, error) {
+// ConversationGet retrieves a full conversation record by ID.
+func (c *Client) ConversationGet(ctx context.Context, conversationID string) (ConversationRecord, error) {
 	args := map[string]any{
-		"wing":  c.wing,
-		"room":  "conversations",
-		"query": "conversation_id",
-		"limit": limit,
+		"conversation_id": conversationID,
 	}
-	raw, err := c.mcp.CallTool(ctx, "mempalace_search", args)
+	raw, err := c.mcp.CallTool(ctx, "mempalace_conversation_get", args)
 	if err != nil {
-		return nil, fmt.Errorf("substrate: list conversations: %w", err)
+		return ConversationRecord{}, fmt.Errorf("substrate: conversation_get %s: %w", conversationID, err)
 	}
-	drawers, err := parseContent[[]drawerResult](raw)
+	rec, err := parseContent[ConversationRecord](raw)
 	if err != nil {
-		return nil, fmt.Errorf("substrate: parse drawer list: %w", err)
+		return ConversationRecord{}, fmt.Errorf("substrate: parse conversation_get %s: %w", conversationID, err)
 	}
-	ids := make([]string, 0, len(drawers))
-	for _, d := range drawers {
-		var rec ConversationRecord
-		if err := json.Unmarshal([]byte(d.Content), &rec); err != nil {
-			continue
-		}
-		if rec.ConversationID != "" {
-			ids = append(ids, rec.ConversationID)
-		}
+	return rec, nil
+}
+
+// ConversationSummary is a lightweight entry in a list response.
+type ConversationSummary struct {
+	ConversationID string    `json:"conversation_id"`
+	BlockID        string    `json:"block_id"`
+	Status         string    `json:"status"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// ConversationList returns summaries of all stored conversations.
+func (c *Client) ConversationList(ctx context.Context) ([]ConversationSummary, error) {
+	raw, err := c.mcp.CallTool(ctx, "mempalace_conversation_list", map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("substrate: conversation_list: %w", err)
 	}
-	return ids, nil
+	list, err := parseContent[[]ConversationSummary](raw)
+	if err != nil {
+		return nil, fmt.Errorf("substrate: parse conversation_list: %w", err)
+	}
+	return list, nil
+}
+
+// --- Transcript ---
+
+// AppendTurnRequest is the input for ConversationAppendTurn.
+type AppendTurnRequest struct {
+	ConversationID string            `json:"conversation_id"`
+	Turn           conversation.Turn `json:"turn"`
+}
+
+// ConversationAppendTurn appends a single transcript turn.
+func (c *Client) ConversationAppendTurn(ctx context.Context, req AppendTurnRequest) error {
+	args := map[string]any{
+		"conversation_id": req.ConversationID,
+		"role":            string(req.Turn.Role),
+		"provider":        req.Turn.Provider,
+		"text":            req.Turn.Text,
+	}
+	_, err := c.mcp.CallTool(ctx, "mempalace_conversation_append_turn", args)
+	if err != nil {
+		return fmt.Errorf("substrate: conversation_append_turn %s: %w", req.ConversationID, err)
+	}
+	return nil
+}
+
+// --- Segments ---
+
+// StartSegmentRequest is the input for ConversationStartSegment.
+type StartSegmentRequest struct {
+	ConversationID string `json:"conversation_id"`
+	Provider       string `json:"provider"`
+}
+
+// StartSegmentResponse is returned by ConversationStartSegment.
+type StartSegmentResponse struct {
+	SegmentID string    `json:"segment_id"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+// ConversationStartSegment opens a new provider segment.
+func (c *Client) ConversationStartSegment(ctx context.Context, req StartSegmentRequest) (StartSegmentResponse, error) {
+	args := map[string]any{
+		"conversation_id": req.ConversationID,
+		"provider":        req.Provider,
+	}
+	raw, err := c.mcp.CallTool(ctx, "mempalace_conversation_start_segment", args)
+	if err != nil {
+		return StartSegmentResponse{}, fmt.Errorf("substrate: conversation_start_segment %s/%s: %w", req.ConversationID, req.Provider, err)
+	}
+	resp, err := parseContent[StartSegmentResponse](raw)
+	if err != nil {
+		return StartSegmentResponse{}, fmt.Errorf("substrate: parse conversation_start_segment: %w", err)
+	}
+	return resp, nil
+}
+
+// EndSegmentRequest is the input for ConversationEndSegment.
+type EndSegmentRequest struct {
+	ConversationID string `json:"conversation_id"`
+	SegmentID      string `json:"segment_id"`
+	Status         string `json:"status"` // "done" | "failed" | "exhausted"
+	Reason         string `json:"reason,omitempty"`
+}
+
+// ConversationEndSegment closes an active provider segment.
+func (c *Client) ConversationEndSegment(ctx context.Context, req EndSegmentRequest) error {
+	args := map[string]any{
+		"conversation_id": req.ConversationID,
+		"segment_id":      req.SegmentID,
+		"status":          req.Status,
+		"reason":          req.Reason,
+	}
+	_, err := c.mcp.CallTool(ctx, "mempalace_conversation_end_segment", args)
+	if err != nil {
+		return fmt.Errorf("substrate: conversation_end_segment %s/%s: %w", req.ConversationID, req.SegmentID, err)
+	}
+	return nil
 }
 
 // --- Working Memory ---
 
-// GetMemory retrieves the working memory for a conversation.
-func (c *Client) GetMemory(ctx context.Context, conversationID string) (conversation.MemoryState, error) {
-	rec, err := c.GetConversation(ctx, conversationID)
-	if err != nil {
-		return conversation.MemoryState{}, err
+// ConversationWorkingMemoryGet retrieves working memory for a conversation.
+func (c *Client) ConversationWorkingMemoryGet(ctx context.Context, conversationID string) (conversation.MemoryState, error) {
+	args := map[string]any{
+		"conversation_id": conversationID,
 	}
-	return rec.Memory, nil
+	raw, err := c.mcp.CallTool(ctx, "mempalace_conversation_working_memory_get", args)
+	if err != nil {
+		return conversation.MemoryState{}, fmt.Errorf("substrate: working_memory_get %s: %w", conversationID, err)
+	}
+	mem, err := parseContent[conversation.MemoryState](raw)
+	if err != nil {
+		return conversation.MemoryState{}, fmt.Errorf("substrate: parse working_memory_get %s: %w", conversationID, err)
+	}
+	return mem, nil
 }
 
-// SetMemory updates the working memory entry for a conversation.
-func (c *Client) SetMemory(ctx context.Context, conversationID string, mem conversation.MemoryState) error {
-	content, err := json.Marshal(mem)
+// ConversationWorkingMemorySet writes working memory for a conversation.
+func (c *Client) ConversationWorkingMemorySet(ctx context.Context, conversationID string, mem conversation.MemoryState) error {
+	memJSON, err := json.Marshal(mem)
 	if err != nil {
-		return fmt.Errorf("substrate: marshal memory: %w", err)
+		return fmt.Errorf("substrate: marshal working memory: %w", err)
 	}
 	args := map[string]any{
-		"wing":     c.wing,
-		"room":     "working-memory",
-		"content":  fmt.Sprintf(`{"conversation_id":%q,"memory":%s}`, conversationID, content),
-		"added_by": "milliways",
+		"conversation_id": conversationID,
+		"memory":          json.RawMessage(memJSON),
 	}
-	_, err = c.mcp.CallTool(ctx, "mempalace_add_drawer", args)
+	_, err = c.mcp.CallTool(ctx, "mempalace_conversation_working_memory_set", args)
 	if err != nil {
-		return fmt.Errorf("substrate: set memory %s: %w", conversationID, err)
+		return fmt.Errorf("substrate: working_memory_set %s: %w", conversationID, err)
 	}
 	return nil
 }
 
 // --- Context Bundle ---
 
-// GetContextBundle retrieves the context bundle for a conversation.
-func (c *Client) GetContextBundle(ctx context.Context, conversationID string) (conversation.ContextBundle, error) {
-	rec, err := c.GetConversation(ctx, conversationID)
-	if err != nil {
-		return conversation.ContextBundle{}, err
+// ConversationContextBundleGet retrieves the context bundle for a conversation.
+func (c *Client) ConversationContextBundleGet(ctx context.Context, conversationID string) (conversation.ContextBundle, error) {
+	args := map[string]any{
+		"conversation_id": conversationID,
 	}
-	return rec.Context, nil
+	raw, err := c.mcp.CallTool(ctx, "mempalace_conversation_context_bundle_get", args)
+	if err != nil {
+		return conversation.ContextBundle{}, fmt.Errorf("substrate: context_bundle_get %s: %w", conversationID, err)
+	}
+	bundle, err := parseContent[conversation.ContextBundle](raw)
+	if err != nil {
+		return conversation.ContextBundle{}, fmt.Errorf("substrate: parse context_bundle_get %s: %w", conversationID, err)
+	}
+	return bundle, nil
 }
 
-// SetContextBundle persists a context bundle for a conversation.
-func (c *Client) SetContextBundle(ctx context.Context, conversationID string, bundle conversation.ContextBundle) error {
-	content, err := json.Marshal(bundle)
+// ConversationContextBundleSet persists a context bundle for a conversation.
+func (c *Client) ConversationContextBundleSet(ctx context.Context, conversationID string, bundle conversation.ContextBundle) error {
+	bundleJSON, err := json.Marshal(bundle)
 	if err != nil {
 		return fmt.Errorf("substrate: marshal context bundle: %w", err)
 	}
 	args := map[string]any{
-		"wing":     c.wing,
-		"room":     "context-bundles",
-		"content":  fmt.Sprintf(`{"conversation_id":%q,"context":%s}`, conversationID, content),
-		"added_by": "milliways",
+		"conversation_id": conversationID,
+		"context":         json.RawMessage(bundleJSON),
 	}
-	_, err = c.mcp.CallTool(ctx, "mempalace_add_drawer", args)
+	_, err = c.mcp.CallTool(ctx, "mempalace_conversation_context_bundle_set", args)
 	if err != nil {
-		return fmt.Errorf("substrate: set context bundle %s: %w", conversationID, err)
+		return fmt.Errorf("substrate: context_bundle_set %s: %w", conversationID, err)
 	}
 	return nil
 }
@@ -212,149 +295,144 @@ type Event struct {
 	ConversationID string    `json:"conversation_id"`
 	Kind           string    `json:"kind"`
 	Payload        string    `json:"payload"`
-	At             time.Time `json:"at"`
+	At             time.Time `json:"at,omitempty"`
 }
 
-// AppendEvent records an event for a conversation.
-func (c *Client) AppendEvent(ctx context.Context, ev Event) error {
-	content, err := json.Marshal(ev)
-	if err != nil {
-		return fmt.Errorf("substrate: marshal event: %w", err)
-	}
+// ConversationEventsAppend records an event for a conversation.
+func (c *Client) ConversationEventsAppend(ctx context.Context, ev Event) error {
 	args := map[string]any{
-		"wing":     c.wing,
-		"room":     "events",
-		"content":  string(content),
-		"added_by": "milliways",
+		"conversation_id": ev.ConversationID,
+		"kind":            ev.Kind,
+		"payload":         ev.Payload,
 	}
-	_, err = c.mcp.CallTool(ctx, "mempalace_add_drawer", args)
+	_, err := c.mcp.CallTool(ctx, "mempalace_conversation_events_append", args)
 	if err != nil {
-		return fmt.Errorf("substrate: append event %s/%s: %w", ev.ConversationID, ev.Kind, err)
+		return fmt.Errorf("substrate: events_append %s/%s: %w", ev.ConversationID, ev.Kind, err)
 	}
 	return nil
 }
 
-// QueryEvents retrieves events for a conversation matching an optional kind filter.
-func (c *Client) QueryEvents(ctx context.Context, conversationID, kind string, limit int) ([]Event, error) {
-	query := "conversation_id:" + conversationID
-	if kind != "" {
-		query += " kind:" + kind
-	}
+// EventsQueryRequest is the input for ConversationEventsQuery.
+type EventsQueryRequest struct {
+	ConversationID string `json:"conversation_id"`
+	Kind           string `json:"kind,omitempty"`
+	Limit          int    `json:"limit,omitempty"`
+}
+
+// ConversationEventsQuery retrieves events for a conversation.
+func (c *Client) ConversationEventsQuery(ctx context.Context, req EventsQueryRequest) ([]Event, error) {
 	args := map[string]any{
-		"wing":  c.wing,
-		"room":  "events",
-		"query": query,
-		"limit": limit,
+		"conversation_id": req.ConversationID,
+		"kind":            req.Kind,
+		"limit":           req.Limit,
 	}
-	raw, err := c.mcp.CallTool(ctx, "mempalace_search", args)
+	raw, err := c.mcp.CallTool(ctx, "mempalace_conversation_events_query", args)
 	if err != nil {
-		return nil, fmt.Errorf("substrate: query events: %w", err)
+		return nil, fmt.Errorf("substrate: events_query %s: %w", req.ConversationID, err)
 	}
-	drawers, err := parseContent[[]drawerResult](raw)
+	events, err := parseContent[[]Event](raw)
 	if err != nil {
-		return nil, fmt.Errorf("substrate: parse events: %w", err)
-	}
-	events := make([]Event, 0, len(drawers))
-	for _, d := range drawers {
-		var ev Event
-		if err := json.Unmarshal([]byte(d.Content), &ev); err != nil {
-			continue
-		}
-		if ev.ConversationID == conversationID {
-			events = append(events, ev)
-		}
+		return nil, fmt.Errorf("substrate: parse events_query %s: %w", req.ConversationID, err)
 	}
 	return events, nil
 }
 
 // --- Checkpoint / Resume ---
 
-// SaveCheckpoint persists a conversation checkpoint.
-func (c *Client) SaveCheckpoint(ctx context.Context, ckpt conversation.ConversationCheckpoint) error {
-	content, err := json.Marshal(ckpt)
-	if err != nil {
-		return fmt.Errorf("substrate: marshal checkpoint: %w", err)
-	}
-	args := map[string]any{
-		"wing":     c.wing,
-		"room":     "checkpoints",
-		"content":  string(content),
-		"added_by": "milliways",
-	}
-	_, err = c.mcp.CallTool(ctx, "mempalace_add_drawer", args)
-	if err != nil {
-		return fmt.Errorf("substrate: save checkpoint %s: %w", ckpt.ID, err)
-	}
-	return nil
+// CheckpointRequest is the input for ConversationCheckpoint.
+type CheckpointRequest struct {
+	ConversationID string `json:"conversation_id"`
+	Reason         string `json:"reason"`
 }
 
-// LatestCheckpoint retrieves the most recent checkpoint for a conversation.
-func (c *Client) LatestCheckpoint(ctx context.Context, conversationID string) (*conversation.ConversationCheckpoint, error) {
+// CheckpointResponse is returned by ConversationCheckpoint.
+type CheckpointResponse struct {
+	CheckpointID string    `json:"checkpoint_id"`
+	TakenAt      time.Time `json:"taken_at"`
+}
+
+// ConversationCheckpoint creates a named checkpoint for a conversation.
+func (c *Client) ConversationCheckpoint(ctx context.Context, req CheckpointRequest) (CheckpointResponse, error) {
 	args := map[string]any{
-		"wing":  c.wing,
-		"room":  "checkpoints",
-		"query": "conversation_id:" + conversationID,
-		"limit": 1,
+		"conversation_id": req.ConversationID,
+		"reason":          req.Reason,
 	}
-	raw, err := c.mcp.CallTool(ctx, "mempalace_search", args)
+	raw, err := c.mcp.CallTool(ctx, "mempalace_conversation_checkpoint", args)
 	if err != nil {
-		return nil, fmt.Errorf("substrate: latest checkpoint %s: %w", conversationID, err)
+		return CheckpointResponse{}, fmt.Errorf("substrate: conversation_checkpoint %s: %w", req.ConversationID, err)
 	}
-	drawers, err := parseContent[[]drawerResult](raw)
+	resp, err := parseContent[CheckpointResponse](raw)
 	if err != nil {
-		return nil, fmt.Errorf("substrate: parse checkpoints: %w", err)
+		return CheckpointResponse{}, fmt.Errorf("substrate: parse conversation_checkpoint: %w", err)
 	}
-	for _, d := range drawers {
-		var ckpt conversation.ConversationCheckpoint
-		if err := json.Unmarshal([]byte(d.Content), &ckpt); err != nil {
-			continue
-		}
-		if ckpt.ConversationID == conversationID {
-			return &ckpt, nil
-		}
+	return resp, nil
+}
+
+// ResumeRequest is the input for ConversationResume.
+type ResumeRequest struct {
+	ConversationID string `json:"conversation_id"`
+	CheckpointID   string `json:"checkpoint_id,omitempty"`
+}
+
+// ResumeResponse contains the conversation state restored by resume.
+type ResumeResponse struct {
+	ConversationID string                     `json:"conversation_id"`
+	RestoredFrom   string                     `json:"restored_from"`
+	Memory         conversation.MemoryState   `json:"memory"`
+	Context        conversation.ContextBundle `json:"context"`
+}
+
+// ConversationResume restores a conversation from a checkpoint.
+func (c *Client) ConversationResume(ctx context.Context, req ResumeRequest) (ResumeResponse, error) {
+	args := map[string]any{
+		"conversation_id": req.ConversationID,
+		"checkpoint_id":   req.CheckpointID,
 	}
-	return nil, fmt.Errorf("substrate: no checkpoint found for %s", conversationID)
+	raw, err := c.mcp.CallTool(ctx, "mempalace_conversation_resume", args)
+	if err != nil {
+		return ResumeResponse{}, fmt.Errorf("substrate: conversation_resume %s: %w", req.ConversationID, err)
+	}
+	resp, err := parseContent[ResumeResponse](raw)
+	if err != nil {
+		return ResumeResponse{}, fmt.Errorf("substrate: parse conversation_resume: %w", err)
+	}
+	return resp, nil
 }
 
 // --- Lineage ---
 
 // LineageEdge records a directed lineage relationship between conversations.
 type LineageEdge struct {
-	FromID    string    `json:"from_id"`
-	ToID      string    `json:"to_id"`
-	Reason    string    `json:"reason"`
-	CreatedAt time.Time `json:"created_at"`
+	FromID string `json:"from_id"`
+	ToID   string `json:"to_id"`
+	Reason string `json:"reason"`
 }
 
-// AppendLineage records a lineage edge between two conversations.
-func (c *Client) AppendLineage(ctx context.Context, edge LineageEdge) error {
-	content, err := json.Marshal(edge)
-	if err != nil {
-		return fmt.Errorf("substrate: marshal lineage: %w", err)
-	}
+// LineageResponse is returned by ConversationLineage.
+type LineageResponse struct {
+	Edges []LineageEdge `json:"edges"`
+}
+
+// ConversationLineage records a lineage edge and/or retrieves the lineage graph
+// for a conversation. Pass an empty ToID to query only.
+func (c *Client) ConversationLineage(ctx context.Context, edge LineageEdge) (LineageResponse, error) {
 	args := map[string]any{
-		"wing":     c.wing,
-		"room":     "lineage",
-		"content":  string(content),
-		"added_by": "milliways",
+		"from_id": edge.FromID,
+		"to_id":   edge.ToID,
+		"reason":  edge.Reason,
 	}
-	_, err = c.mcp.CallTool(ctx, "mempalace_add_drawer", args)
+	raw, err := c.mcp.CallTool(ctx, "mempalace_conversation_lineage", args)
 	if err != nil {
-		return fmt.Errorf("substrate: append lineage %s->%s: %w", edge.FromID, edge.ToID, err)
+		return LineageResponse{}, fmt.Errorf("substrate: conversation_lineage %s->%s: %w", edge.FromID, edge.ToID, err)
 	}
-	return nil
+	resp, err := parseContent[LineageResponse](raw)
+	if err != nil {
+		return LineageResponse{}, fmt.Errorf("substrate: parse conversation_lineage: %w", err)
+	}
+	return resp, nil
 }
 
 // --- internal helpers ---
-
-// drawerResult is the MemPalace search result shape used internally.
-type drawerResult struct {
-	ID      string  `json:"id"`
-	Content string  `json:"text"` // MemPalace returns drawer body in "text"
-	Wing    string  `json:"wing"`
-	Room    string  `json:"room"`
-	Score   float64 `json:"score"`
-}
 
 // parseContent extracts typed content from an MCP tool result using the same
 // dual-parse strategy as pantry.parseToolContent.

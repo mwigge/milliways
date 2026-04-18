@@ -31,261 +31,482 @@ func (f *fakeCaller) lastCall() fakeCall {
 	return f.calls[len(f.calls)-1]
 }
 
-// --- SaveConversation ---
+func mustJSON(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
+}
 
-func TestSaveConversation_CallsAddDrawer(t *testing.T) {
+// --- ConversationStart ---
+
+func TestConversationStart_CallsCorrectTool(t *testing.T) {
 	t.Parallel()
 
-	fc := &fakeCaller{result: json.RawMessage(`{}`)}
-	c := NewWithCaller(fc, "test-wing")
+	resp := StartResponse{ConversationID: "conv-1", Status: "active", CreatedAt: time.Now()}
+	fc := &fakeCaller{result: mustJSON(resp)}
+	c := NewWithCaller(fc)
 
-	conv := conversation.New("conv-1", "block-1", "do the thing")
-	if err := c.SaveConversation(context.Background(), conv); err != nil {
-		t.Fatalf("SaveConversation: %v", err)
+	got, err := c.ConversationStart(context.Background(), StartRequest{
+		ConversationID: "conv-1",
+		BlockID:        "blk-1",
+		Prompt:         "do the thing",
+	})
+	if err != nil {
+		t.Fatalf("ConversationStart: %v", err)
+	}
+	if got.ConversationID != "conv-1" {
+		t.Errorf("expected conv-1, got %q", got.ConversationID)
 	}
 
-	if len(fc.calls) != 1 {
-		t.Fatalf("expected 1 call, got %d", len(fc.calls))
-	}
 	call := fc.lastCall()
-	if call.toolName != "mempalace_add_drawer" {
-		t.Errorf("expected mempalace_add_drawer, got %q", call.toolName)
+	if call.toolName != "mempalace_conversation_start" {
+		t.Errorf("expected mempalace_conversation_start, got %q", call.toolName)
 	}
-	if call.args["wing"] != "test-wing" {
-		t.Errorf("expected wing 'test-wing', got %v", call.args["wing"])
+	if call.args["conversation_id"] != "conv-1" {
+		t.Errorf("expected conversation_id conv-1, got %v", call.args["conversation_id"])
 	}
-	if call.args["room"] != "conversations" {
-		t.Errorf("expected room 'conversations', got %v", call.args["room"])
+	if call.args["block_id"] != "blk-1" {
+		t.Errorf("expected block_id blk-1, got %v", call.args["block_id"])
 	}
-
-	// Content should be valid JSON with conversation_id
-	content, ok := call.args["content"].(string)
-	if !ok {
-		t.Fatal("content is not a string")
-	}
-	var rec ConversationRecord
-	if err := json.Unmarshal([]byte(content), &rec); err != nil {
-		t.Fatalf("content is not valid JSON: %v", err)
-	}
-	if rec.ConversationID != "conv-1" {
-		t.Errorf("expected conversation_id 'conv-1', got %q", rec.ConversationID)
-	}
-	if rec.Prompt != "do the thing" {
-		t.Errorf("expected prompt 'do the thing', got %q", rec.Prompt)
+	if call.args["prompt"] != "do the thing" {
+		t.Errorf("expected prompt 'do the thing', got %v", call.args["prompt"])
 	}
 }
 
-func TestSaveConversation_PropagatesMCPError(t *testing.T) {
+func TestConversationStart_PropagatesMCPError(t *testing.T) {
 	t.Parallel()
 
 	fc := &fakeCaller{err: fmt.Errorf("mcp down")}
-	c := NewWithCaller(fc, "test-wing")
+	c := NewWithCaller(fc)
 
-	err := c.SaveConversation(context.Background(), conversation.New("conv-err", "b", "p"))
+	_, err := c.ConversationStart(context.Background(), StartRequest{ConversationID: "conv-err"})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
 
-// --- GetConversation ---
+// --- ConversationEnd ---
 
-func TestGetConversation_ParsesSearchResult(t *testing.T) {
+func TestConversationEnd_CallsCorrectTool(t *testing.T) {
 	t.Parallel()
 
-	rec := ConversationRecord{
-		ConversationID: "conv-42",
-		BlockID:        "blk-1",
-		Prompt:         "hello",
-		Status:         "active",
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
-	}
-	recJSON, _ := json.Marshal(rec)
+	fc := &fakeCaller{result: json.RawMessage(`{}`)}
+	c := NewWithCaller(fc)
 
-	// MemPalace returns a list of drawers; each drawer's body is in "text".
-	drawers := []drawerResult{{
-		ID:      "d1",
-		Content: string(recJSON),
-		Wing:    "test-wing",
-		Room:    "conversations",
-		Score:   0.99,
-	}}
-	drawersJSON, _ := json.Marshal(drawers)
-
-	fc := &fakeCaller{result: drawersJSON}
-	c := NewWithCaller(fc, "test-wing")
-
-	got, err := c.GetConversation(context.Background(), "conv-42")
+	err := c.ConversationEnd(context.Background(), EndRequest{
+		ConversationID: "conv-1",
+		Status:         "done",
+		Reason:         "task complete",
+	})
 	if err != nil {
-		t.Fatalf("GetConversation: %v", err)
+		t.Fatalf("ConversationEnd: %v", err)
+	}
+
+	call := fc.lastCall()
+	if call.toolName != "mempalace_conversation_end" {
+		t.Errorf("expected mempalace_conversation_end, got %q", call.toolName)
+	}
+	if call.args["status"] != "done" {
+		t.Errorf("expected status done, got %v", call.args["status"])
+	}
+}
+
+// --- ConversationGet ---
+
+func TestConversationGet_CallsCorrectTool(t *testing.T) {
+	t.Parallel()
+
+	rec := ConversationRecord{ConversationID: "conv-42", Prompt: "hello", Status: "active"}
+	fc := &fakeCaller{result: mustJSON(rec)}
+	c := NewWithCaller(fc)
+
+	got, err := c.ConversationGet(context.Background(), "conv-42")
+	if err != nil {
+		t.Fatalf("ConversationGet: %v", err)
 	}
 	if got.ConversationID != "conv-42" {
 		t.Errorf("expected conv-42, got %q", got.ConversationID)
 	}
 	if got.Prompt != "hello" {
-		t.Errorf("expected 'hello', got %q", got.Prompt)
+		t.Errorf("expected hello, got %q", got.Prompt)
+	}
+
+	call := fc.lastCall()
+	if call.toolName != "mempalace_conversation_get" {
+		t.Errorf("expected mempalace_conversation_get, got %q", call.toolName)
+	}
+	if call.args["conversation_id"] != "conv-42" {
+		t.Errorf("expected conversation_id conv-42, got %v", call.args["conversation_id"])
 	}
 }
 
-func TestGetConversation_NotFound(t *testing.T) {
+func TestConversationGet_PropagatesMCPError(t *testing.T) {
 	t.Parallel()
 
-	// Empty drawer list
-	fc := &fakeCaller{result: json.RawMessage(`[]`)}
-	c := NewWithCaller(fc, "test-wing")
+	fc := &fakeCaller{err: fmt.Errorf("not found")}
+	c := NewWithCaller(fc)
 
-	_, err := c.GetConversation(context.Background(), "conv-missing")
+	_, err := c.ConversationGet(context.Background(), "conv-missing")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 }
 
-// --- SetMemory / GetMemory ---
+// --- ConversationList ---
 
-func TestSetMemory_CallsAddDrawer(t *testing.T) {
+func TestConversationList_CallsCorrectTool(t *testing.T) {
 	t.Parallel()
 
-	fc := &fakeCaller{result: json.RawMessage(`{}`)}
-	c := NewWithCaller(fc, "test-wing")
+	summaries := []ConversationSummary{
+		{ConversationID: "conv-1", Status: "active"},
+		{ConversationID: "conv-2", Status: "done"},
+	}
+	fc := &fakeCaller{result: mustJSON(summaries)}
+	c := NewWithCaller(fc)
 
-	mem := conversation.MemoryState{
-		WorkingSummary: "still going",
-		NextAction:     "continue",
-	}
-	if err := c.SetMemory(context.Background(), "conv-1", mem); err != nil {
-		t.Fatalf("SetMemory: %v", err)
-	}
-
-	call := fc.lastCall()
-	if call.toolName != "mempalace_add_drawer" {
-		t.Errorf("expected mempalace_add_drawer, got %q", call.toolName)
-	}
-	if call.args["room"] != "working-memory" {
-		t.Errorf("expected room 'working-memory', got %v", call.args["room"])
-	}
-
-	content, ok := call.args["content"].(string)
-	if !ok {
-		t.Fatal("content is not a string")
-	}
-	var wrapper struct {
-		ConvID string                   `json:"conversation_id"`
-		Memory conversation.MemoryState `json:"memory"`
-	}
-	if err := json.Unmarshal([]byte(content), &wrapper); err != nil {
-		t.Fatalf("content JSON: %v", err)
-	}
-	if wrapper.ConvID != "conv-1" {
-		t.Errorf("expected conversation_id 'conv-1', got %q", wrapper.ConvID)
-	}
-	if wrapper.Memory.WorkingSummary != "still going" {
-		t.Errorf("expected 'still going', got %q", wrapper.Memory.WorkingSummary)
-	}
-}
-
-// --- AppendEvent / QueryEvents ---
-
-func TestAppendEvent_CallsAddDrawer(t *testing.T) {
-	t.Parallel()
-
-	fc := &fakeCaller{result: json.RawMessage(`{}`)}
-	c := NewWithCaller(fc, "test-wing")
-
-	ev := Event{
-		ConversationID: "conv-1",
-		Kind:           "segment.started",
-		Payload:        `{"provider":"anthropic"}`,
-		At:             time.Now(),
-	}
-	if err := c.AppendEvent(context.Background(), ev); err != nil {
-		t.Fatalf("AppendEvent: %v", err)
-	}
-
-	call := fc.lastCall()
-	if call.toolName != "mempalace_add_drawer" {
-		t.Errorf("expected mempalace_add_drawer, got %q", call.toolName)
-	}
-	if call.args["room"] != "events" {
-		t.Errorf("expected room 'events', got %v", call.args["room"])
-	}
-}
-
-func TestQueryEvents_FiltersById(t *testing.T) {
-	t.Parallel()
-
-	ev := Event{
-		ConversationID: "conv-1",
-		Kind:           "segment.started",
-		Payload:        "{}",
-		At:             time.Now(),
-	}
-	evJSON, _ := json.Marshal(ev)
-	drawers := []drawerResult{{ID: "e1", Content: string(evJSON), Wing: "test-wing", Room: "events", Score: 0.9}}
-	drawersJSON, _ := json.Marshal(drawers)
-
-	fc := &fakeCaller{result: drawersJSON}
-	c := NewWithCaller(fc, "test-wing")
-
-	events, err := c.QueryEvents(context.Background(), "conv-1", "", 10)
+	list, err := c.ConversationList(context.Background())
 	if err != nil {
-		t.Fatalf("QueryEvents: %v", err)
+		t.Fatalf("ConversationList: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 event, got %d", len(events))
-	}
-	if events[0].Kind != "segment.started" {
-		t.Errorf("expected 'segment.started', got %q", events[0].Kind)
-	}
-}
-
-// --- SaveCheckpoint ---
-
-func TestSaveCheckpoint_CallsAddDrawer(t *testing.T) {
-	t.Parallel()
-
-	fc := &fakeCaller{result: json.RawMessage(`{}`)}
-	c := NewWithCaller(fc, "test-wing")
-
-	conv := conversation.New("conv-ckpt", "b", "p")
-	ckpt := conv.Snapshot("test-checkpoint")
-
-	if err := c.SaveCheckpoint(context.Background(), ckpt); err != nil {
-		t.Fatalf("SaveCheckpoint: %v", err)
+	if len(list) != 2 {
+		t.Fatalf("expected 2 summaries, got %d", len(list))
 	}
 
 	call := fc.lastCall()
-	if call.toolName != "mempalace_add_drawer" {
-		t.Errorf("expected mempalace_add_drawer, got %q", call.toolName)
-	}
-	if call.args["room"] != "checkpoints" {
-		t.Errorf("expected room 'checkpoints', got %v", call.args["room"])
+	if call.toolName != "mempalace_conversation_list" {
+		t.Errorf("expected mempalace_conversation_list, got %q", call.toolName)
 	}
 }
 
-// --- AppendLineage ---
+// --- ConversationAppendTurn ---
 
-func TestAppendLineage_CallsAddDrawer(t *testing.T) {
+func TestConversationAppendTurn_CallsCorrectTool(t *testing.T) {
 	t.Parallel()
 
 	fc := &fakeCaller{result: json.RawMessage(`{}`)}
-	c := NewWithCaller(fc, "test-wing")
+	c := NewWithCaller(fc)
 
-	edge := LineageEdge{
-		FromID:    "conv-1",
-		ToID:      "conv-2",
-		Reason:    "context-limit-failover",
-		CreatedAt: time.Now(),
-	}
-	if err := c.AppendLineage(context.Background(), edge); err != nil {
-		t.Fatalf("AppendLineage: %v", err)
+	err := c.ConversationAppendTurn(context.Background(), AppendTurnRequest{
+		ConversationID: "conv-1",
+		Turn: conversation.Turn{
+			Role:     conversation.RoleAssistant,
+			Provider: "claude",
+			Text:     "here is the answer",
+			At:       time.Now(),
+		},
+	})
+	if err != nil {
+		t.Fatalf("ConversationAppendTurn: %v", err)
 	}
 
 	call := fc.lastCall()
-	if call.toolName != "mempalace_add_drawer" {
-		t.Errorf("expected mempalace_add_drawer, got %q", call.toolName)
+	if call.toolName != "mempalace_conversation_append_turn" {
+		t.Errorf("expected mempalace_conversation_append_turn, got %q", call.toolName)
 	}
-	if call.args["room"] != "lineage" {
-		t.Errorf("expected room 'lineage', got %v", call.args["room"])
+	if call.args["role"] != "assistant" {
+		t.Errorf("expected role assistant, got %v", call.args["role"])
+	}
+	if call.args["text"] != "here is the answer" {
+		t.Errorf("expected text 'here is the answer', got %v", call.args["text"])
+	}
+}
+
+// --- ConversationStartSegment / EndSegment ---
+
+func TestConversationStartSegment_CallsCorrectTool(t *testing.T) {
+	t.Parallel()
+
+	resp := StartSegmentResponse{SegmentID: "seg-1", StartedAt: time.Now()}
+	fc := &fakeCaller{result: mustJSON(resp)}
+	c := NewWithCaller(fc)
+
+	got, err := c.ConversationStartSegment(context.Background(), StartSegmentRequest{
+		ConversationID: "conv-1",
+		Provider:       "claude",
+	})
+	if err != nil {
+		t.Fatalf("ConversationStartSegment: %v", err)
+	}
+	if got.SegmentID != "seg-1" {
+		t.Errorf("expected seg-1, got %q", got.SegmentID)
+	}
+
+	call := fc.lastCall()
+	if call.toolName != "mempalace_conversation_start_segment" {
+		t.Errorf("expected mempalace_conversation_start_segment, got %q", call.toolName)
+	}
+	if call.args["provider"] != "claude" {
+		t.Errorf("expected provider claude, got %v", call.args["provider"])
+	}
+}
+
+func TestConversationEndSegment_CallsCorrectTool(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCaller{result: json.RawMessage(`{}`)}
+	c := NewWithCaller(fc)
+
+	err := c.ConversationEndSegment(context.Background(), EndSegmentRequest{
+		ConversationID: "conv-1",
+		SegmentID:      "seg-1",
+		Status:         "exhausted",
+		Reason:         "context limit",
+	})
+	if err != nil {
+		t.Fatalf("ConversationEndSegment: %v", err)
+	}
+
+	call := fc.lastCall()
+	if call.toolName != "mempalace_conversation_end_segment" {
+		t.Errorf("expected mempalace_conversation_end_segment, got %q", call.toolName)
+	}
+	if call.args["status"] != "exhausted" {
+		t.Errorf("expected status exhausted, got %v", call.args["status"])
+	}
+}
+
+// --- Working Memory ---
+
+func TestConversationWorkingMemoryGet_CallsCorrectTool(t *testing.T) {
+	t.Parallel()
+
+	mem := conversation.MemoryState{WorkingSummary: "in progress", NextAction: "continue"}
+	fc := &fakeCaller{result: mustJSON(mem)}
+	c := NewWithCaller(fc)
+
+	got, err := c.ConversationWorkingMemoryGet(context.Background(), "conv-1")
+	if err != nil {
+		t.Fatalf("WorkingMemoryGet: %v", err)
+	}
+	if got.WorkingSummary != "in progress" {
+		t.Errorf("expected 'in progress', got %q", got.WorkingSummary)
+	}
+
+	call := fc.lastCall()
+	if call.toolName != "mempalace_conversation_working_memory_get" {
+		t.Errorf("expected mempalace_conversation_working_memory_get, got %q", call.toolName)
+	}
+}
+
+func TestConversationWorkingMemorySet_CallsCorrectTool(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCaller{result: json.RawMessage(`{}`)}
+	c := NewWithCaller(fc)
+
+	mem := conversation.MemoryState{WorkingSummary: "done", NextAction: "finish"}
+	err := c.ConversationWorkingMemorySet(context.Background(), "conv-1", mem)
+	if err != nil {
+		t.Fatalf("WorkingMemorySet: %v", err)
+	}
+
+	call := fc.lastCall()
+	if call.toolName != "mempalace_conversation_working_memory_set" {
+		t.Errorf("expected mempalace_conversation_working_memory_set, got %q", call.toolName)
+	}
+	if call.args["conversation_id"] != "conv-1" {
+		t.Errorf("expected conversation_id conv-1, got %v", call.args["conversation_id"])
+	}
+}
+
+// --- Context Bundle ---
+
+func TestConversationContextBundleGet_CallsCorrectTool(t *testing.T) {
+	t.Parallel()
+
+	bundle := conversation.ContextBundle{MemPalaceText: "some context"}
+	fc := &fakeCaller{result: mustJSON(bundle)}
+	c := NewWithCaller(fc)
+
+	got, err := c.ConversationContextBundleGet(context.Background(), "conv-1")
+	if err != nil {
+		t.Fatalf("ContextBundleGet: %v", err)
+	}
+	if got.MemPalaceText != "some context" {
+		t.Errorf("expected 'some context', got %q", got.MemPalaceText)
+	}
+
+	call := fc.lastCall()
+	if call.toolName != "mempalace_conversation_context_bundle_get" {
+		t.Errorf("expected mempalace_conversation_context_bundle_get, got %q", call.toolName)
+	}
+}
+
+func TestConversationContextBundleSet_CallsCorrectTool(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCaller{result: json.RawMessage(`{}`)}
+	c := NewWithCaller(fc)
+
+	bundle := conversation.ContextBundle{CodeGraphText: "graph data"}
+	err := c.ConversationContextBundleSet(context.Background(), "conv-1", bundle)
+	if err != nil {
+		t.Fatalf("ContextBundleSet: %v", err)
+	}
+
+	call := fc.lastCall()
+	if call.toolName != "mempalace_conversation_context_bundle_set" {
+		t.Errorf("expected mempalace_conversation_context_bundle_set, got %q", call.toolName)
+	}
+}
+
+// --- Events ---
+
+func TestConversationEventsAppend_CallsCorrectTool(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCaller{result: json.RawMessage(`{}`)}
+	c := NewWithCaller(fc)
+
+	ev := Event{
+		ConversationID: "conv-1",
+		Kind:           "segment.started",
+		Payload:        `{"provider":"claude"}`,
+	}
+	err := c.ConversationEventsAppend(context.Background(), ev)
+	if err != nil {
+		t.Fatalf("EventsAppend: %v", err)
+	}
+
+	call := fc.lastCall()
+	if call.toolName != "mempalace_conversation_events_append" {
+		t.Errorf("expected mempalace_conversation_events_append, got %q", call.toolName)
+	}
+	if call.args["kind"] != "segment.started" {
+		t.Errorf("expected kind segment.started, got %v", call.args["kind"])
+	}
+	if call.args["payload"] != `{"provider":"claude"}` {
+		t.Errorf("unexpected payload: %v", call.args["payload"])
+	}
+}
+
+func TestConversationEventsQuery_CallsCorrectTool(t *testing.T) {
+	t.Parallel()
+
+	events := []Event{
+		{ConversationID: "conv-1", Kind: "segment.started", Payload: "{}"},
+	}
+	fc := &fakeCaller{result: mustJSON(events)}
+	c := NewWithCaller(fc)
+
+	got, err := c.ConversationEventsQuery(context.Background(), EventsQueryRequest{
+		ConversationID: "conv-1",
+		Kind:           "segment.started",
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatalf("EventsQuery: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(got))
+	}
+	if got[0].Kind != "segment.started" {
+		t.Errorf("expected segment.started, got %q", got[0].Kind)
+	}
+
+	call := fc.lastCall()
+	if call.toolName != "mempalace_conversation_events_query" {
+		t.Errorf("expected mempalace_conversation_events_query, got %q", call.toolName)
+	}
+}
+
+// --- Checkpoint ---
+
+func TestConversationCheckpoint_CallsCorrectTool(t *testing.T) {
+	t.Parallel()
+
+	resp := CheckpointResponse{CheckpointID: "ckpt-1", TakenAt: time.Now()}
+	fc := &fakeCaller{result: mustJSON(resp)}
+	c := NewWithCaller(fc)
+
+	got, err := c.ConversationCheckpoint(context.Background(), CheckpointRequest{
+		ConversationID: "conv-1",
+		Reason:         "context-limit-failover",
+	})
+	if err != nil {
+		t.Fatalf("Checkpoint: %v", err)
+	}
+	if got.CheckpointID != "ckpt-1" {
+		t.Errorf("expected ckpt-1, got %q", got.CheckpointID)
+	}
+
+	call := fc.lastCall()
+	if call.toolName != "mempalace_conversation_checkpoint" {
+		t.Errorf("expected mempalace_conversation_checkpoint, got %q", call.toolName)
+	}
+	if call.args["reason"] != "context-limit-failover" {
+		t.Errorf("expected reason context-limit-failover, got %v", call.args["reason"])
+	}
+}
+
+// --- Resume ---
+
+func TestConversationResume_CallsCorrectTool(t *testing.T) {
+	t.Parallel()
+
+	resp := ResumeResponse{
+		ConversationID: "conv-1",
+		RestoredFrom:   "ckpt-1",
+		Memory:         conversation.MemoryState{WorkingSummary: "resuming"},
+	}
+	fc := &fakeCaller{result: mustJSON(resp)}
+	c := NewWithCaller(fc)
+
+	got, err := c.ConversationResume(context.Background(), ResumeRequest{
+		ConversationID: "conv-1",
+		CheckpointID:   "ckpt-1",
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if got.RestoredFrom != "ckpt-1" {
+		t.Errorf("expected ckpt-1, got %q", got.RestoredFrom)
+	}
+	if got.Memory.WorkingSummary != "resuming" {
+		t.Errorf("expected 'resuming', got %q", got.Memory.WorkingSummary)
+	}
+
+	call := fc.lastCall()
+	if call.toolName != "mempalace_conversation_resume" {
+		t.Errorf("expected mempalace_conversation_resume, got %q", call.toolName)
+	}
+	if call.args["checkpoint_id"] != "ckpt-1" {
+		t.Errorf("expected checkpoint_id ckpt-1, got %v", call.args["checkpoint_id"])
+	}
+}
+
+// --- Lineage ---
+
+func TestConversationLineage_CallsCorrectTool(t *testing.T) {
+	t.Parallel()
+
+	resp := LineageResponse{Edges: []LineageEdge{{FromID: "conv-1", ToID: "conv-2", Reason: "failover"}}}
+	fc := &fakeCaller{result: mustJSON(resp)}
+	c := NewWithCaller(fc)
+
+	got, err := c.ConversationLineage(context.Background(), LineageEdge{
+		FromID: "conv-1",
+		ToID:   "conv-2",
+		Reason: "failover",
+	})
+	if err != nil {
+		t.Fatalf("Lineage: %v", err)
+	}
+	if len(got.Edges) != 1 {
+		t.Fatalf("expected 1 edge, got %d", len(got.Edges))
+	}
+	if got.Edges[0].Reason != "failover" {
+		t.Errorf("expected failover, got %q", got.Edges[0].Reason)
+	}
+
+	call := fc.lastCall()
+	if call.toolName != "mempalace_conversation_lineage" {
+		t.Errorf("expected mempalace_conversation_lineage, got %q", call.toolName)
+	}
+	if call.args["from_id"] != "conv-1" {
+		t.Errorf("expected from_id conv-1, got %v", call.args["from_id"])
+	}
+	if call.args["to_id"] != "conv-2" {
+		t.Errorf("expected to_id conv-2, got %v", call.args["to_id"])
 	}
 }
 
