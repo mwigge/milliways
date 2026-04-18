@@ -186,7 +186,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					exitCode = 1
 				}
 			}
-
+			// Preserve the actual measured duration, not a recalculated wall-clock value.
+			if msg.Duration > 0 {
+				b.Duration = msg.Duration
+			}
 			var cost *adapter.CostInfo
 			if msg.Duration > 0 {
 				cost = &adapter.CostInfo{DurationMs: int(msg.Duration.Milliseconds())}
@@ -1126,13 +1129,14 @@ func (m *Model) mostRecentSwitchSource() (string, bool) {
 }
 
 func (m *Model) appendCommandFeedback(prompt, text string) {
+	now := time.Now()
 	block := Block{
 		ID:        m.nextBlockID(),
 		Prompt:    prompt,
 		Kitchen:   "milliways",
 		State:     StateDone,
-		StartedAt: time.Now(),
-		Duration:  0,
+		StartedAt: now,
+		Duration:  1 * time.Second, // stable value so elapsed() doesn't drift
 	}
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
