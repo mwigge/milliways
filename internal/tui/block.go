@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -138,55 +139,25 @@ func (b *Block) RenderSeparator(width int) string {
 // RenderBody renders the output lines with kitchen prefixes.
 // When maxLines > 0, applies ScrollOffset to show a window of maxLines.
 func (b *Block) RenderBody(width int, mode RenderMode) string {
-	if len(b.Lines) == 0 {
-		if b.State == StateRouting {
-			return mutedStyle.Render("routing...")
-		}
-		if b.State == StateStreaming || b.State == StateRouted {
-			return mutedStyle.Render("waiting for output...")
-		}
-		return ""
+	sections := make([]string, 0, 3)
+	if telemetry := b.renderTelemetry(); telemetry != "" {
+		sections = append(sections, telemetry)
 	}
 
-	var buf strings.Builder
-
-	for _, line := range b.Lines {
-		prefix := kitchenPrefix(line.Kitchen)
-
-		switch line.Type {
-		case LineCode:
-			code := line.Text
-			if mode == RenderRaw && line.Language != "" {
-				code = highlightCode(code, line.Language)
-			}
-			for _, codeLine := range strings.Split(code, "\n") {
-				buf.WriteString(prefix + codeLine + "\n")
-			}
-		case LineTool:
-			buf.WriteString(prefix + mutedStyle.Render("⚙ "+line.Text) + "\n")
-		case LineSystem:
-			buf.WriteString(mutedStyle.Render("[milliways] "+line.Text) + "\n")
-		default:
-			buf.WriteString(prefix + line.Text + "\n")
+	if output := b.renderOutput(mode); output != "" {
+		sections = append(sections, output)
+	} else {
+		placeholder := b.renderPlaceholder()
+		if placeholder != "" {
+			sections = append(sections, placeholder)
 		}
 	}
 
-	// Footer with cost if done.
-	if b.isDone() {
-		status := "done"
-		icon := successStyle.Render("✓")
-		if b.ExitCode != 0 {
-			status = "failed"
-			icon = failureStyle.Render("✗")
-		}
-		footer := fmt.Sprintf("%s %s  %s  %.1fs", icon, b.Kitchen, status, b.elapsed().Seconds())
-		if b.Cost != nil && b.Cost.USD > 0 {
-			footer += fmt.Sprintf("  $%.2f", b.Cost.USD)
-		}
-		buf.WriteString(footer + "\n")
+	if footer := b.renderFooter(); footer != "" {
+		sections = append(sections, footer)
 	}
 
-	return buf.String()
+	return strings.Join(sections, "\n")
 }
 
 // RenderBodyWindow renders a scrollable window of the body.
@@ -342,6 +313,239 @@ func (b *Block) elapsed() time.Duration {
 		return 0
 	}
 	return time.Since(b.StartedAt)
+}
+
+func (b *Block) renderTelemetry() string {
+	rows := make([]string, 0, 5)
+
+	if session := b.renderSessionTelemetry(); session != "" {
+		rows = append(rows, session)
+	}
+	if usage := b.renderUsageTelemetry(); usage != "" {
+		rows = append(rows, usage)
+	}
+	if runtime := b.renderRuntimeTelemetry(); runtime != "" {
+		rows = append(rows, runtime)
+	}
+	if context := b.renderContextTelemetry(); context != "" {
+		rows = append(rows, context)
+	}
+	if mcp := b.renderMCPTelemetry(); mcp != "" {
+		rows = append(rows, mcp)
+	}
+
+	return strings.Join(rows, "\n")
+}
+
+func (b *Block) renderSessionTelemetry() string {
+	parts := make([]string, 0, 4)
+	if started := b.sessionStart(); !started.IsZero() {
+		parts = append(parts, started.Format("2006-01-02 15:04:05 MST"))
+	}
+	if elapsed := b.elapsed().Round(time.Second); elapsed > 0 {
+		parts = append(parts, "elapsed "+elapsed.String())
+	}
+	if b.Kitchen != "" {
+		parts = append(parts, "kitchen "+b.Kitchen)
+	}
+	if sticky := b.stickyKitchen(); sticky != "" {
+		parts = append(parts, "sticky "+sticky)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Session: " + strings.Join(parts, " · ")
+}
+
+func (b *Block) renderUsageTelemetry() string {
+	if b.Cost == nil {
+		return ""
+	}
+	parts := make([]string, 0, 4)
+	if b.Cost.InputTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%d in", b.Cost.InputTokens))
+	}
+	if b.Cost.OutputTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%d out", b.Cost.OutputTokens))
+	}
+	if b.Cost.USD > 0 {
+		parts = append(parts, fmt.Sprintf("$%.2f", b.Cost.USD))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Usage: " + strings.Join(parts, " · ")
+}
+
+func (b *Block) renderRuntimeTelemetry() string {
+	parts := make([]string, 0, 3)
+	if switches, ok := b.switchCount(); ok {
+		parts = append(parts, pluralizeCount(switches, "switch"))
+	}
+	if segments, ok := b.segmentCount(); ok {
+		parts = append(parts, pluralizeCount(segments, "segment"))
+	}
+	if checkpoints, ok := b.checkpointCount(); ok {
+		parts = append(parts, pluralizeCount(checkpoints, "checkpoint"))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Runtime: " + strings.Join(parts, " · ")
+}
+
+func (b *Block) renderContextTelemetry() string {
+	parts := make([]string, 0, 2)
+	if b.ContinuationPrompt != "" {
+		parts = append(parts, "continuation ready")
+	}
+	if b.hasContextBundle() {
+		parts = append(parts, "bundle restored")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Context: " + strings.Join(parts, " · ")
+}
+
+func (b *Block) renderMCPTelemetry() string {
+	parts := make([]string, 0, 2)
+	if envConfigured("MILLIWAYS_MEMPALACE_MCP_CMD") {
+		parts = append(parts, "MemPalace configured")
+	}
+	if envConfigured("MILLIWAYS_CODEGRAPH_MCP_CMD") {
+		parts = append(parts, "CodeGraph configured")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "MCP: " + strings.Join(parts, " · ")
+}
+
+func (b *Block) renderOutput(mode RenderMode) string {
+	if len(b.Lines) == 0 {
+		return ""
+	}
+
+	var buf strings.Builder
+	for _, line := range b.Lines {
+		prefix := kitchenPrefix(line.Kitchen)
+
+		switch line.Type {
+		case LineCode:
+			code := line.Text
+			if mode == RenderRaw && line.Language != "" {
+				code = highlightCode(code, line.Language)
+			}
+			for _, codeLine := range strings.Split(code, "\n") {
+				buf.WriteString(prefix + codeLine + "\n")
+			}
+		case LineTool:
+			buf.WriteString(prefix + mutedStyle.Render("⚙ "+line.Text) + "\n")
+		case LineSystem:
+			buf.WriteString(mutedStyle.Render("[milliways] "+line.Text) + "\n")
+		default:
+			buf.WriteString(prefix + line.Text + "\n")
+		}
+	}
+
+	return strings.TrimRight(buf.String(), "\n")
+}
+
+func (b *Block) renderPlaceholder() string {
+	switch b.State {
+	case StateRouting:
+		return mutedStyle.Render("routing...")
+	case StateStreaming, StateRouted:
+		return mutedStyle.Render("waiting for output...")
+	default:
+		return ""
+	}
+}
+
+func (b *Block) renderFooter() string {
+	if !b.isDone() {
+		return ""
+	}
+	status := "done"
+	icon := successStyle.Render("✓")
+	if b.ExitCode != 0 {
+		status = "failed"
+		icon = failureStyle.Render("✗")
+	}
+	footer := fmt.Sprintf("%s %s  %s  %.1fs", icon, b.Kitchen, status, b.elapsed().Seconds())
+	if b.Cost != nil && b.Cost.USD > 0 {
+		footer += fmt.Sprintf("  $%.2f", b.Cost.USD)
+	}
+	return footer
+}
+
+func (b *Block) sessionStart() time.Time {
+	if !b.StartedAt.IsZero() {
+		return b.StartedAt
+	}
+	if b.Conversation != nil {
+		return b.Conversation.CreatedAt
+	}
+	return time.Time{}
+}
+
+func (b *Block) stickyKitchen() string {
+	if b.Conversation == nil {
+		return ""
+	}
+	return b.Conversation.Memory.StickyKitchen
+}
+
+func (b *Block) hasContextBundle() bool {
+	if b.Conversation == nil {
+		return false
+	}
+	ctx := b.Conversation.Context
+	return ctx.CodeGraphText != "" || ctx.MemPalaceText != "" || len(ctx.SpecRefs) > 0 || ctx.InvalidatedMemoryCount > 0
+}
+
+func (b *Block) switchCount() (int, bool) {
+	if len(b.ProviderChain) > 0 {
+		return maxInt(len(b.ProviderChain)-1, 0), true
+	}
+	if b.Conversation != nil && len(b.Conversation.Segments) > 0 {
+		return maxInt(len(b.Conversation.Segments)-1, 0), true
+	}
+	return 0, false
+}
+
+func (b *Block) segmentCount() (int, bool) {
+	if b.Conversation != nil && len(b.Conversation.Segments) > 0 {
+		return len(b.Conversation.Segments), true
+	}
+	return 0, false
+}
+
+func (b *Block) checkpointCount() (int, bool) {
+	if b.Conversation != nil {
+		return len(b.Conversation.Checkpoints), true
+	}
+	return 0, false
+}
+
+func envConfigured(name string) bool {
+	value, ok := os.LookupEnv(name)
+	return ok && strings.TrimSpace(value) != ""
+}
+
+func pluralizeCount(count int, noun string) string {
+	if count == 1 {
+		return fmt.Sprintf("%d %s", count, noun)
+	}
+	return fmt.Sprintf("%d %ss", count, noun)
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // kitchenPrefix returns a color-coded [kitchen] prefix string.
