@@ -566,26 +566,44 @@ func (c *Client) SearchProjectContext(ctx context.Context, query string, limit i
 	if err != nil {
 		return nil, fmt.Errorf("substrate: project_context_search %q: %w", query, err)
 	}
-	type drawer struct {
-		ID      string  `json:"id"`
-		Text    string  `json:"text"`
-		Wing    string  `json:"wing"`
-		Room    string  `json:"room"`
-		Score   float64 `json:"score"`
-		FiledAt string  `json:"filed_at"`
+
+	// MemPalace returns: {"content": [{"type": "text", "text": "{\"query\":..., \"results\":[...]}}]}
+	// First unwrap the MCP content wrapper.
+	var wrapper struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
 	}
-	drawers, err := parseContent[[]drawer](raw)
-	if err != nil {
-		return nil, fmt.Errorf("substrate: parse project_context_search %q: %w", query, err)
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return nil, fmt.Errorf("substrate: parse content wrapper %q: %w", query, err)
 	}
-	hits := make([]conversation.ProjectHit, 0, len(drawers))
-	for _, item := range drawers {
+	if len(wrapper.Content) == 0 {
+		return nil, nil
+	}
+
+	// Parse the inner JSON (the text field contains a JSON string).
+	var inner struct {
+		Results []struct {
+			Text       string  `json:"text"`
+			Wing       string  `json:"wing"`
+			Room       string  `json:"room"`
+			Similarity float64 `json:"similarity"`
+			FiledAt    string  `json:"created_at"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(wrapper.Content[0].Text), &inner); err != nil {
+		return nil, fmt.Errorf("substrate: parse search inner %q: %w", query, err)
+	}
+
+	hits := make([]conversation.ProjectHit, 0, len(inner.Results))
+	for _, item := range inner.Results {
 		hits = append(hits, conversation.ProjectHit{
-			DrawerID:   item.ID,
+			DrawerID:   "", // MemPalace search doesn't return drawer IDs in search results
 			Wing:       item.Wing,
 			Room:       item.Room,
 			Content:    item.Text,
-			Relevance:  item.Score,
+			Relevance:  item.Similarity,
 			CapturedAt: item.FiledAt,
 		})
 	}
@@ -605,34 +623,47 @@ func (c *Client) ResolveProjectRef(ctx context.Context, ref conversation.Project
 	if err != nil {
 		return conversation.ProjectHit{}, fmt.Errorf("substrate: resolve project ref %q: %w", ref.DrawerID, err)
 	}
-	type drawer struct {
-		ID      string  `json:"id"`
-		Text    string  `json:"text"`
-		Wing    string  `json:"wing"`
-		Room    string  `json:"room"`
-		Score   float64 `json:"score"`
-		FiledAt string  `json:"filed_at"`
+
+	// MemPalace returns: {"content": [{"type": "text", "text": "{\"query\":..., \"results\":[...]}}]}
+	var wrapper struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
 	}
-	drawers, err := parseContent[[]drawer](raw)
-	if err != nil {
-		return conversation.ProjectHit{}, fmt.Errorf("substrate: parse resolved project ref %q: %w", ref.DrawerID, err)
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return conversation.ProjectHit{}, fmt.Errorf("substrate: parse content wrapper %q: %w", ref.DrawerID, err)
 	}
-	for _, item := range drawers {
-		if item.ID != ref.DrawerID {
-			continue
-		}
+	if len(wrapper.Content) == 0 {
+		return conversation.ProjectHit{}, ErrProjectRefNotFound
+	}
+
+	var inner struct {
+		Results []struct {
+			Text       string  `json:"text"`
+			Wing       string  `json:"wing"`
+			Room       string  `json:"room"`
+			Similarity float64 `json:"similarity"`
+			FiledAt    string  `json:"created_at"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(wrapper.Content[0].Text), &inner); err != nil {
+		return conversation.ProjectHit{}, fmt.Errorf("substrate: parse search inner %q: %w", ref.DrawerID, err)
+	}
+
+	for _, item := range inner.Results {
 		if ref.Room != "" && item.Room != ref.Room {
 			continue
 		}
 		return conversation.ProjectHit{
 			PalaceID:    ref.PalaceID,
 			PalacePath:  ref.PalacePath,
-			DrawerID:    item.ID,
+			DrawerID:    ref.DrawerID,
 			Wing:        item.Wing,
 			Room:        item.Room,
 			Content:     item.Text,
 			FactSummary: ref.FactSummary,
-			Relevance:   item.Score,
+			Relevance:   item.Similarity,
 			CapturedAt:  item.FiledAt,
 		}, nil
 	}
