@@ -24,7 +24,7 @@ smoke_root="$repo_root/testdata/smoke"
 tmpl="$smoke_root/config/carte.yaml.tmpl"
 
 if [ -z "${TMPDIR:-}" ]; then
-    TMPDIR=/tmp
+	TMPDIR=/tmp
 fi
 # Strip any trailing slash so path joins stay tidy.
 tmp_base=${TMPDIR%/}
@@ -35,8 +35,8 @@ milliways_bin=${MILLIWAYS_BIN:-$bin_default}
 # --- preflight ---------------------------------------------------------
 
 fail() {
-    printf '[smoke] FAIL: %s\n' "$1" >&2
-    exit 1
+	printf '[smoke] FAIL: %s\n' "$1" >&2
+	exit 1
 }
 
 [ -f "$tmpl" ] || fail "missing config template: $tmpl"
@@ -44,7 +44,7 @@ fail() {
 [ -x "$smoke_root/bin/fake-codex-ok" ] || fail "missing or non-executable: $smoke_root/bin/fake-codex-ok"
 
 if [ ! -x "$milliways_bin" ]; then
-    fail "milliways binary not found at $milliways_bin (set MILLIWAYS_BIN or run 'make smoke')"
+	fail "milliways binary not found at $milliways_bin (set MILLIWAYS_BIN or run 'make smoke')"
 fi
 
 # --- per-run temp dir --------------------------------------------------
@@ -52,11 +52,11 @@ fi
 run_dir=$(mktemp -d "$tmp_base/mw-smoke-XXXXXX") || fail "mktemp failed"
 
 cleanup() {
-    if [ -n "${SMOKE_KEEP:-}" ]; then
-        printf '[smoke] SMOKE_KEEP set; preserving %s\n' "$run_dir" >&2
-        return
-    fi
-    rm -rf "$run_dir"
+	if [ -n "${SMOKE_KEEP:-}" ]; then
+		printf '[smoke] SMOKE_KEEP set; preserving %s\n' "$run_dir" >&2
+		return
+	fi
+	rm -rf "$run_dir"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -70,55 +70,55 @@ mkdir -p "$HOME" "$XDG_CONFIG_HOME"
 # replacement so path separators never clash with sed.
 rendered_config="$run_dir/carte.yaml"
 sed \
-    -e "s|{{SMOKE_ROOT}}|$smoke_root|g" \
-    -e "s|{{RUN_DIR}}|$run_dir|g" \
-    "$tmpl" > "$rendered_config" || fail "rendering config template"
+	-e "s|{{SMOKE_ROOT}}|$smoke_root|g" \
+	-e "s|{{RUN_DIR}}|$run_dir|g" \
+	"$tmpl" >"$rendered_config" || fail "rendering config template"
 
 # --- scenario PC-21.1 --------------------------------------------------
 
 run_scenario_pc21_1() {
-    scenario="PC-21.1 claude-exhausts-codex-continues"
-    log="$run_dir/pc21_1.log"
+	scenario="PC-21.1 claude-exhausts-codex-continues"
+	log="$run_dir/pc21_1.log"
 
-    printf '[smoke] running scenario: %s\n' "$scenario"
+	printf '[smoke] running scenario: %s\n' "$scenario"
 
-    # Capture stdout+stderr together; exit status in $rc. We do not use
-    # `set -e` in this script, so a non-zero rc will not abort — we
-    # assert on it explicitly below.
-    "$milliways_bin" \
-        -c "$rendered_config" \
-        --verbose \
-        --timeout 15s \
-        "explain foo" \
-        > "$log" 2>&1
-    rc=$?
+	# Capture stdout+stderr together; exit status in $rc. We do not use
+	# `set -e` in this script, so a non-zero rc will not abort — we
+	# assert on it explicitly below.
+	"$milliways_bin" \
+		-c "$rendered_config" \
+		--use-legacy-conversation \
+		--verbose \
+		--timeout 15s \
+		"explain foo" \
+		>"$log" 2>&1
+	rc=$?
 
-    failures=0
+	failures=0
 
-    if [ "$rc" -ne 0 ]; then
-        printf '[smoke] FAIL: %s expected exit 0, got %d\n' "$scenario" "$rc" >&2
-        failures=$((failures + 1))
-    fi
+	if [ "$rc" -ne 0 ]; then
+		printf '[smoke] FAIL: %s expected exit 0, got %d\n' "$scenario" "$rc" >&2
+		failures=$((failures + 1))
+	fi
 
-    for needle in \
-        "claude exhausted, continuing with the next provider" \
-        "[routed] codex"
-    do
-        if ! grep -Fq -- "$needle" "$log"; then
-            printf '[smoke] FAIL: %s missing expected output: %s\n' "$scenario" "$needle" >&2
-            failures=$((failures + 1))
-        fi
-    done
+	for needle in \
+		"claude exhausted, continuing with the next provider" \
+		"[routed] codex"; do
+		if ! grep -Fq -- "$needle" "$log"; then
+			printf '[smoke] FAIL: %s missing expected output: %s\n' "$scenario" "$needle" >&2
+			failures=$((failures + 1))
+		fi
+	done
 
-    if [ "$failures" -gt 0 ]; then
-        printf '[smoke] --- captured output (%s) ---\n' "$log" >&2
-        cat "$log" >&2
-        printf '[smoke] --- end captured output ---\n' >&2
-        return 1
-    fi
+	if [ "$failures" -gt 0 ]; then
+		printf '[smoke] --- captured output (%s) ---\n' "$log" >&2
+		cat "$log" >&2
+		printf '[smoke] --- end captured output ---\n' >&2
+		return 1
+	fi
 
-    printf '[smoke] pass: %s\n' "$scenario"
-    return 0
+	printf '[smoke] pass: %s\n' "$scenario"
+	return 0
 }
 
 # --- run all -----------------------------------------------------------
@@ -127,9 +127,9 @@ overall=0
 run_scenario_pc21_1 || overall=1
 
 if [ "$overall" -eq 0 ]; then
-    printf '[smoke] all scenarios passed\n'
+	printf '[smoke] all scenarios passed\n'
 else
-    printf '[smoke] one or more scenarios failed\n' >&2
+	printf '[smoke] one or more scenarios failed\n' >&2
 fi
 
 exit "$overall"
