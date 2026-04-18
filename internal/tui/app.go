@@ -56,6 +56,9 @@ type Model struct {
 	jobTickets  []pantry.Ticket
 	ticketStore *pantry.TicketStore
 
+	// DB access for ledger sink.
+	pdb *pantry.DB
+
 	// Dialogue overlay.
 	overlayInput  textinput.Model
 	overlayActive bool
@@ -113,13 +116,14 @@ func NewModel(store *pantry.TicketStore) Model {
 }
 
 // NewAdapterModel creates the TUI model with adapter-based dispatch.
-func NewAdapterModel(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator, sink observability.Sink, recorder ConversationRecorder, replayer ConversationReplayer, store *pantry.TicketStore) Model {
+func NewAdapterModel(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator, sink observability.Sink, recorder ConversationRecorder, replayer ConversationReplayer, store *pantry.TicketStore, pdb *pantry.DB) Model {
 	m := NewModel(store)
 	m.providerFactory = providerFactory
 	m.hydrator = hydrator
 	m.sink = sink
 	m.recorder = recorder
 	m.replayer = replayer
+	m.pdb = pdb
 	return m
 }
 
@@ -724,13 +728,13 @@ type RunOpts struct {
 }
 
 // Run starts the TUI with adapter-based dispatch.
-func Run(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator, sink observability.Sink, recorder ConversationRecorder, replayer ConversationReplayer, store *pantry.TicketStore) error {
-	return RunWithOpts(providerFactory, hydrator, sink, recorder, replayer, store, RunOpts{})
+func Run(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator, sink observability.Sink, recorder ConversationRecorder, replayer ConversationReplayer, store *pantry.TicketStore, pdb *pantry.DB) error {
+	return RunWithOpts(providerFactory, hydrator, sink, recorder, replayer, store, pdb, RunOpts{})
 }
 
 // RunWithOpts starts the TUI with adapter-based dispatch and options.
-func RunWithOpts(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator, sink observability.Sink, recorder ConversationRecorder, replayer ConversationReplayer, store *pantry.TicketStore, opts RunOpts) error {
-	m := NewAdapterModel(providerFactory, hydrator, sink, recorder, replayer, store)
+func RunWithOpts(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator, sink observability.Sink, recorder ConversationRecorder, replayer ConversationReplayer, store *pantry.TicketStore, pdb *pantry.DB, opts RunOpts) error {
+	m := NewAdapterModel(providerFactory, hydrator, sink, recorder, replayer, store, pdb)
 	m.SetKitchenStates(opts.KitchenStates)
 	if opts.ProjectState.RepoRoot != "" {
 		m.SetProjectState(opts.ProjectState)

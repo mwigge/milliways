@@ -93,7 +93,7 @@ func runTUI(configPath string, tuiOpts tui.RunOpts) error {
 		fmt.Fprintf(os.Stderr, "[project] MILLIWAYS_PROJECT_ROOT not set, skipping detection\n")
 	}
 
-	return tui.RunWithOpts(providerFactory, hydrator, sink, recorder, replayer, ticketStore, tuiOpts)
+	return tui.RunWithOpts(providerFactory, hydrator, sink, recorder, replayer, ticketStore, pdb, tuiOpts)
 }
 
 func buildKitchenStates(cfg *maitre.Config, reg *kitchen.Registry, pdb *pantry.DB) []tui.KitchenState {
@@ -133,7 +133,7 @@ func makeRuntimeSink(pdb *pantry.DB) observability.Sink {
 	if pdb == nil {
 		return observability.NopSink{}
 	}
-	return observability.FuncSink(func(evt observability.Event) {
+	runtimeSink := observability.FuncSink(func(evt observability.Event) {
 		_, _ = pdb.RuntimeEvents().Insert(pantry.RuntimeEventRecord{
 			ConversationID: evt.ConversationID,
 			BlockID:        evt.BlockID,
@@ -145,6 +145,8 @@ func makeRuntimeSink(pdb *pantry.DB) observability.Sink {
 			Fields:         evt.Fields,
 		})
 	})
+	ledgerSink := ledger.NewLedgerSink(pdb)
+	return observability.MultiSink{runtimeSink, ledgerSink}
 }
 
 func makeConversationRecorder(cfg *maitre.Config, pdb *pantry.DB) tui.ConversationRecorder {
