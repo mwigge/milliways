@@ -854,6 +854,9 @@ func (m *Model) executePaletteCommand(command string) tea.Cmd {
 	case command == "switch":
 		m.appendCommandFeedback("/switch", "usage: /switch <kitchen>")
 		return nil
+	case command == "back":
+		m.handleBackCommand()
+		return nil
 	case strings.HasPrefix(command, "switch "):
 		m.handleSwitchCommand(strings.TrimSpace(strings.TrimPrefix(command, "switch ")))
 		return nil
@@ -1016,6 +1019,48 @@ func (m *Model) handleSwitchCommand(kitchen string) {
 	})
 }
 
+func (m *Model) handleBackCommand() {
+	targetKitchen, ok := m.mostRecentSwitchSource()
+	if !ok {
+		m.appendCommandFeedback("/back", "no prior switch found to reverse")
+		return
+	}
+
+	beforeBlockCount := len(m.blocks)
+	previousKitchen := ""
+	if b := m.focusedBlock(); b != nil {
+		previousKitchen = b.Kitchen
+	}
+
+	m.executePaletteCommand("switch " + targetKitchen)
+
+	if len(m.blocks) != beforeBlockCount {
+		return
+	}
+
+	b := m.focusedBlock()
+	if b == nil || b.Kitchen != targetKitchen {
+		return
+	}
+
+	b.appendSystemLine(fmt.Sprintf("switch reversal executed: %s -> %s", previousKitchen, targetKitchen))
+}
+
+func (m *Model) mostRecentSwitchSource() (string, bool) {
+	for i := len(m.runtimeEvents) - 1; i >= 0; i-- {
+		event := m.runtimeEvents[i]
+		if event.Kind != "switch" {
+			continue
+		}
+		fromKitchen := strings.TrimSpace(event.Fields["from"])
+		if fromKitchen == "" {
+			continue
+		}
+		return fromKitchen, true
+	}
+	return "", false
+}
+
 func (m *Model) appendCommandFeedback(prompt, text string) {
 	block := Block{
 		ID:        m.nextBlockID(),
@@ -1050,7 +1095,7 @@ func resolvePaletteCommand(input, fallback string) string {
 	if input == "" {
 		return fallback
 	}
-	if input == "kitchens" || input == "switch" || strings.HasPrefix(input, "switch ") {
+	if input == "back" || input == "kitchens" || input == "switch" || strings.HasPrefix(input, "switch ") {
 		return input
 	}
 	for _, item := range paletteItems {

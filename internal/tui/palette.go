@@ -14,6 +14,7 @@ type PaletteItem struct {
 
 var paletteItems = []PaletteItem{
 	{"switch", "Request a kitchen switch"},
+	{"back", "Reverse the most recent switch"},
 	{"kitchens", "List kitchens and status"},
 	{"status", "Show kitchen availability"},
 	{"report", "Routing statistics"},

@@ -3,10 +3,12 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mwigge/milliways/internal/conversation"
+	"github.com/mwigge/milliways/internal/observability"
 )
 
 func TestHandleKey_EnterExecutesSwitchPaletteCommandWithArgument(t *testing.T) {
@@ -248,5 +250,128 @@ func TestExecutePaletteCommand_KitchensListsStatuses(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("kitchens output = %q, want substring %q", got, want)
 		}
+	}
+}
+
+func TestExecutePaletteCommand_BackReversesMostRecentSwitch(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil)
+	m.kitchenStates = []KitchenState{{Name: "claude", Status: "ready"}, {Name: "gpt", Status: "ready"}}
+
+	conv := conversation.New("conv-1", "b1", "finish the task")
+	conv.AppendTurn(conversation.RoleAssistant, "claude", "working on it")
+	conv.StartSegment("claude")
+	conv.EndActiveSegment(conversation.SegmentDone, "user_switch")
+	switchedSegment := conv.StartSegment("gpt")
+
+	m.blocks = []Block{{
+		ID:             "b1",
+		ConversationID: conv.ID,
+		Prompt:         "finish the task",
+		Kitchen:        "gpt",
+		ProviderChain:  []string{"claude", "gpt"},
+		State:          StateStreaming,
+		StartedAt:      conv.CreatedAt,
+		Conversation:   conv,
+	}}
+	m.focusedIdx = 0
+	m.runtimeEvents = []observability.Event{{
+		ID:             "switch-b1-1",
+		ConversationID: conv.ID,
+		BlockID:        "b1",
+		SegmentID:      switchedSegment.ID,
+		Kind:           "switch",
+		Provider:       "gpt",
+		Text:           "switch claude -> gpt (user requested)",
+		At:             time.Now().Add(-time.Minute),
+		Fields: map[string]string{
+			"from":   "claude",
+			"to":     "gpt",
+			"reason": "user requested",
+		},
+	}}
+
+	m.executePaletteCommand("back")
+
+	b := m.blocks[0]
+	if b.Kitchen != "claude" {
+		t.Fatalf("kitchen = %q, want claude", b.Kitchen)
+	}
+	if len(b.Lines) < 2 {
+		t.Fatalf("lines = %+v, want switch and reversal messages", b.Lines)
+	}
+	if got := b.Lines[len(b.Lines)-1].Text; !strings.Contains(got, "reversal") || !strings.Contains(got, "gpt -> claude") {
+		t.Fatalf("last line = %q, want reversal confirmation", got)
+	}
+	if len(m.runtimeEvents) != 2 {
+		t.Fatalf("runtime events = %d, want 2", len(m.runtimeEvents))
+	}
+	lastEvent := m.runtimeEvents[len(m.runtimeEvents)-1]
+	for key, want := range map[string]string{"from": "gpt", "to": "claude", "reason": "user requested"} {
+		if got := lastEvent.Fields[key]; got != want {
+			t.Fatalf("event field %q = %q, want %q", key, got, want)
+		}
+	}
+}
+
+func TestExecutePaletteCommand_BackWithoutSwitchHistoryShowsHelpfulMessage(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil)
+
+	m.executePaletteCommand("back")
+
+	if len(m.blocks) != 1 {
+		t.Fatalf("blocks = %d, want 1", len(m.blocks))
+	}
+	if got := m.blocks[0].Lines[0].Text; !strings.Contains(got, "no prior switch") {
+		t.Fatalf("message = %q, want helpful no-history guidance", got)
+	}
+}
+
+func TestExecutePaletteCommand_BackReusesUnavailableKitchenHandling(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil)
+	m.kitchenStates = []KitchenState{
+		{Name: "claude", Status: "exhausted", ResetsAt: "22:00"},
+		{Name: "gpt", Status: "ready"},
+	}
+	m.runtimeEvents = []observability.Event{{
+		Kind: "switch",
+		Fields: map[string]string{
+			"from": "claude",
+			"to":   "gpt",
+		},
+	}}
+
+	m.executePaletteCommand("back")
+
+	if len(m.blocks) != 1 {
+		t.Fatalf("blocks = %d", len(m.blocks))
+	}
+	got := m.blocks[0].Lines[0].Text
+	if !strings.Contains(got, "unavailable") {
+		t.Fatalf("back error = %q, want unavailable message", got)
+	}
+	if !strings.Contains(got, "gpt") {
+		t.Fatalf("back error = %q, want ready kitchen list", got)
+	}
+	if !strings.Contains(got, "22:00") {
+		t.Fatalf("back error = %q, want reset time", got)
+	}
+}
+
+func TestRenderPalette_IncludesBackCommand(t *testing.T) {
+	t.Parallel()
+
+	rendered := RenderPalette(FilterPalette("back"), 0, "back", 80)
+
+	if !strings.Contains(rendered, "back") {
+		t.Fatalf("rendered palette = %q, want back command", rendered)
+	}
+	if !strings.Contains(rendered, "Reverse the most recent") || !strings.Contains(rendered, "switch") {
+		t.Fatalf("rendered palette = %q, want back description", rendered)
 	}
 }
