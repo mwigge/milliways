@@ -340,7 +340,7 @@ func (b *Block) renderTelemetry() string {
 func (b *Block) renderSessionTelemetry() string {
 	parts := make([]string, 0, 4)
 	if started := b.sessionStart(); !started.IsZero() {
-		parts = append(parts, started.Format("2006-01-02 15:04:05 MST"))
+		parts = append(parts, "New session - "+started.Format("2006-01-02 15:04:05 MST"))
 	}
 	if elapsed := b.elapsed().Round(time.Second); elapsed > 0 {
 		parts = append(parts, "elapsed "+elapsed.String())
@@ -354,7 +354,7 @@ func (b *Block) renderSessionTelemetry() string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return "Session: " + strings.Join(parts, " · ")
+	return renderTelemetrySection("Session", parts)
 }
 
 func (b *Block) renderUsageTelemetry() string {
@@ -374,7 +374,7 @@ func (b *Block) renderUsageTelemetry() string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return "Usage: " + strings.Join(parts, " · ")
+	return renderTelemetrySection("Usage", parts)
 }
 
 func (b *Block) renderRuntimeTelemetry() string {
@@ -391,7 +391,7 @@ func (b *Block) renderRuntimeTelemetry() string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return "Runtime: " + strings.Join(parts, " · ")
+	return renderTelemetrySection("Progress", parts)
 }
 
 func (b *Block) renderContextTelemetry() string {
@@ -405,21 +405,22 @@ func (b *Block) renderContextTelemetry() string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return "Context: " + strings.Join(parts, " · ")
+	return renderTelemetrySection("Context", parts)
 }
 
 func (b *Block) renderMCPTelemetry() string {
-	parts := make([]string, 0, 2)
+	parts := make([]string, 0, 3)
 	if envConfigured("MILLIWAYS_MEMPALACE_MCP_CMD") {
 		parts = append(parts, "MemPalace configured")
 	}
 	if envConfigured("MILLIWAYS_CODEGRAPH_MCP_CMD") {
 		parts = append(parts, "CodeGraph configured")
 	}
+	parts = append(parts, "task-queue unknown")
 	if len(parts) == 0 {
 		return ""
 	}
-	return "MCP: " + strings.Join(parts, " · ")
+	return renderTelemetrySection("MCP", parts)
 }
 
 func (b *Block) renderOutput(mode RenderMode) string {
@@ -539,6 +540,13 @@ func pluralizeCount(count int, noun string) string {
 		return fmt.Sprintf("%d %s", count, noun)
 	}
 	return fmt.Sprintf("%d %ss", count, noun)
+}
+
+func renderTelemetrySection(label string, parts []string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	return label + " │ " + strings.Join(parts, " · ")
 }
 
 func maxInt(a, b int) int {

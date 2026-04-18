@@ -136,25 +136,25 @@ func TestBlock_RenderBody_IncludesTelemetrySummary(t *testing.T) {
 	body := stripAnsi(b.RenderBody(100, RenderRaw))
 
 	for _, want := range []string{
-		"Session:",
-		"2026-04-18 10:30:00 UTC",
+		"Session │ New session - 2026-04-18 10:30:00 UTC",
 		"elapsed 2m5s",
 		"kitchen codex",
 		"sticky claude",
-		"Usage:",
+		"Usage │",
 		"200 in",
 		"100 out",
 		"$0.14",
-		"Runtime:",
+		"Progress │",
 		"1 switch",
 		"2 segments",
 		"1 checkpoint",
-		"Context:",
+		"Context │",
 		"continuation ready",
 		"bundle restored",
-		"MCP:",
+		"MCP │",
 		"MemPalace configured",
 		"CodeGraph configured",
+		"task-queue unknown",
 	} {
 		if !contains(body, want) {
 			t.Fatalf("rendered body missing %q:\n%s", want, body)
@@ -172,11 +172,29 @@ func TestBlock_RenderBody_IncludesTelemetryWithoutOutput(t *testing.T) {
 
 	body := stripAnsi(b.RenderBody(80, RenderRaw))
 
-	if !contains(body, "Session:") {
+	if !contains(body, "Session │") {
 		t.Fatalf("expected telemetry section in body: %s", body)
+	}
+	if !contains(body, "sticky claude") {
+		t.Fatalf("expected sticky kitchen summary in body: %s", body)
 	}
 	if !contains(body, "routing...") {
 		t.Fatalf("expected routing placeholder in body: %s", body)
+	}
+}
+
+func TestBlock_RenderBody_ReportsUnknownMCPStatusWithoutConfig(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBlock("b1", "inspect status", "claude", StateStreaming)
+
+	body := stripAnsi(b.RenderBody(80, RenderRaw))
+
+	if !contains(body, "MCP │ task-queue unknown") {
+		t.Fatalf("expected unknown task-queue status in body: %s", body)
+	}
+	if contains(body, "MemPalace") || contains(body, "CodeGraph") {
+		t.Fatalf("expected unconfigured MCPs to be omitted: %s", body)
 	}
 }
 
