@@ -2,6 +2,7 @@ package kitchen
 
 import (
 	"context"
+	"os/exec"
 	"testing"
 	"time"
 )
@@ -84,6 +85,28 @@ func TestExec_NilOnLine(t *testing.T) {
 	result, err := k.Exec(ctx, Task{Prompt: "hello", OnLine: nil})
 	if err != nil {
 		t.Fatalf("Exec with nil OnLine: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("exit code: got %d, want 0", result.ExitCode)
+	}
+}
+
+func TestExec_AllowsAbsolutePathWhenBasenameIsAllowlisted(t *testing.T) {
+	t.Parallel()
+
+	cmdPath, err := exec.LookPath("echo")
+	if err != nil {
+		t.Fatalf("LookPath echo: %v", err)
+	}
+
+	k := NewGeneric(GenericConfig{Name: "echo-absolute-path", Cmd: cmdPath, Enabled: true})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := k.Exec(ctx, Task{Prompt: "hello"})
+	if err != nil {
+		t.Fatalf("Exec with absolute path: %v", err)
 	}
 	if result.ExitCode != 0 {
 		t.Errorf("exit code: got %d, want 0", result.ExitCode)
