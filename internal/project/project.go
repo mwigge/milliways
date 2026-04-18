@@ -1,5 +1,14 @@
 package project
 
+import (
+	"errors"
+	"os"
+	"path/filepath"
+)
+
+// ErrNoRepository indicates that no git repository was found.
+var ErrNoRepository = errors.New("no git repository found")
+
 // AccessRules defines project-scoped read and write permissions.
 type AccessRules struct {
 	Read  string `json:"read"`
@@ -25,4 +34,27 @@ type ProjectContext struct {
 	PalacePath       *string     `json:"palace_path,omitempty"`
 	PalaceDrawers    *int        `json:"palace_drawers,omitempty"`
 	AccessRules      AccessRules `json:"access_rules"`
+}
+
+// FindRepoRoot walks up from startDir until it finds a .git directory.
+func FindRepoRoot(startDir string) (string, error) {
+	currentDir, err := filepath.Abs(startDir)
+	if err != nil {
+		return "", err
+	}
+
+	for {
+		gitDir := filepath.Join(currentDir, ".git")
+		info, statErr := os.Stat(gitDir)
+		if statErr == nil && info.IsDir() {
+			return currentDir, nil
+		}
+
+		parentDir := filepath.Dir(currentDir)
+		if parentDir == currentDir {
+			return "", ErrNoRepository
+		}
+
+		currentDir = parentDir
+	}
 }

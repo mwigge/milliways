@@ -2,6 +2,9 @@ package project
 
 import (
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -63,5 +66,60 @@ func TestProjectContextJSONTags(t *testing.T) {
 	}
 	if accessRules["write"] != "project" {
 		t.Fatalf("expected access_rules.write project, got %#v", accessRules["write"])
+	}
+}
+
+func TestFindRepoRootInCurrentDirectory(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+	gitDir := filepath.Join(repoRoot, ".git")
+	if err := os.Mkdir(gitDir, 0o755); err != nil {
+		t.Fatalf("create .git dir: %v", err)
+	}
+
+	got, err := FindRepoRoot(repoRoot)
+	if err != nil {
+		t.Fatalf("find repo root: %v", err)
+	}
+	if got != repoRoot {
+		t.Fatalf("expected repo root %q, got %q", repoRoot, got)
+	}
+}
+
+func TestFindRepoRootInParentDirectory(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+	gitDir := filepath.Join(repoRoot, ".git")
+	if err := os.Mkdir(gitDir, 0o755); err != nil {
+		t.Fatalf("create .git dir: %v", err)
+	}
+
+	startDir := filepath.Join(repoRoot, "src", "nested")
+	if err := os.MkdirAll(startDir, 0o755); err != nil {
+		t.Fatalf("create start dir: %v", err)
+	}
+
+	got, err := FindRepoRoot(startDir)
+	if err != nil {
+		t.Fatalf("find repo root: %v", err)
+	}
+	if got != repoRoot {
+		t.Fatalf("expected repo root %q, got %q", repoRoot, got)
+	}
+}
+
+func TestFindRepoRootWithoutRepository(t *testing.T) {
+	t.Parallel()
+
+	startDir := t.TempDir()
+
+	got, err := FindRepoRoot(startDir)
+	if !errors.Is(err, ErrNoRepository) {
+		t.Fatalf("expected ErrNoRepository, got %v", err)
+	}
+	if got != "" {
+		t.Fatalf("expected empty repo root, got %q", got)
 	}
 }
