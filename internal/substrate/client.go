@@ -529,6 +529,42 @@ func (c *Client) ConversationLineage(ctx context.Context, edge LineageEdge) (Lin
 	return resp, nil
 }
 
+// SearchProjectContext queries MemPalace project memory via semantic search.
+func (c *Client) SearchProjectContext(ctx context.Context, query string, limit int) ([]conversation.ProjectHit, error) {
+	args := map[string]any{
+		"query": query,
+		"limit": limit,
+	}
+	raw, err := c.mcp.CallTool(ctx, "mempalace_search", args)
+	if err != nil {
+		return nil, fmt.Errorf("substrate: project_context_search %q: %w", query, err)
+	}
+	type drawer struct {
+		ID      string  `json:"id"`
+		Text    string  `json:"text"`
+		Wing    string  `json:"wing"`
+		Room    string  `json:"room"`
+		Score   float64 `json:"score"`
+		FiledAt string  `json:"filed_at"`
+	}
+	drawers, err := parseContent[[]drawer](raw)
+	if err != nil {
+		return nil, fmt.Errorf("substrate: parse project_context_search %q: %w", query, err)
+	}
+	hits := make([]conversation.ProjectHit, 0, len(drawers))
+	for _, item := range drawers {
+		hits = append(hits, conversation.ProjectHit{
+			DrawerID:   item.ID,
+			Wing:       item.Wing,
+			Room:       item.Room,
+			Content:    item.Text,
+			Relevance:  item.Score,
+			CapturedAt: item.FiledAt,
+		})
+	}
+	return hits, nil
+}
+
 // --- internal helpers ---
 
 // parseContent extracts typed content from an MCP tool result using the same

@@ -6,10 +6,12 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/mwigge/milliways/internal/bridge"
 	"github.com/mwigge/milliways/internal/conversation"
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/observability"
+	"github.com/mwigge/milliways/internal/project"
 	"github.com/mwigge/milliways/internal/sommelier"
 	"github.com/mwigge/milliways/internal/substrate"
 )
@@ -315,6 +317,57 @@ func TestOrchestratorEvaluatesAfterEachUserTurn(t *testing.T) {
 	last := conv.Transcript[len(conv.Transcript)-1]
 	if last.Role != conversation.RoleUser || last.Text != evaluations[1] {
 		t.Fatalf("last transcript turn = %#v, want appended continuation user turn", last)
+	}
+}
+
+type stubBridgeClient struct {
+	hits []conversation.ProjectHit
+
+	queries []string
+	limits  []int
+}
+
+func (s *stubBridgeClient) SearchProjectContext(_ context.Context, query string, limit int) ([]conversation.ProjectHit, error) {
+	s.queries = append(s.queries, query)
+	s.limits = append(s.limits, limit)
+	return s.hits, nil
+}
+
+func (s *stubBridgeClient) Close() error { return nil }
+
+func TestOrchestratorInjectsProjectContextIntoUserTurn(t *testing.T) {
+	t.Parallel()
+
+	second := &stubAdapter{events: []adapter.Event{{Type: adapter.EventDone, Kitchen: "second", ExitCode: 0}}}
+	bridgeClient := &stubBridgeClient{hits: []conversation.ProjectHit{{
+		DrawerID:    "drawer-1",
+		Wing:        "decisions",
+		Room:        "routing",
+		Content:     "budget fallback prefers opencode",
+		FactSummary: "budget fallback prefers opencode",
+		Relevance:   0.9,
+		CapturedAt:  "2026-04-18T10:00:00Z",
+	}}}
+
+	o := &Orchestrator{
+		Factory: func(_ context.Context, _ string, _ map[string]bool, _ string, _ map[string]string) (RouteResult, error) {
+			return RouteResult{Decision: sommelier.Decision{Kitchen: "second"}, Adapter: second}, nil
+		},
+		Bridge: bridge.NewForClient(&project.ProjectContext{RepoName: "repo"}, 1, bridgeClient),
+	}
+
+	conv, err := o.Run(context.Background(), RunRequest{ConversationID: "conv-project", BlockID: "b1", Prompt: "Investigate AlphaService retry policy"}, nil, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(conv.Context.ProjectHits) != 1 {
+		t.Fatalf("project hits = %#v, want one hit", conv.Context.ProjectHits)
+	}
+	if got := conv.Transcript[0].ProjectRefs; len(got) != 1 || got[0].DrawerID != "drawer-1" {
+		t.Fatalf("project refs = %#v", got)
+	}
+	if len(bridgeClient.limits) == 0 || bridgeClient.limits[0] != 1 {
+		t.Fatalf("limits = %#v, want [1]", bridgeClient.limits)
 	}
 }
 

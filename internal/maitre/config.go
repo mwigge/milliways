@@ -11,10 +11,11 @@ import (
 
 // Config represents the carte.yaml configuration.
 type Config struct {
-	Kitchens map[string]KitchenConfig `yaml:"kitchens"`
-	Routing  RoutingConfig            `yaml:"routing"`
-	Ledger   LedgerConfig             `yaml:"ledger"`
-	Recipes  map[string][]recipe.Step `yaml:"recipes"`
+	Kitchens            map[string]KitchenConfig `yaml:"kitchens"`
+	Routing             RoutingConfig            `yaml:"routing"`
+	Ledger              LedgerConfig             `yaml:"ledger"`
+	Recipes             map[string][]recipe.Step `yaml:"recipes"`
+	ProjectContextLimit int                      `yaml:"project_context_limit" json:"project_context_limit"`
 }
 
 // KitchenConfig defines a kitchen's CLI command and capabilities.
@@ -124,6 +125,9 @@ func LoadConfig(path string) (*Config, error) {
 	if len(fileCfg.Recipes) > 0 {
 		defaults.Recipes = fileCfg.Recipes
 	}
+	if fileCfg.ProjectContextLimit > 0 {
+		defaults.ProjectContextLimit = fileCfg.ProjectContextLimit
+	}
 
 	return defaults, nil
 }
@@ -185,6 +189,7 @@ func defaultConfig() *Config {
 			NDJSON: filepath.Join(DefaultConfigDir(), "ledger.ndjson"),
 			DB:     filepath.Join(DefaultConfigDir(), "ledger.db"),
 		},
+		ProjectContextLimit: 3,
 		Recipes: map[string][]recipe.Step{
 			"implement-feature": {
 				{Station: "think", Kitchen: "claude"},

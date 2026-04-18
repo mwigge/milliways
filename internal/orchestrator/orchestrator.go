@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mwigge/milliways/internal/bridge"
 	"github.com/mwigge/milliways/internal/conversation"
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
@@ -67,6 +68,8 @@ type Orchestrator struct {
 	// Reader, when set, is consulted before local hydration on each provider
 	// failover to pre-populate conversation state from substrate.
 	Reader substrate.Reader
+	// Bridge, when set, injects project memory into user turns.
+	Bridge *bridge.ProjectBridge
 }
 
 // Run executes a logical conversation with provider failover on exhaustion.
@@ -80,6 +83,10 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 	}
 
 	conv := conversation.New(req.ConversationID, req.BlockID, req.Prompt)
+	if err := bridge.InjectProjectContext(ctx, o.Bridge, conv, req.Prompt); err != nil {
+		conv.Status = conversation.StatusFailed
+		return conv, err
+	}
 	if err := o.evaluate(ctx, conv); err != nil {
 		conv.Status = conversation.StatusFailed
 		return conv, err
@@ -330,6 +337,10 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 				NextProvider: "the next provider",
 			})
 			conv.AppendTurn(conversation.RoleUser, "user", currentPrompt)
+			if err := bridge.InjectProjectContext(ctx, o.Bridge, conv, currentPrompt); err != nil {
+				conv.Status = conversation.StatusFailed
+				return conv, err
+			}
 			if err := o.evaluate(ctx, conv); err != nil {
 				conv.Status = conversation.StatusFailed
 				return conv, err
@@ -572,5 +583,8 @@ func applySubstrateState(conv *conversation.Conversation, rec substrate.Conversa
 	}
 	if conv.Context.MemPalaceText == "" {
 		conv.Context.MemPalaceText = rec.Context.MemPalaceText
+	}
+	if len(conv.Context.ProjectHits) == 0 {
+		conv.Context.ProjectHits = rec.Context.ProjectHits
 	}
 }

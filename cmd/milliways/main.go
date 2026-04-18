@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mwigge/milliways/internal/bridge"
 	"github.com/mwigge/milliways/internal/conversation"
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
@@ -196,6 +197,17 @@ func dispatch(opts dispatchOpts) error {
 	var hydrator orchestrator.ContextHydrator = makeConversationHydrator(pdb, opts.prompt)
 	var sink = makeRuntimeSink(pdb)
 	var substrateReader substrate.Reader
+	projectContext, err := project.ResolveProject(opts.projectRoot)
+	if err != nil {
+		return err
+	}
+	projectBridge, err := bridge.New(projectContext, cfg.ProjectContextLimit)
+	if err != nil && projectContext.PalacePath != nil {
+		return err
+	}
+	if projectBridge != nil {
+		defer func() { _ = projectBridge.Close() }()
+	}
 
 	if !opts.useLegacyConversation {
 		substrateClient, err := openSubstrateClient()
@@ -300,6 +312,7 @@ func dispatch(opts dispatchOpts) error {
 		Hydrate: hydrator,
 		Sink:    sink,
 		Reader:  substrateReader,
+		Bridge:  projectBridge,
 	}
 
 	start := time.Now()

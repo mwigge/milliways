@@ -31,6 +31,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Routing.BudgetFallback != "opencode" {
 		t.Errorf("expected budget fallback to opencode, got %q", cfg.Routing.BudgetFallback)
 	}
+	if cfg.ProjectContextLimit != 3 {
+		t.Errorf("expected project context limit 3, got %d", cfg.ProjectContextLimit)
+	}
 }
 
 func TestLoadConfig_FileNotFound(t *testing.T) {
@@ -67,6 +70,7 @@ routing:
     think: claude
     code: opencode
   default: claude
+project_context_limit: 5
 `
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
@@ -88,6 +92,9 @@ routing:
 
 	if cfg.Routing.Keywords["think"] != "claude" {
 		t.Errorf("expected think→claude routing, got %q", cfg.Routing.Keywords["think"])
+	}
+	if cfg.ProjectContextLimit != 5 {
+		t.Errorf("expected project context limit 5, got %d", cfg.ProjectContextLimit)
 	}
 }
 

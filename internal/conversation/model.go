@@ -5,6 +5,30 @@ import (
 	"time"
 )
 
+// ProjectRef is a lightweight citation attached to a user turn.
+type ProjectRef struct {
+	PalaceID    string `json:"palace_id"`
+	PalacePath  string `json:"palace_path"`
+	DrawerID    string `json:"drawer_id"`
+	Wing        string `json:"wing"`
+	Room        string `json:"room"`
+	FactSummary string `json:"fact_summary"`
+	CapturedAt  string `json:"captured_at"`
+}
+
+// ProjectHit captures recalled project memory added to the context bundle.
+type ProjectHit struct {
+	PalaceID    string  `json:"palace_id"`
+	PalacePath  string  `json:"palace_path"`
+	DrawerID    string  `json:"drawer_id"`
+	Wing        string  `json:"wing"`
+	Room        string  `json:"room"`
+	Content     string  `json:"content"`
+	FactSummary string  `json:"fact_summary"`
+	Relevance   float64 `json:"relevance"`
+	CapturedAt  string  `json:"captured_at"`
+}
+
 // Status is the lifecycle state of a canonical conversation.
 type Status string
 
@@ -25,10 +49,11 @@ const (
 
 // Turn is one canonical transcript entry owned by Milliways.
 type Turn struct {
-	Role     TurnRole  `json:"role"`
-	Provider string    `json:"provider"`
-	Text     string    `json:"text"`
-	At       time.Time `json:"at"`
+	Role        TurnRole     `json:"role"`
+	Provider    string       `json:"provider"`
+	Text        string       `json:"text"`
+	ProjectRefs []ProjectRef `json:"project_refs,omitempty"`
+	At          time.Time    `json:"at"`
 }
 
 // MemoryState is a compact working-memory representation for continuation.
@@ -42,10 +67,11 @@ type MemoryState struct {
 
 // ContextBundle captures recovered context used to rebuild continuity.
 type ContextBundle struct {
-	SpecRefs               []string `json:"spec_refs"`
-	CodeGraphText          string   `json:"codegraph_text"`
-	MemPalaceText          string   `json:"mempalace_text"`
-	InvalidatedMemoryCount int      `json:"invalidated_memory_count,omitempty"`
+	SpecRefs               []string     `json:"spec_refs"`
+	CodeGraphText          string       `json:"codegraph_text"`
+	MemPalaceText          string       `json:"mempalace_text"`
+	ProjectHits            []ProjectHit `json:"project_hits,omitempty"`
+	InvalidatedMemoryCount int          `json:"invalidated_memory_count,omitempty"`
 }
 
 // SegmentStatus is the lifecycle of one provider segment.
