@@ -133,6 +133,13 @@ based on what each tool does best.
 					}
 				}
 
+				// Try to fetch palace stats via MCP.
+				opts.ProjectState = fetchPalaceStatsForTUI(
+					opts.ProjectState,
+					os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD"),
+					splitEnvArgs(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS")),
+				)
+
 				return runTUI(configPath, opts)
 			}
 			if len(args) == 0 {
@@ -884,6 +891,31 @@ func fetchMemPalaceContext(ctx context.Context, task string) string {
 		lines = append(lines, fmt.Sprintf("[%s/%s] %s", drawer.Wing, drawer.Room, drawer.Text))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// fetchPalaceStatsForTUI queries the MemPalace MCP server for palace statistics
+// and returns an updated ProjectState with drawer/wing/room counts.
+func fetchPalaceStatsForTUI(ps tui.ProjectState, mempalaceCmd string, mempalaceArgs []string) tui.ProjectState {
+	if mempalaceCmd == "" || ps.PalacePath == "" {
+		return ps
+	}
+	client, err := substrate.New(mempalaceCmd, mempalaceArgs...)
+	if err != nil {
+		return ps
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stats, err := client.GetPalaceStats(ctx)
+	if err != nil || stats == nil {
+		return ps
+	}
+	ps.PalaceDrawers = stats.TotalDrawers
+	ps.PalaceWings = stats.Wings
+	ps.PalaceRooms = stats.Rooms
+	return ps
 }
 
 func splitEnvArgs(raw string) []string {

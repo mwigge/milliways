@@ -610,6 +610,50 @@ func (c *Client) SearchProjectContext(ctx context.Context, query string, limit i
 	return hits, nil
 }
 
+// PalaceStats holds palace statistics from mempalace_status.
+type PalaceStats struct {
+	TotalDrawers int
+	Wings        int
+	Rooms        int
+}
+
+// GetPalaceStats queries the MemPalace MCP server for palace statistics.
+func (c *Client) GetPalaceStats(ctx context.Context) (*PalaceStats, error) {
+	raw, err := c.mcp.CallTool(ctx, "mempalace_status", map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("substrate: mempalace_status: %w", err)
+	}
+
+	// Unwrap MCP content wrapper.
+	var wrapper struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return nil, fmt.Errorf("substrate: parse mempalace_status wrapper: %w", err)
+	}
+	if len(wrapper.Content) == 0 {
+		return nil, nil
+	}
+
+	var inner struct {
+		TotalDrawers int `json:"total_drawers"`
+		Wings        int `json:"wings"`
+		Rooms        int `json:"rooms"`
+	}
+	if err := json.Unmarshal([]byte(wrapper.Content[0].Text), &inner); err != nil {
+		return nil, fmt.Errorf("substrate: parse mempalace_status inner: %w", err)
+	}
+
+	return &PalaceStats{
+		TotalDrawers: inner.TotalDrawers,
+		Wings:        inner.Wings,
+		Rooms:        inner.Rooms,
+	}, nil
+}
+
 // ResolveProjectRef fetches drawer content for a cited project reference.
 func (c *Client) ResolveProjectRef(ctx context.Context, ref conversation.ProjectRef) (conversation.ProjectHit, error) {
 	args := map[string]any{
