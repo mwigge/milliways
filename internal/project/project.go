@@ -30,11 +30,24 @@ type ProjectContext struct {
 	RepoName         string      `json:"repo_name"`
 	Branch           string      `json:"branch"`
 	Commit           string      `json:"commit"`
+	CodeGraphExists  bool        `json:"codegraph_exists"`
 	CodeGraphPath    string      `json:"codegraph_path"`
 	CodeGraphSymbols int         `json:"codegraph_symbols"`
 	PalacePath       *string     `json:"palace_path,omitempty"`
 	PalaceDrawers    *int        `json:"palace_drawers,omitempty"`
 	AccessRules      AccessRules `json:"access_rules"`
+}
+
+// DetectCodeGraph reports whether a CodeGraph data directory exists at the repository root.
+func DetectCodeGraph(repoRoot string) (codegraphPath string, exists bool) {
+	codegraphPath = filepath.Join(repoRoot, ".codegraph")
+
+	info, err := os.Stat(codegraphPath)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+
+	return codegraphPath, true
 }
 
 // FindRepoRoot walks up from startDir until it finds a .git directory.
@@ -85,10 +98,14 @@ func ResolveProject(overrideRoot string) (*ProjectContext, error) {
 			return nil, fmt.Errorf("No git repository at %s", repoRoot)
 		}
 
+		codegraphPath, codegraphExists := DetectCodeGraph(repoRoot)
+
 		return &ProjectContext{
-			RepoRoot:    repoRoot,
-			RepoName:    filepath.Base(repoRoot),
-			AccessRules: DefaultAccessRules(),
+			RepoRoot:        repoRoot,
+			RepoName:        filepath.Base(repoRoot),
+			CodeGraphPath:   codegraphPath,
+			CodeGraphExists: codegraphExists,
+			AccessRules:     DefaultAccessRules(),
 		}, nil
 	}
 
@@ -105,9 +122,13 @@ func ResolveProject(overrideRoot string) (*ProjectContext, error) {
 		return nil, err
 	}
 
+	codegraphPath, codegraphExists := DetectCodeGraph(repoRoot)
+
 	return &ProjectContext{
-		RepoRoot:    repoRoot,
-		RepoName:    filepath.Base(repoRoot),
-		AccessRules: DefaultAccessRules(),
+		RepoRoot:        repoRoot,
+		RepoName:        filepath.Base(repoRoot),
+		CodeGraphPath:   codegraphPath,
+		CodeGraphExists: codegraphExists,
+		AccessRules:     DefaultAccessRules(),
 	}, nil
 }
