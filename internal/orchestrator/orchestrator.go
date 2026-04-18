@@ -32,6 +32,22 @@ type EventCallback func(adapter.Event)
 // ContextHydrator enriches a conversation before continuation.
 type ContextHydrator func(ctx context.Context, conv *conversation.Conversation) error
 
+// Evaluator is invoked whenever a new user turn is available for routing.
+type Evaluator interface {
+	Evaluate(ctx context.Context, conv *conversation.Conversation) error
+}
+
+// EvaluatorFunc adapts a function into an Evaluator.
+type EvaluatorFunc func(ctx context.Context, conv *conversation.Conversation) error
+
+// Evaluate runs the wrapped evaluator function.
+func (f EvaluatorFunc) Evaluate(ctx context.Context, conv *conversation.Conversation) error {
+	if f == nil {
+		return nil
+	}
+	return f(ctx, conv)
+}
+
 // RunRequest starts a new logical conversation.
 type RunRequest struct {
 	ConversationID string
@@ -45,6 +61,9 @@ type Orchestrator struct {
 	Factory ProviderFactory
 	Sink    observability.Sink
 	Hydrate ContextHydrator
+	// Evaluator is called after every appended user turn so future routing
+	// policies can inspect the latest conversation state.
+	Evaluator Evaluator
 	// Reader, when set, is consulted before local hydration on each provider
 	// failover to pre-populate conversation state from substrate.
 	Reader substrate.Reader
@@ -61,6 +80,10 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 	}
 
 	conv := conversation.New(req.ConversationID, req.BlockID, req.Prompt)
+	if err := o.evaluate(ctx, conv); err != nil {
+		conv.Status = conversation.StatusFailed
+		return conv, err
+	}
 	exclude := make(map[string]bool)
 	currentPrompt := req.Prompt
 	kitchenForce := req.KitchenForce
@@ -285,6 +308,11 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 				Reason:       fmt.Sprintf("Previous provider %s became exhausted.", route.Decision.Kitchen),
 				NextProvider: "the next provider",
 			})
+			conv.AppendTurn(conversation.RoleUser, "user", currentPrompt)
+			if err := o.evaluate(ctx, conv); err != nil {
+				conv.Status = conversation.StatusFailed
+				return conv, err
+			}
 			kitchenForce = ""
 			continue
 		}
@@ -325,6 +353,16 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 		conv.Status = conversation.StatusFailed
 		return conv, nil
 	}
+}
+
+func (o *Orchestrator) evaluate(ctx context.Context, conv *conversation.Conversation) error {
+	if o.Evaluator == nil {
+		return nil
+	}
+	if err := o.Evaluator.Evaluate(ctx, conv); err != nil {
+		return fmt.Errorf("evaluate route: %w", err)
+	}
+	return nil
 }
 
 func (o *Orchestrator) captureTurn(conv *conversation.Conversation, evt adapter.Event) {

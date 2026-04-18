@@ -12,6 +12,19 @@ import (
 	"github.com/mwigge/milliways/internal/substrate"
 )
 
+type stubLocalModelRouter struct {
+	calls    int
+	decision sommelier.Decision
+	ok       bool
+}
+
+func (s *stubLocalModelRouter) Decide(_ context.Context, _ sommelier.RouteRequest) (sommelier.Decision, bool) {
+	s.calls++
+	return s.decision, s.ok
+}
+
+var _ sommelier.LocalModelRouter = (*stubLocalModelRouter)(nil)
+
 type stubAdapter struct {
 	events    []adapter.Event
 	sessionID string
@@ -251,6 +264,87 @@ func TestOrchestratorCacheAvoidsRepeatSubstrateFetch(t *testing.T) {
 	// Two exhaustions but only one substrate fetch (cache hit on second).
 	if reader.calls.Load() != 1 {
 		t.Errorf("substrate fetches = %d, want 1 (cache should absorb second exhaustion)", reader.calls.Load())
+	}
+}
+
+func TestOrchestratorEvaluatesAfterEachUserTurn(t *testing.T) {
+	t.Parallel()
+
+	first := &stubAdapter{events: []adapter.Event{
+		{Type: adapter.EventRateLimit, Kitchen: "first", RateLimit: &adapter.RateLimitInfo{Status: "exhausted", IsExhaustion: true}},
+		{Type: adapter.EventDone, Kitchen: "first", ExitCode: 1},
+	}}
+	second := &stubAdapter{events: []adapter.Event{
+		{Type: adapter.EventDone, Kitchen: "second", ExitCode: 0},
+	}}
+
+	o := &Orchestrator{
+		Factory: func(_ context.Context, prompt string, exclude map[string]bool, _ string, _ map[string]string) (RouteResult, error) {
+			if !exclude["first"] {
+				return RouteResult{Decision: sommelier.Decision{Kitchen: "first", Reason: prompt}, Adapter: first}, nil
+			}
+			return RouteResult{Decision: sommelier.Decision{Kitchen: "second", Reason: prompt}, Adapter: second}, nil
+		},
+	}
+
+	var evaluations []string
+	o.Evaluator = EvaluatorFunc(func(_ context.Context, conv *conversation.Conversation) error {
+		last := conv.Transcript[len(conv.Transcript)-1]
+		if last.Role != conversation.RoleUser {
+			t.Fatalf("last turn role = %q, want %q", last.Role, conversation.RoleUser)
+		}
+		evaluations = append(evaluations, last.Text)
+		return nil
+	})
+
+	conv, err := o.Run(context.Background(), RunRequest{ConversationID: "conv-eval", BlockID: "b1", Prompt: "start here"}, nil, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(evaluations) != 2 {
+		t.Fatalf("evaluations = %d, want 2", len(evaluations))
+	}
+	if evaluations[0] != "start here" {
+		t.Fatalf("first evaluation = %q, want %q", evaluations[0], "start here")
+	}
+	if evaluations[1] == evaluations[0] {
+		t.Fatal("continuation prompt was not appended as a distinct user turn")
+	}
+	last := conv.Transcript[len(conv.Transcript)-1]
+	if last.Role != conversation.RoleUser || last.Text != evaluations[1] {
+		t.Fatalf("last transcript turn = %#v, want appended continuation user turn", last)
+	}
+}
+
+func TestSommelierComposesLearnedPantryLocalModelAndKeywordRouters(t *testing.T) {
+	t.Parallel()
+
+	reg := kitchen.NewRegistry()
+	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "claude", Cmd: "echo", Enabled: true}))
+	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "opencode", Cmd: "echo", Enabled: true}))
+	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "gemini", Cmd: "echo", Enabled: true}))
+
+	router := sommelier.New(map[string]string{"code": "opencode"}, "claude", "opencode", reg)
+	local := &stubLocalModelRouter{
+		decision: sommelier.Decision{Kitchen: "gemini", Tier: "local-model", Reason: "future local model"},
+		ok:       true,
+	}
+	router.SetLocalModelRouter(local)
+
+	learned := router.RouteEnriched("code a handler", &sommelier.Signals{LearnedKitchen: "claude", LearnedRate: 95}, nil)
+	if learned.Kitchen != "claude" || learned.Tier != "learned" {
+		t.Fatalf("learned route = %#v", learned)
+	}
+	if local.calls != 0 {
+		t.Fatalf("local model calls after learned decision = %d, want 0", local.calls)
+	}
+
+	fallbackToLocal := router.RouteEnriched("code a handler", nil, nil)
+	if fallbackToLocal.Kitchen != "gemini" || fallbackToLocal.Tier != "local-model" {
+		t.Fatalf("local model route = %#v", fallbackToLocal)
+	}
+	if local.calls != 1 {
+		t.Fatalf("local model calls = %d, want 1", local.calls)
 	}
 }
 
