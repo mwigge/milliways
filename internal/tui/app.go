@@ -970,7 +970,50 @@ func (m *Model) handleSwitchCommand(kitchen string) {
 		return
 	}
 
-	m.appendCommandFeedback("/switch "+kitchen, fmt.Sprintf("switch to %q accepted; pending orchestration handoff in a later slice", kitchen))
+	b := m.focusedBlock()
+	if b == nil {
+		m.appendCommandFeedback("/switch "+kitchen, fmt.Sprintf("cannot switch to %q: no focused block", kitchen))
+		return
+	}
+	if b.Conversation == nil {
+		b.appendSystemLine(fmt.Sprintf("cannot switch to %q: focused block has no active conversation", kitchen))
+		return
+	}
+	active := b.Conversation.ActiveSegment()
+	if active == nil {
+		b.appendSystemLine(fmt.Sprintf("cannot switch to %q: conversation has no active segment", kitchen))
+		return
+	}
+
+	fromKitchen := active.Provider
+	b.Conversation.EndActiveSegment(conversation.SegmentDone, "user_switch")
+	segment := b.Conversation.StartSegment(kitchen)
+	b.ContinuationPrompt = conversation.BuildContinuationPrompt(conversation.ContinueInput{
+		Conversation: b.Conversation,
+		NextProvider: kitchen,
+		Reason:       "user requested",
+	})
+	b.Conversation.AppendTurn(conversation.RoleSystem, "milliways", fmt.Sprintf("Prepared continuation payload for user-requested switch from %s to %s.\n%s", fromKitchen, kitchen, b.ContinuationPrompt))
+	b.Kitchen = kitchen
+	if !containsProvider(b.ProviderChain, kitchen) {
+		b.ProviderChain = append(b.ProviderChain, kitchen)
+	}
+	b.appendSystemLine(fmt.Sprintf("switch executed: %s -> %s (%s)", fromKitchen, kitchen, "user requested"))
+	m.appendRuntimeEvent(observability.Event{
+		ID:             fmt.Sprintf("switch-%s-%d", b.ID, time.Now().UnixNano()),
+		ConversationID: b.Conversation.ID,
+		BlockID:        b.ID,
+		SegmentID:      segment.ID,
+		Kind:           "switch",
+		Provider:       kitchen,
+		Text:           fmt.Sprintf("switch %s -> %s (user requested)", fromKitchen, kitchen),
+		At:             time.Now(),
+		Fields: map[string]string{
+			"from":   fromKitchen,
+			"to":     kitchen,
+			"reason": "user requested",
+		},
+	})
 }
 
 func (m *Model) appendCommandFeedback(prompt, text string) {
@@ -986,10 +1029,20 @@ func (m *Model) appendCommandFeedback(prompt, text string) {
 		if line == "" {
 			continue
 		}
-		block.Lines = append(block.Lines, OutputLine{Kitchen: "milliways", Type: LineSystem, Text: line})
+		block.appendSystemLine(line)
 	}
 	m.blocks = append(m.blocks, block)
 	m.focusedIdx = len(m.blocks) - 1
+}
+
+func (m *Model) appendRuntimeEvent(event observability.Event) {
+	m.runtimeEvents = append(m.runtimeEvents, event)
+	if len(m.runtimeEvents) > 100 {
+		m.runtimeEvents = append([]observability.Event(nil), m.runtimeEvents[len(m.runtimeEvents)-100:]...)
+	}
+	if m.sink != nil {
+		m.sink.Emit(event)
+	}
 }
 
 func resolvePaletteCommand(input, fallback string) string {

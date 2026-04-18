@@ -17,9 +17,9 @@ type LineType int
 
 const (
 	LineText   LineType = iota // Plain text from kitchen
-	LineCode                  // Syntax-highlighted code block
-	LineTool                  // Tool use notification
-	LineSystem                // System message (routing, quota, etc.)
+	LineCode                   // Syntax-highlighted code block
+	LineTool                   // Tool use notification
+	LineSystem                 // System message (routing, quota, etc.)
 )
 
 // OutputLine is a single line of kitchen output within a block.
@@ -41,22 +41,23 @@ const (
 // Block represents a single dispatch lifecycle in the TUI.
 // Each Block owns its state, output, and adapter — enabling concurrent dispatch.
 type Block struct {
-	ID             string
-	ConversationID string
-	Prompt         string
-	Kitchen        string
-	ProviderChain  []string
-	Decision       sommelier.Decision
-	State          DispatchState
-	Lines          []OutputLine
-	Collapsed      bool
-	Focused        bool
-	StartedAt      time.Time
-	Duration       time.Duration
-	Cost           *adapter.CostInfo
-	ExitCode       int
-	Rated          *bool
-	Conversation   *conversation.Conversation
+	ID                 string
+	ConversationID     string
+	Prompt             string
+	Kitchen            string
+	ContinuationPrompt string
+	ProviderChain      []string
+	Decision           sommelier.Decision
+	State              DispatchState
+	Lines              []OutputLine
+	Collapsed          bool
+	Focused            bool
+	StartedAt          time.Time
+	Duration           time.Duration
+	Cost               *adapter.CostInfo
+	ExitCode           int
+	Rated              *bool
+	Conversation       *conversation.Conversation
 
 	// Lifecycle — not serialized.
 	CancelFn      context.CancelFunc
@@ -64,6 +65,17 @@ type Block struct {
 
 	// Per-block scroll offset (lines from top of body).
 	ScrollOffset int
+}
+
+func (b *Block) appendSystemLine(text string) {
+	if b == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	b.Lines = append(b.Lines, OutputLine{
+		Kitchen: "milliways",
+		Type:    LineSystem,
+		Text:    text,
+	})
 }
 
 // Block border styles.
