@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -17,9 +19,11 @@ import (
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/ledger"
 	"github.com/mwigge/milliways/internal/maitre"
+	"github.com/mwigge/milliways/internal/migration"
 	"github.com/mwigge/milliways/internal/orchestrator"
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/sommelier"
+	"github.com/mwigge/milliways/internal/substrate"
 	"github.com/mwigge/milliways/internal/tui"
 	"github.com/spf13/cobra"
 )
@@ -28,9 +32,10 @@ var version = "0.1.0"
 
 // dispatchOpts groups the parameters for the dispatch function.
 type dispatchOpts struct {
-	prompt, kitchenForce, configPath string
-	jsonOutput, explain, verbose     bool
-	timeout                          time.Duration
+	prompt, kitchenForce, configPath, switchTo, sessionName string
+	jsonOutput, explain, verbose                            bool
+	useLegacyConversation                                   bool
+	timeout                                                 time.Duration
 }
 
 // exitError wraps an error with a specific exit code.
@@ -53,19 +58,21 @@ func main() {
 
 func rootCmd() *cobra.Command {
 	var (
-		kitchenFlag string
-		jsonFlag    bool
-		explainFlag bool
-		configPath  string
-		verbose     bool
-		recipeFlag  string
-		asyncFlag   bool
-		detachFlag  bool
-		keepContext bool
-		tuiFlag     bool
-		resumeFlag  bool
-		sessionName string
-		timeoutDur  time.Duration
+		kitchenFlag           string
+		jsonFlag              bool
+		explainFlag           bool
+		configPath            string
+		verbose               bool
+		recipeFlag            string
+		asyncFlag             bool
+		detachFlag            bool
+		keepContext           bool
+		tuiFlag               bool
+		resumeFlag            bool
+		useLegacyConversation bool
+		sessionName           string
+		switchToKitchen       string
+		timeoutDur            time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -96,6 +103,9 @@ based on what each tool does best.
 			if len(args) == 0 {
 				return cmd.Help()
 			}
+			if switchToKitchen != "" && sessionName == "" {
+				return fmt.Errorf("--switch-to requires --session")
+			}
 			prompt := strings.Join(args, " ")
 			if recipeFlag != "" {
 				return dispatchRecipe(recipeFlag, prompt, verbose, configPath, keepContext)
@@ -107,13 +117,16 @@ based on what each tool does best.
 				return dispatchDetach(prompt, kitchenFlag, verbose, configPath)
 			}
 			return dispatch(dispatchOpts{
-				prompt:       prompt,
-				kitchenForce: kitchenFlag,
-				configPath:   configPath,
-				jsonOutput:   jsonFlag,
-				explain:      explainFlag,
-				verbose:      verbose,
-				timeout:      timeoutDur,
+				prompt:                prompt,
+				kitchenForce:          kitchenFlag,
+				configPath:            configPath,
+				switchTo:              switchToKitchen,
+				sessionName:           sessionName,
+				jsonOutput:            jsonFlag,
+				explain:               explainFlag,
+				verbose:               verbose,
+				useLegacyConversation: useLegacyConversation,
+				timeout:               timeoutDur,
 			})
 		},
 		SilenceUsage: true,
@@ -131,6 +144,8 @@ based on what each tool does best.
 	cmd.Flags().BoolVarP(&tuiFlag, "tui", "t", false, "Interactive TUI mode")
 	cmd.Flags().BoolVar(&resumeFlag, "resume", false, "Resume last TUI session")
 	cmd.Flags().StringVar(&sessionName, "session", "", "Named TUI session")
+	cmd.Flags().StringVar(&switchToKitchen, "switch-to", "", "Switch an existing session to a kitchen in headless mode")
+	cmd.Flags().BoolVar(&useLegacyConversation, "use-legacy-conversation", false, "Use pantry conversation storage instead of substrate")
 	cmd.Flags().DurationVar(&timeoutDur, "timeout", 5*time.Minute, "Dispatch timeout for headless mode")
 
 	cmd.AddCommand(statusCmd(&configPath))
@@ -150,16 +165,61 @@ func dispatch(opts dispatchOpts) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
+	reg := buildRegistry(cfg)
+
 	// Open PantryDB once — used for signals assembly and post-dispatch recording.
 	pdb, pdbErr := openPantryDB()
 	if pdbErr != nil && opts.verbose {
 		fmt.Fprintf(os.Stderr, "[pantry] warning: %v\n", pdbErr)
 	}
 	if pdb != nil {
-		defer func() { _ = pdb.Close() }()
+		pantryDB := pdb
+		defer func() { _ = pantryDB.Close() }()
 	}
 
-	reg := buildRegistry(cfg)
+	if opts.switchTo != "" {
+		return dispatchHeadlessSwitch(reg, opts)
+	}
+
+	var recordLegacyConversation = true
+	var hydrator orchestrator.ContextHydrator = makeConversationHydrator(pdb, opts.prompt)
+	var sink = makeRuntimeSink(pdb)
+	var substrateReader substrate.Reader
+
+	if !opts.useLegacyConversation {
+		substrateClient, err := openSubstrateClient()
+		if err != nil {
+			return err
+		}
+		defer func() { _ = substrateClient.Close() }()
+
+		if pdb != nil {
+			legacyDB, err := openLegacyConversationDB(pdb.Path())
+			if err != nil {
+				return err
+			}
+			defer func() { _ = legacyDB.Close() }()
+
+			if err := migration.MigrateOnce(context.Background(), legacyDB, substrateClient); err != nil {
+				return err
+			}
+			rowsMigrated, err := countLegacyConversationRows(legacyDB)
+			if err != nil {
+				return err
+			}
+			if _, err := legacyDB.Exec(`PRAGMA query_only = ON`); err != nil {
+				return fmt.Errorf("setting legacy conversation db read-only: %w", err)
+			}
+			slog.Info("legacy-conversation-migration-complete", "rows_migrated", rowsMigrated)
+		}
+
+		recordLegacyConversation = false
+		pdb = nil
+		hydrator = nil
+		sink = nil
+		substrateReader = substrate.NewCachedReader(substrateClient)
+	}
+
 	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, reg)
 
 	// Circuit breaker check
@@ -226,8 +286,9 @@ func dispatch(opts dispatchOpts) error {
 	providerFactory := makeProviderFactory(cfg, reg, som, pdb, opts.verbose)
 	orch := orchestrator.Orchestrator{
 		Factory: providerFactory,
-		Hydrate: makeConversationHydrator(pdb, opts.prompt),
-		Sink:    makeRuntimeSink(pdb),
+		Hydrate: hydrator,
+		Sink:    sink,
+		Reader:  substrateReader,
 	}
 
 	start := time.Now()
@@ -292,7 +353,9 @@ func dispatch(opts dispatchOpts) error {
 		fmt.Fprintf(os.Stderr, "[dispatch] %s done (%.1fs, exit=%d)\n", lastKitchen, duration, exitCode)
 	}
 
-	recordConversationDispatch(cfg, pdb, opts.prompt, lastKitchen, duration, exitCode, conv)
+	if recordLegacyConversation {
+		recordConversationDispatch(cfg, pdb, opts.prompt, lastKitchen, duration, exitCode, conv)
+	}
 
 	if opts.jsonOutput {
 		out := map[string]any{
@@ -316,6 +379,206 @@ func dispatch(opts dispatchOpts) error {
 	}
 
 	return nil
+}
+
+func dispatchHeadlessSwitch(reg *kitchen.Registry, opts dispatchOpts) error {
+	blocks, blockIndex, err := loadHeadlessSessionBlock(opts.sessionName)
+	if err != nil {
+		return err
+	}
+
+	block := &blocks[blockIndex]
+	prompt, fromKitchen, err := prepareHeadlessSwitch(block, opts.switchTo, opts.prompt)
+	if err != nil {
+		return err
+	}
+
+	k, ok := reg.Get(opts.switchTo)
+	if !ok {
+		return fmt.Errorf("kitchen %q not found in registry", opts.switchTo)
+	}
+	if k.Status() != kitchen.Ready {
+		return fmt.Errorf("kitchen %q is %s — run 'milliways --setup %s' to fix", opts.switchTo, k.Status(), opts.switchTo)
+	}
+
+	if opts.verbose {
+		fmt.Fprintf(os.Stderr, "[switch] session=%s %s -> %s\n", opts.sessionName, fromKitchen, opts.switchTo)
+	}
+
+	adapt, err := adapter.AdapterFor(k, adapter.AdapterOpts{Verbose: opts.verbose})
+	if err != nil {
+		return fmt.Errorf("creating adapter for %s: %w", opts.switchTo, err)
+	}
+
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithTimeout(sigCtx, opts.timeout)
+	defer cancel()
+
+	start := time.Now()
+	block.StartedAt = start
+	block.Duration = 0
+	block.ExitCode = 0
+	block.Cost = nil
+	block.State = tui.StateStreaming
+
+	eventCh, err := adapt.Exec(ctx, kitchen.Task{Prompt: prompt})
+	if err != nil {
+		block.Conversation.EndActiveSegment(conversation.SegmentFailed, err.Error())
+		block.Complete(1, nil)
+		return fmt.Errorf("executing switched dispatch: %w", err)
+	}
+
+	var output strings.Builder
+	var costInfo *adapter.CostInfo
+	exitCode := 0
+	for evt := range eventCh {
+		if sessionID := adapt.SessionID(); sessionID != "" {
+			block.Conversation.SetNativeSessionID(opts.switchTo, sessionID)
+		}
+		captureConversationTurn(block.Conversation, evt)
+		block.AppendEvent(evt)
+
+		switch evt.Type {
+		case adapter.EventText:
+			if !opts.jsonOutput {
+				fmt.Println(evt.Text)
+			}
+			output.WriteString(evt.Text)
+			output.WriteString("\n")
+		case adapter.EventCodeBlock:
+			if !opts.jsonOutput {
+				fmt.Printf("```%s\n%s\n```\n", evt.Language, evt.Code)
+			}
+			output.WriteString(evt.Code)
+			output.WriteString("\n")
+		case adapter.EventCost:
+			costInfo = evt.Cost
+			if opts.verbose && evt.Cost != nil {
+				fmt.Fprintf(os.Stderr, "[cost] $%.4f\n", evt.Cost.USD)
+			}
+		case adapter.EventRateLimit:
+			if opts.verbose && evt.RateLimit != nil {
+				fmt.Fprintf(os.Stderr, "[rate_limit] %s: %s (resets %s)\n", evt.Kitchen, evt.RateLimit.Status, evt.RateLimit.ResetsAt.Format("15:04"))
+			}
+		case adapter.EventDone:
+			exitCode = evt.ExitCode
+		case adapter.EventError:
+			if opts.verbose {
+				fmt.Fprintf(os.Stderr, "[error] %s: %s\n", evt.Kitchen, evt.Text)
+			}
+		}
+	}
+
+	if exitCode == 0 {
+		block.Conversation.EndActiveSegment(conversation.SegmentDone, "completed")
+	} else {
+		block.Conversation.EndActiveSegment(conversation.SegmentFailed, "provider failed")
+	}
+	block.Complete(exitCode, costInfo)
+
+	if err := tui.SaveSession(opts.sessionName, blocks); err != nil {
+		return fmt.Errorf("saving session %q: %w", opts.sessionName, err)
+	}
+
+	if opts.jsonOutput {
+		out := map[string]any{
+			"kitchen":    opts.switchTo,
+			"exit_code":  exitCode,
+			"duration_s": time.Since(start).Seconds(),
+			"output":     output.String(),
+		}
+		if costInfo != nil {
+			out["cost_usd"] = costInfo.USD
+		}
+		if err := printJSON(out, true); err != nil {
+			return err
+		}
+	}
+
+	if exitCode != 0 {
+		return &exitError{code: exitCode, err: fmt.Errorf("kitchen %s exited with code %d", opts.switchTo, exitCode)}
+	}
+
+	return nil
+}
+
+func loadHeadlessSessionBlock(sessionName string) ([]tui.Block, int, error) {
+	blocks, err := tui.LoadSession(sessionName)
+	if err != nil {
+		return nil, 0, fmt.Errorf("loading session %q: %w", sessionName, err)
+	}
+	for i := len(blocks) - 1; i >= 0; i-- {
+		if blocks[i].Conversation != nil {
+			return blocks, i, nil
+		}
+	}
+	return nil, 0, fmt.Errorf("session %q has no persisted conversation", sessionName)
+}
+
+func prepareHeadlessSwitch(block *tui.Block, nextKitchen, userPrompt string) (string, string, error) {
+	if block == nil || block.Conversation == nil {
+		return "", "", fmt.Errorf("focused block has no active conversation")
+	}
+	active := block.Conversation.ActiveSegment()
+	if active == nil {
+		return "", "", fmt.Errorf("conversation has no active segment")
+	}
+
+	fromKitchen := active.Provider
+	block.Conversation.EndActiveSegment(conversation.SegmentDone, "user_switch")
+	block.Conversation.StartSegment(nextKitchen)
+	block.ContinuationPrompt = conversation.BuildContinuationPrompt(conversation.ContinueInput{
+		Conversation: block.Conversation,
+		NextProvider: nextKitchen,
+		Reason:       "user requested",
+	})
+	block.Conversation.AppendTurn(conversation.RoleSystem, "milliways", fmt.Sprintf("Prepared continuation payload for user-requested switch from %s to %s.\n%s", fromKitchen, nextKitchen, block.ContinuationPrompt))
+	if strings.TrimSpace(userPrompt) != "" {
+		block.Conversation.AppendTurn(conversation.RoleUser, "user", userPrompt)
+	}
+	block.Kitchen = nextKitchen
+	if !providerChainContains(block.ProviderChain, nextKitchen) {
+		block.ProviderChain = append(block.ProviderChain, nextKitchen)
+	}
+	block.Lines = append(block.Lines, tui.OutputLine{
+		Kitchen: "milliways",
+		Type:    tui.LineSystem,
+		Text:    fmt.Sprintf("switch executed: %s -> %s (%s)", fromKitchen, nextKitchen, "user requested"),
+	})
+
+	return buildHeadlessSwitchPrompt(block.ContinuationPrompt, userPrompt), fromKitchen, nil
+}
+
+func buildHeadlessSwitchPrompt(continuationPrompt, userPrompt string) string {
+	if strings.TrimSpace(userPrompt) == "" {
+		return continuationPrompt
+	}
+	return continuationPrompt + "\n\nNew user message:\n" + userPrompt
+}
+
+func captureConversationTurn(conv *conversation.Conversation, evt adapter.Event) {
+	switch evt.Type {
+	case adapter.EventText:
+		role := conversation.RoleAssistant
+		if evt.Kitchen == "milliways" {
+			role = conversation.RoleSystem
+		}
+		conv.AppendTurn(role, evt.Kitchen, evt.Text)
+	case adapter.EventCodeBlock:
+		conv.AppendTurn(conversation.RoleAssistant, evt.Kitchen, evt.Code)
+	case adapter.EventError:
+		conv.AppendTurn(conversation.RoleSystem, evt.Kitchen, evt.Text)
+	}
+}
+
+func providerChainContains(chain []string, kitchenName string) bool {
+	for _, item := range chain {
+		if item == kitchenName {
+			return true
+		}
+	}
+	return false
 }
 
 // recordDispatch writes to PantryDB + ndjson audit trail + routing feedback.
@@ -619,6 +882,42 @@ func assembleSignals(_ *maitre.Config, pdb *pantry.DB, prompt string, verbose bo
 func openPantryDB() (*pantry.DB, error) {
 	dbPath := filepath.Join(maitre.DefaultConfigDir(), "milliways.db")
 	return pantry.Open(dbPath)
+}
+
+func openSubstrateClient() (*substrate.Client, error) {
+	cmd := os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD")
+	if cmd == "" {
+		return nil, errors.New("opening substrate client: MILLIWAYS_MEMPALACE_MCP_CMD is not set")
+	}
+	client, err := substrate.New(cmd, splitEnvArgs(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS"))...)
+	if err != nil {
+		return nil, fmt.Errorf("opening substrate client: %w", err)
+	}
+	return client, nil
+}
+
+func openLegacyConversationDB(dbPath string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
+	if err != nil {
+		return nil, fmt.Errorf("opening legacy conversation db: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	return db, nil
+}
+
+func countLegacyConversationRows(db *sql.DB) (int, error) {
+	if db == nil {
+		return 0, nil
+	}
+	var checkpoints int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM mw_checkpoints`).Scan(&checkpoints); err != nil {
+		return 0, fmt.Errorf("counting legacy checkpoints: %w", err)
+	}
+	var events int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM mw_runtime_events`).Scan(&events); err != nil {
+		return 0, fmt.Errorf("counting legacy runtime events: %w", err)
+	}
+	return checkpoints + events, nil
 }
 
 // checkPromptPaths scans for absolute paths in the prompt and enforces

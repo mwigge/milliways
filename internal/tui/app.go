@@ -333,8 +333,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 		}
 		// Palette selection.
 		if m.overlayActive && m.overlayMode == OverlayPalette {
-			if m.palette.Selected >= 0 && m.palette.Selected < len(m.palette.Matches) {
-				cmd := m.executePaletteCommand(m.palette.Matches[m.palette.Selected].Command)
+			command := resolvePaletteCommand(strings.TrimSpace(m.overlayInput.Value()), "")
+			if command == "" && m.palette.Selected >= 0 && m.palette.Selected < len(m.palette.Matches) {
+				command = m.palette.Matches[m.palette.Selected].Command
+			}
+			if command != "" {
+				cmd := m.executePaletteCommand(command)
 				m.overlayActive = false
 				m.overlayMode = OverlayNone
 				m.palette.Active = false
@@ -382,6 +386,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 			ctx, cancel := context.WithCancel(context.Background())
 			if b := m.findBlock(blockID); b != nil {
 				b.CancelFn = cancel
+			} else {
+				cancel()
 			}
 			return []tea.Cmd{
 				m.startPipelineBlockDispatch(ctx, blockID, pipelinePrompt),
@@ -843,6 +849,25 @@ func containsProvider(chain []string, provider string) bool {
 
 // executePaletteCommand runs a palette command and returns an optional tea.Cmd.
 func (m *Model) executePaletteCommand(command string) tea.Cmd {
+	command = strings.TrimSpace(command)
+	switch {
+	case command == "switch":
+		m.appendCommandFeedback("/switch", "usage: /switch <kitchen>")
+		return nil
+	case command == "stick":
+		m.handleStickCommand()
+		return nil
+	case command == "back":
+		m.handleBackCommand()
+		return nil
+	case strings.HasPrefix(command, "switch "):
+		m.handleSwitchCommand(strings.TrimSpace(strings.TrimPrefix(command, "switch ")))
+		return nil
+	case command == "kitchens":
+		m.appendCommandFeedback("/kitchens", formatKitchenStates(m.kitchenStates))
+		return nil
+	}
+
 	switch command {
 	case "cancel":
 		if b := m.focusedBlock(); b != nil && b.IsActive() {
@@ -932,6 +957,235 @@ func (m *Model) executePaletteCommand(command string) tea.Cmd {
 		}
 	}
 	return nil
+}
+
+func (m *Model) handleSwitchCommand(kitchen string) {
+	m.executeSwitch(kitchen, "user requested")
+}
+
+func (m *Model) executeSwitch(kitchen, reason string) {
+	kitchen = strings.TrimSpace(kitchen)
+	if kitchen == "" {
+		m.appendCommandFeedback("/switch", "usage: /switch <kitchen>")
+		return
+	}
+
+	state, ok := findKitchenState(m.kitchenStates, kitchen)
+	if !ok {
+		m.appendCommandFeedback("/switch "+kitchen, fmt.Sprintf("kitchen %q is unavailable. Ready kitchens: %s", kitchen, formatReadyKitchens(m.kitchenStates)))
+		return
+	}
+	if state.Status != "ready" {
+		m.appendCommandFeedback("/switch "+kitchen, fmt.Sprintf("kitchen %q is unavailable (%s). Ready kitchens: %s", kitchen, kitchenAvailabilityLabel(state), formatReadyKitchens(m.kitchenStates)))
+		return
+	}
+
+	b := m.focusedBlock()
+	if b == nil {
+		m.appendCommandFeedback("/switch "+kitchen, fmt.Sprintf("cannot switch to %q: no focused block", kitchen))
+		return
+	}
+	if b.Conversation == nil {
+		b.appendSystemLine(fmt.Sprintf("cannot switch to %q: focused block has no active conversation", kitchen))
+		return
+	}
+	active := b.Conversation.ActiveSegment()
+	if active == nil {
+		b.appendSystemLine(fmt.Sprintf("cannot switch to %q: conversation has no active segment", kitchen))
+		return
+	}
+
+	fromKitchen := active.Provider
+	b.Conversation.EndActiveSegment(conversation.SegmentDone, "user_switch")
+	segment := b.Conversation.StartSegment(kitchen)
+	b.ContinuationPrompt = conversation.BuildContinuationPrompt(conversation.ContinueInput{
+		Conversation: b.Conversation,
+		NextProvider: kitchen,
+		Reason:       "user requested",
+	})
+	b.Conversation.AppendTurn(conversation.RoleSystem, "milliways", fmt.Sprintf("Prepared continuation payload for switch from %s to %s (%s).\n%s", fromKitchen, kitchen, reason, b.ContinuationPrompt))
+	b.Kitchen = kitchen
+	if !containsProvider(b.ProviderChain, kitchen) {
+		b.ProviderChain = append(b.ProviderChain, kitchen)
+	}
+	b.appendSystemLine(formatSwitchSystemLine(fromKitchen, kitchen, reason))
+	m.appendRuntimeEvent(observability.Event{
+		ID:             fmt.Sprintf("switch-%s-%d", b.ID, time.Now().UnixNano()),
+		ConversationID: b.Conversation.ID,
+		BlockID:        b.ID,
+		SegmentID:      segment.ID,
+		Kind:           "switch",
+		Provider:       kitchen,
+		Text:           formatSwitchRuntimeText(fromKitchen, kitchen, reason),
+		At:             time.Now(),
+		Fields: map[string]string{
+			"from":   fromKitchen,
+			"to":     kitchen,
+			"reason": reason,
+		},
+	})
+}
+
+func (m *Model) handleStickCommand() {
+	b := m.focusedBlock()
+	if b == nil {
+		m.appendCommandFeedback("/stick", "cannot toggle sticky mode: no focused block")
+		return
+	}
+	if b.Conversation == nil {
+		b.appendSystemLine("cannot toggle sticky mode: focused block has no active conversation")
+		return
+	}
+	kitchen := strings.TrimSpace(b.Kitchen)
+	if kitchen == "" {
+		b.appendSystemLine("cannot toggle sticky mode: focused block has no current kitchen")
+		return
+	}
+
+	if b.Conversation.Memory.StickyKitchen == kitchen {
+		b.Conversation.Memory.StickyKitchen = ""
+		b.appendSystemLine("sticky mode off")
+		return
+	}
+
+	b.Conversation.Memory.StickyKitchen = kitchen
+	b.appendSystemLine(fmt.Sprintf("sticky mode enabled for kitchen %q", kitchen))
+}
+
+func (m *Model) handleBackCommand() {
+	targetKitchen, ok := m.mostRecentSwitchSource()
+	if !ok {
+		m.appendCommandFeedback("/back", "no prior switch found to reverse")
+		return
+	}
+
+	beforeBlockCount := len(m.blocks)
+
+	m.executeSwitch(targetKitchen, "reversing most recent switch")
+
+	if len(m.blocks) != beforeBlockCount {
+		return
+	}
+
+	b := m.focusedBlock()
+	if b == nil || b.Kitchen != targetKitchen {
+		return
+	}
+}
+
+func formatSwitchSystemLine(fromKitchen, toKitchen, reason string) string {
+	return fmt.Sprintf("switch: %s -> %s | reason: %s | Use /back to return", fromKitchen, toKitchen, reason)
+}
+
+func formatSwitchRuntimeText(fromKitchen, toKitchen, reason string) string {
+	return fmt.Sprintf("switch %s -> %s (%s)", fromKitchen, toKitchen, reason)
+}
+
+func (m *Model) mostRecentSwitchSource() (string, bool) {
+	for i := len(m.runtimeEvents) - 1; i >= 0; i-- {
+		event := m.runtimeEvents[i]
+		if event.Kind != "switch" {
+			continue
+		}
+		fromKitchen := strings.TrimSpace(event.Fields["from"])
+		if fromKitchen == "" {
+			continue
+		}
+		return fromKitchen, true
+	}
+	return "", false
+}
+
+func (m *Model) appendCommandFeedback(prompt, text string) {
+	block := Block{
+		ID:        m.nextBlockID(),
+		Prompt:    prompt,
+		Kitchen:   "milliways",
+		State:     StateRouted,
+		StartedAt: time.Now(),
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		block.appendSystemLine(line)
+	}
+	m.blocks = append(m.blocks, block)
+	m.focusedIdx = len(m.blocks) - 1
+}
+
+func (m *Model) appendRuntimeEvent(event observability.Event) {
+	m.runtimeEvents = append(m.runtimeEvents, event)
+	if len(m.runtimeEvents) > 100 {
+		m.runtimeEvents = append([]observability.Event(nil), m.runtimeEvents[len(m.runtimeEvents)-100:]...)
+	}
+	if m.sink != nil {
+		m.sink.Emit(event)
+	}
+}
+
+func resolvePaletteCommand(input, fallback string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return fallback
+	}
+	if input == "back" || input == "kitchens" || input == "stick" || input == "switch" || strings.HasPrefix(input, "switch ") {
+		return input
+	}
+	for _, item := range paletteItems {
+		if input == item.Command {
+			return input
+		}
+	}
+	return fallback
+}
+
+func findKitchenState(states []KitchenState, name string) (KitchenState, bool) {
+	for _, state := range states {
+		if state.Name == name {
+			return state, true
+		}
+	}
+	return KitchenState{}, false
+}
+
+func formatReadyKitchens(states []KitchenState) string {
+	var ready []string
+	for _, state := range states {
+		if state.Status == "ready" {
+			ready = append(ready, state.Name)
+		}
+	}
+	if len(ready) == 0 {
+		return "none"
+	}
+	return strings.Join(ready, ", ")
+}
+
+func formatKitchenStates(states []KitchenState) string {
+	if len(states) == 0 {
+		return "Kitchens: none available"
+	}
+	parts := make([]string, 0, len(states))
+	for _, state := range states {
+		parts = append(parts, fmt.Sprintf("%s [%s]", state.Name, kitchenAvailabilityLabel(state)))
+	}
+	return "Kitchens: " + strings.Join(parts, ", ")
+}
+
+func kitchenAvailabilityLabel(state KitchenState) string {
+	switch state.Status {
+	case "exhausted":
+		if state.ResetsAt != "" {
+			return "exhausted until " + state.ResetsAt
+		}
+		return "exhausted"
+	case "warning":
+		return fmt.Sprintf("warning %.0f%%", state.UsageRatio*100)
+	default:
+		return state.Status
+	}
 }
 
 func (m *Model) hasCompletedBlocks() bool {

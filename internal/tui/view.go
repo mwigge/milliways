@@ -178,21 +178,54 @@ func (m Model) runtimeActivityLines(limit int) []string {
 	}
 
 	var lines []string
+	const activityTimePrefix = "15:04:05 "
+	continuationPrefix := strings.Repeat(" ", len(activityTimePrefix))
 	for _, evt := range filtered {
-		label := evt.Kind
-		if evt.Provider != "" && evt.Provider != "milliways" {
-			label = evt.Provider + " " + evt.Kind
+		eventLines := formatRuntimeActivityEvent(evt)
+		for i, line := range eventLines {
+			if i == 0 {
+				lines = append(lines, fmt.Sprintf("%s %s",
+					mutedStyle.Render(evt.At.Format("15:04:05")),
+					truncate(line, 40),
+				))
+				continue
+			}
+			lines = append(lines, continuationPrefix+truncate(line, 40))
 		}
-		text := evt.Text
-		if text == "" {
-			text = evt.Kind
-		}
-		lines = append(lines, fmt.Sprintf("%s %s",
-			mutedStyle.Render(evt.At.Format("15:04:05")),
-			truncate(label+": "+text, 40),
-		))
 	}
 	return lines
+}
+
+func formatRuntimeActivityEvent(evt observability.Event) []string {
+	if evt.Kind == "switch" {
+		fromKitchen := strings.TrimSpace(evt.Fields["from"])
+		toKitchen := strings.TrimSpace(evt.Fields["to"])
+		reason := strings.TrimSpace(evt.Fields["reason"])
+		if fromKitchen != "" && toKitchen != "" {
+			text := fromKitchen + " → " + toKitchen
+			if reason != "" {
+				text += " (" + reason + ")"
+			}
+
+			lines := []string{"switch: " + text}
+			for _, key := range []string{"trigger", "tier"} {
+				if value := strings.TrimSpace(evt.Fields[key]); value != "" {
+					lines = append(lines, key+": "+value)
+				}
+			}
+			return lines
+		}
+	}
+
+	label := evt.Kind
+	if evt.Provider != "" && evt.Provider != "milliways" {
+		label = evt.Provider + " " + evt.Kind
+	}
+	text := evt.Text
+	if text == "" {
+		text = evt.Kind
+	}
+	return []string{label + ": " + text}
 }
 
 // renderStatusBar renders kitchen availability in the title bar.

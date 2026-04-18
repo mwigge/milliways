@@ -1,0 +1,5 @@
+#!/bin/sh
+cat <<'EVENTS'
+{"type":"item.completed","item":{"item_type":"assistant_message","text":"gpt response after switch"}}
+EVENTS
+exit 0

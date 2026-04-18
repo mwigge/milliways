@@ -37,6 +37,7 @@ type MemoryState struct {
 	OpenQuestions  []string `json:"open_questions"`
 	ActiveGoals    []string `json:"active_goals"`
 	NextAction     string   `json:"next_action"`
+	StickyKitchen  string   `json:"sticky_kitchen,omitempty"`
 }
 
 // ContextBundle captures recovered context used to rebuild continuity.

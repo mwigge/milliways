@@ -11,6 +11,7 @@ import (
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/observability"
 	"github.com/mwigge/milliways/internal/sommelier"
+	"github.com/mwigge/milliways/internal/substrate"
 )
 
 // RouteResult contains the selected kitchen decision and a ready adapter.
@@ -31,6 +32,22 @@ type EventCallback func(adapter.Event)
 // ContextHydrator enriches a conversation before continuation.
 type ContextHydrator func(ctx context.Context, conv *conversation.Conversation) error
 
+// Evaluator is invoked whenever a new user turn is available for routing.
+type Evaluator interface {
+	Evaluate(ctx context.Context, conv *conversation.Conversation) error
+}
+
+// EvaluatorFunc adapts a function into an Evaluator.
+type EvaluatorFunc func(ctx context.Context, conv *conversation.Conversation) error
+
+// Evaluate runs the wrapped evaluator function.
+func (f EvaluatorFunc) Evaluate(ctx context.Context, conv *conversation.Conversation) error {
+	if f == nil {
+		return nil
+	}
+	return f(ctx, conv)
+}
+
 // RunRequest starts a new logical conversation.
 type RunRequest struct {
 	ConversationID string
@@ -44,6 +61,12 @@ type Orchestrator struct {
 	Factory ProviderFactory
 	Sink    observability.Sink
 	Hydrate ContextHydrator
+	// Evaluator is called after every appended user turn so future routing
+	// policies can inspect the latest conversation state.
+	Evaluator Evaluator
+	// Reader, when set, is consulted before local hydration on each provider
+	// failover to pre-populate conversation state from substrate.
+	Reader substrate.Reader
 }
 
 // Run executes a logical conversation with provider failover on exhaustion.
@@ -57,6 +80,10 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 	}
 
 	conv := conversation.New(req.ConversationID, req.BlockID, req.Prompt)
+	if err := o.evaluate(ctx, conv); err != nil {
+		conv.Status = conversation.StatusFailed
+		return conv, err
+	}
 	exclude := make(map[string]bool)
 	currentPrompt := req.Prompt
 	kitchenForce := req.KitchenForce
@@ -68,7 +95,28 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 			return conv, err
 		}
 
+		fromKitchen, autoSwitch := autoSwitchSource(conv, route.Decision)
 		seg := conv.StartSegment(route.Decision.Kitchen)
+		if autoSwitch {
+			switchText := formatSwitchSystemLine(fromKitchen, route.Decision.Kitchen, route.Decision.Reason)
+			sink.Emit(observability.Event{
+				ConversationID: conv.ID,
+				BlockID:        conv.BlockID,
+				SegmentID:      seg.ID,
+				Kind:           "switch",
+				Provider:       route.Decision.Kitchen,
+				Text:           formatSwitchRuntimeText(fromKitchen, route.Decision.Kitchen, route.Decision.Reason),
+				At:             time.Now(),
+				Fields:         autoSwitchFields(fromKitchen, route.Decision),
+			})
+			if onEvent != nil {
+				onEvent(adapter.Event{
+					Type:    adapter.EventText,
+					Kitchen: "milliways",
+					Text:    switchText,
+				})
+			}
+		}
 		sink.Emit(observability.Event{
 			ConversationID: conv.ID,
 			BlockID:        conv.BlockID,
@@ -180,6 +228,11 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 					Text:    fmt.Sprintf("[milliways] %s exhausted, continuing with the next provider", route.Decision.Kitchen),
 				})
 			}
+			if o.Reader != nil {
+				if rec, err := o.Reader.GetConversation(ctx, conv.ID); err == nil {
+					applySubstrateState(conv, rec)
+				}
+			}
 			if o.Hydrate != nil {
 				if err := o.Hydrate(ctx, conv); err == nil {
 					plan := conversation.DefaultRetrievalPlan()
@@ -276,6 +329,11 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 				Reason:       fmt.Sprintf("Previous provider %s became exhausted.", route.Decision.Kitchen),
 				NextProvider: "the next provider",
 			})
+			conv.AppendTurn(conversation.RoleUser, "user", currentPrompt)
+			if err := o.evaluate(ctx, conv); err != nil {
+				conv.Status = conversation.StatusFailed
+				return conv, err
+			}
 			kitchenForce = ""
 			continue
 		}
@@ -316,6 +374,16 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 		conv.Status = conversation.StatusFailed
 		return conv, nil
 	}
+}
+
+func (o *Orchestrator) evaluate(ctx context.Context, conv *conversation.Conversation) error {
+	if o.Evaluator == nil {
+		return nil
+	}
+	if err := o.Evaluator.Evaluate(ctx, conv); err != nil {
+		return fmt.Errorf("evaluate route: %w", err)
+	}
+	return nil
 }
 
 func (o *Orchestrator) captureTurn(conv *conversation.Conversation, evt adapter.Event) {
@@ -377,6 +445,52 @@ func memoryTypes(types []conversation.MemoryType) []string {
 	return out
 }
 
+func autoSwitchSource(conv *conversation.Conversation, decision sommelier.Decision) (string, bool) {
+	if conv == nil || decision.Tier != "auto-switch" || len(conv.Segments) == 0 {
+		return "", false
+	}
+	fromKitchen := strings.TrimSpace(conv.Segments[len(conv.Segments)-1].Provider)
+	toKitchen := strings.TrimSpace(decision.Kitchen)
+	if fromKitchen == "" || toKitchen == "" || fromKitchen == toKitchen {
+		return "", false
+	}
+	return fromKitchen, true
+}
+
+func formatSwitchSystemLine(fromKitchen, toKitchen, reason string) string {
+	return fmt.Sprintf("switch: %s -> %s | reason: %s | Use /back to return", fromKitchen, toKitchen, reason)
+}
+
+func formatSwitchRuntimeText(fromKitchen, toKitchen, reason string) string {
+	return fmt.Sprintf("switch %s -> %s (%s)", fromKitchen, toKitchen, reason)
+}
+
+func autoSwitchFields(fromKitchen string, decision sommelier.Decision) map[string]string {
+	fields := map[string]string{
+		"from":          fromKitchen,
+		"to":            decision.Kitchen,
+		"reason":        decision.Reason,
+		"reversal_hint": "/back",
+	}
+	if decision.Tier != "" {
+		fields["tier"] = decision.Tier
+	}
+	if trigger := deriveAutoSwitchTrigger(decision.Reason); trigger != "" {
+		fields["trigger"] = trigger
+	}
+	return fields
+}
+
+func deriveAutoSwitchTrigger(reason string) string {
+	normalized := strings.ToLower(strings.TrimSpace(reason))
+	switch {
+	case strings.Contains(normalized, "hard signal"), strings.Contains(normalized, "hard-signal"):
+		return "hard-signal"
+	default:
+		return ""
+	}
+}
+
 func emitMemoryPromotionEvents(sink observability.Sink, conv *conversation.Conversation, segmentID string) {
 	if sink == nil || conv == nil {
 		return
@@ -435,5 +549,28 @@ func emitMemoryPromotionEvents(sink observability.Sink, conv *conversation.Conve
 				"reason":      decision.Reason,
 			},
 		})
+	}
+}
+
+// applySubstrateState merges fields from a substrate ConversationRecord into a
+// local Conversation, filling gaps only — locally-set values are never overwritten.
+func applySubstrateState(conv *conversation.Conversation, rec substrate.ConversationRecord) {
+	if conv.Memory.WorkingSummary == "" {
+		conv.Memory.WorkingSummary = rec.Memory.WorkingSummary
+	}
+	if conv.Memory.NextAction == "" {
+		conv.Memory.NextAction = rec.Memory.NextAction
+	}
+	if len(conv.Memory.ActiveGoals) == 0 {
+		conv.Memory.ActiveGoals = rec.Memory.ActiveGoals
+	}
+	if len(conv.Context.SpecRefs) == 0 {
+		conv.Context.SpecRefs = rec.Context.SpecRefs
+	}
+	if conv.Context.CodeGraphText == "" {
+		conv.Context.CodeGraphText = rec.Context.CodeGraphText
+	}
+	if conv.Context.MemPalaceText == "" {
+		conv.Context.MemPalaceText = rec.Context.MemPalaceText
 	}
 }

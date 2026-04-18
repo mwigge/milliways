@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mwigge/milliways/internal/conversation"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/sommelier"
 )
@@ -105,6 +106,95 @@ func TestBlock_RenderBody_Done(t *testing.T) {
 	}
 	if !containsPlain(body, "$0.05") {
 		t.Error("done block body should contain cost")
+	}
+}
+
+func TestBlock_RenderBody_IncludesTelemetrySummary(t *testing.T) {
+	t.Setenv("MILLIWAYS_MEMPALACE_MCP_CMD", "mempalace-mcp")
+	t.Setenv("MILLIWAYS_CODEGRAPH_MCP_CMD", "codegraph-mcp")
+
+	b := newTestBlock("b1", "fix bug", "codex", StateDone)
+	b.StartedAt = time.Date(2026, time.April, 18, 10, 30, 0, 0, time.UTC)
+	b.Duration = 125 * time.Second
+	b.ContinuationPrompt = "Continue from the current state."
+	b.Cost = &adapter.CostInfo{USD: 0.14, InputTokens: 200, OutputTokens: 100}
+	b.ProviderChain = []string{"claude", "codex"}
+	b.Conversation = &conversation.Conversation{
+		CreatedAt: time.Date(2026, time.April, 18, 10, 29, 30, 0, time.UTC),
+		Memory: conversation.MemoryState{
+			StickyKitchen: "claude",
+		},
+		Context: conversation.ContextBundle{
+			CodeGraphText: "repo context",
+			MemPalaceText: "memory context",
+		},
+		Segments:    []conversation.ProviderSegment{{Provider: "claude"}, {Provider: "codex"}},
+		Checkpoints: []conversation.ConversationCheckpoint{{ID: "ckpt-1"}},
+	}
+	b.AppendEvent(adapter.Event{Type: adapter.EventText, Kitchen: "codex", Text: "Fixed."})
+
+	body := stripAnsi(b.RenderBody(100, RenderRaw))
+
+	for _, want := range []string{
+		"Session │ New session - 2026-04-18 10:30:00 UTC",
+		"elapsed 2m5s",
+		"kitchen codex",
+		"sticky claude",
+		"Usage │",
+		"200 in",
+		"100 out",
+		"$0.14",
+		"Progress │",
+		"1 switch",
+		"2 segments",
+		"1 checkpoint",
+		"Context │",
+		"continuation ready",
+		"bundle restored",
+		"MCP │",
+		"MemPalace configured",
+		"CodeGraph configured",
+		"task-queue unknown",
+	} {
+		if !contains(body, want) {
+			t.Fatalf("rendered body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestBlock_RenderBody_IncludesTelemetryWithoutOutput(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBlock("b1", "explain auth", "claude", StateRouting)
+	b.Conversation = &conversation.Conversation{
+		Memory: conversation.MemoryState{StickyKitchen: "claude"},
+	}
+
+	body := stripAnsi(b.RenderBody(80, RenderRaw))
+
+	if !contains(body, "Session │") {
+		t.Fatalf("expected telemetry section in body: %s", body)
+	}
+	if !contains(body, "sticky claude") {
+		t.Fatalf("expected sticky kitchen summary in body: %s", body)
+	}
+	if !contains(body, "routing...") {
+		t.Fatalf("expected routing placeholder in body: %s", body)
+	}
+}
+
+func TestBlock_RenderBody_ReportsUnknownMCPStatusWithoutConfig(t *testing.T) {
+	t.Parallel()
+
+	b := newTestBlock("b1", "inspect status", "claude", StateStreaming)
+
+	body := stripAnsi(b.RenderBody(80, RenderRaw))
+
+	if !contains(body, "MCP │ task-queue unknown") {
+		t.Fatalf("expected unknown task-queue status in body: %s", body)
+	}
+	if contains(body, "MemPalace") || contains(body, "CodeGraph") {
+		t.Fatalf("expected unconfigured MCPs to be omitted: %s", body)
 	}
 }
 

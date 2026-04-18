@@ -1,6 +1,7 @@
 package sommelier
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -15,6 +16,23 @@ type Decision struct {
 	Tier    string   `json:"tier"`           // "keyword", "enriched", "learned", "forced", "fallback"
 	Risk    string   `json:"risk,omitempty"` // "low", "medium", "high" (from signals)
 	Signals *Signals `json:"signals,omitempty"`
+}
+
+// RouteRequest describes the data available to a router evaluation.
+type RouteRequest struct {
+	Prompt    string
+	Signals   *Signals
+	SkillHint *SkillHint
+}
+
+// Router selects a kitchen when it has enough information to do so.
+type Router interface {
+	Decide(ctx context.Context, req RouteRequest) (Decision, bool)
+}
+
+// LocalModelRouter is a reserved slot for future local-model routing.
+type LocalModelRouter interface {
+	Router
 }
 
 // keywordRule is a keyword-to-kitchen mapping with defined priority.
@@ -37,7 +55,16 @@ type Sommelier struct {
 	registry       *kitchen.Registry
 	quotaChecker   QuotaChecker
 	quotaLimits    map[string]int // kitchen name → daily limit
+	localModel     LocalModelRouter
 }
+
+type learnedRouter struct{ sommelier *Sommelier }
+
+type pantryRouter struct{ sommelier *Sommelier }
+
+type keywordRouter struct{ sommelier *Sommelier }
+
+type fallbackRouter struct{ sommelier *Sommelier }
 
 // New creates a sommelier with keyword routing rules.
 // Keywords are sorted by length descending for longest-match-first behavior.
@@ -59,6 +86,11 @@ func New(keywords map[string]string, defaultKitchen, fallback string, reg *kitch
 		fallback:       fallback,
 		registry:       reg,
 	}
+}
+
+// SetLocalModelRouter installs the reserved future local-model routing tier.
+func (s *Sommelier) SetLocalModelRouter(router LocalModelRouter) {
+	s.localModel = router
 }
 
 // SetQuotaChecker enables quota-gated routing.
@@ -89,7 +121,8 @@ func (s *Sommelier) isAvailable(kitchenName string) bool {
 
 // Route determines which kitchen should handle a prompt using keyword matching only (Tier 1).
 func (s *Sommelier) Route(prompt string) Decision {
-	return s.RouteEnriched(prompt, nil, nil)
+	decision, _ := s.Decide(context.Background(), RouteRequest{Prompt: prompt})
+	return decision
 }
 
 func riskFromSignals(signals *Signals) string {
@@ -109,72 +142,22 @@ type SkillHint struct {
 // Pass nil signals for keyword-only routing (graceful degradation when pantry is unavailable).
 // Pass nil skillHint when skill catalog is unavailable or no match found.
 func (s *Sommelier) RouteEnriched(prompt string, signals *Signals, skillHint *SkillHint) Decision {
-	lower := strings.ToLower(prompt)
+	decision, _ := s.Decide(context.Background(), RouteRequest{Prompt: prompt, Signals: signals, SkillHint: skillHint})
+	return decision
+}
 
-	// Tier 3: learned routing (if sufficient data, overrides keyword)
-	if signals != nil && signals.LearnedKitchen != "" {
-		if s.isAvailable(signals.LearnedKitchen) {
-			return Decision{
-				Kitchen: signals.LearnedKitchen,
-				Reason:  fmt.Sprintf("learned: %s succeeded %.0f%% for this task type (%s)", signals.LearnedKitchen, signals.LearnedRate, signals.Summary()),
-				Tier:    "learned",
-				Risk:    signals.RiskLevel(),
-				Signals: signals,
-			}
+// Decide evaluates the composed routing tiers in priority order.
+func (s *Sommelier) Decide(ctx context.Context, req RouteRequest) (Decision, bool) {
+	for _, router := range s.routers() {
+		if router == nil {
+			continue
+		}
+		decision, ok := router.Decide(ctx, req)
+		if ok {
+			return decision, true
 		}
 	}
-
-	// Tier 2b: skill-based boost (if a kitchen has a matching skill, prefer it)
-	if skillHint != nil && skillHint.Kitchen != "" {
-		if s.isAvailable(skillHint.Kitchen) {
-			return Decision{
-				Kitchen: skillHint.Kitchen,
-				Reason:  fmt.Sprintf("skill %q available in %s", skillHint.SkillName, skillHint.Kitchen),
-				Tier:    "enriched",
-				Risk:    riskFromSignals(signals),
-				Signals: signals,
-			}
-		}
-	}
-
-	// Tier 2: enriched routing (high risk overrides keyword → route to careful kitchen)
-	if signals != nil && signals.RiskLevel() == "high" {
-		// High risk: prefer claude (deep reasoning) over keyword match
-		if s.isAvailable("claude") {
-			keywordMatch := s.keywordMatch(lower)
-			if keywordMatch != "claude" {
-				return Decision{
-					Kitchen: "claude",
-					Reason:  fmt.Sprintf("risk HIGH overrides keyword %q → claude for safety (%s)", keywordMatch, signals.Summary()),
-					Tier:    "enriched",
-					Risk:    "high",
-					Signals: signals,
-				}
-			}
-		}
-	}
-
-	// Tier 1: keyword scan (longest match first, deterministic order)
-	for _, rule := range s.rules {
-		if strings.Contains(lower, rule.keyword) {
-			if s.isAvailable(rule.kitchen) {
-				d := Decision{
-					Kitchen: rule.kitchen,
-					Reason:  fmt.Sprintf("keyword %q matched → %s", rule.keyword, rule.kitchen),
-					Tier:    "keyword",
-				}
-				if signals != nil {
-					d.Risk = signals.RiskLevel()
-					d.Signals = signals
-					d.Reason += fmt.Sprintf(" (%s)", signals.Summary())
-				}
-				return d
-			}
-		}
-	}
-
-	// Fallback chain
-	return s.fallbackRoute(signals)
+	return Decision{}, false
 }
 
 // ForceRoute returns a decision for an explicitly chosen kitchen.
@@ -208,6 +191,85 @@ func (s *Sommelier) keywordMatch(lowerPrompt string) string {
 		}
 	}
 	return ""
+}
+
+func (s *Sommelier) routers() []Router {
+	return []Router{
+		learnedRouter{sommelier: s},
+		pantryRouter{sommelier: s},
+		s.localModel,
+		keywordRouter{sommelier: s},
+		fallbackRouter{sommelier: s},
+	}
+}
+
+func (r learnedRouter) Decide(_ context.Context, req RouteRequest) (Decision, bool) {
+	signals := req.Signals
+	if signals == nil || signals.LearnedKitchen == "" {
+		return Decision{}, false
+	}
+	if !r.sommelier.isAvailable(signals.LearnedKitchen) {
+		return Decision{}, false
+	}
+	return Decision{
+		Kitchen: signals.LearnedKitchen,
+		Reason:  fmt.Sprintf("learned: %s succeeded %.0f%% for this task type (%s)", signals.LearnedKitchen, signals.LearnedRate, signals.Summary()),
+		Tier:    "learned",
+		Risk:    signals.RiskLevel(),
+		Signals: signals,
+	}, true
+}
+
+func (r pantryRouter) Decide(_ context.Context, req RouteRequest) (Decision, bool) {
+	signals := req.Signals
+	if req.SkillHint != nil && req.SkillHint.Kitchen != "" && r.sommelier.isAvailable(req.SkillHint.Kitchen) {
+		return Decision{
+			Kitchen: req.SkillHint.Kitchen,
+			Reason:  fmt.Sprintf("skill %q available in %s", req.SkillHint.SkillName, req.SkillHint.Kitchen),
+			Tier:    "enriched",
+			Risk:    riskFromSignals(signals),
+			Signals: signals,
+		}, true
+	}
+	if signals == nil || signals.RiskLevel() != "high" || !r.sommelier.isAvailable("claude") {
+		return Decision{}, false
+	}
+	keywordMatch := r.sommelier.keywordMatch(strings.ToLower(req.Prompt))
+	if keywordMatch == "claude" {
+		return Decision{}, false
+	}
+	return Decision{
+		Kitchen: "claude",
+		Reason:  fmt.Sprintf("risk HIGH overrides keyword %q → claude for safety (%s)", keywordMatch, signals.Summary()),
+		Tier:    "enriched",
+		Risk:    "high",
+		Signals: signals,
+	}, true
+}
+
+func (r keywordRouter) Decide(_ context.Context, req RouteRequest) (Decision, bool) {
+	lower := strings.ToLower(req.Prompt)
+	for _, rule := range r.sommelier.rules {
+		if !strings.Contains(lower, rule.keyword) || !r.sommelier.isAvailable(rule.kitchen) {
+			continue
+		}
+		decision := Decision{
+			Kitchen: rule.kitchen,
+			Reason:  fmt.Sprintf("keyword %q matched → %s", rule.keyword, rule.kitchen),
+			Tier:    "keyword",
+		}
+		if req.Signals != nil {
+			decision.Risk = req.Signals.RiskLevel()
+			decision.Signals = req.Signals
+			decision.Reason += fmt.Sprintf(" (%s)", req.Signals.Summary())
+		}
+		return decision, true
+	}
+	return Decision{}, false
+}
+
+func (r fallbackRouter) Decide(_ context.Context, req RouteRequest) (Decision, bool) {
+	return r.sommelier.fallbackRoute(req.Signals), true
 }
 
 func (s *Sommelier) fallbackRoute(signals *Signals) Decision {
