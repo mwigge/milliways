@@ -3,6 +3,7 @@ package project
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 )
@@ -34,6 +35,7 @@ type ProjectContext struct {
 	CodeGraphPath    string      `json:"codegraph_path"`
 	CodeGraphSymbols int         `json:"codegraph_symbols"`
 	PalacePath       *string     `json:"palace_path,omitempty"`
+	PalaceExists     bool        `json:"palace_exists"`
 	PalaceDrawers    *int        `json:"palace_drawers,omitempty"`
 	AccessRules      AccessRules `json:"access_rules"`
 }
@@ -48,6 +50,30 @@ func DetectCodeGraph(repoRoot string) (codegraphPath string, exists bool) {
 	}
 
 	return codegraphPath, true
+}
+
+// InitCodeGraph verifies that CodeGraph has been initialized for the repository.
+func InitCodeGraph(repoRoot string) error {
+	codegraphPath := filepath.Join(repoRoot, ".codegraph")
+
+	info, err := os.Stat(codegraphPath)
+	if err == nil && info.IsDir() {
+		return nil
+	}
+
+	return fmt.Errorf("CodeGraph not initialized at %s. Run codegraph init or wait for background indexing.", codegraphPath)
+}
+
+// DetectPalace reports whether a MemPalace data directory exists at the repository root.
+func DetectPalace(repoRoot string) (palacePath string, exists bool) {
+	palacePath = filepath.Join(repoRoot, ".mempalace")
+
+	info, err := os.Stat(palacePath)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+
+	return palacePath, true
 }
 
 // FindRepoRoot walks up from startDir until it finds a .git directory.
@@ -98,15 +124,7 @@ func ResolveProject(overrideRoot string) (*ProjectContext, error) {
 			return nil, fmt.Errorf("No git repository at %s", repoRoot)
 		}
 
-		codegraphPath, codegraphExists := DetectCodeGraph(repoRoot)
-
-		return &ProjectContext{
-			RepoRoot:        repoRoot,
-			RepoName:        filepath.Base(repoRoot),
-			CodeGraphPath:   codegraphPath,
-			CodeGraphExists: codegraphExists,
-			AccessRules:     DefaultAccessRules(),
-		}, nil
+		return newProjectContext(repoRoot), nil
 	}
 
 	workingDir, err := os.Getwd()
@@ -122,13 +140,29 @@ func ResolveProject(overrideRoot string) (*ProjectContext, error) {
 		return nil, err
 	}
 
-	codegraphPath, codegraphExists := DetectCodeGraph(repoRoot)
+	return newProjectContext(repoRoot), nil
+}
 
-	return &ProjectContext{
+func newProjectContext(repoRoot string) *ProjectContext {
+	codegraphPath, codegraphExists := DetectCodeGraph(repoRoot)
+	if err := InitCodeGraph(repoRoot); err != nil {
+		slog.Default().Error("codegraph unavailable", "repo_root", repoRoot, "error", err)
+	}
+
+	palacePath, palaceExists := DetectPalace(repoRoot)
+
+	ctx := &ProjectContext{
 		RepoRoot:        repoRoot,
 		RepoName:        filepath.Base(repoRoot),
 		CodeGraphPath:   codegraphPath,
 		CodeGraphExists: codegraphExists,
+		PalaceExists:    palaceExists,
 		AccessRules:     DefaultAccessRules(),
-	}, nil
+	}
+
+	if palaceExists {
+		ctx.PalacePath = &palacePath
+	}
+
+	return ctx
 }

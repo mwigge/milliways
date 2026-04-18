@@ -24,6 +24,9 @@ func TestDefaultAccessRules(t *testing.T) {
 func TestProjectContextJSONTags(t *testing.T) {
 	t.Parallel()
 
+	palacePath := "/tmp/repo/.mempalace"
+	palaceDrawers := 3
+
 	ctx := ProjectContext{
 		RepoRoot:         "/tmp/repo",
 		RepoName:         "repo",
@@ -32,6 +35,9 @@ func TestProjectContextJSONTags(t *testing.T) {
 		CodeGraphExists:  true,
 		CodeGraphPath:    "/tmp/repo/.codegraph",
 		CodeGraphSymbols: 42,
+		PalacePath:       &palacePath,
+		PalaceExists:     true,
+		PalaceDrawers:    &palaceDrawers,
 		AccessRules:      DefaultAccessRules(),
 	}
 
@@ -45,7 +51,7 @@ func TestProjectContextJSONTags(t *testing.T) {
 		t.Fatalf("unmarshal project context: %v", err)
 	}
 
-	for _, key := range []string{"repo_root", "repo_name", "branch", "commit", "codegraph_exists", "codegraph_path", "codegraph_symbols", "access_rules"} {
+	for _, key := range []string{"repo_root", "repo_name", "branch", "commit", "codegraph_exists", "codegraph_path", "codegraph_symbols", "palace_path", "palace_exists", "palace_drawers", "access_rules"} {
 		if _, ok := got[key]; !ok {
 			t.Fatalf("expected JSON key %q in marshalled project context", key)
 		}
@@ -55,11 +61,14 @@ func TestProjectContextJSONTags(t *testing.T) {
 		t.Fatalf("expected codegraph_exists true, got %#v", got["codegraph_exists"])
 	}
 
-	if _, ok := got["palace_path"]; ok {
-		t.Fatal("did not expect palace_path when nil")
+	if got["palace_path"] != palacePath {
+		t.Fatalf("expected palace_path %q, got %#v", palacePath, got["palace_path"])
 	}
-	if _, ok := got["palace_drawers"]; ok {
-		t.Fatal("did not expect palace_drawers when nil")
+	if got["palace_exists"] != true {
+		t.Fatalf("expected palace_exists true, got %#v", got["palace_exists"])
+	}
+	if got["palace_drawers"] != float64(palaceDrawers) {
+		t.Fatalf("expected palace_drawers %d, got %#v", palaceDrawers, got["palace_drawers"])
 	}
 
 	accessRules, ok := got["access_rules"].(map[string]any)
@@ -161,6 +170,68 @@ func TestDetectCodeGraphMissing(t *testing.T) {
 	}
 }
 
+func TestInitCodeGraphExists(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+	codeGraphDir := filepath.Join(repoRoot, ".codegraph")
+	if err := os.Mkdir(codeGraphDir, 0o755); err != nil {
+		t.Fatalf("create .codegraph dir: %v", err)
+	}
+
+	if err := InitCodeGraph(repoRoot); err != nil {
+		t.Fatalf("init codegraph: %v", err)
+	}
+}
+
+func TestInitCodeGraphMissing(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+
+	err := InitCodeGraph(repoRoot)
+	if err == nil {
+		t.Fatal("expected init codegraph to fail")
+	}
+
+	want := "CodeGraph not initialized at " + filepath.Join(repoRoot, ".codegraph") + ". Run codegraph init or wait for background indexing."
+	if err.Error() != want {
+		t.Fatalf("expected error %q, got %q", want, err.Error())
+	}
+}
+
+func TestDetectPalaceExists(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+	palaceDir := filepath.Join(repoRoot, ".mempalace")
+	if err := os.Mkdir(palaceDir, 0o755); err != nil {
+		t.Fatalf("create .mempalace dir: %v", err)
+	}
+
+	gotPath, gotExists := DetectPalace(repoRoot)
+	if !gotExists {
+		t.Fatal("expected palace to exist")
+	}
+	if gotPath != palaceDir {
+		t.Fatalf("expected palace path %q, got %q", palaceDir, gotPath)
+	}
+}
+
+func TestDetectPalaceMissing(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+
+	gotPath, gotExists := DetectPalace(repoRoot)
+	if gotExists {
+		t.Fatal("expected palace to be missing")
+	}
+	if gotPath != "" {
+		t.Fatalf("expected empty palace path, got %q", gotPath)
+	}
+}
+
 func TestResolveProjectWithOverride(t *testing.T) {
 	t.Parallel()
 
@@ -196,6 +267,12 @@ func TestResolveProjectWithOverride(t *testing.T) {
 	if ctx.CodeGraphPath != "" {
 		t.Fatalf("expected empty code graph path, got %q", ctx.CodeGraphPath)
 	}
+	if ctx.PalaceExists {
+		t.Fatal("expected palace to be missing")
+	}
+	if ctx.PalacePath != nil {
+		t.Fatalf("expected nil palace path, got %v", *ctx.PalacePath)
+	}
 }
 
 func TestResolveProjectWithOverrideAndCodeGraph(t *testing.T) {
@@ -221,6 +298,35 @@ func TestResolveProjectWithOverrideAndCodeGraph(t *testing.T) {
 	}
 	if ctx.CodeGraphPath != codeGraphDir {
 		t.Fatalf("expected code graph path %q, got %q", codeGraphDir, ctx.CodeGraphPath)
+	}
+}
+
+func TestResolveProjectWithOverrideAndPalace(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := t.TempDir()
+	gitDir := filepath.Join(repoRoot, ".git")
+	if err := os.Mkdir(gitDir, 0o755); err != nil {
+		t.Fatalf("create .git dir: %v", err)
+	}
+	palaceDir := filepath.Join(repoRoot, ".mempalace")
+	if err := os.Mkdir(palaceDir, 0o755); err != nil {
+		t.Fatalf("create .mempalace dir: %v", err)
+	}
+
+	ctx, err := ResolveProject(repoRoot)
+	if err != nil {
+		t.Fatalf("resolve project: %v", err)
+	}
+
+	if !ctx.PalaceExists {
+		t.Fatal("expected palace to exist")
+	}
+	if ctx.PalacePath == nil {
+		t.Fatal("expected palace path to be set")
+	}
+	if *ctx.PalacePath != palaceDir {
+		t.Fatalf("expected palace path %q, got %q", palaceDir, *ctx.PalacePath)
 	}
 }
 
