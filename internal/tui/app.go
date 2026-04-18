@@ -1130,8 +1130,9 @@ func (m *Model) appendCommandFeedback(prompt, text string) {
 		ID:        m.nextBlockID(),
 		Prompt:    prompt,
 		Kitchen:   "milliways",
-		State:     StateRouted,
+		State:     StateDone,
 		StartedAt: time.Now(),
+		Duration:  0,
 	}
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)

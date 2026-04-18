@@ -160,15 +160,23 @@ func (m Model) runtimeActivityLines(limit int) []string {
 		return nil
 	}
 
+	// Filter out noisy event types that have dedicated rendering elsewhere.
+	skipKinds := map[string]bool{
+		"provider_output": true,
+	}
 	var filtered []observability.Event
 	if b := m.focusedBlock(); b != nil && b.ConversationID != "" {
 		for _, evt := range m.runtimeEvents {
-			if evt.ConversationID == b.ConversationID {
+			if evt.ConversationID == b.ConversationID && !skipKinds[evt.Kind] {
 				filtered = append(filtered, evt)
 			}
 		}
 	} else {
-		filtered = append(filtered, m.runtimeEvents...)
+		for _, evt := range m.runtimeEvents {
+			if !skipKinds[evt.Kind] {
+				filtered = append(filtered, evt)
+			}
+		}
 	}
 	if len(filtered) == 0 {
 		return nil
