@@ -16,6 +16,7 @@ import (
 	"github.com/mwigge/milliways/internal/observability"
 	"github.com/mwigge/milliways/internal/orchestrator"
 	"github.com/mwigge/milliways/internal/pantry"
+	"github.com/mwigge/milliways/internal/project"
 	"github.com/mwigge/milliways/internal/recipe"
 	"github.com/mwigge/milliways/internal/sommelier"
 	"github.com/mwigge/milliways/internal/tui"
@@ -50,6 +51,32 @@ func runTUI(configPath string, tuiOpts tui.RunOpts) error {
 		ticketStore = pdb.Tickets()
 	}
 	tuiOpts.KitchenStates = buildKitchenStates(cfg, reg, pdb)
+
+	// Detect project context for the TUI.
+	if projectRoot := os.Getenv("MILLIWAYS_PROJECT_ROOT"); projectRoot != "" {
+		if pc, err := project.ResolveProject(projectRoot); err == nil {
+			ps := tui.ProjectState{
+				RepoRoot: pc.RepoRoot,
+				RepoName: pc.RepoName,
+				PalacePath: func() string {
+					if pc.PalacePath != nil {
+						return *pc.PalacePath
+					}
+					return ""
+				}(),
+				PalaceDrawers: func() int {
+					if pc.PalaceDrawers != nil {
+						return *pc.PalaceDrawers
+					}
+					return 0
+				}(),
+				CodeGraphSymbols: pc.CodeGraphSymbols,
+				AccessReadRule:   pc.AccessRules.Read,
+				AccessWriteRule:  pc.AccessRules.Write,
+			}
+			tuiOpts.ProjectState = ps
+		}
+	}
 
 	return tui.RunWithOpts(providerFactory, hydrator, sink, recorder, replayer, ticketStore, tuiOpts)
 }

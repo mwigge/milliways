@@ -717,6 +717,7 @@ type RunOpts struct {
 	ResumeSession string // session name to resume ("" = no resume, "last" = resume last)
 	SessionName   string // named session ("" = use "last")
 	KitchenStates []KitchenState
+	ProjectState  ProjectState // detected project context (optional)
 }
 
 // Run starts the TUI with adapter-based dispatch.
@@ -728,6 +729,9 @@ func Run(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator,
 func RunWithOpts(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator, sink observability.Sink, recorder ConversationRecorder, replayer ConversationReplayer, store *pantry.TicketStore, opts RunOpts) error {
 	m := NewAdapterModel(providerFactory, hydrator, sink, recorder, replayer, store)
 	m.SetKitchenStates(opts.KitchenStates)
+	if opts.ProjectState.RepoRoot != "" {
+		m.SetProjectState(opts.ProjectState)
+	}
 
 	// Resume session if requested.
 	sessionName := opts.SessionName
