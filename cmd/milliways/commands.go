@@ -54,7 +54,18 @@ func runTUI(configPath string, tuiOpts tui.RunOpts) error {
 
 	// Detect project context for the TUI.
 	if projectRoot := os.Getenv("MILLIWAYS_PROJECT_ROOT"); projectRoot != "" {
+		fmt.Fprintf(os.Stderr, "[project] detecting from MILLIWAYS_PROJECT_ROOT=%q\n", projectRoot)
 		if pc, err := project.ResolveProject(projectRoot); err == nil {
+			palaceStr := "(nil)"
+			if pc.PalacePath != nil {
+				palaceStr = *pc.PalacePath
+			}
+			drawersStr := "(nil)"
+			if pc.PalaceDrawers != nil {
+				drawersStr = fmt.Sprintf("%d", *pc.PalaceDrawers)
+			}
+			fmt.Fprintf(os.Stderr, "[project] resolved: root=%s repo=%s palace=%s drawers=%s\n",
+				pc.RepoRoot, pc.RepoName, palaceStr, drawersStr)
 			ps := tui.ProjectState{
 				RepoRoot: pc.RepoRoot,
 				RepoName: pc.RepoName,
@@ -75,7 +86,11 @@ func runTUI(configPath string, tuiOpts tui.RunOpts) error {
 				AccessWriteRule:  pc.AccessRules.Write,
 			}
 			tuiOpts.ProjectState = ps
+		} else {
+			fmt.Fprintf(os.Stderr, "[project] detection failed: %v\n", err)
 		}
+	} else {
+		fmt.Fprintf(os.Stderr, "[project] MILLIWAYS_PROJECT_ROOT not set, skipping detection\n")
 	}
 
 	return tui.RunWithOpts(providerFactory, hydrator, sink, recorder, replayer, ticketStore, tuiOpts)
