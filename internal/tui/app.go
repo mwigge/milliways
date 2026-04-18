@@ -864,6 +864,15 @@ func containsProvider(chain []string, provider string) bool {
 func (m *Model) executePaletteCommand(command string) tea.Cmd {
 	command = strings.TrimSpace(command)
 	switch {
+	case command == "project":
+		m.appendCommandFeedback("/project", m.HandleProjectCommand())
+		return nil
+	case command == "palace":
+		m.appendCommandFeedback("/palace", m.HandlePalaceCommand(""))
+		return nil
+	case command == "codegraph":
+		m.appendCommandFeedback("/codegraph", m.HandleCodeGraphCommand(""))
+		return nil
 	case command == "switch":
 		m.appendCommandFeedback("/switch", "usage: /switch <kitchen>")
 		return nil
@@ -1146,7 +1155,7 @@ func resolvePaletteCommand(input, fallback string) string {
 	if input == "" {
 		return fallback
 	}
-	if input == "back" || input == "kitchens" || input == "repos" || input == "stick" || input == "switch" || strings.HasPrefix(input, "switch ") {
+	if input == "back" || input == "codegraph" || input == "kitchens" || input == "palace" || input == "project" || input == "repos" || input == "stick" || input == "switch" || strings.HasPrefix(input, "switch ") {
 		return input
 	}
 	for _, item := range paletteItems {

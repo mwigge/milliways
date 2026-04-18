@@ -13,6 +13,9 @@ type PaletteItem struct {
 }
 
 var paletteItems = []PaletteItem{
+	{"project", "Show active project details"},
+	{"palace", "Project palace operations: status, init, search"},
+	{"codegraph", "CodeGraph operations: status, reindex, search"},
 	{"switch", "Request a kitchen switch"},
 	{"back", "Reverse the most recent switch"},
 	{"kitchens", "List kitchens and status"},

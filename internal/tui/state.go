@@ -94,15 +94,21 @@ type KitchenState struct {
 
 // ProjectState represents the active project context for the TUI.
 type ProjectState struct {
-	RepoRoot         string
-	RepoName         string
-	Branch           string
-	PalacePath       string
-	PalaceDrawers    int
-	PalaceExists     bool
-	CodeGraphExists  bool
-	CodeGraphSymbols int
-	LastAccessed     string
+	RepoRoot             string
+	RepoName             string
+	RemoteURL            string
+	Branch               string
+	PalacePath           string
+	PalaceDrawers        int
+	PalaceWings          int
+	PalaceRooms          int
+	PalaceExists         bool
+	CodeGraphExists      bool
+	CodeGraphSymbols     int
+	CodeGraphLastIndexed string
+	AccessReadRule       string
+	AccessWriteRule      string
+	LastAccessed         string
 }
 
 // RecentRepos tracks repositories accessed during the current TUI session.
