@@ -1,0 +1,12 @@
+#!/bin/sh
+# Fake claude kitchen that emits init + one assistant turn, then a
+# rate_limit_event with status=exhausted, a result with is_error:true,
+# and exits 1. Used by scripts/smoke.sh for the PC-21.1 scenario
+# (claude exhausts -> codex continues).
+cat <<'EVENTS'
+{"type":"system","subtype":"init","session_id":"smoke-claude","model":"claude-opus-4-6"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"starting the task..."}]}}
+{"type":"rate_limit_event","rate_limit_info":{"status":"exhausted","resetsAt":1893456000}}
+{"type":"result","total_cost_usd":0,"duration_ms":100,"num_turns":0,"is_error":true,"usage":{"input_tokens":0,"output_tokens":0}}
+EVENTS
+exit 1

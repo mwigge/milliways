@@ -1,0 +1,17 @@
+kitchens:
+  claude:
+    cmd: {{SMOKE_ROOT}}/bin/fake-claude-exhausted
+    stations: [think, plan, review, explore]
+    cost_tier: cloud
+  codex:
+    cmd: {{SMOKE_ROOT}}/bin/fake-codex-ok
+    stations: [code, implement]
+    cost_tier: cloud
+routing:
+  keywords:
+    explain: claude
+  default: claude
+  budget_fallback: codex
+ledger:
+  ndjson: {{RUN_DIR}}/ledger.ndjson
+  db: {{RUN_DIR}}/milliways.db
