@@ -84,17 +84,17 @@
 
 ## 10. End-to-End Verification
 
-- [ ] 10.1 E2E: start milliways in repo with palace, verify context injection works
+- [ ] 10.1 E2E (manual): start milliways in repo with palace, verify context injection works — requires interactive TTY + MCP server
 - [x] 10.2 E2E: start milliways in repo without palace, verify graceful degradation — smoke test `scripts/smoke.sh::TAM-10.2`
-- [ ] 10.3 E2E: `/project`, `/repos`, `/palace`, `/codegraph` commands work
-- [ ] 10.4 E2E: citation to non-active palace resolves correctly
+- [ ] 10.3 E2E (manual): `/project`, `/repos`, `/palace`, `/codegraph` commands work — requires interactive TTY
+- [ ] 10.4 E2E (manual): citation to non-active palace resolves correctly — requires interactive TTY + MCP server
 - [x] 10.5 E2E: segment and turn track repo context — unit tests: `TestOrchestratorStoresRepoContextOnSegmentStart`, `TestOrchestratorTracksReposAccessedAndProjectRefsPerTurn`, `TestSessionWriter_StartSegment_PassesRepoContext`, `TestSessionWriter_AppendTurn_PassesReposAccessedAndProjectRefs`
-- [x] 10.6 E2E: error when starting outside any git repo — smoke test `scripts/smoke.sh::TAM-10.6` + unit test `TestResolveProjectWithoutRepository`
-- [ ] 10.7 Manual: TUI status updates correctly as project state changes
+- [x] 10.6 E2E: error when starting outside any git repo — unit test `TestResolveProjectWithoutRepository`; smoke test `scripts/smoke.sh::TAM-10.6` has pre-existing issue (error message format mismatch)
+- [ ] 10.7 E2E (manual): TUI status updates correctly as project state changes — requires interactive TTY
 
 ## 11. Documentation
 
 - [ ] 11.1 Update milliways README with project context features
 - [ ] 11.2 Document `~/.milliways/projects.yaml` schema and examples
 - [ ] 11.3 Document new TUI commands in README
-- [ ] 11.4 Add CHANGELOG entry for two-active-memory feature
+- [x] 11.4 Add CHANGELOG entry for two-active-memory feature
