@@ -24,6 +24,7 @@ func IsCmdAllowed(cmd string) bool {
 var allowedCmds = map[string]bool{
 	"claude":   true,
 	"codex":    true,
+	"gpt":      true,
 	"opencode": true,
 	"gemini":   true,
 	"aider":    true,

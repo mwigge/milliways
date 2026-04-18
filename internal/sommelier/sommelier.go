@@ -55,11 +55,7 @@ type Sommelier struct {
 	registry       *kitchen.Registry
 	quotaChecker   QuotaChecker
 	quotaLimits    map[string]int // kitchen name → daily limit
-	learned        Router
-	pantry         Router
 	localModel     LocalModelRouter
-	keyword        Router
-	fallbackTier   Router
 }
 
 type learnedRouter struct{ sommelier *Sommelier }
@@ -89,10 +85,6 @@ func New(keywords map[string]string, defaultKitchen, fallback string, reg *kitch
 		defaultKitchen: defaultKitchen,
 		fallback:       fallback,
 		registry:       reg,
-		learned:        nil,
-		pantry:         nil,
-		keyword:        nil,
-		fallbackTier:   nil,
 	}
 }
 
@@ -202,19 +194,13 @@ func (s *Sommelier) keywordMatch(lowerPrompt string) string {
 }
 
 func (s *Sommelier) routers() []Router {
-	if s.learned == nil {
-		s.learned = learnedRouter{sommelier: s}
+	return []Router{
+		learnedRouter{sommelier: s},
+		pantryRouter{sommelier: s},
+		s.localModel,
+		keywordRouter{sommelier: s},
+		fallbackRouter{sommelier: s},
 	}
-	if s.pantry == nil {
-		s.pantry = pantryRouter{sommelier: s}
-	}
-	if s.keyword == nil {
-		s.keyword = keywordRouter{sommelier: s}
-	}
-	if s.fallbackTier == nil {
-		s.fallbackTier = fallbackRouter{sommelier: s}
-	}
-	return []Router{s.learned, s.pantry, s.localModel, s.keyword, s.fallbackTier}
 }
 
 func (r learnedRouter) Decide(_ context.Context, req RouteRequest) (Decision, bool) {

@@ -7,6 +7,7 @@ func TestIsCmdAllowed_CanonicalKitchens(t *testing.T) {
 	canonical := []string{
 		"claude",
 		"codex",
+		"gpt",
 		"opencode",
 		"gemini",
 		"aider",

@@ -3,6 +3,7 @@
 #
 # Scenarios:
 #   PC-21.1  claude exhausts -> codex continues
+#   KP-19A   user switch -> gpt continues
 #
 # Environment:
 #   MILLIWAYS_BIN    path to the milliways binary (default: $TMPDIR/milliways
@@ -42,6 +43,7 @@ fail() {
 [ -f "$tmpl" ] || fail "missing config template: $tmpl"
 [ -x "$smoke_root/bin/fake-claude-exhausted" ] || fail "missing or non-executable: $smoke_root/bin/fake-claude-exhausted"
 [ -x "$smoke_root/bin/fake-codex-ok" ] || fail "missing or non-executable: $smoke_root/bin/fake-codex-ok"
+[ -x "$smoke_root/bin/fake-gpt-ok" ] || fail "missing or non-executable: $smoke_root/bin/fake-gpt-ok"
 
 if [ ! -x "$milliways_bin" ]; then
 	fail "milliways binary not found at $milliways_bin (set MILLIWAYS_BIN or run 'make smoke')"
@@ -121,10 +123,120 @@ run_scenario_pc21_1() {
 	return 0
 }
 
+# --- scenario KP-19A ---------------------------------------------------
+
+write_paused_session() {
+	session_dir="$HOME/.config/milliways/sessions"
+	mkdir -p "$session_dir" || fail "creating session dir"
+	cat >"$session_dir/paused.json" <<'SESSION'
+{
+  "name": "paused",
+  "created_at": "2026-04-18T00:00:00Z",
+  "updated_at": "2026-04-18T00:00:00Z",
+  "blocks": [
+    {
+      "id": "b1",
+      "conversation_id": "conv-1",
+      "prompt": "finish the task",
+      "kitchen": "claude",
+      "provider_chain": ["claude"],
+      "state": "waiting for you",
+      "lines": [],
+      "collapsed": false,
+      "exit_code": 0,
+      "duration_s": 0,
+      "started_at": "2026-04-18T00:00:00Z",
+      "conversation": {
+        "id": "conv-1",
+        "block_id": "b1",
+        "prompt": "finish the task",
+        "status": "active",
+        "transcript": [
+          {
+            "role": "user",
+            "provider": "user",
+            "text": "finish the task",
+            "at": "2026-04-18T00:00:00Z"
+          },
+          {
+            "role": "assistant",
+            "provider": "claude",
+            "text": "working on it",
+            "at": "2026-04-18T00:00:01Z"
+          }
+        ],
+        "memory": {
+          "working_summary": "Keep existing context"
+        },
+        "context": {},
+        "segments": [
+          {
+            "id": "conv-1-seg-1",
+            "provider": "claude",
+            "status": "active",
+            "started_at": "2026-04-18T00:00:00Z"
+          }
+        ],
+        "active_segment_id": "conv-1-seg-1",
+        "created_at": "2026-04-18T00:00:00Z",
+        "updated_at": "2026-04-18T00:00:01Z"
+      }
+    }
+  ]
+}
+SESSION
+}
+
+run_scenario_user_switch() {
+	scenario="KP-19A user-switch-gpt-continues"
+	log="$run_dir/kp19a.log"
+
+	write_paused_session
+
+	printf '[smoke] running scenario: %s\n' "$scenario"
+
+	"$milliways_bin" \
+		-c "$rendered_config" \
+		--session paused \
+		--switch-to gpt \
+		--verbose \
+		--timeout 15s \
+		"/switch gpt" \
+		>"$log" 2>&1
+	rc=$?
+
+	failures=0
+
+	if [ "$rc" -ne 0 ]; then
+		printf '[smoke] FAIL: %s expected exit 0, got %d\n' "$scenario" "$rc" >&2
+		failures=$((failures + 1))
+	fi
+
+	for needle in \
+		"[switch] session=paused claude -> gpt" \
+		"gpt response after switch"; do
+		if ! grep -Fq -- "$needle" "$log"; then
+			printf '[smoke] FAIL: %s missing expected output: %s\n' "$scenario" "$needle" >&2
+			failures=$((failures + 1))
+		fi
+	done
+
+	if [ "$failures" -gt 0 ]; then
+		printf '[smoke] --- captured output (%s) ---\n' "$log" >&2
+		cat "$log" >&2
+		printf '[smoke] --- end captured output ---\n' >&2
+		return 1
+	fi
+
+	printf '[smoke] pass: %s\n' "$scenario"
+	return 0
+}
+
 # --- run all -----------------------------------------------------------
 
 overall=0
 run_scenario_pc21_1 || overall=1
+run_scenario_user_switch || overall=1
 
 if [ "$overall" -eq 0 ]; then
 	printf '[smoke] all scenarios passed\n'
