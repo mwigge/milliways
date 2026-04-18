@@ -4,6 +4,8 @@
 # Scenarios:
 #   PC-21.1  claude exhausts -> codex continues
 #   KP-19A   user switch -> gpt continues
+#   TAM-10.6 milliways exits with error when not in a git repo
+#   TAM-10.2 milliways handles missing palace gracefully
 #
 # Environment:
 #   MILLIWAYS_BIN    path to the milliways binary (default: $TMPDIR/milliways
@@ -232,11 +234,117 @@ run_scenario_user_switch() {
 	return 0
 }
 
+# --- scenario TAM-10.6: error when starting outside any git repo ---------
+
+run_scenario_tam_10_6() {
+	scenario="TAM-10.6 no-git-repo-error"
+	log="$run_dir/tam_10_6.log"
+
+	printf '[smoke] running scenario: %s\n' "$scenario"
+
+	# Create a temp dir that is NOT a git repo
+	non_git_dir=$(mktemp -d "$tmp_base/mw-no-git-XXXXXX") || fail "mktemp failed"
+	# Keep it but do NOT create .git/ inside it
+
+	# milliways should exit with error since it's not inside a git repo
+	"$milliways_bin" \
+		-c "$rendered_config" \
+		--timeout 5s \
+		--project-root "$non_git_dir" \
+		"hello" \
+		>"$log" 2>&1
+	rc=$?
+
+	# Clean up the non-git dir
+	rm -rf "$non_git_dir"
+
+	failures=0
+
+	if [ "$rc" -eq 0 ]; then
+		printf '[smoke] FAIL: %s expected non-zero exit, got 0\n' "$scenario" >&2
+		failures=$((failures + 1))
+	fi
+
+	# Verify error message is helpful
+	for needle in \
+		"no git repository" \
+		"--project-root"; do
+		if ! grep -qi -- "$needle" "$log"; then
+			printf '[smoke] FAIL: %s missing expected output: %s\n' "$scenario" "$needle" >&2
+			failures=$((failures + 1))
+		fi
+	done
+
+	if [ "$failures" -gt 0 ]; then
+		printf '[smoke] --- captured output (%s) ---\n' "$log" >&2
+		cat "$log" >&2
+		printf '[smoke] --- end captured output ---\n' >&2
+		return 1
+	fi
+
+	printf '[smoke] pass: %s\n' "$scenario"
+	return 0
+}
+
+# --- scenario TAM-10.2: graceful degradation without palace -------------
+
+run_scenario_tam_10_2() {
+	scenario="TAM-10.2 no-palace-graceful-degradation"
+	log="$run_dir/tam_10_2.log"
+
+	printf '[smoke] running scenario: %s\n' "$scenario"
+
+	# Create a temp git repo WITHOUT .mempalace/ (but WITH .codegraph/ placeholder)
+	git_dir=$(mktemp -d "$tmp_base/mw-no-palace-XXXXXX") || fail "mktemp failed"
+	mkdir "$git_dir/.git" || fail "creating .git"
+	# milliways needs .codegraph to be present (even if empty) for the graceful path
+	# Since the fake providers don't do real CodeGraph calls, this should work
+
+	"$milliways_bin" \
+		-c "$rendered_config" \
+		--project-root "$git_dir" \
+		--timeout 15s \
+		"hello" \
+		>"$log" 2>&1
+	rc=$?
+
+	# Clean up
+	rm -rf "$git_dir"
+
+	failures=0
+
+	# milliways should NOT crash; it should handle gracefully
+	# We just check it doesn't segfault or panic
+	if [ "$rc" -gt 128 ]; then
+		printf '[smoke] FAIL: %s crashed (signal %d)\n' "$scenario" "$rc" >&2
+		failures=$((failures + 1))
+	fi
+
+	# Should mention palace or gracefully skip it
+	# The output should NOT contain panic or segfault
+	if grep -qi "panic\|segmentation fault\|trace/BUG" "$log"; then
+		printf '[smoke] FAIL: %s crashed unexpectedly\n' "$scenario" >&2
+		failures=$((failures + 1))
+	fi
+
+	if [ "$failures" -gt 0 ]; then
+		printf '[smoke] --- captured output (%s) ---\n' "$log" >&2
+		cat "$log" >&2
+		printf '[smoke] --- end captured output ---\n' >&2
+		return 1
+	fi
+
+	printf '[smoke] pass: %s\n' "$scenario"
+	return 0
+}
+
 # --- run all -----------------------------------------------------------
 
 overall=0
 run_scenario_pc21_1 || overall=1
 run_scenario_user_switch || overall=1
+run_scenario_tam_10_6 || overall=1
+run_scenario_tam_10_2 || overall=1
 
 if [ "$overall" -eq 0 ]; then
 	printf '[smoke] all scenarios passed\n'
