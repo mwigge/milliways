@@ -2,14 +2,18 @@
 
 > The Restaurant at the End of the Universe — one CLI to route them all.
 
-Milliways doesn't cook. It seats you at the right table and brings the best dish from whichever kitchen excels at making it.
+Milliways is a command-line router for coding, research, and review workflows. You give it a prompt, it picks the best installed kitchen (that is, the backend CLI that will do the work), streams the result back, and keeps a record of what happened.
 
+It does not run models itself. It does not manage credentials. It just sits in front of the tools you already use and sends each request to the right place.
+
+```bash
+$ milliways "explain the auth flow"        → routes to claude
+$ milliways "code a rate limiter"          → routes to opencode (local, $0)
+$ milliways "search for DORA regulations"  → routes to gemini (free)
+$ milliways --kitchen aider "refactor"     → forces aider
 ```
-$ milliways "explain the auth flow"       → routes to claude
-$ milliways "code a rate limiter"         → routes to opencode (local, $0)
-$ milliways "search for DORA regulations" → routes to gemini (free)
-$ milliways --kitchen aider "refactor"    → forces aider
-```
+
+If you want one way to talk to several different coding and research tools without remembering a pile of flags, this is that layer.
 
 ## Install
 
@@ -21,7 +25,7 @@ cd milliways
 go build -o ~/.local/bin/milliways ./cmd/milliways/
 ```
 
-Verify: `milliways --version` or `milliways status`
+Verify it worked with `milliways --version` or `milliways status`.
 
 ### Go install
 
@@ -33,7 +37,7 @@ Requires: Go 1.21+
 
 ### Neovim plugin
 
-See [nvim-plugin/README.md](nvim-plugin/README.md) for full documentation.
+The Neovim plugin lives in [nvim-plugin/README.md](nvim-plugin/README.md).
 
 ```lua
 -- lazy.nvim
@@ -51,7 +55,7 @@ See [nvim-plugin/README.md](nvim-plugin/README.md) for full documentation.
 }
 ```
 
-Requires: Neovim 0.10+, `milliways` binary on PATH.
+Requires: Neovim 0.10+, plus the `milliways` binary on your `PATH`.
 
 Commands: `:Milliways`, `:MilliwaysExplain`, `:MilliwaysKitchen`, `:MilliwaysRecipe`, `:MilliwaysStatus`, `:MilliwaysSwitch`, `:MilliwaysStick`, `:MilliwaysBack`, `:MilliwaysKitchens`
 
@@ -61,11 +65,57 @@ Features: L2 context hydration (git branch, LSP diagnostics, cursor position, qu
 
 ## TUI Mode
 
-Start the TUI: `milliways --tui`
+Start the terminal UI with `milliways --tui`.
 
-Approximate layout (terminal size changes what fits):
+The TUI is for when you want a live view of active work instead of one-shot CLI output. The left side shows the currently focused dispatch in full. The right side shows recent blocks and a lower panel that can swap between different views.
 
+### How the TUI works
+
+```text
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ milliways --tui                                                              │
+│ repo • branch • palace/codegraph • kitchen status                            │
+├──────────────────────────────────────────────┬───────────────────────────────┤
+│ Block Stack / Focused Dispatch               │ Block List                    │
+│ (main output)                                │ [1 ●] [2 ◐] [3 ✓] [4 ✗]      │
+│                                              ├───────────────────────────────┤
+│ • prompt                                     │ Swappable panel               │
+│ • selected kitchen                           │ ctrl+] / ctrl+[ cycles:       │
+│ • streamed output                            │  - Ledger                     │
+│ • runtime events                             │  - Jobs                       │
+│ • inline confirms/questions                  │  - Cost                       │
+│                                              │  - Routing                    │
+│                                              │  - System                     │
+│                                              │  - Snippets                   │
+│                                              │  - Diff                       │
+│                                              │  - Compare                    │
+├──────────────────────────────────────────────┴───────────────────────────────┤
+│ > your prompt here                                                          │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
+
+And here is the same idea as a more concrete screen sketch:
+
+```text
+┌──────────────────────────────────────────────────────┐
+│  milliways --tui                                     │
+│                                                      │
+│  ┌────────────────────┐  ┌─────────────────┐         │
+│  │  Block Stack       │  │ Block List      │         │
+│  │  (main output)     │  │ [k1 ●] [k2 ◐]   │         │
+│  │                    │  ├─────────────────┤         │
+│  │                    │  │ Ledger          │ ← panel │
+│  │                    │  │ 14:32 claude ✓  │   cycle │
+│  └────────────────────┘  └─────────────────┘  ctrl+] │
+│                          ┌─────────────────┐         │
+│                          │ > your prompt   │         │
+│                          └─────────────────┘         │
+└──────────────────────────────────────────────────────┘
+```
+
+Approximate layout (your terminal size changes what fits):
+
+```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ Milliways                                                                   │
 │ repo • branch • palace/codegraph status • kitchen availability              │
@@ -101,6 +151,8 @@ Approximate layout (terminal size changes what fits):
 | `Ctrl+F` | Rate the last completed dispatch |
 | `Ctrl+S` | Show a session summary |
 | `Ctrl+G` | Toggle rendered/raw output mode |
+| `Ctrl+]` | Cycle to the next sidebar panel |
+| `Ctrl+[` | Cycle to the previous sidebar panel |
 | `Tab` | Cycle focus across blocks |
 | `1`-`9` | Jump to a specific block |
 | `c` | Collapse or expand the focused block |
@@ -122,7 +174,19 @@ Approximate layout (terminal size changes what fits):
 - Prompt preview and elapsed time
 - Queue preview when max concurrency is exceeded
 
-**Ledger (bottom-right)** — recent completed dispatches:
+**Swappable lower-right panel** — the bottom of the sidebar rotates through eight views:
+- **Ledger** — recent completed dispatches
+- **Jobs** — background work from milliways tickets
+- **Cost** — usage and spend-oriented detail when available
+- **Routing** — why the sommelier chose the current kitchen
+- **System** — runtime/system status lines
+- **Snippets** — captured snippets for quick reuse
+- **Diff** — change preview for relevant outputs
+- **Compare** — side-by-side comparison views
+
+Cycle these panels with `Ctrl+]` and `Ctrl+[`.
+
+**Ledger** — recent completed dispatches:
 - Last 8 completed blocks, newest first
 - Timestamp, kitchen badge, duration, and status icon
 
@@ -172,6 +236,8 @@ milliways --tui --session demo    # Use a named TUI session
 
 Recipes are multi-course meal plans defined in `~/.config/milliways/carte.yaml` and executed sequentially across kitchens.
 
+For example, you can review a pull request in one kitchen and then hand the fix-up pass to another.
+
 ```yaml
 recipes:
   review-pr:
@@ -193,18 +259,116 @@ Dispatch without waiting for completion:
 milliways --async "run the full test suite"
 ```
 
-Async tickets appear in the Jobs panel in the TUI and can be inspected from the CLI:
+Async tickets appear in the Jobs panel in the TUI and can also be inspected from the CLI:
 
 ```bash
 milliways tickets
 milliways ticket <id>
 ```
 
-`--detach` is reserved for detached execution, but currently returns a not-yet-implemented error.
+`--detach` is reserved for detached execution, but right now it returns a not-yet-implemented error.
 
-## How It Works
+## How the Neovim plugin works
 
+The Neovim plugin is a thin client. It collects editor context, sends a request to the milliways daemon or CLI transport, and streams the answer back into Neovim.
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  Neovim + milliways.nvim                                   │
+│                                                            │
+│  ┌──────────────┐      ┌──────────────────┐                │
+│  │ :Milliways   │ ───▶ │ milliways client │                │
+│  │ (command)    │      │ (Lua, in plugin) │                │
+│  └──────────────┘      └────────┬─────────┘                │
+│                                  │                         │
+│                         stdin/stdout or IPC                │
+│                                  │                         │
+│                                  ▼                         │
+│                         ┌──────────────────┐               │
+│                         │ milliways daemon │ (always on)   │
+│                         │                  │               │
+│                         │  ┌────────────┐  │               │
+│                         │  │ orchestrator│  │               │
+│                         │  │ sommelier   │  │               │
+│                         │  │ kitchen(s)  │  │               │
+│                         │  └────────────┘  │               │
+│                         └──────────────────┘               │
+│                                    │                       │
+│                           events stream                    │
+│                                    ▼                       │
+│                         ┌──────────────────┐               │
+│                         │ TUI or --json    │               │
+│                         │ output           │               │
+│                         └──────────────────┘               │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+### L2 context hydration
+
+"L2 context hydration" means the plugin sends more than just the sentence you typed. It also bundles useful nearby code and repo details so the model sees the request in context.
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│  L2 Context Hydration (what happens when you press Enter)  │
+│                                                            │
+│  1. Neovim → :Milliways "explain this function"           │
+│  2. milliways.nvim collects:                               │
+│     • file under cursor (via treesitter or buffer info)    │
+│     • surrounding code (上下 30 lines)                     │
+│     • repo context (project name, language)                │
+│  3. All of the above bundled into the prompt               │
+│  4. Sent to milliways daemon                               │
+│  5. Response streamed back into a Neovim buffer            │
+│                                                            │
+│  The model sees your code IN CONTEXT,                      │
+│  not just the function name.                               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Tiny example: if your cursor is on `validateToken()`, the plugin can send that function, the surrounding 30 lines, the file path, and the current repo language along with your prompt. That gives the model enough context to explain the actual code instead of guessing from the function name alone.
+
+## How request routing works
+
+Milliways uses a router called the **sommelier**. Its job is simple: inspect the request, check the project context, and pick the kitchen most likely to do well.
+
+```text
+You type a prompt
+       │
+       ▼
+┌──────────────────┐
+│ sommelier        │  (the router)
+│ "which kitchen   │
+│  should handle   │
+│  this?"         │
+└────────┬─────────┘
+         │
+    inspects:
+    • keywords ("fix bug" → claude-ha)
+    • file types (.py → python-kitchen)
+    • repo context
+    • load balancing
+         │
+         ▼
+┌──────────────────┐
+│ Decision:        │
+│  kitchen: claude │
+│  tier: keyword   │
+│  reason: found   │
+│  'pytest' in     │
+│  prompt          │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│ orchestrator     │
+│ dispatches to    │
+│ selected kitchen │
+└──────────────────┘
+```
+
+The router uses three tiers:
+
+```text
 You type a task
      │
      ▼
@@ -223,7 +387,12 @@ You type a task
 └─────────────┘  └─────────────┘  └─────────────┘
 ```
 
-Each kitchen is a CLI tool you've already logged into. Milliways calls the binary — it never touches API keys or credentials.
+In practice, that means something like this:
+- `"explain this design"` usually lands in a thinking-oriented kitchen
+- `"refactor these tests"` usually lands in a coding-oriented kitchen
+- `"search docs for X"` usually lands in a research-oriented kitchen
+
+Each kitchen is a CLI tool you've already logged into. Milliways calls the binary directly — it never touches API keys or credentials.
 
 ## Kitchens
 
@@ -320,7 +489,7 @@ When a quota is exhausted, Milliways falls back to the `budget_fallback` kitchen
 
 ## Kitchen Switching
 
-You can switch kitchens mid-conversation without losing the thread. Milliways carries conversation state forward in continuation payloads, so the next kitchen picks up with the existing context instead of starting over.
+You can switch kitchens in the middle of a conversation without losing the thread. Milliways carries the conversation state forward in continuation payloads, so the next kitchen picks up with the current context instead of starting from zero.
 
 Every switch is reversible with `/back`, and sticky mode lets you temporarily opt out of automatic rerouting when you want to stay with the current kitchen.
 
@@ -374,14 +543,14 @@ Without a config file, Milliways uses sensible defaults for all six kitchens.
 
 The sommelier uses three tiers to pick the right kitchen:
 
-**Tier 1 — Keywords**: Scans your prompt for keywords. Longest match wins. Deterministic.
+**Tier 1 — Keywords**: Scan the prompt for keywords. Longest match wins. Deterministic.
 
-**Tier 2 — Pantry signals**: Consults knowledge about the files involved:
+**Tier 2 — Pantry signals**: Consult knowledge about the files involved:
 - GitGraph: file churn, stability, last author
 - QualityGraph: cyclomatic complexity, test coverage
-- Risk scoring: HIGH risk overrides keyword routing → routes to claude for safety
+- Risk scoring: HIGH risk overrides keyword routing and sends the request to claude for safety
 
-**Tier 3 — Learned history**: After enough dispatches, learns which kitchen succeeds at which task type. Overrides keywords when data is sufficient (5+ data points).
+**Tier 3 — Learned history**: After enough dispatches, learn which kitchen succeeds at which task type. This can override keywords when there is enough data (5+ data points).
 
 ```bash
 $ milliways --explain --verbose "refactor store.py"
@@ -396,7 +565,7 @@ Risk:    high
 
 ## Project Memory (CodeGraph + MemPalace)
 
-Milliways can optionally use CodeGraph (code structure search) and MemPalace (project memory) to inject relevant context before routing.
+Milliways can optionally use CodeGraph (semantic code structure search) and MemPalace (project memory) to inject relevant context before routing.
 
 ### Setup
 
@@ -439,7 +608,7 @@ export MILLIWAYS_CODEGRAPH_MCP_CMD="codegraph"
 export MILLIWAYS_CODEGRAPH_MCP_ARGS="mcp"
 ```
 
-Or put them in your shell profile (`~/.zshrc`, `~/.bashrc`) for persistence.
+Or put them in your shell profile (`~/.zshrc`, `~/.bashrc`) if you want them available all the time.
 
 Milliways kitchen parity requires the `mempalace-milliways` fork at commit `e5e705ea43bfab283fd9c16eedec1f5068d10f44` or later so the conversation MCP tools and checkpoint/resume schema are available.
 
@@ -454,7 +623,7 @@ With project memory enabled:
 6. Citations to project facts are tracked per-turn and stored with the conversation
 7. `/project`, `/repos`, `/palace`, `/codegraph` commands show project state
 
-Without these directories, milliways operates without project context (graceful degradation).
+Without these directories, milliways still works; it just runs without project context.
 
 ### Project registry: `~/.milliways/projects.yaml`
 
@@ -507,13 +676,13 @@ Inside the TUI:
 
 Milliways respects the company/private mode from `~/.claude/mode`:
 
-- **Company mode**: Only approved kitchens, only company paths writable
-- **Private mode**: All kitchens available, only private paths writable
+- **Company mode**: only approved kitchens, only company paths writable
+- **Private mode**: all kitchens available, only private paths writable
 - **Neutral paths**: `~/.claude/`, `~/.config/`, `ai_local/` always accessible
 
 ## Data Storage
 
-All state in a single SQLite file: `~/.config/milliways/milliways.db` (~2 MB).
+All state lives in one SQLite file: `~/.config/milliways/milliways.db` (~2 MB).
 
 | Table | What It Stores |
 |-------|---------------|
@@ -531,9 +700,9 @@ Related files:
 
 ## Architecture
 
-Milliways is ~8 MB in memory. It never loads models, never stores credentials, never runs in the background. It spawns a kitchen CLI, streams the output, logs the result, and exits.
+Milliways is about 8 MB in memory. It does not load models, store credentials, or sit in the background doing hidden work. It spawns a kitchen CLI, streams output, logs the result, and exits.
 
-```
+```text
 milliways (Go binary, ~8 MB)
   ├── sommelier (3-tier routing)
   ├── pantry (SQLite + MCP clients for MemPalace/CodeGraph)
