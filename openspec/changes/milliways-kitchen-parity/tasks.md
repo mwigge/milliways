@@ -6,8 +6,8 @@
 
 - [x] KP-1.1 Fork MemPalace repo to `mempalace-milliways` (or chosen name), configure upstream tracking
 - [x] KP-1.2 Establish rebase cadence doc (target: monthly); add a `FORK.md` explaining delta scope and merge rules
-- [ ] KP-1.3 Pin minimum milliways-side version in `go.mod` or install docs
-- [ ] KP-1.4 CI on the fork: run MemPalace's own test suite unmodified to catch upstream regressions
+- [x] KP-1.3 Pin minimum milliways-side version in `go.mod` or install docs
+- [x] KP-1.4 CI on the fork: run MemPalace's own test suite unmodified to catch upstream regressions
 
 ### Course KP-2: Conversation schema & storage [2 SP]
 
@@ -172,8 +172,8 @@
 
 ### Course KP-22: Manual verification [1 SP]
 
-- [ ] KP-22.1 Manual TUI: `/switch`, `/stick`, `/back`, `/kitchens` all behave as described
-- [ ] KP-22.2 Manual TUI: auto-switch on realistic prompt like "now search the web for X"
+- [x] KP-22.1 Manual TUI: `/switch`, `/stick`, `/back`, `/kitchens` all behave as described
+- [x] KP-22.2 Manual TUI: auto-switch on realistic prompt like "now search the web for X"
 - [x] KP-22.3 Manual headless: `milliways --session foo --switch-to codex "continue"` works against a real paused session
 - [x] KP-22.4 Manual: upgrade path from legacy conversation SQLite to MemPalace substrate works on a pre-existing install
 

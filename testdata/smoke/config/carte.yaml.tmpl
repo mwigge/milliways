@@ -11,9 +11,24 @@ kitchens:
     cmd: {{SMOKE_ROOT}}/bin/fake-gpt-ok
     stations: [code]
     cost_tier: cloud
+  claude-web-search:
+    cmd: {{SMOKE_ROOT}}/bin/fake-claude-web-search
+    stations: [think, plan, review, explore]
+    cost_tier: cloud
+  claude-streaming:
+    cmd: {{SMOKE_ROOT}}/bin/fake-claude-streaming
+    stations: [think, plan, review]
+    cost_tier: cloud
+  question-kitchen:
+    cmd: {{SMOKE_ROOT}}/bin/fake-kitchen-question
+    stations: [ask]
+    cost_tier: cloud
 routing:
   keywords:
     explain: claude
+    route: claude-streaming
+    search: claude-web-search
+    ask: question-kitchen
   default: claude
   budget_fallback: codex
 ledger:

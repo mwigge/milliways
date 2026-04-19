@@ -31,3 +31,10 @@ func TestIsCmdAllowed_PathBasename(t *testing.T) {
 		t.Errorf("IsCmdAllowed(%q) = false, want true (basename fallback must allow codex)", path)
 	}
 }
+
+func TestIsCmdAllowed_KitchenNameFallback(t *testing.T) {
+	t.Parallel()
+	if !IsCmdAllowedKitchen("/tmp/mw-smoke/bin/fake-claude-streaming", "irrelevant-name") {
+		t.Fatal("expected smoke test binary basename to be allowlisted")
+	}
+}

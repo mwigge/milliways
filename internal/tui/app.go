@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -84,7 +86,7 @@ type compareResult struct {
 
 // Model is the main Bubble Tea application model for the Milliways TUI.
 type Model struct {
-	input      textinput.Model
+	input      textarea.Model
 	output     viewport.Model
 	width      int
 	height     int
@@ -171,14 +173,29 @@ type Model struct {
 
 // NewModel creates the TUI model.
 func NewModel(store *pantry.TicketStore) Model {
-	ti := textinput.New()
+	ti := textarea.New()
 	ti.Placeholder = "Type a task... (@kitchen to force, Ctrl+D to exit)"
 	ti.Focus()
 	ti.CharLimit = 500
-	ti.Width = 80
+	ti.SetWidth(80)
+	ti.SetHeight(3)
 	ti.Prompt = "▶ "
-	ti.PromptStyle = promptStyle
-	ti.TextStyle = inputStyle
+	ti.ShowLineNumbers = false
+	ti.KeyMap.InsertNewline = key.NewBinding(
+		key.WithKeys("shift+enter"),
+		key.WithHelp("shift+enter", "insert newline"),
+	)
+	focusedStyle, blurredStyle := textarea.DefaultStyles()
+	focusedStyle.Base = inputStyle
+	focusedStyle.Text = inputStyle
+	focusedStyle.Prompt = promptStyle
+	focusedStyle.Placeholder = mutedStyle
+	blurredStyle.Base = inputStyle
+	blurredStyle.Text = inputStyle
+	blurredStyle.Prompt = promptStyle
+	blurredStyle.Placeholder = mutedStyle
+	ti.FocusedStyle = focusedStyle
+	ti.BlurredStyle = blurredStyle
 
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
@@ -220,7 +237,7 @@ func NewAdapterModel(providerFactory ProviderFactory, hydrator orchestrator.Cont
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, jobsRefreshCmd(m.ticketStore), m.startSystemMonitor(), initialOpenSpecRefreshCmd(), scheduleOpenSpecRefresh())
+	return tea.Batch(jobsRefreshCmd(m.ticketStore), m.startSystemMonitor(), initialOpenSpecRefreshCmd(), scheduleOpenSpecRefresh())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -233,7 +250,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.output.Width = msg.Width - 30
 		m.output.Height = msg.Height - 6
-		m.input.Width = msg.Width - 4
+		m.input.SetWidth(msg.Width - 4)
 		m.ready = true
 
 	case tea.KeyMsg:
@@ -1123,7 +1140,7 @@ func trimLastRune(value string) string {
 }
 
 func snippetBodyForInput(body string) string {
-	return strings.ReplaceAll(body, "\n", " ")
+	return body
 }
 
 func (m *Model) openRunTargetChooser(prompt string) {

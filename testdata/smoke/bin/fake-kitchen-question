@@ -1,0 +1,6 @@
+#!/bin/sh
+
+printf '%s\n' '?MW> Which model?'
+IFS= read -r _ || true
+printf '%s\n' 'Got your answer: answered'
+exit 0

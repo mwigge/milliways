@@ -302,6 +302,47 @@ func TestHandleKeyAltEnterStartsCompareDispatch(t *testing.T) {
 	}
 }
 
+func TestNewModelConfiguresMultilineInput(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil)
+
+	if got := m.input.Height(); got != 3 {
+		t.Fatalf("input height = %d, want 3", got)
+	}
+	if m.input.ShowLineNumbers {
+		t.Fatal("expected line numbers to be disabled")
+	}
+	if got := m.input.KeyMap.InsertNewline.Keys(); len(got) != 1 || got[0] != "shift+enter" {
+		t.Fatalf("insert newline keys = %v, want [shift+enter]", got)
+	}
+	if !m.input.Focused() {
+		t.Fatal("expected input to be focused")
+	}
+}
+
+func TestUpdateEnterSubmitsMultilinePromptWithoutAppendingNewline(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil)
+	m.kitchenStates = []KitchenState{{Name: "alpha", Status: "ready", Remaining: -1, Trend: ""}}
+	m.input.SetValue("line one\nline two")
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_ = cmd
+	model := updated.(Model)
+
+	if !model.overlayActive || model.overlayMode != OverlayRunIn {
+		t.Fatalf("overlay = active:%t mode:%v", model.overlayActive, model.overlayMode)
+	}
+	if got := model.pendingPrompt; got != "line one\nline two" {
+		t.Fatalf("pendingPrompt = %q, want multiline prompt", got)
+	}
+	if got := model.input.Value(); got != "" {
+		t.Fatalf("input value = %q, want empty", got)
+	}
+}
+
 func TestBlockDoneAccumulatesCompareResult(t *testing.T) {
 	t.Parallel()
 

@@ -1,0 +1,4 @@
+#!/bin/sh
+
+printf '%s\n' 'Hello from claude'
+exit 0

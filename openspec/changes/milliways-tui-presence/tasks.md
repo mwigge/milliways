@@ -78,7 +78,7 @@
 - [x] TP-9.1 All existing unit tests pass after DispatchFunc signature change (DispatchOptions added)
 - [x] TP-9.2 `go test -race ./internal/tui/... ./internal/kitchen/...` passes — race detector validates goroutine-safe p.Send usage and AnswerCh ownership
 - [x] TP-9.3 `go vet ./...` passes — no shadow variables, no unused fields
-- [ ] TP-9.4 Manual smoke test: `milliways --tui` → type prompt → see echo line + "routing..." → see kitchen badge appear → see "streaming" → see output → see "done"
-- [ ] TP-9.5 Manual dialogue test: run a test script that writes `?MW> Which test runner?` to stdout, verify TUI shows overlay, answer flows back to stdin
+- [x] TP-9.4 Manual smoke test: `milliways --tui` → type prompt → see echo line + "routing..." → see kitchen badge appear → see "streaming" → see output → see "done"
+- [x] TP-9.5 Manual dialogue test: run a test script that writes `?MW> Which test runner?` to stdout, verify TUI shows overlay, answer flows back to stdin
 
 - [ ] 🍽️ **Service check** — Palate cleanser: TUI feels present. Prompt echoes. Kitchen named before output starts. Questions answered inline. `milliways --tui` is a conversation, not a void.
