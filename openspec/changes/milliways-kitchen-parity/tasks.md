@@ -164,18 +164,18 @@
 ### Course KP-21: End-to-end integration [1.5 SP]
 
 - [x] KP-21.1 E2E: start in claude, `/switch codex` mid-block, transcript + context preserved, codex continues
-- [ ] KP-21.2 E2E: restart milliways mid-conversation, resume from MemPalace, continue in same segment
-- [ ] KP-21.3 E2E: second milliways process reads live conversation from same MemPalace drawer (read-only co-presence)
+- [x] KP-21.2 E2E: restart milliways mid-conversation, resume from MemPalace, continue in same segment
+- [x] KP-21.3 E2E: second milliways process reads live conversation from same MemPalace drawer (read-only co-presence)
 - [x] KP-21.4 E2E: auto-switch triggered by hard signal, `/back` reverses, conversation continues
-- [ ] KP-21.5 E2E: continuous-routing respects `/stick` — no auto-switch after `/stick` enabled
+- [x] KP-21.5 E2E: continuous-routing respects `/stick` — no auto-switch after `/stick` enabled
 - [x] KP-21.6 `go test ./...` passes; `make smoke` passes
 
 ### Course KP-22: Manual verification [1 SP]
 
 - [ ] KP-22.1 Manual TUI: `/switch`, `/stick`, `/back`, `/kitchens` all behave as described
 - [ ] KP-22.2 Manual TUI: auto-switch on realistic prompt like "now search the web for X"
-- [ ] KP-22.3 Manual headless: `milliways --session foo --switch-to codex "continue"` works against a real paused session
-- [ ] KP-22.4 Manual: upgrade path from legacy conversation SQLite to MemPalace substrate works on a pre-existing install
+- [x] KP-22.3 Manual headless: `milliways --session foo --switch-to codex "continue"` works against a real paused session
+- [x] KP-22.4 Manual: upgrade path from legacy conversation SQLite to MemPalace substrate works on a pre-existing install
 
 ### Course KP-23: Documentation [0.5 SP]
 

@@ -134,6 +134,9 @@ func TestGenericAdapter_Capabilities(t *testing.T) {
 	if caps.NativeResume {
 		t.Error("Capabilities.NativeResume = true, want false")
 	}
+	if !caps.InteractiveSend {
+		t.Error("Capabilities.InteractiveSend = false, want true")
+	}
 	if caps.StructuredEvents {
 		t.Error("Capabilities.StructuredEvents = true, want false")
 	}

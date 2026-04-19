@@ -338,6 +338,11 @@ run_scenario_tam_10_2() {
 	return 0
 }
 
+run_scenario_nvim_context() {
+	printf '%s\n' '--- nvim-context'
+	bash "$repo_root/testdata/smoke/scenarios/nvim-context.sh"
+}
+
 # --- run all -----------------------------------------------------------
 
 overall=0
@@ -345,6 +350,7 @@ run_scenario_pc21_1 || overall=1
 run_scenario_user_switch || overall=1
 run_scenario_tam_10_6 || overall=1
 run_scenario_tam_10_2 || overall=1
+run_scenario_nvim_context || overall=1
 
 if [ "$overall" -eq 0 ]; then
 	printf '[smoke] all scenarios passed\n'

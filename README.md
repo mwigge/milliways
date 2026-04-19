@@ -13,7 +13,17 @@ $ milliways --kitchen aider "refactor"    → forces aider
 
 ## Install
 
-### Quick install (macOS/Linux)
+### macOS
+
+```bash
+# Homebrew
+brew install mwigge/tap/milliways
+
+# Or curl
+curl -fsSL https://raw.githubusercontent.com/mwigge/milliways/master/install.sh | sh
+```
+
+### Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mwigge/milliways/master/install.sh | sh
@@ -27,11 +37,184 @@ cd milliways
 go build -o ~/.local/bin/milliways ./cmd/milliways/
 ```
 
+Verify: `milliways --version` or `milliways status`
+
 ### Go install
 
 ```bash
 go install github.com/mwigge/milliways/cmd/milliways@latest
 ```
+
+### Neovim plugin
+
+See [nvim-plugin/README.md](nvim-plugin/README.md) for full documentation.
+
+```lua
+-- lazy.nvim
+{
+  "mwigge/milliways",
+  config = function()
+    require("milliways").setup({
+      bin = "milliways",       -- path to binary (must be on PATH)
+      keybindings = true,      -- register default keybindings
+      leader = "<leader>m",    -- keybinding prefix
+      float_width = 0.8,       -- floating window dimensions
+      float_height = 0.8,
+    })
+  end,
+}
+```
+
+Requires: Neovim 0.10+, `milliways` binary on PATH.
+
+Commands: `:Milliways`, `:MilliwaysExplain`, `:MilliwaysKitchen`, `:MilliwaysRecipe`, `:MilliwaysStatus`, `:MilliwaysSwitch`, `:MilliwaysStick`, `:MilliwaysBack`, `:MilliwaysKitchens`
+
+Keybindings: `<leader>mm` dispatch, `<leader>me` explain, `<leader>ms` status, `<leader>mk` kitchen, `<leader>mK` telescope picker, `<leader>m.` reroute
+
+Features: L2 context hydration (git branch, LSP diagnostics, cursor position, quickfix), visual selection as context, floating window output with yank support.
+
+## TUI Mode
+
+Start the TUI: `milliways --tui`
+
+Approximate layout (terminal size changes what fits):
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ Milliways                                                                   │
+│ repo • branch • palace/codegraph status • kitchen availability              │
+├───────────────────────────────────────────────┬─────────────────────────────┤
+│                                               │ Blocks                      │
+│  Focused dispatch                             │ >⠿ add rate limiting  18s  │
+│  ─────────────────────────                    │  ✓ fix tests            4s   │
+│  Prompt, kitchen, timing, sticky state        │                             │
+│  Streaming provider output                    │ Ledger                      │
+│  Runtime events and system lines              │ 15:04 [claude] 3.2s ✓       │
+│  Questions / confirms inline                  │ 14:58 [gemini] 1.1s ✗       │
+│                                               │                             │
+│                                               │ Activity                    │
+│                                               │ 15:04:05 switch: ...        │
+│                                               │                             │
+│                                               │ Jobs                        │
+│                                               │ milliways                   │
+├───────────────────────────────────────────────┴─────────────────────────────┤
+│ ▶ Type a task... (@kitchen to force, Ctrl+D to exit)                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Dispatch the current prompt |
+| `Ctrl+D` | Exit the TUI |
+| `Ctrl+C` | Cancel the focused active block, or quit if nothing is running |
+| `/` | Open the command palette |
+| `Ctrl+R` | Fuzzy search completed dispatch history |
+| `Ctrl+I` | Inject extra context into the focused streaming block |
+| `Ctrl+F` | Rate the last completed dispatch |
+| `Ctrl+S` | Show a session summary |
+| `Ctrl+G` | Toggle rendered/raw output mode |
+| `Tab` | Cycle focus across blocks |
+| `1`-`9` | Jump to a specific block |
+| `c` | Collapse or expand the focused block |
+| `PgUp` / `PgDn` | Scroll the focused block |
+| `Esc` | Close the active overlay |
+
+### TUI Panels
+
+**Focused dispatch (left)** — the main viewport shows the selected block in full:
+- Prompt, kitchen badge, elapsed time, and state
+- Streaming provider output and code blocks
+- Runtime/system events such as routing, switching, and injected context
+- Inline questions and confirmations from the active kitchen
+- Completed blocks auto-collapse when there are multiple active entries
+
+**Blocks (top-right)** — a compact list of recent blocks:
+- Focus marker (`>`) for the selected block
+- State icons for routing, streaming, success, failure, and cancellation
+- Prompt preview and elapsed time
+- Queue preview when max concurrency is exceeded
+
+**Ledger (bottom-right)** — recent completed dispatches:
+- Last 8 completed blocks, newest first
+- Timestamp, kitchen badge, duration, and status icon
+
+**Activity (inside Ledger)** — recent structured runtime activity:
+- Switch events and other non-output runtime events for the focused conversation
+- Truncated to the latest 6 events
+
+**Jobs (inside Ledger)** — background work from milliways tickets:
+- **milliways** tickets from `pantry.TicketStore` (`mw_tickets` in `~/.config/milliways/milliways.db`)
+  - Shows status icon, truncated prompt, and kitchen
+  - Polls every 5 seconds
+
+**Project header / status bar (top)** — current repo plus kitchen availability:
+- Active repo, branch, palace/codegraph state, and access rules
+- Kitchen readiness and quota warnings inline
+
+### Overlays
+
+**Run In chooser** — opens when you press `Enter` without an `@kitchen` prefix:
+- `Auto` lets Milliways route normally
+- Kitchen-specific entries allow manual override
+- Ready, warning, exhausted, needs-auth, disabled, and not-installed states are shown inline
+
+**Command palette** — opens when you type `/` in the input box:
+- `project`, `palace`, `codegraph`, `login`
+- `switch`, `back`, `stick`, `kitchens`, `repos`
+- `status`, `report`, `cancel`
+- `collapse`, `expand`, `collapse all`, `expand all`
+- `history`, `session save`, `session load`, `summary`
+
+**History search** (`Ctrl+R`) — fuzzy search over completed blocks and prompt history.
+
+**Feedback** (`Ctrl+F`) — rate the last completed dispatch as good, bad, or skipped.
+
+**Session summary** (`Ctrl+S`) — totals by kitchen, duration, success count, and cost when available.
+
+### TUI Commands
+
+```bash
+milliways --tui                    # Start the TUI
+milliways --tui --kitchen claude  # Start the TUI with a kitchen forced
+milliways --tui --resume          # Resume the last saved TUI session
+milliways --tui --session demo    # Use a named TUI session
+```
+
+### Recipes
+
+Recipes are multi-course meal plans defined in `~/.config/milliways/carte.yaml` and executed sequentially across kitchens.
+
+```yaml
+recipes:
+  review-pr:
+    - station: review
+      kitchen: claude
+      prompt: "Review {{ .Prompt }} for security issues"
+    - station: refactor
+      kitchen: aider
+      prompt: "Apply the suggested fixes"
+```
+
+Run one with `milliways --recipe review-pr "https://github.com/org/repo/pull/123"`.
+
+### Async Dispatch
+
+Dispatch without waiting for completion:
+
+```bash
+milliways --async "run the full test suite"
+```
+
+Async tickets appear in the Jobs panel in the TUI and can be inspected from the CLI:
+
+```bash
+milliways tickets
+milliways ticket <id>
+```
+
+`--detach` is reserved for detached execution, but currently returns a not-yet-implemented error.
 
 ## How It Works
 
@@ -69,34 +252,85 @@ Each kitchen is a CLI tool you've already logged into. Milliways calls the binar
 
 ## Commands
 
+### CLI mode
+
 ```bash
-# Route a task to the best kitchen
-milliways "explain the auth flow"
-
-# Force a specific kitchen
-milliways --kitchen opencode "add rate limiting"
-
-# See routing decision without executing
-milliways --explain "refactor store.py"
-
-# Verbose: show sommelier reasoning
-milliways --verbose "design JWT middleware"
-
-# JSON output for scripting
-milliways --json "explain this"
-
-# Check which kitchens are available
-milliways status
-
-# Install and set up a kitchen
-milliways setup gemini
-
-# View routing statistics
-milliways report
-
-# View tiered-CLI performance analysis
-milliways report --tiered
+milliways "explain the auth flow"            # Route a task to the best kitchen
+milliways --kitchen opencode "refactor"      # Force a specific kitchen
+milliways --explain "refactor store.py"      # See routing decision without executing
+milliways --verbose "design JWT middleware"  # Show sommelier reasoning
+milliways --json "explain this"              # JSON output for scripting
+milliways --tui                               # Start the TUI
+milliways --tui --kitchen claude              # TUI with kitchen forced
+milliways --async "long-running job"         # Async dispatch, return a ticket ID
+milliways --detach "long-running job"        # Reserved detached mode (currently not implemented)
+milliways ticket <id>                         # Show one async/detached ticket
+milliways tickets                             # List async/detached tickets
+milliways status                              # Check which kitchens are available
+milliways setup gemini                        # Install and set up a kitchen
+milliways login --list                        # Show auth status for kitchens
+milliways login claude                        # Authenticate to a kitchen
+milliways report                              # View routing statistics
+milliways report --tiered                     # View tiered-CLI performance analysis
+milliways --recipe <name> "prompt"           # Run a named recipe
 ```
+
+### TUI commands
+
+```text
+/project         Show active repo, CodeGraph, palace, and access rules
+/palace          Show palace status
+/codegraph       Show CodeGraph status
+/login           Show kitchen auth status
+/login <kitchen> Start kitchen login flow
+/switch <kitchen> Move the current conversation to a different kitchen
+/back            Return to the previous kitchen after a switch
+/stick           Toggle sticky mode for the focused conversation
+/kitchens        List kitchens and their current status
+/repos           List repos accessed in this session
+/status          Show kitchen availability
+/report          Show routing statistics placeholder output
+/cancel          Cancel the focused active block
+/collapse        Collapse the focused block
+/expand          Expand the focused block
+/collapse all    Collapse all blocks
+/expand all      Expand all blocks
+/history         Open fuzzy history search
+/session save    Save the current session
+/session load    Load the last saved session
+/summary         Show the session summary overlay
+```
+
+### Recipes
+
+Recipes are named multi-course plans configured in `~/.config/milliways/carte.yaml`.
+
+```yaml
+recipes:
+  review-pr:
+    - station: review
+      kitchen: claude
+      prompt: "Review {{ .Prompt }} for security issues"
+    - station: refactor
+      kitchen: aider
+      prompt: "Apply the suggested fixes"
+```
+
+Run them with `milliways --recipe review-pr "https://github.com/org/repo/pull/123"`.
+
+### Quotas
+
+Set daily limits per kitchen to control spend:
+
+```yaml
+quotas:
+  claude:
+    daily_limit: 50
+  gemini:
+    daily_limit: 200
+```
+
+When a quota is exhausted, Milliways falls back to the `budget_fallback` kitchen.
 
 ## Kitchen Switching
 
@@ -305,7 +539,9 @@ All state in a single SQLite file: `~/.config/milliways/milliways.db` (~2 MB).
 | mw_deps | Package versions, CVEs |
 | mw_tickets | Async/detached dispatch tracking |
 
-Plus `~/.config/milliways/ledger.ndjson` as a human-readable audit trail (for `jq`).
+Related files:
+
+- `~/.config/milliways/ledger.ndjson` — human-readable audit trail for dispatch history (`jq`-friendly)
 
 ## Architecture
 

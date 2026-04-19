@@ -23,8 +23,24 @@ M.config = {
   bin = "milliways",
 }
 
+M.kitchen_chain = {}
+M.sticky_mode = false
+
 function M.configure(opts)
   M.config = vim.tbl_deep_extend("force", M.config, opts or {})
+end
+
+---Update the float title to reflect kitchen lineage and shortcuts.
+function M.update_float_title()
+  local title = "Milliways"
+  if #M.kitchen_chain > 0 then
+    title = table.concat(M.kitchen_chain, " > ")
+    if M.sticky_mode then
+      title = title .. " | sticky"
+    end
+    title = title .. " | Tab recent | leader mK kitchens"
+  end
+  float.set_title(title)
 end
 
 -- Run a command asynchronously, streaming output line by line to the float.
@@ -34,6 +50,8 @@ function M.run_async(cmd, opts, callback)
   opts = opts or {}
   local output = {}
   local float_buf, float_win = float.open(opts.header or "Milliways...", opts.streaming)
+  float.resume_autoscroll()
+  M.update_float_title()
 
   vim.fn.jobstart(cmd, {
     stdout_buffered = false, -- stream line by line
@@ -105,6 +123,8 @@ local function run_dispatch_command(prompt, header)
   end
   table.insert(cmd, prompt)
 
+  float.add_recent(prompt, M.kitchen_chain[#M.kitchen_chain])
+
   M.run_async(cmd, { streaming = true, header = header }, function(output)
     render_output(output)
   end)
@@ -175,6 +195,7 @@ function M.pick_kitchen(prompt)
     end
     table.insert(cmd, prompt)
 
+    float.add_recent(prompt, choice)
     float.open("Milliways — " .. choice .. "...", true)
     M.run_async(cmd, { streaming = true }, function(output)
       float.set_content(vim.split(output, "\n"))
@@ -195,16 +216,26 @@ function M.switch(kitchen)
     return
   end
 
+  if M.kitchen_chain[#M.kitchen_chain] ~= kitchen then
+    table.insert(M.kitchen_chain, kitchen)
+  end
+  M.update_float_title()
   M.dispatch("switch " .. kitchen)
 end
 
 -- Toggle sticky kitchen mode.
 function M.stick()
+  M.sticky_mode = not M.sticky_mode
+  M.update_float_title()
   M.dispatch("stick")
 end
 
 -- Reverse the most recent switch.
 function M.back()
+  if #M.kitchen_chain > 1 then
+    table.remove(M.kitchen_chain)
+  end
+  M.update_float_title()
   M.dispatch("back")
 end
 

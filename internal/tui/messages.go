@@ -26,12 +26,12 @@ type blockRoutedMsg struct {
 
 // blockDoneMsg signals dispatch completion for a block.
 type blockDoneMsg struct {
-	BlockID       string
-	Result        kitchen.Result
-	Decision      sommelier.Decision
-	Conversation  *conversation.Conversation
-	Err           error
-	Duration      time.Duration
+	BlockID      string
+	Result       kitchen.Result
+	Decision     sommelier.Decision
+	Conversation *conversation.Conversation
+	Err          error
+	Duration     time.Duration
 }
 
 // tickMsg is a tick for elapsed timers on all active blocks.

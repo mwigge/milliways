@@ -32,10 +32,14 @@ func (m Model) View() string {
 
 	// Ledger panel (right bottom).
 	ledgerHeight := (m.height - 6) - blockListHeight
+	ledgerContent := m.renderLedger()
+	if jobsPanel := m.renderJobsPanel(); jobsPanel != "" {
+		ledgerContent = ledgerContent + "\n\n" + jobsPanel
+	}
 	ledgerPanel := panelBorder.
 		Width(sideWidth).
 		Height(ledgerHeight).
-		Render(m.renderLedger())
+		Render(ledgerContent)
 
 	// Combine panels.
 	mainArea := lipgloss.JoinHorizontal(lipgloss.Top,
@@ -150,6 +154,34 @@ func (m Model) renderLedger() string {
 	if len(activity) > 0 {
 		lines = append(lines, "", mutedStyle.Render("Activity"))
 		lines = append(lines, activity...)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// renderJobsPanel renders milliways async/detached tickets in the sidebar.
+// Returns "" when m.height < 20 (panel hidden on narrow terminals).
+func (m Model) renderJobsPanel() string {
+	if m.height < 20 {
+		return ""
+	}
+
+	if len(m.jobTickets) == 0 {
+		return ""
+	}
+
+	var lines []string
+	lines = append(lines, mutedStyle.Render("Jobs"))
+
+	for i, t := range m.jobTickets {
+		if i >= 6 {
+			break
+		}
+		prompt := t.Prompt
+		if len(prompt) > 20 {
+			prompt = prompt[:20] + "…"
+		}
+		lines = append(lines, fmt.Sprintf("%s %s %s", StatusIcon(t.Status), prompt, t.Kitchen))
 	}
 
 	return strings.Join(lines, "\n")

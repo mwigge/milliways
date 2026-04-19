@@ -6,7 +6,73 @@ import (
 	"time"
 
 	"github.com/mwigge/milliways/internal/observability"
+	"github.com/mwigge/milliways/internal/pantry"
 )
+
+func TestRenderJobsPanel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		model    Model
+		want     []string
+		notWant  []string
+		wantSame string
+	}{
+		{
+			name:     "hidden when terminal too short",
+			model:    Model{height: 15},
+			wantSame: "",
+		},
+		{
+			name:     "hidden when there are no tickets",
+			model:    Model{height: 30},
+			wantSame: "",
+		},
+		{
+			name: "renders milliways tickets only",
+			model: Model{
+				height:     30,
+				jobTickets: []pantry.Ticket{{Status: "complete", Prompt: "test prompt", Kitchen: "k1"}},
+			},
+			want:    []string{"Jobs", "✓", "test prompt", "k1"},
+			notWant: []string{"OpenHands", "no db", "no jobs yet"},
+		},
+		{
+			name: "truncates long prompts",
+			model: Model{
+				height:     30,
+				jobTickets: []pantry.Ticket{{Status: "pending", Prompt: "abcdefghijklmnopqrstuvwxyz", Kitchen: "k1"}},
+			},
+			want:    []string{"abcdefghijklmnopqrst…"},
+			notWant: []string{"abcdefghijklmnopqrstuvwxyz"},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := tt.model.renderJobsPanel()
+			if tt.wantSame != "" || got == "" {
+				if got != tt.wantSame {
+					t.Fatalf("renderJobsPanel() = %q, want %q", got, tt.wantSame)
+				}
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("renderJobsPanel() = %q, want contains %q", got, want)
+				}
+			}
+			for _, notWant := range tt.notWant {
+				if strings.Contains(got, notWant) {
+					t.Fatalf("renderJobsPanel() = %q, should not contain %q", got, notWant)
+				}
+			}
+		})
+	}
+}
 
 func TestRuntimeActivityLines_FocusedConversation(t *testing.T) {
 	t.Parallel()
