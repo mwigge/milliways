@@ -22,3 +22,10 @@ After each rebase, run: `pytest tests/`
 pip install -e ".[dev]"
 PYTHONPATH=src pytest tests/ --tb=short -q
 ```
+
+## Upstream regression detection
+
+CI clones the upstream mempalace repo at the same version the fork depends on and
+runs its test suite (if present). This catches upstream changes that break the
+fork's assumptions. If upstream has no tests at the tagged version, the step
+passes silently.

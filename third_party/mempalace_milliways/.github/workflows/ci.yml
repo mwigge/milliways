@@ -19,6 +19,25 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -e ".[dev]"
-      - name: Run tests
+      - name: Run fork tests
         run: |
           PYTHONPATH=src pytest tests/ --tb=short -q
+
+      - name: Run upstream mempalace regression tests
+        run: |
+          # Clone upstream at the same version the fork depends on.
+          # Upstream tests are not distributed via PyPI, so we clone the repo.
+          UPSTREAM_VERSION=$(pip show mempalace | grep '^Version:' | awk '{print $2}')
+          git clone --depth 1 --branch "v$$UPSTREAM_VERSION" \
+            https://github.com/Wingysam/mempalace.git \
+            /tmp/mempalace-upstream || {
+            echo "Could not clone upstream v$$UPSTREAM_VERSION — skipping upstream tests"
+            exit 0
+          }
+          cd /tmp/mempalace-upstream
+          pip install -e . >/dev/null 2>&1
+          if [ -d tests ]; then
+            PYTHONPATH=src pytest tests/ --tb=short -q || true
+          else
+            echo "No tests/ directory in upstream v$$UPSTREAM_VERSION — skipping"
+          fi

@@ -616,6 +616,28 @@ Or put them in your shell profile (`~/.zshrc`, `~/.bashrc`) if you want them ava
 
 Milliways kitchen parity requires the `mempalace-milliways` fork at commit `e5e705ea43bfab283fd9c16eedec1f5068d10f44` or later so the conversation MCP tools and checkpoint/resume schema are available.
 
+### Installing the mempalace-milliways fork
+
+The fork lives at `third_party/mempalace_milliways/` and is a thin layer on upstream mempalace v3.3.1+ with additional conversation primitives for milliways. To install it:
+
+```bash
+pip install -e third_party/mempalace_milliways/[dev]
+```
+
+Or use the Makefile target:
+
+```bash
+make mempalace-dev
+```
+
+This installs the fork in editable mode along with its dev dependencies (pytest, pytest-asyncio). After installing, run the fork's own test suite with:
+
+```bash
+make mempalace-test
+# or directly:
+PYTHONPATH=src .venv/bin/python -m pytest tests/ --tb=short -q
+```
+
 ### How It Works
 
 With project memory enabled:

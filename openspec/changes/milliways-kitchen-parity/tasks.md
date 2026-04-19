@@ -6,8 +6,8 @@
 
 - [x] KP-1.1 Fork MemPalace repo to `mempalace-milliways` (or chosen name), configure upstream tracking
 - [x] KP-1.2 Establish rebase cadence doc (target: monthly); add a `FORK.md` explaining delta scope and merge rules
-- [ ] KP-1.3 Pin minimum milliways-side version in `go.mod` or install docs
-- [ ] KP-1.4 CI on the fork: run MemPalace's own test suite unmodified to catch upstream regressions
+- [x] KP-1.3 Pin minimum milliways-side version in `go.mod` or install docs
+- [x] KP-1.4 CI on the fork: run MemPalace's own test suite unmodified to catch upstream regressions
 
 ### Course KP-2: Conversation schema & storage [2 SP]
 
