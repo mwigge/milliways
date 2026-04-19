@@ -49,11 +49,12 @@ const (
 
 // Turn is one canonical transcript entry owned by Milliways.
 type Turn struct {
-	Role        TurnRole     `json:"role"`
-	Provider    string       `json:"provider"`
-	Text        string       `json:"text"`
-	ProjectRefs []ProjectRef `json:"project_refs,omitempty"`
-	At          time.Time    `json:"at"`
+	Role          TurnRole     `json:"role"`
+	Provider      string       `json:"provider"`
+	ReposAccessed []string     `json:"repos_accessed,omitempty"`
+	Text          string       `json:"text"`
+	ProjectRefs   []ProjectRef `json:"project_refs,omitempty"`
+	At            time.Time    `json:"at"`
 }
 
 // MemoryState is a compact working-memory representation for continuation.
@@ -159,11 +160,12 @@ func (c *Conversation) AppendTurnWithContext(role TurnRole, provider, text strin
 	}
 	now := time.Now()
 	c.Transcript = append(c.Transcript, Turn{
-		Role:        role,
-		Provider:    provider,
-		Text:        text,
-		ProjectRefs: projectRefs,
-		At:          now,
+		Role:          role,
+		Provider:      provider,
+		ReposAccessed: reposAccessed,
+		Text:          text,
+		ProjectRefs:   projectRefs,
+		At:            now,
 	})
 	c.UpdatedAt = now
 }

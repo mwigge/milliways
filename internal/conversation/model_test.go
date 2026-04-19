@@ -1,6 +1,9 @@
 package conversation
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestConversationSegmentLifecycle(t *testing.T) {
 	t.Parallel()
@@ -78,5 +81,22 @@ func TestConversationSnapshot(t *testing.T) {
 	}
 	if ckpt.WorkingMemory.NextAction != "continue in codex" {
 		t.Fatalf("WorkingMemory = %#v", ckpt.WorkingMemory)
+	}
+}
+
+func TestAppendTurnWithContext_StoresReposAccessed(t *testing.T) {
+	t.Parallel()
+
+	c := New("conv-1", "b1", "hello")
+	c.Transcript = nil
+	repos := []string{"/Users/dev/src/myrepo", "/Users/dev/src/other"}
+
+	c.AppendTurnWithContext(RoleUser, "claude", "hello", repos, nil)
+
+	if len(c.Transcript) != 1 {
+		t.Fatalf("len = %d, want 1", len(c.Transcript))
+	}
+	if !slices.Equal(c.Transcript[0].ReposAccessed, repos) {
+		t.Fatalf("ReposAccessed = %v, want %v", c.Transcript[0].ReposAccessed, repos)
 	}
 }
