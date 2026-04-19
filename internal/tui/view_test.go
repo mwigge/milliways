@@ -307,8 +307,8 @@ func TestNewModelConfiguresMultilineInput(t *testing.T) {
 
 	m := NewModel(nil)
 
-	if got := m.input.Height(); got != 3 {
-		t.Fatalf("input height = %d, want 3", got)
+	if got := m.input.Height(); got != 8 {
+		t.Fatalf("input height = %d, want 8", got)
 	}
 	if m.input.ShowLineNumbers {
 		t.Fatal("expected line numbers to be disabled")

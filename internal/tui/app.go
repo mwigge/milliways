@@ -181,7 +181,7 @@ func NewModel(store *pantry.TicketStore) Model {
 	ti.Focus()
 	ti.CharLimit = 500
 	ti.SetWidth(80)
-	ti.SetHeight(3)
+	ti.SetHeight(8)
 	ti.Prompt = "▶ "
 	ti.ShowLineNumbers = false
 	ti.KeyMap.InsertNewline = key.NewBinding(
@@ -1162,8 +1162,8 @@ func (m *Model) setInsertMode() {
 
 func (m *Model) setNormalMode() {
 	m.vimMode = VimNormal
-	m.overlayActive = true
-	m.overlayMode = OverlayPanel
+	m.overlayActive = false
+	m.overlayMode = OverlayNone
 	m.input.Blur()
 }
 
