@@ -46,6 +46,7 @@ type Block struct {
 	ConversationID     string
 	Prompt             string
 	Kitchen            string
+	PID                int
 	ContinuationPrompt string
 	ProviderChain      []string
 	Decision           sommelier.Decision

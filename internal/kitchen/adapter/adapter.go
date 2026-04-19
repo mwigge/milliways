@@ -38,6 +38,9 @@ type Adapter interface {
 	// SessionID returns the current session ID for resume, or "" if none.
 	SessionID() string
 
+	// ProcessID returns the underlying subprocess pid when available, or 0.
+	ProcessID() int
+
 	// Capabilities returns continuity-relevant adapter capabilities.
 	Capabilities() Capabilities
 }

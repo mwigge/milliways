@@ -373,6 +373,7 @@ func (s *stubAdapter) Exec(_ context.Context, _ kitchen.Task) (<-chan adapter.Ev
 func (s *stubAdapter) Send(context.Context, string) error { return nil }
 func (s *stubAdapter) SupportsResume() bool               { return false }
 func (s *stubAdapter) SessionID() string                  { return "" }
+func (s *stubAdapter) ProcessID() int                     { return 0 }
 func (s *stubAdapter) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
 		StructuredEvents:    true,

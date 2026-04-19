@@ -19,6 +19,7 @@ type CodexAdapter struct {
 	opts      AdapterOpts
 	mu        sync.Mutex
 	stdinPipe io.WriteCloser
+	processID int
 }
 
 // NewCodexAdapter creates an adapter for the codex kitchen.
@@ -67,6 +68,10 @@ func (a *CodexAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Even
 
 	a.mu.Lock()
 	a.stdinPipe = stdinPipe
+	a.processID = 0
+	if cmd.Process != nil {
+		a.processID = cmd.Process.Pid
+	}
 	a.mu.Unlock()
 
 	ch := make(chan Event, 64)
@@ -80,6 +85,7 @@ func (a *CodexAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Even
 				a.stdinPipe.Close()
 				a.stdinPipe = nil
 			}
+			a.processID = 0
 			a.mu.Unlock()
 		}()
 
@@ -182,6 +188,13 @@ func (a *CodexAdapter) SupportsResume() bool { return false }
 
 // SessionID returns "" for codex.
 func (a *CodexAdapter) SessionID() string { return "" }
+
+// ProcessID returns the running subprocess pid when available.
+func (a *CodexAdapter) ProcessID() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.processID
+}
 
 // Capabilities returns Codex continuity features.
 func (a *CodexAdapter) Capabilities() Capabilities {

@@ -25,6 +25,7 @@ type ClaudeAdapter struct {
 	stdinPipe io.WriteCloser
 	sessionID string
 	model     string
+	processID int
 }
 
 // NewClaudeAdapter creates an adapter for the claude kitchen.
@@ -139,6 +140,10 @@ func (a *ClaudeAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Eve
 
 	a.mu.Lock()
 	a.stdinPipe = stdinPipe
+	a.processID = 0
+	if cmd.Process != nil {
+		a.processID = cmd.Process.Pid
+	}
 	a.mu.Unlock()
 
 	ch := make(chan Event, 64)
@@ -224,6 +229,7 @@ func (a *ClaudeAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Eve
 					a.stdinPipe.Close()
 					a.stdinPipe = nil
 				}
+				a.processID = 0
 				a.mu.Unlock()
 				break
 			}
@@ -423,6 +429,13 @@ func (a *ClaudeAdapter) SessionID() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.sessionID
+}
+
+// ProcessID returns the underlying subprocess pid when available.
+func (a *ClaudeAdapter) ProcessID() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.processID
 }
 
 // Capabilities returns Claude continuity features.

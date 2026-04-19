@@ -46,6 +46,7 @@ func (m *mockAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan adapt
 func (m *mockAdapter) Send(_ context.Context, _ string) error { return adapter.ErrNotInteractive }
 func (m *mockAdapter) SupportsResume() bool                   { return false }
 func (m *mockAdapter) SessionID() string                      { return "" }
+func (m *mockAdapter) ProcessID() int                         { return 0 }
 func (m *mockAdapter) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{}
 }

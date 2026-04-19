@@ -24,6 +24,12 @@ type blockRoutedMsg struct {
 	Adapt    adapter.Adapter
 }
 
+// blockPIDMsg records the OS process id for a started kitchen block.
+type blockPIDMsg struct {
+	BlockID string
+	PID     int
+}
+
 // blockDoneMsg signals dispatch completion for a block.
 type blockDoneMsg struct {
 	BlockID      string
@@ -36,6 +42,9 @@ type blockDoneMsg struct {
 
 // tickMsg is a tick for elapsed timers on all active blocks.
 type tickMsg time.Time
+
+// systemMonitorTickMsg triggers a process stats refresh.
+type systemMonitorTickMsg time.Time
 
 // jobsRefreshMsg carries a fresh slice of recent tickets.
 type jobsRefreshMsg []pantry.Ticket

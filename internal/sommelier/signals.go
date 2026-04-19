@@ -250,3 +250,70 @@ func isTestAwareLanguage(language string) bool {
 		return false
 	}
 }
+
+func signalScores(signals *Signals) map[string]float64 {
+	if signals == nil {
+		return nil
+	}
+
+	scores := map[string]float64{
+		"risk_score":       riskScore(*signals),
+		"complexity":       float64(signals.Complexity),
+		"file_authors":     float64(signals.FileAuthors),
+		"file_churn_30d":   float64(signals.FileChurn30d),
+		"file_churn_90d":   float64(signals.FileChurn90d),
+		"files_changed":    float64(signals.FilesChanged),
+		"lsp_errors":       float64(signals.LSPErrors),
+		"lsp_warnings":     float64(signals.LSPWarnings),
+		"smells":           float64(signals.Smells),
+		"learned_rate":     signals.LearnedRate,
+		"editor_ctx_boost": editorContextScore(signals),
+	}
+	if signals.Coverage >= 0 {
+		scores["coverage"] = signals.Coverage
+	}
+	if signals.InTestFile {
+		scores["in_test_file"] = 1
+	}
+	if signals.Dirty {
+		scores["dirty"] = 1
+	}
+
+	return scores
+}
+
+func riskScore(s Signals) float64 {
+	score := 0.0
+
+	switch s.FileStability {
+	case "volatile":
+		score += 3
+	case "active":
+		score += 1
+	}
+
+	if s.Complexity > complexityHigh {
+		score += 3
+	} else if s.Complexity > complexityMedium {
+		score += 1
+	}
+
+	if s.Coverage >= 0 {
+		if s.Coverage < coverageLow {
+			score += 3
+		} else if s.Coverage < coverageMedium {
+			score += 1
+		}
+	}
+
+	if s.FileAuthors > authorRiskThreshold {
+		score += 1
+	}
+
+	return score
+}
+
+func editorContextScore(signals *Signals) float64 {
+	_, score := editorContextBoostWithWeights(signals, nil)
+	return score
+}

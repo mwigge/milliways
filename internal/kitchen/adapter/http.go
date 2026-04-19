@@ -409,6 +409,9 @@ func (a *httpKitchenAdapter) SupportsResume() bool { return false }
 
 func (a *httpKitchenAdapter) SessionID() string { return "" }
 
+// ProcessID returns 0 — HTTP adapters have no local subprocess.
+func (a *httpKitchenAdapter) ProcessID() int { return 0 }
+
 func (a *httpKitchenAdapter) Capabilities() Capabilities {
 	return Capabilities{
 		NativeResume:        false,
