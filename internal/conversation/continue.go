@@ -2,19 +2,93 @@ package conversation
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+
+	"github.com/mwigge/milliways/internal/editorcontext"
 )
 
 const (
 	maxContinuationTranscriptTurns = 40
 	maxContinuationTranscriptChars = 12000
+	maxRenderedEditorContextChars  = 2000
 )
 
 // ContinueInput describes the state used to hand a conversation to another provider.
 type ContinueInput struct {
-	Conversation *Conversation
-	NextProvider string
-	Reason       string
+	Conversation  *Conversation
+	NextProvider  string
+	Reason        string
+	EditorContext *editorcontext.Bundle
+}
+
+// RenderEditorContext returns a condensed text representation of an editor Bundle,
+// capped at approximately 500 tokens with the highest-signal entries first.
+func RenderEditorContext(b *editorcontext.Bundle) string {
+	if b == nil {
+		return ""
+	}
+
+	lines := []string{"Editor Context:"}
+	signals := b.Signals()
+	if signals.LSPErrors > 0 || signals.LSPWarnings > 0 {
+		lines = append(lines, fmt.Sprintf("  LSP: %d error(s), %d warning(s)", signals.LSPErrors, signals.LSPWarnings))
+	}
+
+	for _, name := range orderedCollectorNames(b.Collectors) {
+		collector := b.Collectors[name]
+		if collector == nil {
+			continue
+		}
+
+		if collector.Buffer != nil {
+			modified := ""
+			if collector.Buffer.Modified {
+				modified = " modified=true"
+			}
+			lines = append(lines, fmt.Sprintf("  %s: %s [%s]%s", name, collector.Buffer.Path, collector.Buffer.Filetype, modified))
+		}
+
+		if collector.Git != nil {
+			dirty := ""
+			if collector.Git.Dirty {
+				dirty = " (dirty)"
+			}
+			filesChanged := ""
+			if collector.Git.FilesChanged > 0 {
+				filesChanged = fmt.Sprintf(" %d files changed", collector.Git.FilesChanged)
+			}
+			lines = append(lines, fmt.Sprintf("  Git: %s%s%s", collector.Git.Branch, dirty, filesChanged))
+		}
+
+		if collector.Cursor != nil {
+			scope := ""
+			if collector.Cursor.Scope != "" {
+				scope = " in " + collector.Cursor.Scope
+			}
+			lines = append(lines, fmt.Sprintf("  Cursor: line %d, col %d%s", collector.Cursor.Line, collector.Cursor.Column, scope))
+		}
+
+		if collector.Selection != nil {
+			selectionLines := collector.Selection.EndLine - collector.Selection.StartLine + 1
+			if selectionLines < 1 {
+				selectionLines = 1
+			}
+			lines = append(lines, fmt.Sprintf("  Selection: %d lines", selectionLines))
+		}
+	}
+
+	result := strings.Join(lines, "\n")
+	if len(result) <= maxRenderedEditorContextChars {
+		return result
+	}
+
+	suffix := "\n  [...truncated...]"
+	if maxRenderedEditorContextChars <= len(suffix) {
+		return suffix[:maxRenderedEditorContextChars]
+	}
+
+	return result[:maxRenderedEditorContextChars-len(suffix)] + suffix
 }
 
 // BuildContinuationPrompt reconstructs provider-visible context from canonical state.
@@ -79,6 +153,15 @@ func BuildContinuationPrompt(in ContinueInput) string {
 		b.WriteString("\n\n")
 	}
 
+	if in.EditorContext != nil {
+		editorText := RenderEditorContext(in.EditorContext)
+		if editorText != "" {
+			b.WriteString("Editor context:\n")
+			b.WriteString(editorText)
+			b.WriteString("\n\n")
+		}
+	}
+
 	transcript := boundedTranscript(in.Conversation.Transcript, maxContinuationTranscriptTurns, maxContinuationTranscriptChars)
 	if transcript != "" {
 		b.WriteString("Transcript so far:\n")
@@ -88,6 +171,15 @@ func BuildContinuationPrompt(in ContinueInput) string {
 
 	b.WriteString(fmt.Sprintf("Continue from the current state in %s. Do not restart the task from scratch.", in.NextProvider))
 	return b.String()
+}
+
+func orderedCollectorNames(collectors map[string]*editorcontext.Collector) []string {
+	keys := make([]string, 0, len(collectors))
+	for key := range collectors {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func boundedTranscript(turns []Turn, maxTurns, maxChars int) string {
