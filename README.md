@@ -2,18 +2,9 @@
 
 > The Restaurant at the End of the Universe — one CLI to route them all.
 
-Milliways is a command-line router for coding, research, and review workflows. You give it a prompt, it picks the best installed kitchen (that is, the backend CLI that will do the work), streams the result back, and keeps a record of what happened.
+Milliways is a terminal-first AI routing layer for coding, research, and review workflows. Start the TUI with `milliways --tui`, type prompts, and let milliways route each request to the right installed kitchen while keeping a full ledger of what ran.
 
-It does not run models itself. It does not manage credentials. It just sits in front of the tools you already use and sends each request to the right place.
-
-```bash
-$ milliways "explain the auth flow"        → routes to claude
-$ milliways "code a rate limiter"          → routes to opencode (local, $0)
-$ milliways "search for DORA regulations"  → routes to gemini (free)
-$ milliways --kitchen aider "refactor"     → forces aider
-```
-
-If you want one way to talk to several different coding and research tools without remembering a pile of flags, this is that layer.
+It does not run models itself or manage credentials. It sits in front of the tools you already use and orchestrates them through one interface.
 
 ## Install
 
@@ -35,39 +26,13 @@ go install github.com/mwigge/milliways/cmd/milliways@latest
 
 Requires: Go 1.21+
 
-### Neovim plugin
-
-The Neovim plugin lives in [nvim-plugin/README.md](nvim-plugin/README.md).
-
-```lua
--- lazy.nvim
-{
-  "mwigge/milliways",
-  config = function()
-    require("milliways").setup({
-      bin = "milliways",       -- path to binary (must be on PATH)
-      keybindings = true,      -- register default keybindings
-      leader = "<leader>m",    -- keybinding prefix
-      float_width = 0.8,       -- floating window dimensions
-      float_height = 0.8,
-    })
-  end,
-}
-```
-
-Requires: Neovim 0.10+, plus the `milliways` binary on your `PATH`.
-
-Commands: `:Milliways`, `:MilliwaysExplain`, `:MilliwaysKitchen`, `:MilliwaysRecipe`, `:MilliwaysStatus`, `:MilliwaysSwitch`, `:MilliwaysStick`, `:MilliwaysBack`, `:MilliwaysKitchens`
-
-Keybindings: `<leader>mm` dispatch, `<leader>me` explain, `<leader>ms` status, `<leader>mk` kitchen, `<leader>mK` telescope picker, `<leader>m.` reroute
-
-Features: L2 context hydration (git branch, LSP diagnostics, cursor position, quickfix), visual selection as context, floating window output with yank support.
-
 ## TUI Mode
 
 Start the terminal UI with `milliways --tui`.
 
-The TUI is for when you want a live view of active work instead of one-shot CLI output. The left side shows the currently focused dispatch in full. The right side shows recent blocks and a lower panel that can swap between different views.
+The TUI is the primary milliways experience: a live workspace for routing prompts, watching streamed output, switching kitchens, and inspecting the ledger without leaving the terminal. Use it when you want an ongoing session instead of isolated one-off commands.
+
+The left side shows the currently focused dispatch in full. The right side shows recent blocks and a lower panel that can swap between different views.
 
 ### How the TUI works
 
@@ -267,6 +232,45 @@ milliways ticket <id>
 ```
 
 `--detach` is reserved for detached execution, but right now it returns a not-yet-implemented error.
+
+## Neovim Plugin
+
+The Neovim plugin lives in [nvim-plugin/README.md](nvim-plugin/README.md).
+
+```lua
+-- lazy.nvim
+{
+  "mwigge/milliways",
+  config = function()
+    require("milliways").setup({
+      bin = "milliways",       -- path to binary (must be on PATH)
+      keybindings = true,      -- register default keybindings
+      leader = "<leader>m",    -- keybinding prefix
+      float_width = 0.8,       -- floating window dimensions
+      float_height = 0.8,
+    })
+  end,
+}
+```
+
+Requires: Neovim 0.10+, plus the `milliways` binary on your `PATH`.
+
+Commands: `:Milliways`, `:MilliwaysExplain`, `:MilliwaysKitchen`, `:MilliwaysRecipe`, `:MilliwaysStatus`, `:MilliwaysSwitch`, `:MilliwaysStick`, `:MilliwaysBack`, `:MilliwaysKitchens`
+
+Keybindings: `<leader>mm` dispatch, `<leader>me` explain, `<leader>ms` status, `<leader>mk` kitchen, `<leader>mK` telescope picker, `<leader>m.` reroute
+
+Features: L2 context hydration (git branch, LSP diagnostics, cursor position, quickfix), visual selection as context, floating window output with yank support.
+
+## CLI Mode
+
+For quick one-off requests without the TUI, use CLI mode:
+
+```bash
+$ milliways "explain the auth flow"        → routes to claude
+$ milliways "code a rate limiter"          → routes to opencode (local, $0)
+$ milliways "search for DORA regulations"  → routes to gemini (free)
+$ milliways --kitchen aider "refactor"     → forces aider
+```
 
 ## How the Neovim plugin works
 
