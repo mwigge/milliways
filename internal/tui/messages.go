@@ -45,9 +45,6 @@ type runtimeEventMsg struct {
 	Event observability.Event
 }
 
-// openhandsJobsTickMsg carries the current time from the OpenHands polling tick.
-type openhandsJobsTickMsg time.Time
-
 // pipelineStepMsg signals a pipeline step lifecycle change.
 type pipelineStepMsg struct {
 	blockID    string

@@ -14,7 +14,6 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mwigge/milliways/internal/conversation"
-	"github.com/mwigge/milliways/internal/jobs"
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/maitre"
@@ -60,10 +59,8 @@ type Model struct {
 	ready      bool
 
 	// Jobs panel (async tickets from pantry).
-	jobTickets          []pantry.Ticket
-	ticketStore         *pantry.TicketStore
-	openhandsJobsReader *jobs.Reader
-	openhandsJobs       []jobs.Job
+	jobTickets  []pantry.Ticket
+	ticketStore *pantry.TicketStore
 
 	// DB access for ledger sink.
 	pdb *pantry.DB
@@ -115,16 +112,13 @@ func NewModel(store *pantry.TicketStore) Model {
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
 
-	openhandsJobsReader, _ := jobs.NewReader()
-
 	return Model{
-		input:               ti,
-		output:              vp,
-		historyIdx:          -1,
-		ticketStore:         store,
-		openhandsJobsReader: openhandsJobsReader,
-		prog:                new(*tea.Program),
-		maxConcurrent:       defaultMaxConcurrent,
+		input:         ti,
+		output:        vp,
+		historyIdx:    -1,
+		ticketStore:   store,
+		prog:          new(*tea.Program),
+		maxConcurrent: defaultMaxConcurrent,
 	}
 }
 
@@ -137,12 +131,11 @@ func NewAdapterModel(providerFactory ProviderFactory, hydrator orchestrator.Cont
 	m.recorder = recorder
 	m.replayer = replayer
 	m.pdb = pdb
-	m.openhandsJobsReader, _ = jobs.NewReader()
 	return m
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, jobsRefreshCmd(m.ticketStore), openhandsJobsTickCmd(m.openhandsJobsReader))
+	return tea.Batch(textinput.Blink, jobsRefreshCmd(m.ticketStore))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -266,15 +259,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case jobsRefreshMsg:
 		m.jobTickets = []pantry.Ticket(msg)
 		return m, tea.Batch(scheduleJobsRefresh(m.ticketStore))
-
-	case openhandsJobsTickMsg:
-		if m.openhandsJobsReader != nil {
-			list, err := m.openhandsJobsReader.List(6)
-			if err == nil {
-				m.openhandsJobs = list
-			}
-		}
-		return m, tea.Batch(scheduleJobsRefresh(m.ticketStore), openhandsJobsTickCmd(m.openhandsJobsReader))
 
 	case runtimeEventMsg:
 		m.runtimeEvents = append(m.runtimeEvents, msg.Event)

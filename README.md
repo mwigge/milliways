@@ -96,7 +96,7 @@ Approximate layout (terminal size changes what fits):
 │                                               │ 15:04:05 switch: ...        │
 │                                               │                             │
 │                                               │ Jobs                        │
-│                                               │ milliways / OpenHands       │
+│                                               │ milliways                   │
 ├───────────────────────────────────────────────┴─────────────────────────────┤
 │ ▶ Type a task... (@kitchen to force, Ctrl+D to exit)                        │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -144,15 +144,10 @@ Approximate layout (terminal size changes what fits):
 - Switch events and other non-output runtime events for the focused conversation
 - Truncated to the latest 6 events
 
-**Jobs (inside Ledger)** — background work from two sources:
+**Jobs (inside Ledger)** — background work from milliways tickets:
 - **milliways** tickets from `pantry.TicketStore` (`mw_tickets` in `~/.config/milliways/milliways.db`)
   - Shows status icon, truncated prompt, and kitchen
   - Polls every 5 seconds
-  - Displays `milliways (no jobs yet)` or `milliways (no db)` when appropriate
-- **OpenHands** jobs from `~/.agent_task_queue.db`
-  - Shows status icon, job title, and wing
-  - Polls every 2 seconds
-  - Displays `OpenHands (no jobs yet)` or `OpenHands (no db)` when appropriate
 
 **Project header / status bar (top)** — current repo plus kitchen availability:
 - Active repo, branch, palace/codegraph state, and access rules
@@ -547,7 +542,6 @@ All state in a single SQLite file: `~/.config/milliways/milliways.db` (~2 MB).
 Related files:
 
 - `~/.config/milliways/ledger.ndjson` — human-readable audit trail for dispatch history (`jq`-friendly)
-- `~/.agent_task_queue.db` — OpenHands task-queue database surfaced in the TUI Jobs panel
 
 ## Architecture
 
