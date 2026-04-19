@@ -1,6 +1,7 @@
 package maitre
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -51,6 +52,10 @@ func PathAllowed(path string, mode Mode) error {
 
 	// Normalize for prefix matching
 	abs = filepath.Clean(abs)
+	real, err := filepath.EvalSymlinks(abs)
+	if err == nil {
+		abs = filepath.Clean(real)
+	}
 
 	// Neutral paths (always allowed)
 	neutral := []string{
@@ -85,7 +90,7 @@ func PathAllowed(path string, mode Mode) error {
 		}
 		for _, p := range privatePaths {
 			if strings.HasPrefix(abs, p) {
-				return fmt.Errorf("path %s blocked in company mode — switch: mode private", abs)
+				return errors.New("path blocked in company mode — switch: mode private")
 			}
 		}
 	case ModePrivate:
@@ -96,7 +101,7 @@ func PathAllowed(path string, mode Mode) error {
 		}
 		for _, p := range companyPaths {
 			if strings.HasPrefix(abs, p) {
-				return fmt.Errorf("path %s blocked in private mode — switch: mode company", abs)
+				return errors.New("path blocked in private mode — switch: mode company")
 			}
 		}
 	}
