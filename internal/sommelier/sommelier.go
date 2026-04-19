@@ -52,6 +52,7 @@ type Sommelier struct {
 	rules          []keywordRule
 	defaultKitchen string
 	fallback       string
+	weightOn       map[string]map[string]float64
 	registry       *kitchen.Registry
 	quotaChecker   QuotaChecker
 	quotaLimits    map[string]int // kitchen name → daily limit
@@ -68,7 +69,7 @@ type fallbackRouter struct{ sommelier *Sommelier }
 
 // New creates a sommelier with keyword routing rules.
 // Keywords are sorted by length descending for longest-match-first behavior.
-func New(keywords map[string]string, defaultKitchen, fallback string, reg *kitchen.Registry) *Sommelier {
+func New(keywords map[string]string, defaultKitchen, fallback string, weightOn map[string]map[string]float64, reg *kitchen.Registry) *Sommelier {
 	rules := make([]keywordRule, 0, len(keywords))
 	for k, v := range keywords {
 		rules = append(rules, keywordRule{keyword: k, kitchen: v})
@@ -84,6 +85,7 @@ func New(keywords map[string]string, defaultKitchen, fallback string, reg *kitch
 		rules:          rules,
 		defaultKitchen: defaultKitchen,
 		fallback:       fallback,
+		weightOn:       weightOn,
 		registry:       reg,
 	}
 }
@@ -232,7 +234,17 @@ func (r pantryRouter) Decide(_ context.Context, req RouteRequest) (Decision, boo
 		}, true
 	}
 	if signals == nil || signals.RiskLevel() != "high" || !r.sommelier.isAvailable("claude") {
-		return Decision{}, false
+		boosted, score := editorContextBoostWithWeights(signals, r.sommelier.weightOn)
+		if boosted == "" || !r.sommelier.isAvailable(boosted) {
+			return Decision{}, false
+		}
+		return Decision{
+			Kitchen: boosted,
+			Reason:  fmt.Sprintf("editor-context boost %.1f → %s (%s)", score, boosted, signals.Summary()),
+			Tier:    "enriched",
+			Risk:    signals.RiskLevel(),
+			Signals: signals,
+		}, true
 	}
 	keywordMatch := r.sommelier.keywordMatch(strings.ToLower(req.Prompt))
 	if keywordMatch == "claude" {

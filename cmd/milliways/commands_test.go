@@ -93,7 +93,7 @@ func TestSelectDecision_ContinuationOverridesWeakerRoute(t *testing.T) {
 		Tier:     kitchen.Cloud,
 		Enabled:  true,
 	}))
-	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, reg)
+	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, cfg.Routing.WeightOn, reg)
 
 	decision := selectDecision(cfg, reg, som, nil, "fix continuity", "", map[string]bool{"claude": true})
 	if decision.Kitchen != "codex" {

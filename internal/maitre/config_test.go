@@ -31,6 +31,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Routing.BudgetFallback != "opencode" {
 		t.Errorf("expected budget fallback to opencode, got %q", cfg.Routing.BudgetFallback)
 	}
+	if cfg.Routing.WeightOn["claude"]["lsp_errors"] != 0.5 {
+		t.Errorf("expected default claude lsp_errors weight 0.5, got %v", cfg.Routing.WeightOn["claude"]["lsp_errors"])
+	}
 	if cfg.ProjectContextLimit != 3 {
 		t.Errorf("expected project context limit 3, got %d", cfg.ProjectContextLimit)
 	}
@@ -70,6 +73,11 @@ routing:
     think: claude
     code: opencode
   default: claude
+  weight_on:
+    claude:
+      lsp_errors: 0.5
+    opencode:
+      in_test_file: 0.4
 project_context_limit: 5
 `
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
@@ -92,6 +100,9 @@ project_context_limit: 5
 
 	if cfg.Routing.Keywords["think"] != "claude" {
 		t.Errorf("expected think→claude routing, got %q", cfg.Routing.Keywords["think"])
+	}
+	if cfg.Routing.WeightOn["opencode"]["in_test_file"] != 0.4 {
+		t.Errorf("expected opencode in_test_file weight 0.4, got %v", cfg.Routing.WeightOn["opencode"]["in_test_file"])
 	}
 	if cfg.ProjectContextLimit != 5 {
 		t.Errorf("expected project context limit 5, got %d", cfg.ProjectContextLimit)

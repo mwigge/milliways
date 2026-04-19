@@ -404,7 +404,7 @@ func dispatch(opts dispatchOpts) error {
 		substrateReader = substrate.NewCachedReader(substrateClient)
 	}
 
-	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, reg)
+	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, cfg.Routing.WeightOn, reg)
 
 	// Circuit breaker check
 	mode := maitre.ReadMode()

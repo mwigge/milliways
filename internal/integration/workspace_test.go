@@ -136,7 +136,7 @@ func TestIntegration_QuotaExhaustion_Failover(t *testing.T) {
 
 	som := sommelier.New(
 		map[string]string{"explain": "claude"},
-		"claude", "opencode", reg,
+		"claude", "opencode", nil, reg,
 	)
 
 	checker := &mockQuotaChecker{exhausted: map[string]bool{"claude": true}}

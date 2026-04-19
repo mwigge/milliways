@@ -30,7 +30,7 @@ func runTUI(configPath string, tuiOpts tui.RunOpts) error {
 	}
 
 	reg := buildRegistry(cfg)
-	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, reg)
+	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, cfg.Routing.WeightOn, reg)
 
 	// Wire quota checking if pantry is available
 	pdb, pdbErr := openPantryDB()
@@ -385,7 +385,7 @@ func dispatchAsync(prompt, kitchenForce string, verbose bool, configPath string)
 	}
 
 	reg := buildRegistry(cfg)
-	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, reg)
+	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, cfg.Routing.WeightOn, reg)
 
 	var decision sommelier.Decision
 	if kitchenForce != "" {

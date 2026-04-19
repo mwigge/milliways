@@ -62,9 +62,10 @@ func (kc KitchenConfig) IsEnabled() bool {
 
 // RoutingConfig defines keyword-to-kitchen routing rules.
 type RoutingConfig struct {
-	Keywords       map[string]string `yaml:"keywords"`
-	Default        string            `yaml:"default"`
-	BudgetFallback string            `yaml:"budget_fallback"`
+	Keywords       map[string]string             `yaml:"keywords"`
+	Default        string                        `yaml:"default"`
+	BudgetFallback string                        `yaml:"budget_fallback"`
+	WeightOn       map[string]map[string]float64 `yaml:"weight_on"`
 }
 
 // LedgerConfig defines ledger file paths.
@@ -124,6 +125,9 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if fileCfg.Routing.BudgetFallback != "" {
 		defaults.Routing.BudgetFallback = fileCfg.Routing.BudgetFallback
+	}
+	if len(fileCfg.Routing.WeightOn) > 0 {
+		defaults.Routing.WeightOn = fileCfg.Routing.WeightOn
 	}
 
 	// Ledger: file overrides paths
@@ -235,6 +239,19 @@ func defaultConfig() *Config {
 			},
 			Default:        "claude",
 			BudgetFallback: "opencode",
+			WeightOn: map[string]map[string]float64{
+				"claude": {
+					"lsp_errors": 0.5,
+					"dirty":      0.3,
+				},
+				"opencode": {
+					"in_test_file": 0.4,
+					"lsp_warnings": 0.2,
+				},
+				"goose": {
+					"language_sql": 0.5,
+				},
+			},
 		},
 		Ledger: LedgerConfig{
 			NDJSON: filepath.Join(DefaultConfigDir(), "ledger.ndjson"),

@@ -570,7 +570,7 @@ func TestSommelierComposesLearnedPantryLocalModelAndKeywordRouters(t *testing.T)
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "opencode", Cmd: "echo", Enabled: true}))
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "gemini", Cmd: "echo", Enabled: true}))
 
-	router := sommelier.New(map[string]string{"code": "opencode"}, "claude", "opencode", reg)
+	router := sommelier.New(map[string]string{"code": "opencode"}, "claude", "opencode", nil, reg)
 	local := &stubLocalModelRouter{
 		decision: sommelier.Decision{Kitchen: "gemini", Tier: "local-model", Reason: "future local model"},
 		ok:       true,

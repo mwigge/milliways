@@ -2,18 +2,20 @@ package sommelier
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
 // Risk and quality thresholds for signal scoring.
 const (
-	riskThresholdHigh   = 5
-	riskThresholdMedium = 2
-	complexityHigh      = 30
-	complexityMedium    = 15
-	coverageLow         = 40
-	coverageMedium      = 70
-	authorRiskThreshold = 3
+	riskThresholdHigh      = 5
+	riskThresholdMedium    = 2
+	complexityHigh         = 30
+	complexityMedium       = 15
+	coverageLow            = 40
+	coverageMedium         = 70
+	authorRiskThreshold    = 3
+	editorContextThreshold = 0.3
 )
 
 // Signals holds pantry-derived routing signals for a task.
@@ -137,4 +139,114 @@ func (s Signals) Summary() string {
 	}
 
 	return strings.Join(parts, " ")
+}
+
+func editorContextBoost(signals *Signals) string {
+	boosted, _ := editorContextBoostWithWeights(signals, nil)
+	return boosted
+}
+
+func editorContextBoostWithWeights(signals *Signals, weightOn map[string]map[string]float64) (string, float64) {
+	if signals == nil {
+		return "", 0
+	}
+
+	scores := baseEditorContextScores(signals)
+	for kitchenName, weights := range weightOn {
+		for signalKey, delta := range weights {
+			if matchesEditorSignal(signalKey, signals) {
+				scores[kitchenName] += delta
+			}
+		}
+	}
+
+	return highestScoringKitchen(scores, editorContextThreshold)
+}
+
+func baseEditorContextScores(signals *Signals) map[string]float64 {
+	scores := map[string]float64{}
+	if signals == nil {
+		return scores
+	}
+
+	language := normalizeLanguage(signals.Language)
+	if signals.InTestFile && isTestAwareLanguage(language) {
+		scores["opencode"] += 0.4
+		scores["aider"] += 0.35
+	}
+	if signals.Dirty && signals.FilesChanged > 5 {
+		scores["claude"] += 0.4
+	}
+	if language == "sql" {
+		scores["goose"] += 0.5
+	}
+	if signals.LSPErrors > 0 {
+		scores["claude"] += 0.5
+	}
+
+	return scores
+}
+
+func highestScoringKitchen(scores map[string]float64, threshold float64) (string, float64) {
+	if len(scores) == 0 {
+		return "", 0
+	}
+
+	names := make([]string, 0, len(scores))
+	for name := range scores {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	bestKitchen := ""
+	bestScore := 0.0
+	for _, name := range names {
+		score := scores[name]
+		if score < threshold {
+			continue
+		}
+		if bestKitchen == "" || score > bestScore {
+			bestKitchen = name
+			bestScore = score
+		}
+	}
+
+	return bestKitchen, bestScore
+}
+
+func matchesEditorSignal(signalKey string, signals *Signals) bool {
+	if signals == nil {
+		return false
+	}
+
+	switch signalKey {
+	case "in_test_file":
+		return signals.InTestFile
+	case "dirty":
+		return signals.Dirty
+	case "lsp_errors":
+		return signals.LSPErrors > 0
+	case "lsp_warnings":
+		return signals.LSPWarnings > 0
+	}
+
+	const languagePrefix = "language_"
+	if strings.HasPrefix(signalKey, languagePrefix) {
+		return normalizeLanguage(strings.TrimPrefix(signalKey, languagePrefix)) == normalizeLanguage(signals.Language)
+	}
+
+	return false
+}
+
+func normalizeLanguage(language string) string {
+	return strings.ToLower(strings.TrimSpace(language))
+}
+
+func isTestAwareLanguage(language string) bool {
+	switch language {
+	case "go", "python", "ts", "typescript":
+		return true
+	default:
+		return false
+	}
 }
