@@ -24,14 +24,14 @@ func TestHandleKey_CyclesSidePanelsForward(t *testing.T) {
 		want  int
 	}{
 		{
-			name:  "ctrl close bracket advances",
-			key:   tea.KeyMsg{Type: tea.KeyCtrlCloseBracket},
+			name:  "ctrl right arrow advances",
+			key:   tea.KeyMsg{Type: tea.KeyCtrlRight},
 			start: 0,
 			want:  1,
 		},
 		{
-			name:  "ctrl close bracket wraps",
-			key:   tea.KeyMsg{Type: tea.KeyCtrlCloseBracket},
+			name:  "ctrl right arrow wraps",
+			key:   tea.KeyMsg{Type: tea.KeyCtrlRight},
 			start: int(sidePanelCount) - 1,
 			want:  0,
 		},
@@ -78,14 +78,14 @@ func TestHandleKey_CyclesSidePanelsBackward(t *testing.T) {
 		want  int
 	}{
 		{
-			name:  "ctrl open bracket decrements",
-			key:   tea.KeyMsg{Type: tea.KeyCtrlOpenBracket},
+			name:  "ctrl left arrow decrements",
+			key:   tea.KeyMsg{Type: tea.KeyCtrlLeft},
 			start: 3,
 			want:  2,
 		},
 		{
-			name:  "ctrl open bracket wraps",
-			key:   tea.KeyMsg{Type: tea.KeyCtrlOpenBracket},
+			name:  "ctrl left arrow wraps",
+			key:   tea.KeyMsg{Type: tea.KeyCtrlLeft},
 			start: 0,
 			want:  int(sidePanelCount) - 1,
 		},

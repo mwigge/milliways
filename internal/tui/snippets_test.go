@@ -170,7 +170,7 @@ func TestHandleKeySnippetPanel(t *testing.T) {
 		m.sidePanelIdx = int(SidePanelOpenSpec)
 		m.snippetFilter = "review"
 
-		cmds := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlCloseBracket})
+		cmds := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlRight})
 		if len(cmds) != 0 {
 			t.Fatalf("expected no commands, got %d", len(cmds))
 		}

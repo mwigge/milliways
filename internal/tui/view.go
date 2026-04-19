@@ -118,7 +118,7 @@ func (m Model) renderActiveSidePanel(width, height int) string {
 	}
 
 	contentHeight := height - 2
-	header := fmt.Sprintf("┌─ %s ␇ ctrl+[/ctrl+] ─", m.currentSidePanelName())
+	header := fmt.Sprintf("┌─ %s ␇ ctrl+←/ctrl+→ ─", m.currentSidePanelName())
 	content := m.renderCurrentPanel(width, contentHeight)
 
 	return lipgloss.JoinVertical(lipgloss.Left,

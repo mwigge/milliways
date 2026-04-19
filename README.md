@@ -45,7 +45,7 @@ The left side shows the currently focused dispatch in full. The right side shows
 │ (main output)                                │ [1 ●] [2 ◐] [3 ✓] [4 ✗]      │
 │                                              ├───────────────────────────────┤
 │ • prompt                                     │ Swappable panel               │
-│ • selected kitchen                           │ ctrl+] / ctrl+[ cycles:       │
+│ • selected kitchen                           │ ctrl+→ / ctrl+← cycles:       │
 │ • streamed output                            │  - Ledger                     │
 │ • runtime events                             │  - Jobs                       │
 │ • inline confirms/questions                  │  - Cost                       │
@@ -71,7 +71,7 @@ And here is the same idea as a more concrete screen sketch:
 │  │                    │  ├─────────────────┤         │
 │  │                    │  │ Ledger          │ ← panel │
 │  │                    │  │ 14:32 claude ✓  │   cycle │
-│  └────────────────────┘  └─────────────────┘  ctrl+] │
+│  └────────────────────┘  └─────────────────┘  ctrl+← │
 │                          ┌─────────────────┐         │
 │                          │ > your prompt   │         │
 │                          └─────────────────┘         │
@@ -116,7 +116,7 @@ Approximate layout (your terminal size changes what fits):
 | `Ctrl+F` | Rate the last completed dispatch |
 | `Ctrl+S` | Show a session summary |
 | `Ctrl+G` | Toggle rendered/raw output mode |
-| `Ctrl+]` | Cycle to the next sidebar panel |
+| `Ctrl+→` | Cycle to the next sidebar panel |
 | `Ctrl+[` | Cycle to the previous sidebar panel |
 | `Tab` | Cycle focus across blocks |
 | `1`-`9` | Jump to a specific block |
@@ -149,7 +149,7 @@ Approximate layout (your terminal size changes what fits):
 - **Diff** — change preview for relevant outputs
 - **Compare** — side-by-side comparison views
 
-Cycle these panels with `Ctrl+]` and `Ctrl+[`.
+Cycle these panels with `Ctrl+→` and `Ctrl+←`.
 
 **Ledger** — recent completed dispatches:
 - Last 8 completed blocks, newest first
