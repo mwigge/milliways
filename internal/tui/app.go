@@ -123,6 +123,8 @@ type Model struct {
 	changedFiles           []diffFile
 	diffSelected           int
 	compareResults         map[string][]compareResult
+	activeCompareID        string
+	compareSelected        int
 	compareSelectedKitchen string
 	openSpecChanges        []openSpecChange
 	openSpecCourses        []openSpecCourse
@@ -195,6 +197,9 @@ func NewModel(store *pantry.TicketStore) Model {
 		snippetIndex:           initialSnippets,
 		changedFiles:           []diffFile{},
 		diffSelected:           0,
+		compareResults:         map[string][]compareResult{},
+		activeCompareID:        "",
+		compareSelected:        0,
 		openSpecChanges:        []openSpecChange{},
 		openSpecCourses:        []openSpecCourse{},
 		openSpecSelected:       0,
@@ -336,6 +341,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_, cmd := m.startBlockDispatch(task.Prompt, task.KitchenForce)
 				cmds = append(cmds, cmd)
 			}
+			m.accumulateCompareResult(b, msg)
 			m.refreshChangedFiles()
 		}
 
@@ -624,7 +630,30 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 		}
 		return []tea.Cmd{tea.Quit}
 
+	case "alt+enter":
+		if m.overlayActive {
+			return nil
+		}
+		prompt := strings.TrimSpace(m.input.Value())
+		if prompt == "" {
+			return nil
+		}
+		m.history = append(m.history, prompt)
+		m.historyIdx = -1
+		m.input.SetValue("")
+		return m.startCompareDispatch(prompt)
+
 	case "enter":
+		if !m.overlayActive && msg.Alt {
+			prompt := strings.TrimSpace(m.input.Value())
+			if prompt == "" {
+				return nil
+			}
+			m.history = append(m.history, prompt)
+			m.historyIdx = -1
+			m.input.SetValue("")
+			return m.startCompareDispatch(prompt)
+		}
 		if m.overlayActive && m.overlayMode == OverlayRunIn {
 			return m.handleRunTargetSelection()
 		}
@@ -880,6 +909,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 			m.moveRunTargetSelection(-1)
 			return nil
 		}
+		if !m.overlayActive && m.sidePanelIdx == int(SidePanelCompare) {
+			if m.compareSelected > 0 {
+				m.compareSelected--
+			}
+			m.syncCompareSelection()
+			return nil
+		}
 		if !m.overlayActive && m.sidePanelIdx == int(SidePanelDiff) {
 			if m.diffSelected > 0 {
 				m.diffSelected--
@@ -913,6 +949,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 	case "down":
 		if m.overlayActive && m.overlayMode == OverlayRunIn {
 			m.moveRunTargetSelection(1)
+			return nil
+		}
+		if !m.overlayActive && m.sidePanelIdx == int(SidePanelCompare) {
+			results := m.activeCompareResults()
+			if m.compareSelected < len(results)-1 {
+				m.compareSelected++
+			}
+			m.syncCompareSelection()
 			return nil
 		}
 		if !m.overlayActive && m.sidePanelIdx == int(SidePanelDiff) {
@@ -1304,6 +1348,172 @@ func (m *Model) focusedBlock() *Block {
 		return &m.blocks[m.focusedIdx]
 	}
 	return nil
+}
+
+func (m *Model) activeCompareResults() []compareResult {
+	if m.activeCompareID == "" {
+		return nil
+	}
+	return m.compareResults[m.activeCompareID]
+}
+
+func (m *Model) startCompareDispatch(prompt string) []tea.Cmd {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return nil
+	}
+
+	compareID := fmt.Sprintf("compare-%d", time.Now().UnixNano())
+	kitchens := m.compareKitchenNames()
+	if len(kitchens) == 0 {
+		return nil
+	}
+
+	if m.compareResults == nil {
+		m.compareResults = make(map[string][]compareResult)
+	}
+
+	results := make([]compareResult, 0, len(kitchens))
+	cmds := make([]tea.Cmd, 0, len(kitchens))
+	for _, kitchen := range kitchens {
+		results = append(results, compareResult{Kitchen: kitchen})
+		blockID, cmd := m.startBlockDispatch(prompt, kitchen)
+		if b := m.findBlock(blockID); b != nil {
+			b.comparePrompt = compareID
+		}
+		cmds = append(cmds, cmd)
+	}
+
+	m.compareResults[compareID] = results
+	m.activeCompareID = compareID
+	m.compareSelected = 0
+	m.syncCompareSelection()
+
+	return cmds
+}
+
+func (m *Model) compareKitchenNames() []string {
+	seen := make(map[string]struct{})
+	names := make([]string, 0, len(m.kitchenStates))
+	for _, state := range m.kitchenStates {
+		if state.Name == "" {
+			continue
+		}
+		if state.Status == "disabled" || state.Status == "not-installed" {
+			continue
+		}
+		if _, ok := seen[state.Name]; ok {
+			continue
+		}
+		seen[state.Name] = struct{}{}
+		names = append(names, state.Name)
+	}
+	if len(names) == 0 {
+		for _, name := range []string{"claude", "codex", "opencode", "gemini"} {
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (m *Model) accumulateCompareResult(block *Block, msg blockDoneMsg) {
+	if block == nil || block.comparePrompt == "" {
+		return
+	}
+
+	result := compareResult{
+		Kitchen: block.Kitchen,
+		Done:    msg.Err == nil && msg.Result.ExitCode == 0,
+		Error:   compareErrorText(msg),
+		Output:  strings.TrimSpace(msg.Result.Output),
+	}
+	if result.Output == "" {
+		result.Output = blockCompareOutput(block)
+	}
+
+	existing := append([]compareResult(nil), m.compareResults[block.comparePrompt]...)
+	updated := false
+	for i := range existing {
+		if existing[i].Kitchen != block.Kitchen {
+			continue
+		}
+		existing[i].Done = result.Done
+		existing[i].Error = result.Error
+		existing[i].Output = result.Output
+		updated = true
+		break
+	}
+	if !updated {
+		existing = append(existing, result)
+	}
+	recalculateCompareProgress(existing)
+	m.compareResults[block.comparePrompt] = existing
+	if m.activeCompareID == "" {
+		m.activeCompareID = block.comparePrompt
+	}
+	m.syncCompareSelection()
+}
+
+func compareErrorText(msg blockDoneMsg) string {
+	if msg.Err != nil {
+		return msg.Err.Error()
+	}
+	if msg.Result.ExitCode != 0 {
+		return fmt.Sprintf("exit code %d", msg.Result.ExitCode)
+	}
+	return ""
+}
+
+func blockCompareOutput(block *Block) string {
+	if block == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(block.Lines))
+	for _, line := range block.Lines {
+		text := strings.TrimSpace(line.Text)
+		if text == "" {
+			continue
+		}
+		parts = append(parts, text)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func recalculateCompareProgress(results []compareResult) {
+	if len(results) == 0 {
+		return
+	}
+	completed := 0
+	for _, result := range results {
+		if result.Done || result.Error != "" || result.Output != "" {
+			completed++
+		}
+	}
+	percent := float64(completed) / float64(len(results)) * 100
+	for i := range results {
+		results[i].Percent = percent
+	}
+}
+
+func (m *Model) syncCompareSelection() {
+	results := m.activeCompareResults()
+	if len(results) == 0 {
+		m.compareSelected = 0
+		m.compareSelectedKitchen = ""
+		return
+	}
+	if m.compareSelected < 0 {
+		m.compareSelected = 0
+	}
+	if m.compareSelected >= len(results) {
+		m.compareSelected = len(results) - 1
+	}
+	m.compareSelectedKitchen = results[m.compareSelected].Kitchen
 }
 
 func containsProvider(chain []string, provider string) bool {

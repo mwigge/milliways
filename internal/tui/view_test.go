@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/observability"
 	"github.com/mwigge/milliways/internal/pantry"
 )
@@ -163,6 +164,173 @@ func TestDiffPanelEmpty(t *testing.T) {
 	if !strings.Contains(got, "no changes") {
 		t.Fatalf("expected 'no changes' message, got: %s", got)
 	}
+}
+
+func TestComparePanelEmpty(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil)
+	m.compareResults = nil
+	m.activeCompareID = ""
+
+	got := m.renderComparePanel(50, 20)
+	if !strings.Contains(got, "ctrl+shift+enter") {
+		t.Fatalf("expected compare hint, got: %s", got)
+	}
+}
+
+func TestComparePanelShowsRunning(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil)
+	m.compareResults = map[string][]compareResult{}
+	m.activeCompareID = "compare-123"
+
+	got := m.renderComparePanel(50, 20)
+	if !strings.Contains(got, "running") {
+		t.Fatalf("expected running text, got: %s", got)
+	}
+}
+
+func TestComparePanelRendersResults(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil)
+	m.compareResults = map[string][]compareResult{
+		"compare-123": {
+			{Kitchen: "claude", Done: true, Output: "Hello from claude"},
+			{Kitchen: "codex", Error: "connection refused"},
+		},
+	}
+	m.activeCompareID = "compare-123"
+	m.compareSelected = 0
+
+	got := m.renderComparePanel(50, 20)
+	for _, want := range []string{"claude", "codex", "✓", "✗", "Hello from claude"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in output, got: %s", want, got)
+		}
+	}
+}
+
+func TestStartCompareDispatchNoPrompt(t *testing.T) {
+	m := NewModel(nil)
+
+	cmds := m.startCompareDispatch("")
+	if len(cmds) != 0 {
+		t.Fatalf("expected no commands, got %d", len(cmds))
+	}
+	if len(m.compareResults) != 0 {
+		t.Fatalf("expected no compare results, got %d", len(m.compareResults))
+	}
+}
+
+func TestStartCompareDispatchInitializesResults(t *testing.T) {
+	m := NewModel(nil)
+	m.kitchenStates = []KitchenState{{Name: "gemini", Status: "ready"}, {Name: "claude", Status: "warning"}}
+
+	cmds := m.startCompareDispatch("ship it")
+	if len(cmds) != 2 {
+		t.Fatalf("expected 2 commands, got %d", len(cmds))
+	}
+	if len(m.blocks) != 2 {
+		t.Fatalf("expected 2 blocks, got %d", len(m.blocks))
+	}
+	if m.activeCompareID == "" {
+		t.Fatal("expected active compare id")
+	}
+	results := m.activeCompareResults()
+	if len(results) != 2 {
+		t.Fatalf("expected 2 compare results, got %d", len(results))
+	}
+	if results[0].Kitchen != "claude" || results[1].Kitchen != "gemini" {
+		t.Fatalf("unexpected kitchen order: %#v", results)
+	}
+	for _, block := range m.blocks {
+		if block.comparePrompt != m.activeCompareID {
+			t.Fatalf("block compare prompt = %q, want %q", block.comparePrompt, m.activeCompareID)
+		}
+	}
+}
+
+func TestCompareNavigation(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil)
+	m.sidePanelIdx = int(SidePanelCompare)
+	m.compareResults = map[string][]compareResult{
+		"c1": {{Kitchen: "a"}, {Kitchen: "b"}, {Kitchen: "c"}},
+	}
+	m.activeCompareID = "c1"
+	m.compareSelected = 0
+	m.syncCompareSelection()
+
+	if cmds := m.handleKey(tea.KeyMsg{Type: tea.KeyDown}); len(cmds) != 0 {
+		t.Fatalf("expected no commands, got %d", len(cmds))
+	}
+	if cmds := m.handleKey(tea.KeyMsg{Type: tea.KeyDown}); len(cmds) != 0 {
+		t.Fatalf("expected no commands, got %d", len(cmds))
+	}
+	if m.compareSelected != 2 || m.compareSelectedKitchen != "c" {
+		t.Fatalf("selection = %d/%q", m.compareSelected, m.compareSelectedKitchen)
+	}
+	if cmds := m.handleKey(tea.KeyMsg{Type: tea.KeyUp}); len(cmds) != 0 {
+		t.Fatalf("expected no commands, got %d", len(cmds))
+	}
+	if m.compareSelected != 1 || m.compareSelectedKitchen != "b" {
+		t.Fatalf("selection = %d/%q", m.compareSelected, m.compareSelectedKitchen)
+	}
+}
+
+func TestHandleKeyAltEnterStartsCompareDispatch(t *testing.T) {
+	m := NewModel(nil)
+	m.kitchenStates = []KitchenState{{Name: "claude", Status: "ready"}}
+	m.input.SetValue("compare this")
+
+	cmds := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter, Alt: true})
+	if len(cmds) != 1 {
+		t.Fatalf("expected 1 compare command, got %d", len(cmds))
+	}
+	if len(m.blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(m.blocks))
+	}
+	if m.blocks[0].comparePrompt == "" {
+		t.Fatal("expected compare prompt tag on block")
+	}
+	if m.input.Value() != "" {
+		t.Fatalf("expected input cleared, got %q", m.input.Value())
+	}
+}
+
+func TestBlockDoneAccumulatesCompareResult(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil)
+	m.blocks = []Block{{ID: "b1", Kitchen: "claude", comparePrompt: "c1", Lines: []OutputLine{{Text: "Hello world"}}}}
+	m.compareResults = map[string][]compareResult{"c1": {{Kitchen: "claude"}}}
+	m.activeCompareID = "c1"
+	m.activeCount = 1
+
+	updated, cmd := m.Update(blockDoneMsg{BlockID: "b1", Result: pantryResult(0)})
+	_ = cmd
+	model := updated.(Model)
+	results := model.compareResults["c1"]
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].Done {
+		t.Fatal("expected result marked done")
+	}
+	if results[0].Output != "Hello world" {
+		t.Fatalf("output = %q", results[0].Output)
+	}
+	if results[0].Percent != 100 {
+		t.Fatalf("percent = %v, want 100", results[0].Percent)
+	}
+}
+
+func pantryResult(exitCode int) kitchen.Result {
+	return kitchen.Result{ExitCode: exitCode}
 }
 
 func TestParseDiffNameOutput(t *testing.T) {

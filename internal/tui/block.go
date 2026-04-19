@@ -45,6 +45,7 @@ type Block struct {
 	ID                 string
 	ConversationID     string
 	Prompt             string
+	comparePrompt      string
 	Kitchen            string
 	PID                int
 	ContinuationPrompt string
