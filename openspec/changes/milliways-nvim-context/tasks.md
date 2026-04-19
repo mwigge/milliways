@@ -44,21 +44,21 @@
 
 ### Course NC-6: CLI flags [0.5 SP]
 
-- [ ] NC-6.1 Add `--context-json` and `--context-stdin` to `cmd/milliways/`
-- [ ] NC-6.2 Preserve existing `--context-file` (reconstruct into minimal `Bundle`)
-- [ ] NC-6.3 Integration test: invoking milliways with `--context-stdin` pipes a bundle and dispatch completes normally
+- [x] NC-6.1 Add `--context-json` and `--context-stdin` to `cmd/milliways/`
+- [x] NC-6.2 Preserve existing `--context-file` (reconstruct into minimal `Bundle`)
+- [x] NC-6.3 Integration test: invoking milliways with `--context-stdin` pipes a bundle and dispatch completes normally
 
 ### Course NC-7: Sommelier pantry signals from editor context [1 SP]
 
-- [ ] NC-7.1 Add editor-context signal extraction to the pantry-signals tier: `editor.lsp_error_count`, `editor.in_test_file`, `editor.dirty_churn`, `editor.language`
-- [ ] NC-7.2 `carte.yaml` schema extension: per-kitchen `weight_on` map honours editor-context keys
-- [ ] NC-7.3 Unit tests: each signal derivation, weight composition, fallback when bundle absent
+- [x] NC-7.1 Add editor-context signal extraction to the pantry-signals tier: `editor.lsp_error_count`, `editor.in_test_file`, `editor.dirty_churn`, `editor.language`
+- [x] NC-7.2 `carte.yaml` schema extension: per-kitchen `weight_on` map honours editor-context keys
+- [x] NC-7.3 Unit tests: each signal derivation, weight composition, fallback when bundle absent
 
 ### Course NC-8: Continuation payload integration [0.5 SP]
 
-- [ ] NC-8.1 `internal/conversation/continue.go` accepts an optional `editorcontext.Bundle`
-- [ ] NC-8.2 Condensed editor-context section rendered, capped at 500 tokens
-- [ ] NC-8.3 Unit tests: section renders cleanly, truncation preserves highest-signal entries
+- [x] NC-8.1 `internal/conversation/continue.go` accepts an optional `editorcontext.Bundle`
+- [x] NC-8.2 Condensed editor-context section rendered, capped at 500 tokens
+- [x] NC-8.3 Unit tests: section renders cleanly, truncation preserves highest-signal entries
 
 - [ ] 🍋 **Palate Cleanser 2** — `milliways --context-stdin` accepts a real nvim-generated bundle and routes based on it. Continuation payloads include a condensed editor-context section.
 
