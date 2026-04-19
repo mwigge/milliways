@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -184,6 +186,8 @@ func NewModel(store *pantry.TicketStore) Model {
 		output:        vp,
 		historyIdx:    -1,
 		ticketStore:   store,
+		costByKitchen: make(map[string]costAccumulator),
+		procStats:     make(map[string]procInfo),
 		prog:          new(*tea.Program),
 		mu:            &sync.Mutex{},
 		maxConcurrent: defaultMaxConcurrent,
@@ -203,7 +207,7 @@ func NewAdapterModel(providerFactory ProviderFactory, hydrator orchestrator.Cont
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, jobsRefreshCmd(m.ticketStore))
+	return tea.Batch(textinput.Blink, jobsRefreshCmd(m.ticketStore), m.startSystemMonitor())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -232,8 +236,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				b.ProviderChain = append(b.ProviderChain, msg.Decision.Kitchen)
 			}
 		}
+		entry := routingEntry{
+			Kitchen: msg.Decision.Kitchen,
+			Tier:    msg.Decision.Tier,
+			Reason:  msg.Decision.Reason,
+			Signals: cloneSignalScores(msg.Decision.SignalScores),
+			At:      time.Now(),
+		}
+		m.routingHistory = append([]routingEntry{entry}, m.routingHistory...)
+		if len(m.routingHistory) > 20 {
+			m.routingHistory = m.routingHistory[:20]
+		}
 
 	case blockEventMsg:
+		if msg.Event.Type == adapter.EventCost && msg.Event.Cost != nil {
+			kitchen := msg.Event.Kitchen
+			if m.costByKitchen == nil {
+				m.costByKitchen = make(map[string]costAccumulator)
+			}
+			acc := m.costByKitchen[kitchen]
+			acc.add(msg.Event.Cost)
+			m.costByKitchen[kitchen] = acc
+			m.costTotalUSD += msg.Event.Cost.USD
+		}
 		if b := m.findBlock(msg.BlockID); b != nil {
 			b.AppendEvent(msg.Event)
 
@@ -254,6 +279,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case adapter.EventConfirm:
 				b.State = StateConfirming
 				m.focusedIdx = m.blockIndex(msg.BlockID)
+			}
+		}
+
+	case blockPIDMsg:
+		for i := range m.blocks {
+			if m.blocks[i].ID == msg.BlockID {
+				m.blocks[i].PID = msg.PID
+				break
 			}
 		}
 
@@ -333,6 +366,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.runtimeEvents) > 100 {
 			m.runtimeEvents = append([]observability.Event(nil), m.runtimeEvents[len(m.runtimeEvents)-100:]...)
 		}
+
+	case systemMonitorTickMsg:
+		m.refreshProcStats()
+		cmds = append(cmds, m.startSystemMonitor())
 	}
 
 	// Update input or overlay.
@@ -390,6 +427,77 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds = append(cmds, vpCmd)
 
 	return m, tea.Batch(cmds...)
+}
+
+func cloneSignalScores(in map[string]float64) map[string]float64 {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]float64, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func (m Model) startSystemMonitor() tea.Cmd {
+	return tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
+		return systemMonitorTickMsg(t)
+	})
+}
+
+func (m *Model) refreshProcStats() {
+	if m.procStats == nil {
+		m.procStats = make(map[string]procInfo)
+	}
+
+	activeKitchens := make(map[string]bool)
+	for _, block := range m.blocks {
+		if block.PID <= 0 || block.isDone() {
+			continue
+		}
+		if stats, err := fetchProcStats(block.PID); err == nil {
+			m.procStats[block.Kitchen] = stats
+			activeKitchens[block.Kitchen] = true
+		}
+	}
+
+	for kitchen := range m.procStats {
+		if !activeKitchens[kitchen] {
+			delete(m.procStats, kitchen)
+		}
+	}
+}
+
+func fetchProcStats(pid int) (procInfo, error) {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "%cpu=,%mem=,comm=").Output()
+	if err != nil {
+		return procInfo{}, err
+	}
+	return parseProcStatsOutput(pid, string(out))
+}
+
+func parseProcStatsOutput(pid int, output string) (procInfo, error) {
+	parts := strings.Fields(strings.TrimSpace(output))
+	if len(parts) < 3 {
+		return procInfo{}, fmt.Errorf("ps output unexpected: %q", output)
+	}
+
+	cpu, err := strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+	if err != nil {
+		return procInfo{}, fmt.Errorf("parse cpu for pid %d: %w", pid, err)
+	}
+	mem, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+	if err != nil {
+		return procInfo{}, fmt.Errorf("parse memory for pid %d: %w", pid, err)
+	}
+
+	return procInfo{
+		PID:   pid,
+		CPU:   cpu,
+		MemMB: mem * 1024 / 100,
+		Exe:   strings.TrimSpace(parts[2]),
+	}, nil
 }
 
 // handleKey processes key messages and returns commands.

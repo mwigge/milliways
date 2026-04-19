@@ -11,11 +11,12 @@ import (
 
 // Decision captures why a kitchen was chosen.
 type Decision struct {
-	Kitchen string   `json:"kitchen"`
-	Reason  string   `json:"reason"`
-	Tier    string   `json:"tier"`           // "keyword", "enriched", "learned", "forced", "fallback"
-	Risk    string   `json:"risk,omitempty"` // "low", "medium", "high" (from signals)
-	Signals *Signals `json:"signals,omitempty"`
+	Kitchen      string             `json:"kitchen"`
+	Reason       string             `json:"reason"`
+	Tier         string             `json:"tier"`           // "keyword", "enriched", "learned", "forced", "fallback"
+	Risk         string             `json:"risk,omitempty"` // "low", "medium", "high" (from signals)
+	Signals      *Signals           `json:"signals,omitempty"`
+	SignalScores map[string]float64 `json:"signal_scores,omitempty"`
 }
 
 // RouteRequest describes the data available to a router evaluation.
@@ -214,11 +215,12 @@ func (r learnedRouter) Decide(_ context.Context, req RouteRequest) (Decision, bo
 		return Decision{}, false
 	}
 	return Decision{
-		Kitchen: signals.LearnedKitchen,
-		Reason:  fmt.Sprintf("learned: %s succeeded %.0f%% for this task type (%s)", signals.LearnedKitchen, signals.LearnedRate, signals.Summary()),
-		Tier:    "learned",
-		Risk:    signals.RiskLevel(),
-		Signals: signals,
+		Kitchen:      signals.LearnedKitchen,
+		Reason:       fmt.Sprintf("learned: %s succeeded %.0f%% for this task type (%s)", signals.LearnedKitchen, signals.LearnedRate, signals.Summary()),
+		Tier:         "learned",
+		Risk:         signals.RiskLevel(),
+		Signals:      signals,
+		SignalScores: signalScores(signals),
 	}, true
 }
 
@@ -226,11 +228,12 @@ func (r pantryRouter) Decide(_ context.Context, req RouteRequest) (Decision, boo
 	signals := req.Signals
 	if req.SkillHint != nil && req.SkillHint.Kitchen != "" && r.sommelier.isAvailable(req.SkillHint.Kitchen) {
 		return Decision{
-			Kitchen: req.SkillHint.Kitchen,
-			Reason:  fmt.Sprintf("skill %q available in %s", req.SkillHint.SkillName, req.SkillHint.Kitchen),
-			Tier:    "enriched",
-			Risk:    riskFromSignals(signals),
-			Signals: signals,
+			Kitchen:      req.SkillHint.Kitchen,
+			Reason:       fmt.Sprintf("skill %q available in %s", req.SkillHint.SkillName, req.SkillHint.Kitchen),
+			Tier:         "enriched",
+			Risk:         riskFromSignals(signals),
+			Signals:      signals,
+			SignalScores: signalScores(signals),
 		}, true
 	}
 	if signals == nil || signals.RiskLevel() != "high" || !r.sommelier.isAvailable("claude") {
@@ -239,11 +242,12 @@ func (r pantryRouter) Decide(_ context.Context, req RouteRequest) (Decision, boo
 			return Decision{}, false
 		}
 		return Decision{
-			Kitchen: boosted,
-			Reason:  fmt.Sprintf("editor-context boost %.1f → %s (%s)", score, boosted, signals.Summary()),
-			Tier:    "enriched",
-			Risk:    signals.RiskLevel(),
-			Signals: signals,
+			Kitchen:      boosted,
+			Reason:       fmt.Sprintf("editor-context boost %.1f → %s (%s)", score, boosted, signals.Summary()),
+			Tier:         "enriched",
+			Risk:         signals.RiskLevel(),
+			Signals:      signals,
+			SignalScores: signalScores(signals),
 		}, true
 	}
 	keywordMatch := r.sommelier.keywordMatch(strings.ToLower(req.Prompt))
@@ -251,11 +255,12 @@ func (r pantryRouter) Decide(_ context.Context, req RouteRequest) (Decision, boo
 		return Decision{}, false
 	}
 	return Decision{
-		Kitchen: "claude",
-		Reason:  fmt.Sprintf("risk HIGH overrides keyword %q → claude for safety (%s)", keywordMatch, signals.Summary()),
-		Tier:    "enriched",
-		Risk:    "high",
-		Signals: signals,
+		Kitchen:      "claude",
+		Reason:       fmt.Sprintf("risk HIGH overrides keyword %q → claude for safety (%s)", keywordMatch, signals.Summary()),
+		Tier:         "enriched",
+		Risk:         "high",
+		Signals:      signals,
+		SignalScores: signalScores(signals),
 	}, true
 }
 
@@ -273,6 +278,7 @@ func (r keywordRouter) Decide(_ context.Context, req RouteRequest) (Decision, bo
 		if req.Signals != nil {
 			decision.Risk = req.Signals.RiskLevel()
 			decision.Signals = req.Signals
+			decision.SignalScores = signalScores(req.Signals)
 			decision.Reason += fmt.Sprintf(" (%s)", req.Signals.Summary())
 		}
 		return decision, true
@@ -292,11 +298,12 @@ func (s *Sommelier) fallbackRoute(signals *Signals) Decision {
 
 	if s.isAvailable(s.defaultKitchen) {
 		return Decision{
-			Kitchen: s.defaultKitchen,
-			Reason:  fmt.Sprintf("no keyword matched → default %s", s.defaultKitchen),
-			Tier:    "fallback",
-			Risk:    risk,
-			Signals: signals,
+			Kitchen:      s.defaultKitchen,
+			Reason:       fmt.Sprintf("no keyword matched → default %s", s.defaultKitchen),
+			Tier:         "fallback",
+			Risk:         risk,
+			Signals:      signals,
+			SignalScores: signalScores(signals),
 		}
 	}
 

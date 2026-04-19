@@ -79,6 +79,7 @@ func (m *Model) adapterDispatchCmd(ctx context.Context, blockID, prompt, kitchen
 		var lastCost *adapter.CostInfo
 		exitCode := 0
 		var lastDecision sommelier.Decision
+		var lastAdapter adapter.Adapter
 
 		conv, err := orch.Run(ctx, orchestrator.RunRequest{
 			ConversationID: blockID,
@@ -87,6 +88,7 @@ func (m *Model) adapterDispatchCmd(ctx context.Context, blockID, prompt, kitchen
 			KitchenForce:   kitchenForce,
 		}, func(res orchestrator.RouteResult) {
 			lastDecision = res.Decision
+			lastAdapter = res.Adapter
 			if m.prog != nil && *m.prog != nil {
 				(*m.prog).Send(blockRoutedMsg{
 					BlockID:  blockID,
@@ -95,6 +97,12 @@ func (m *Model) adapterDispatchCmd(ctx context.Context, blockID, prompt, kitchen
 				})
 			}
 		}, func(evt adapter.Event) {
+			if lastAdapter != nil && m.prog != nil && *m.prog != nil {
+				if pid := lastAdapter.ProcessID(); pid > 0 {
+					(*m.prog).Send(blockPIDMsg{BlockID: blockID, PID: pid})
+					lastAdapter = nil
+				}
+			}
 			if evt.Type == adapter.EventCost {
 				lastCost = evt.Cost
 			}

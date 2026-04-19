@@ -21,6 +21,7 @@ type GenericAdapter struct {
 	opts      AdapterOpts
 	mu        sync.Mutex
 	stdinPipe io.WriteCloser
+	processID int
 }
 
 // NewGenericAdapter creates a fallback line-by-line adapter.
@@ -64,6 +65,10 @@ func (a *GenericAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Ev
 
 	a.mu.Lock()
 	a.stdinPipe = stdinPipe
+	a.processID = 0
+	if cmd.Process != nil {
+		a.processID = cmd.Process.Pid
+	}
 	a.mu.Unlock()
 
 	ch := make(chan Event, 64)
@@ -76,6 +81,7 @@ func (a *GenericAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Ev
 				_ = a.stdinPipe.Close()
 				a.stdinPipe = nil
 			}
+			a.processID = 0
 			a.mu.Unlock()
 		}()
 
@@ -173,6 +179,13 @@ func (a *GenericAdapter) SupportsResume() bool { return false }
 
 // SessionID returns "" for generic kitchens.
 func (a *GenericAdapter) SessionID() string { return "" }
+
+// ProcessID returns the running subprocess pid when available.
+func (a *GenericAdapter) ProcessID() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.processID
+}
 
 // Capabilities returns generic fallback continuity features.
 func (a *GenericAdapter) Capabilities() Capabilities {

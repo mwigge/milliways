@@ -667,6 +667,7 @@ func (s *switchTestAdapter) Exec(_ context.Context, _ kitchen.Task) (<-chan adap
 func (s *switchTestAdapter) Send(context.Context, string) error { return nil }
 func (s *switchTestAdapter) SupportsResume() bool               { return false }
 func (s *switchTestAdapter) SessionID() string                  { return "" }
+func (s *switchTestAdapter) ProcessID() int                     { return 0 }
 func (s *switchTestAdapter) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{
 		StructuredEvents:    true,

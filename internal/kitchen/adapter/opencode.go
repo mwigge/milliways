@@ -20,6 +20,7 @@ type OpenCodeAdapter struct {
 	mu        sync.Mutex
 	stdinPipe io.WriteCloser
 	sessionID string
+	processID int
 }
 
 // NewOpenCodeAdapter creates an adapter for the opencode kitchen.
@@ -75,6 +76,10 @@ func (a *OpenCodeAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan E
 
 	a.mu.Lock()
 	a.stdinPipe = stdinPipe
+	a.processID = 0
+	if cmd.Process != nil {
+		a.processID = cmd.Process.Pid
+	}
 	a.mu.Unlock()
 
 	ch := make(chan Event, 64)
@@ -88,6 +93,7 @@ func (a *OpenCodeAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan E
 				a.stdinPipe.Close()
 				a.stdinPipe = nil
 			}
+			a.processID = 0
 			a.mu.Unlock()
 		}()
 
@@ -202,6 +208,13 @@ func (a *OpenCodeAdapter) SessionID() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.sessionID
+}
+
+// ProcessID returns the running subprocess pid when available.
+func (a *OpenCodeAdapter) ProcessID() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.processID
 }
 
 // Capabilities returns OpenCode continuity features.

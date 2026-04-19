@@ -21,8 +21,10 @@ var quotaResetRegex = regexp.MustCompile(`reset after (\d+)h(\d+)m(\d+)s`)
 // GeminiAdapter speaks Gemini CLI's stream-json protocol.
 // Gemini in --prompt mode is one-shot — no bidirectional dialogue.
 type GeminiAdapter struct {
-	kitchen *kitchen.GenericKitchen
-	opts    AdapterOpts
+	kitchen   *kitchen.GenericKitchen
+	opts      AdapterOpts
+	mu        sync.Mutex
+	processID int
 }
 
 // NewGeminiAdapter creates an adapter for the gemini kitchen.
@@ -72,6 +74,13 @@ func (a *GeminiAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Eve
 		return nil, fmt.Errorf("starting gemini: %w", err)
 	}
 
+	a.mu.Lock()
+	a.processID = 0
+	if cmd.Process != nil {
+		a.processID = cmd.Process.Pid
+	}
+	a.mu.Unlock()
+
 	ch := make(chan Event, 64)
 	name := a.kitchen.Name()
 
@@ -93,6 +102,11 @@ func (a *GeminiAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Eve
 	// Stdout JSON event parser
 	go func() {
 		defer close(ch)
+		defer func() {
+			a.mu.Lock()
+			a.processID = 0
+			a.mu.Unlock()
+		}()
 
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
@@ -186,6 +200,13 @@ func (a *GeminiAdapter) SupportsResume() bool { return false }
 
 // SessionID returns "" for gemini.
 func (a *GeminiAdapter) SessionID() string { return "" }
+
+// ProcessID returns the running subprocess pid when available.
+func (a *GeminiAdapter) ProcessID() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.processID
+}
 
 // Capabilities returns Gemini continuity features.
 func (a *GeminiAdapter) Capabilities() Capabilities {

@@ -40,6 +40,10 @@ var (
 	mutedStyle = lipgloss.NewStyle().
 			Foreground(colorMuted)
 
+	badgeStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#E5E7EB")).
+			Background(lipgloss.Color("#374151"))
+
 	successStyle = lipgloss.NewStyle().
 			Foreground(colorSuccess)
 
@@ -47,6 +51,9 @@ var (
 			Foreground(colorFailure)
 
 	runningStyle = lipgloss.NewStyle().
+			Foreground(colorRunning)
+
+	warningStyle = lipgloss.NewStyle().
 			Foreground(colorRunning)
 )
 

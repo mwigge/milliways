@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -237,15 +238,100 @@ func (m Model) renderJobsPanel(width, height int) string {
 }
 
 func (m Model) renderCostPanel(width, height int) string {
-	return mutedStyle.Render("(cost panel)")
+	if len(m.costByKitchen) == 0 {
+		return mutedStyle.Render("(no cost data yet)")
+	}
+
+	innerWidth := max(1, width-4)
+	kitchens := make([]string, 0, len(m.costByKitchen))
+	for kitchen := range m.costByKitchen {
+		kitchens = append(kitchens, kitchen)
+	}
+	sort.Strings(kitchens)
+
+	lines := make([]string, 0, len(kitchens)+2)
+	for _, kitchen := range kitchens {
+		acc := m.costByKitchen[kitchen]
+		badge := KitchenBadge(kitchen)
+		usd := formatUSD(acc.TotalUSD)
+		toks := fmt.Sprintf("%dK/%dK", acc.InputToks/1000, acc.OutputToks/1000)
+		line := fmt.Sprintf("%s %s %s tok", badge, usd, toks)
+		lines = append(lines, truncate(line, innerWidth))
+	}
+	lines = append(lines, "", fmt.Sprintf("Total  %s", formatUSD(m.costTotalUSD)))
+
+	return strings.Join(lines, "\n")
+}
+
+func formatUSD(amount float64) string {
+	rounded := math.Round(amount*100) / 100
+	return fmt.Sprintf("$%.2f", rounded)
 }
 
 func (m Model) renderRoutingPanel(width, height int) string {
-	return mutedStyle.Render("(routing panel)")
+	if len(m.routingHistory) == 0 {
+		return mutedStyle.Render("(no routing decisions yet)")
+	}
+
+	innerWidth := max(1, width-4)
+	lines := make([]string, 0, len(m.routingHistory))
+	for _, entry := range m.routingHistory {
+		tierBadgeStr := TierBadge(entry.Tier)
+		reason := truncate(entry.Reason, max(1, innerWidth-15))
+		lines = append(lines, fmt.Sprintf("%s %s  %s", tierBadgeStr, KitchenBadge(entry.Kitchen), reason))
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderSystemPanel(width, height int) string {
-	return mutedStyle.Render("(system panel)")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(m.procStats) == 0 {
+		return mutedStyle.Render("(idle)")
+	}
+
+	kitchens := make([]string, 0, len(m.procStats))
+	for kitchen := range m.procStats {
+		kitchens = append(kitchens, kitchen)
+	}
+	sort.Strings(kitchens)
+
+	lines := make([]string, 0, len(kitchens)*2)
+	for _, kitchen := range kitchens {
+		proc := m.procStats[kitchen]
+		cpuStr := fmt.Sprintf("%.0f%%", proc.CPU)
+		memStr := fmt.Sprintf("%.0fM", proc.MemMB)
+		if proc.CPU > 80 || proc.MemMB > 500 {
+			cpuStr = warningStyle.Render(cpuStr)
+			memStr = warningStyle.Render(memStr)
+		}
+		lines = append(lines,
+			fmt.Sprintf("%s  PID %d", KitchenBadge(kitchen), proc.PID),
+			fmt.Sprintf("CPU %s  MEM %s", cpuStr, memStr),
+		)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// TierBadge returns a styled routing tier badge.
+func TierBadge(tier string) string {
+	switch tier {
+	case "forced":
+		return badgeStyle.Render("[forced]")
+	case "keyword":
+		return badgeStyle.Render("[kw]")
+	case "enriched":
+		return badgeStyle.Render("[enr]")
+	case "learned":
+		return badgeStyle.Render("[lrnd]")
+	case "fallback":
+		return mutedStyle.Render("[fallbk]")
+	default:
+		return mutedStyle.Render("[" + tier + "]")
+	}
 }
 
 func (m Model) renderSnippetsPanel(width, height int) string {
