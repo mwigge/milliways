@@ -221,6 +221,8 @@ export MILLIWAYS_CODEGRAPH_MCP_ARGS="mcp"
 
 Or put them in your shell profile (`~/.zshrc`, `~/.bashrc`) for persistence.
 
+Milliways kitchen parity requires the `mempalace-milliways` fork at commit `e5e705ea43bfab283fd9c16eedec1f5068d10f44` or later so the conversation MCP tools and checkpoint/resume schema are available.
+
 ### How It Works
 
 With project memory enabled:

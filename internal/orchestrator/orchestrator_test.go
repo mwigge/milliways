@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mwigge/milliways/internal/bridge"
 	"github.com/mwigge/milliways/internal/conversation"
@@ -559,6 +560,69 @@ func TestOrchestratorAutoSwitchEmitsReversibleSwitchEvent(t *testing.T) {
 	}
 	if !foundHint {
 		t.Fatalf("outputs = %#v, want visible auto-switch line with /back hint", outputs)
+	}
+}
+
+func TestOrchestratorStickyModePreventsAutoSwitch(t *testing.T) {
+	t.Parallel()
+
+	sticky := &stubAdapter{events: []adapter.Event{{Type: adapter.EventDone, Kitchen: "claude", ExitCode: 0}}}
+
+	var (
+		seenKitchenForces []string
+		runtimeEvents     []observability.Event
+	)
+	o := &Orchestrator{
+		Reader: newFakeReader(substrate.ConversationRecord{
+			ConversationID: "conv-sticky",
+			Prompt:         "search the web for release notes",
+			Memory: conversation.MemoryState{
+				StickyKitchen: "claude",
+			},
+			Segments: []conversation.ProviderSegment{{
+				ID:        "seg-stick",
+				Provider:  "claude",
+				Status:    conversation.SegmentActive,
+				StartedAt: time.Now().Add(-1 * time.Minute),
+			}},
+			ActiveSegmentID: "seg-stick",
+		}),
+		Factory: func(_ context.Context, _ string, exclude map[string]bool, kitchenForce string, _ map[string]string) (RouteResult, error) {
+			seenKitchenForces = append(seenKitchenForces, kitchenForce)
+			if exclude["claude"] {
+				t.Fatalf("exclude = %#v, want sticky kitchen to remain eligible", exclude)
+			}
+			return RouteResult{
+				Decision: sommelier.Decision{Kitchen: "claude", Tier: "forced", Reason: "sticky kitchen"},
+				Adapter:  sticky,
+			}, nil
+		},
+		Sink: observability.FuncSink(func(evt observability.Event) {
+			runtimeEvents = append(runtimeEvents, evt)
+		}),
+	}
+
+	conv, err := o.Run(context.Background(), RunRequest{
+		ConversationID: "conv-sticky",
+		BlockID:        "b1",
+		Prompt:         "search the web for release notes",
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if conv.Status != conversation.StatusDone {
+		t.Fatalf("status = %q, want %q", conv.Status, conversation.StatusDone)
+	}
+	if len(seenKitchenForces) != 1 || seenKitchenForces[0] != "claude" {
+		t.Fatalf("kitchenForce calls = %#v, want [claude]", seenKitchenForces)
+	}
+	for _, evt := range runtimeEvents {
+		if evt.Kind == "switch" {
+			t.Fatalf("runtime events = %#v, want no auto-switch while sticky", runtimeEvents)
+		}
+	}
+	if len(conv.Segments) != 1 || conv.Segments[0].Provider != "claude" {
+		t.Fatalf("segments = %#v, want sticky claude segment only", conv.Segments)
 	}
 }
 

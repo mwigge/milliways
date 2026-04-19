@@ -89,6 +89,11 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 	reposAccessed := make(map[string]bool)
 
 	conv := conversation.New(req.ConversationID, req.BlockID, req.Prompt)
+	if o.Reader != nil {
+		if rec, err := o.Reader.GetConversation(ctx, conv.ID); err == nil {
+			applySubstrateState(conv, rec)
+		}
+	}
 	if err := bridge.InjectProjectContext(ctx, o.Bridge, conv, req.Prompt); err != nil {
 		conv.Status = conversation.StatusFailed
 		return conv, err
@@ -102,7 +107,14 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 	kitchenForce := req.KitchenForce
 
 	for {
-		route, err := o.Factory(ctx, currentPrompt, exclude, kitchenForce, conv.NativeSessionIDs())
+		effectiveKitchenForce := kitchenForce
+		if effectiveKitchenForce == "" {
+			if stickyKitchen := strings.TrimSpace(conv.Memory.StickyKitchen); stickyKitchen != "" && !exclude[stickyKitchen] {
+				effectiveKitchenForce = stickyKitchen
+			}
+		}
+
+		route, err := o.Factory(ctx, currentPrompt, exclude, effectiveKitchenForce, conv.NativeSessionIDs())
 		if err != nil {
 			conv.Status = conversation.StatusFailed
 			return conv, err
@@ -112,7 +124,7 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 		if rc := buildRepoContext(o.ProjectContext); rc != nil && rc.RepoRoot != "" {
 			reposAccessed[rc.RepoRoot] = true
 		}
-		seg := conv.StartSegment(route.Decision.Kitchen, buildRepoContext(o.ProjectContext))
+		seg, startedNewSegment := ensureActiveSegment(conv, route.Decision.Kitchen, buildRepoContext(o.ProjectContext))
 		if autoSwitch {
 			switchText := formatSwitchSystemLine(fromKitchen, route.Decision.Kitchen, route.Decision.Reason)
 			sink.Emit(observability.Event{
@@ -133,15 +145,17 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 				})
 			}
 		}
-		sink.Emit(observability.Event{
-			ConversationID: conv.ID,
-			BlockID:        conv.BlockID,
-			SegmentID:      seg.ID,
-			Kind:           "segment_start",
-			Provider:       route.Decision.Kitchen,
-			Text:           route.Decision.Reason,
-			At:             time.Now(),
-		})
+		if startedNewSegment {
+			sink.Emit(observability.Event{
+				ConversationID: conv.ID,
+				BlockID:        conv.BlockID,
+				SegmentID:      seg.ID,
+				Kind:           "segment_start",
+				Provider:       route.Decision.Kitchen,
+				Text:           route.Decision.Reason,
+				At:             time.Now(),
+			})
+		}
 
 		if onRoute != nil {
 			onRoute(route)
@@ -596,9 +610,30 @@ func buildRepoContext(pc *project.ProjectContext) *conversation.RepoContext {
 	return ctx
 }
 
+func ensureActiveSegment(conv *conversation.Conversation, provider string, repoContext *conversation.RepoContext) (conversation.ProviderSegment, bool) {
+	if conv != nil {
+		if active := conv.ActiveSegment(); active != nil && active.Provider == provider {
+			return *active, false
+		}
+	}
+	return conv.StartSegment(provider, repoContext), true
+}
+
 // applySubstrateState merges fields from a substrate ConversationRecord into a
 // local Conversation, filling gaps only — locally-set values are never overwritten.
 func applySubstrateState(conv *conversation.Conversation, rec substrate.ConversationRecord) {
+	if shouldRestoreTranscript(conv, rec) {
+		conv.Transcript = append([]conversation.Turn(nil), rec.Transcript...)
+	}
+	if len(conv.Segments) == 0 && len(rec.Segments) > 0 {
+		conv.Segments = append([]conversation.ProviderSegment(nil), rec.Segments...)
+	}
+	if len(conv.Checkpoints) == 0 && len(rec.Checkpoints) > 0 {
+		conv.Checkpoints = append([]conversation.ConversationCheckpoint(nil), rec.Checkpoints...)
+	}
+	if conv.ActiveSegmentID == "" {
+		conv.ActiveSegmentID = rec.ActiveSegmentID
+	}
 	if conv.Memory.WorkingSummary == "" {
 		conv.Memory.WorkingSummary = rec.Memory.WorkingSummary
 	}
@@ -607,6 +642,9 @@ func applySubstrateState(conv *conversation.Conversation, rec substrate.Conversa
 	}
 	if len(conv.Memory.ActiveGoals) == 0 {
 		conv.Memory.ActiveGoals = rec.Memory.ActiveGoals
+	}
+	if conv.Memory.StickyKitchen == "" {
+		conv.Memory.StickyKitchen = rec.Memory.StickyKitchen
 	}
 	if len(conv.Context.SpecRefs) == 0 {
 		conv.Context.SpecRefs = rec.Context.SpecRefs
@@ -620,4 +658,18 @@ func applySubstrateState(conv *conversation.Conversation, rec substrate.Conversa
 	if len(conv.Context.ProjectHits) == 0 {
 		conv.Context.ProjectHits = rec.Context.ProjectHits
 	}
+}
+
+func shouldRestoreTranscript(conv *conversation.Conversation, rec substrate.ConversationRecord) bool {
+	if conv == nil || len(rec.Transcript) == 0 {
+		return false
+	}
+	if len(conv.Transcript) == 0 {
+		return true
+	}
+	if len(conv.Transcript) != 1 {
+		return false
+	}
+	turn := conv.Transcript[0]
+	return turn.Role == conversation.RoleUser && turn.Provider == "user" && strings.TrimSpace(turn.Text) == strings.TrimSpace(rec.Prompt)
 }
