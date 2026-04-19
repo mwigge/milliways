@@ -25,6 +25,14 @@ type Signals struct {
 	FileStability string // "stable", "active", "volatile", "" if unknown
 	FileAuthors   int
 
+	// Editor context signals
+	LSPErrors    int
+	LSPWarnings  int
+	InTestFile   bool
+	Dirty        bool
+	Language     string
+	FilesChanged int
+
 	// QualityGraph signals
 	Complexity int
 	Coverage   float64 // 0-100 percentage, -1 means unknown
@@ -98,6 +106,24 @@ func (s Signals) Summary() string {
 	}
 	if s.Complexity > 0 {
 		parts = append(parts, fmt.Sprintf("complexity=%d", s.Complexity))
+	}
+	if s.LSPErrors > 0 {
+		parts = append(parts, fmt.Sprintf("lsp_errors=%d", s.LSPErrors))
+	}
+	if s.LSPWarnings > 0 {
+		parts = append(parts, fmt.Sprintf("lsp_warnings=%d", s.LSPWarnings))
+	}
+	if s.InTestFile {
+		parts = append(parts, "in_test_file=true")
+	}
+	if s.Dirty {
+		parts = append(parts, "dirty=true")
+	}
+	if s.Language != "" {
+		parts = append(parts, fmt.Sprintf("language=%s", s.Language))
+	}
+	if s.FilesChanged > 0 {
+		parts = append(parts, fmt.Sprintf("files_changed=%d", s.FilesChanged))
 	}
 	if s.Coverage >= 0 {
 		parts = append(parts, fmt.Sprintf("coverage=%.0f%%", s.Coverage))

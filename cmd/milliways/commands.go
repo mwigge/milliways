@@ -212,7 +212,7 @@ func selectDecision(cfg *maitre.Config, reg *kitchen.Registry, som *sommelier.So
 	}
 
 	var decision sommelier.Decision
-	signals := assembleSignals(cfg, pdb, prompt, false)
+	signals := assembleSignals(cfg, pdb, prompt, false, nil)
 	catalog := maitre.ScanSkills()
 	var hint *sommelier.SkillHint
 	if catalog.Total() > 0 {

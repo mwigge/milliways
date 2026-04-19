@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/mwigge/milliways/internal/bridge"
 	"github.com/mwigge/milliways/internal/conversation"
+	"github.com/mwigge/milliways/internal/editorcontext"
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/ledger"
@@ -36,8 +38,10 @@ var version = "0.1.0"
 // dispatchOpts groups the parameters for the dispatch function.
 type dispatchOpts struct {
 	prompt, kitchenForce, configPath, switchTo, sessionName, projectRoot string
-	jsonOutput, explain, verbose                                         bool
+	contextJSON, contextFile                                             string
+	jsonOutput, explain, verbose, contextStdin                           bool
 	useLegacyConversation                                                bool
+	bundle                                                               *editorcontext.Bundle
 	timeout                                                              time.Duration
 }
 
@@ -76,6 +80,9 @@ func rootCmd() *cobra.Command {
 		sessionName           string
 		switchToKitchen       string
 		projectRoot           string
+		contextJSON           string
+		contextFile           string
+		contextStdin          bool
 		timeoutDur            time.Duration
 	)
 
@@ -163,6 +170,10 @@ based on what each tool does best.
 			if detachFlag {
 				return dispatchDetach(prompt, kitchenFlag, verbose, configPath)
 			}
+			bundle, err := loadDispatchContextBundle(os.Stdin, contextStdin, contextJSON, contextFile)
+			if err != nil {
+				return err
+			}
 			return dispatch(dispatchOpts{
 				prompt:                prompt,
 				kitchenForce:          kitchenFlag,
@@ -170,10 +181,14 @@ based on what each tool does best.
 				switchTo:              switchToKitchen,
 				sessionName:           sessionName,
 				projectRoot:           projectRoot,
+				contextJSON:           contextJSON,
+				contextFile:           contextFile,
 				jsonOutput:            jsonFlag,
 				explain:               explainFlag,
 				verbose:               verbose,
+				contextStdin:          contextStdin,
 				useLegacyConversation: useLegacyConversation,
+				bundle:                bundle,
 				timeout:               timeoutDur,
 			})
 		},
@@ -194,6 +209,9 @@ based on what each tool does best.
 	cmd.Flags().StringVar(&sessionName, "session", "", "Named TUI session")
 	cmd.Flags().StringVar(&switchToKitchen, "switch-to", "", "Switch an existing session to a kitchen in headless mode")
 	cmd.Flags().StringVar(&projectRoot, "project-root", "", "Override project repository root")
+	cmd.Flags().StringVar(&contextJSON, "context-json", "", "Pass editor context bundle JSON directly on the CLI")
+	cmd.Flags().StringVar(&contextFile, "context-file", "", "Read editor context bundle JSON from a file")
+	cmd.Flags().BoolVar(&contextStdin, "context-stdin", false, "Read editor context bundle JSON from stdin")
 	cmd.Flags().BoolVar(&useLegacyConversation, "use-legacy-conversation", false, "Use pantry conversation storage instead of substrate")
 	cmd.Flags().DurationVar(&timeoutDur, "timeout", 5*time.Minute, "Dispatch timeout for headless mode")
 
@@ -296,7 +314,7 @@ func dispatch(opts dispatchOpts) error {
 	if opts.kitchenForce != "" {
 		decision = som.ForceRoute(opts.kitchenForce)
 	} else {
-		signals := assembleSignals(cfg, pdb, opts.prompt, opts.verbose)
+		signals := assembleSignals(cfg, pdb, opts.prompt, opts.verbose, opts.bundle)
 
 		var skillHint *sommelier.SkillHint
 		catalog := maitre.ScanSkills()
@@ -980,8 +998,44 @@ func printJSON(v any, asJSON bool) error {
 	return nil
 }
 
-func assembleSignals(_ *maitre.Config, pdb *pantry.DB, prompt string, verbose bool) *sommelier.Signals {
-	if pdb == nil {
+func loadDispatchContextBundle(stdin io.Reader, contextStdin bool, contextJSON, contextFile string) (*editorcontext.Bundle, error) {
+	if contextStdin {
+		data, err := io.ReadAll(stdin)
+		if err != nil {
+			return nil, fmt.Errorf("reading --context-stdin: %w", err)
+		}
+		bundle, err := editorcontext.ParseBundle(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing --context-stdin: %w", err)
+		}
+		return bundle, nil
+	}
+
+	if strings.TrimSpace(contextJSON) != "" {
+		bundle, err := editorcontext.ParseBundle([]byte(contextJSON))
+		if err != nil {
+			return nil, fmt.Errorf("parsing --context-json: %w", err)
+		}
+		return bundle, nil
+	}
+
+	if strings.TrimSpace(contextFile) != "" {
+		data, err := os.ReadFile(contextFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading --context-file: %w", err)
+		}
+		bundle, err := editorcontext.ParseBundle(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing --context-file: %w", err)
+		}
+		return bundle, nil
+	}
+
+	return nil, nil
+}
+
+func assembleSignals(_ *maitre.Config, pdb *pantry.DB, prompt string, verbose bool, bundle *editorcontext.Bundle) *sommelier.Signals {
+	if pdb == nil && bundle == nil {
 		if verbose {
 			fmt.Fprintf(os.Stderr, "[pantry] signals unavailable: no database\n")
 		}
@@ -990,18 +1044,52 @@ func assembleSignals(_ *maitre.Config, pdb *pantry.DB, prompt string, verbose bo
 
 	signals := sommelier.NewSignals()
 
-	taskType := sommelier.ClassifyTaskType(prompt)
-	best, rate, err := pdb.Routing().BestKitchen(taskType, "", 5)
-	if err == nil && best != "" {
-		signals.LearnedKitchen = best
-		signals.LearnedRate = rate
+	if pdb == nil {
+		if verbose {
+			fmt.Fprintf(os.Stderr, "[pantry] signals unavailable: no database\n")
+		}
+	} else {
+		taskType := sommelier.ClassifyTaskType(prompt)
+		best, rate, err := pdb.Routing().BestKitchen(taskType, "", 5)
+		if err == nil && best != "" {
+			signals.LearnedKitchen = best
+			signals.LearnedRate = rate
+		}
+
+		if verbose && signals.LearnedKitchen != "" {
+			fmt.Fprintf(os.Stderr, "[pantry] learned: %s@%.0f%% for task_type=%s\n", signals.LearnedKitchen, signals.LearnedRate, taskType)
+		}
 	}
 
-	if verbose && signals.LearnedKitchen != "" {
-		fmt.Fprintf(os.Stderr, "[pantry] learned: %s@%.0f%% for task_type=%s\n", signals.LearnedKitchen, signals.LearnedRate, taskType)
-	}
+	mergeEditorSignals(signals, bundle)
 
 	return signals
+}
+
+func mergeEditorSignals(signals *sommelier.Signals, bundle *editorcontext.Bundle) {
+	if signals == nil || bundle == nil {
+		return
+	}
+
+	editorSignals := bundle.Signals()
+	if editorSignals.LSPErrors > 0 {
+		signals.LSPErrors = editorSignals.LSPErrors
+	}
+	if editorSignals.LSPWarnings > 0 {
+		signals.LSPWarnings = editorSignals.LSPWarnings
+	}
+	if editorSignals.Dirty {
+		signals.Dirty = true
+	}
+	if editorSignals.InTestFile {
+		signals.InTestFile = true
+	}
+	if editorSignals.Language != "" {
+		signals.Language = editorSignals.Language
+	}
+	if editorSignals.FilesChanged > signals.FilesChanged {
+		signals.FilesChanged = editorSignals.FilesChanged
+	}
 }
 
 func openPantryDB() (*pantry.DB, error) {
