@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mwigge/milliways/internal/jobs"
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/ledger"
@@ -293,5 +294,16 @@ func scheduleJobsRefresh(store *pantry.TicketStore) tea.Cmd {
 			return jobsRefreshMsg(nil)
 		}
 		return jobsRefreshMsg(tickets)
+	})
+}
+
+// openhandsJobsTickCmd fires every 2 seconds to refresh the OpenHands job list.
+func openhandsJobsTickCmd(reader *jobs.Reader) tea.Cmd {
+	if reader == nil {
+		return nil
+	}
+
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+		return openhandsJobsTickMsg(t)
 	})
 }

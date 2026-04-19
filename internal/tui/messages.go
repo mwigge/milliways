@@ -26,12 +26,12 @@ type blockRoutedMsg struct {
 
 // blockDoneMsg signals dispatch completion for a block.
 type blockDoneMsg struct {
-	BlockID       string
-	Result        kitchen.Result
-	Decision      sommelier.Decision
-	Conversation  *conversation.Conversation
-	Err           error
-	Duration      time.Duration
+	BlockID      string
+	Result       kitchen.Result
+	Decision     sommelier.Decision
+	Conversation *conversation.Conversation
+	Err          error
+	Duration     time.Duration
 }
 
 // tickMsg is a tick for elapsed timers on all active blocks.
@@ -44,6 +44,9 @@ type jobsRefreshMsg []pantry.Ticket
 type runtimeEventMsg struct {
 	Event observability.Event
 }
+
+// openhandsJobsTickMsg carries the current time from the OpenHands polling tick.
+type openhandsJobsTickMsg time.Time
 
 // pipelineStepMsg signals a pipeline step lifecycle change.
 type pipelineStepMsg struct {

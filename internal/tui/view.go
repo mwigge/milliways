@@ -32,10 +32,14 @@ func (m Model) View() string {
 
 	// Ledger panel (right bottom).
 	ledgerHeight := (m.height - 6) - blockListHeight
+	ledgerContent := m.renderLedger()
+	if jobsPanel := m.renderJobsPanel(); jobsPanel != "" {
+		ledgerContent = ledgerContent + "\n\n" + jobsPanel
+	}
 	ledgerPanel := panelBorder.
 		Width(sideWidth).
 		Height(ledgerHeight).
-		Render(m.renderLedger())
+		Render(ledgerContent)
 
 	// Combine panels.
 	mainArea := lipgloss.JoinHorizontal(lipgloss.Top,
@@ -150,6 +154,62 @@ func (m Model) renderLedger() string {
 	if len(activity) > 0 {
 		lines = append(lines, "", mutedStyle.Render("Activity"))
 		lines = append(lines, activity...)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// openhandsStatusIcon returns a Unicode status indicator for OpenHands job status.
+func openhandsStatusIcon(status string) string {
+	switch status {
+	case "in_progress", "claimed":
+		return "⠿"
+	case "done":
+		return "✓"
+	case "failed":
+		return "✗"
+	case "pending":
+		return "○"
+	default:
+		return "·"
+	}
+}
+
+// renderJobsPanel renders both milliways tickets and OpenHands jobs in the sidebar.
+func (m Model) renderJobsPanel() string {
+	if m.height < 20 {
+		return ""
+	}
+
+	var lines []string
+	lines = append(lines, mutedStyle.Render("Jobs"))
+
+	if len(m.jobTickets) > 0 {
+		lines = append(lines, mutedStyle.Render("milliways"))
+		for i, t := range m.jobTickets {
+			if i >= 6 {
+				break
+			}
+			lines = append(lines, fmt.Sprintf("%s %s %s", StatusIcon(t.Status), truncate(t.Prompt, 20), t.Kitchen))
+		}
+	} else if m.ticketStore != nil {
+		lines = append(lines, mutedStyle.Render("milliways (no jobs yet)"))
+	} else {
+		lines = append(lines, mutedStyle.Render("milliways (no db)"))
+	}
+
+	if len(m.openhandsJobs) > 0 {
+		lines = append(lines, "", mutedStyle.Render("OpenHands"))
+		for i, j := range m.openhandsJobs {
+			if i >= 6 {
+				break
+			}
+			lines = append(lines, fmt.Sprintf("%s %s %s", openhandsStatusIcon(j.Status), truncate(j.Title, 20), j.Wing))
+		}
+	} else if m.openhandsJobsReader != nil {
+		lines = append(lines, "", mutedStyle.Render("OpenHands (no jobs yet)"))
+	} else {
+		lines = append(lines, "", mutedStyle.Render("OpenHands (no db)"))
 	}
 
 	return strings.Join(lines, "\n")
