@@ -390,7 +390,7 @@ func (m Model) renderSystemPanel(width, height int) string {
 
 ## Course SPS-5: Prompt library (snippets) panel [1 SP]
 
-### SPS-5.1 — snippet data model + loader
+### [x] SPS-5.1 — snippet data model + loader
 
 ```go
 type snippet struct {
@@ -419,13 +419,13 @@ tags = ["read", "explain"]
 lang = "en"
 ```
 
-### SPS-5.2 — Filter navigation
+### [x] SPS-5.2 — Filter navigation
 
 In `Update()` key handling for `SidePanelSnippets`:
 - `↑/↓` moves `m.snippetSelected`
 - `Enter` inserts `m.snippetIndex[m.snippetSelected].Body` into `m.input`
 
-### SPS-5.3 — renderSnippetsPanel implementation
+### [x] SPS-5.3 — renderSnippetsPanel implementation
 
 ```go
 func (m Model) renderSnippetsPanel(width, height int) string {
@@ -448,7 +448,7 @@ func (m Model) renderSnippetsPanel(width, height int) string {
 }
 ```
 
-### SPS-5.4 — Tests
+### [x] SPS-5.4 — Tests
 
 - `loadSnippets` creates default file if absent
 - Filter narrows results

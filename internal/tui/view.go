@@ -335,7 +335,28 @@ func TierBadge(tier string) string {
 }
 
 func (m Model) renderSnippetsPanel(width, height int) string {
-	return mutedStyle.Render("(snippets panel)")
+	if len(m.snippetIndex) == 0 {
+		if m.snippetFilter != "" {
+			return mutedStyle.Render("(no snippets match — ctrl+h to clear)")
+		}
+		return mutedStyle.Render("(no snippets — add to ~/.config/milliways/snippets.toml)")
+	}
+
+	innerWidth := max(1, width-4)
+	lines := make([]string, 0, len(m.snippetIndex)+3)
+	for i, item := range m.snippetIndex {
+		prefix := "  "
+		if i == m.snippetSelected {
+			prefix = "> "
+		}
+		name := truncate(item.Name, max(1, innerWidth-2))
+		lines = append(lines, prefix+mutedStyle.Render(name))
+	}
+	if m.snippetFilter != "" {
+		lines = append(lines, "", fmt.Sprintf("Filter: %s", m.snippetFilter))
+	}
+	lines = append(lines, "", mutedStyle.Render("[enter] insert  [↑↓] navigate  [ctrl+h] clear"))
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderDiffPanel(width, height int) string {
