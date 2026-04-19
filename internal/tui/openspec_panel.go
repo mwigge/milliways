@@ -268,6 +268,14 @@ func isSidePanelKey(sidePanelIdx int, msg tea.KeyMsg) bool {
 	if sidePanelIdx == int(SidePanelSnippets) {
 		return isSnippetPanelKey(msg)
 	}
+	if sidePanelIdx == int(SidePanelDiff) {
+		switch msg.String() {
+		case "up", "down", "ctrl+u", "ctrl+d":
+			return true
+		default:
+			return false
+		}
+	}
 	if sidePanelIdx == int(SidePanelOpenSpec) {
 		switch msg.String() {
 		case "up", "down", "enter", "b":
