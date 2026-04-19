@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -96,6 +97,7 @@ based on what each tool does best.
   milliways "explain the auth flow"        → routes to claude
   milliways "code a rate limiter"          → routes to opencode
   milliways "search for DORA-EU Article 25" → routes to gemini
+	  milliways login <kitchen>              → authenticate to a specific kitchen
   milliways --kitchen aider "refactor auth" → forces aider`,
 		Version: version,
 		Args:    cobra.ArbitraryArgs,
@@ -198,7 +200,7 @@ based on what each tool does best.
 	cmd.Flags().StringVarP(&kitchenFlag, "kitchen", "k", "", "Force a specific kitchen (e.g., claude, opencode, gemini)")
 	cmd.Flags().BoolVarP(&jsonFlag, "json", "j", false, "Output structured JSON result")
 	cmd.Flags().BoolVarP(&explainFlag, "explain", "e", false, "Show routing decision without executing")
-	cmd.Flags().StringVarP(&configPath, "config", "c", maitre.DefaultConfigPath(), "Path to carte.yaml")
+	cmd.PersistentFlags().StringVarP(&configPath, "config", "c", maitre.DefaultConfigPath(), "Path to carte.yaml")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print sommelier reasoning to stderr")
 	cmd.Flags().StringVarP(&recipeFlag, "recipe", "r", "", "Execute a multi-course recipe")
 	cmd.Flags().BoolVar(&asyncFlag, "async", false, "Dispatch asynchronously, return ticket ID")
@@ -222,8 +224,112 @@ based on what each tool does best.
 	cmd.AddCommand(ticketCmd())
 	cmd.AddCommand(ticketsCmd())
 	cmd.AddCommand(rateCmd())
+	cmd.AddCommand(loginCmd())
 
 	return cmd
+}
+
+func loginCmd() *cobra.Command {
+	var listFlag bool
+
+	cmd := &cobra.Command{
+		Use:   "login <kitchen>",
+		Short: "Authenticate to a kitchen",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if listFlag {
+				configPath, err := cmd.Root().PersistentFlags().GetString("config")
+				if err != nil || strings.TrimSpace(configPath) == "" {
+					return listLoginStatus()
+				}
+				return listLoginStatusWithConfig(configPath)
+			}
+			if len(args) == 0 {
+				fmt.Println("usage: milliways login <kitchen>")
+				fmt.Println("  milliways login --list  show all kitchens and auth status")
+				return fmt.Errorf("kitchen name required")
+			}
+
+			kitchenName := args[0]
+			if err := maitre.LoginKitchen(kitchenName); err != nil {
+				fmt.Fprintf(os.Stderr, "Login failed: %v\n", err)
+				return err
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&listFlag, "list", false, "List all kitchens with auth status")
+	return cmd
+}
+
+func listLoginStatus() error {
+	return listLoginStatusWithConfig(maitre.DefaultConfigPath())
+}
+
+func listLoginStatusWithConfig(configPath string) error {
+	cfg, err := maitre.LoadConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	health := maitre.Diagnose(buildRegistry(cfg))
+	sort.Slice(health, func(i, j int) bool {
+		return health[i].Name < health[j].Name
+	})
+
+	fmt.Println("Kitchen      Status              Auth Method           Action")
+	fmt.Println("───────      ──────              ───────────           ──────")
+	for _, h := range health {
+		fmt.Printf("%-12s %s %-18s %-21s %s\n",
+			h.Name,
+			h.Status.Symbol(),
+			h.Status,
+			authMethodForKitchen(h.Name),
+			loginActionForKitchen(h),
+		)
+	}
+
+	return nil
+}
+
+func authMethodForKitchen(name string) string {
+	switch name {
+	case "claude", "gemini":
+		return "Browser OAuth"
+	case "opencode":
+		return "Interactive TUI"
+	case "minimax":
+		return "API key (carte.yaml)"
+	case "groq":
+		return "Env var (GROQ_API_KEY)"
+	case "ollama":
+		return "None"
+	case "aider", "cline":
+		return "Env var (ANTHROPIC_API_KEY)"
+	case "goose":
+		return "Env var (GOOSE_API_KEY)"
+	default:
+		return "Unknown"
+	}
+}
+
+func loginActionForKitchen(h maitre.KitchenHealth) string {
+	switch h.Status {
+	case kitchen.Ready:
+		return "ready"
+	case kitchen.Disabled:
+		return "(disabled in carte.yaml)"
+	case kitchen.NotInstalled:
+		if h.InstallCmd != "" {
+			return h.InstallCmd
+		}
+		return fmt.Sprintf("milliways setup %s", h.Name)
+	case kitchen.NeedsAuth:
+		return fmt.Sprintf("milliways login %s", h.Name)
+	default:
+		return "check configuration"
+	}
 }
 
 func dispatch(opts dispatchOpts) error {

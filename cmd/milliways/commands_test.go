@@ -132,6 +132,69 @@ func TestRootCmd_RegistersProjectRootFlag(t *testing.T) {
 	}
 }
 
+func TestRootCmd_LoginRequiresKitchenWithoutList(t *testing.T) {
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"login"})
+
+	stdout, stderr, err := captureOutput(t, cmd.Execute)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "kitchen name required") {
+		t.Fatalf("error = %v, want kitchen requirement", err)
+	}
+	_ = stdout
+	_ = stderr
+}
+
+func TestRootCmd_LoginListShowsStatuses(t *testing.T) {
+	configHome := t.TempDir()
+	configPath := filepath.Join(configHome, "carte.yaml")
+	if err := os.WriteFile(configPath, []byte(`kitchens:
+  claude:
+    cmd: true
+    enabled: true
+  groq:
+    http_client:
+      base_url: https://api.example.test
+      auth_key: GROQ_API_KEY
+      auth_type: bearer
+      model: mixtral
+  ollama:
+    http_client:
+      base_url: http://localhost:11434
+      auth_key: ""
+      auth_type: bearer
+      model: llama3
+  goose:
+    cmd: missing-goose
+    enabled: false
+routing:
+  default: claude
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile(config): %v", err)
+	}
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"--config", configPath, "login", "--list"})
+
+	stdout, _, err := captureOutput(t, cmd.Execute)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{
+		"Kitchen      Status              Auth Method           Action",
+		"claude       ✓ ready              Browser OAuth         ready",
+		"groq         ! needs-auth         Env var (GROQ_API_KEY) milliways login groq",
+		"goose        ⊘ disabled           Env var (GOOSE_API_KEY) (disabled in carte.yaml)",
+		"ollama       ✓ ready              None                  ready",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
 func TestMakeRuntimeSinkIncludesOTelWithoutPantryDB(t *testing.T) {
 	t.Parallel()
 
