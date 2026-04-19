@@ -20,7 +20,7 @@ func TestHandleKey_EnterExecutesSwitchPaletteCommandWithArgument(t *testing.T) {
 	t.Parallel()
 
 	m := NewModel(nil)
-	m.kitchenStates = []KitchenState{{Name: "claude", Status: "ready"}}
+	m.kitchenStates = []KitchenState{{Name: "claude", Status: "ready", Remaining: -1, Trend: ""}}
 	m.overlayActive = true
 	m.overlayMode = OverlayPalette
 	m.palette = PaletteState{Matches: FilterPalette("switch claude")}
@@ -84,7 +84,7 @@ func TestHandleSwitchCommand_TransitionsConversationAndRendersSwitchState(t *tes
 	t.Parallel()
 
 	m := NewModel(nil)
-	m.kitchenStates = []KitchenState{{Name: "gpt", Status: "ready"}}
+	m.kitchenStates = []KitchenState{{Name: "gpt", Status: "ready", Remaining: -1, Trend: ""}}
 
 	conv := conversation.New("conv-1", "b1", "finish the task")
 	conv.AppendTurn(conversation.RoleAssistant, "claude", "working on it")
@@ -326,7 +326,7 @@ func TestHandleSwitchCommand_MissingConversationStateShowsHelpfulMessage(t *test
 			t.Parallel()
 
 			m := NewModel(nil)
-			m.kitchenStates = []KitchenState{{Name: "gpt", Status: "ready"}}
+			m.kitchenStates = []KitchenState{{Name: "gpt", Status: "ready", Remaining: -1, Trend: ""}}
 			tc.setup(&m)
 
 			m.handleSwitchCommand("gpt")
@@ -354,8 +354,8 @@ func TestExecutePaletteCommand_SwitchUnavailableKitchenListsReadyKitchens(t *tes
 
 	m := NewModel(nil)
 	m.kitchenStates = []KitchenState{
-		{Name: "claude", Status: "exhausted", ResetsAt: "22:00"},
-		{Name: "gpt", Status: "ready"},
+		{Name: "claude", Status: "exhausted", ResetsAt: "22:00", Remaining: -1, Trend: ""},
+		{Name: "gpt", Status: "ready", Remaining: -1, Trend: ""},
 	}
 
 	m.executePaletteCommand("switch claude")
@@ -380,9 +380,9 @@ func TestExecutePaletteCommand_KitchensListsStatuses(t *testing.T) {
 
 	m := NewModel(nil)
 	m.kitchenStates = []KitchenState{
-		{Name: "claude", Status: "ready"},
-		{Name: "gpt", Status: "warning", UsageRatio: 0.85},
-		{Name: "copilot", Status: "exhausted", ResetsAt: "22:00"},
+		{Name: "claude", Status: "ready", Remaining: -1, Trend: ""},
+		{Name: "gpt", Status: "warning", UsageRatio: 0.85, Remaining: -1, Trend: ""},
+		{Name: "copilot", Status: "exhausted", ResetsAt: "22:00", Remaining: -1, Trend: ""},
 	}
 
 	m.executePaletteCommand("kitchens")
@@ -402,7 +402,7 @@ func TestExecutePaletteCommand_BackReversesMostRecentSwitch(t *testing.T) {
 	t.Parallel()
 
 	m := NewModel(nil)
-	m.kitchenStates = []KitchenState{{Name: "claude", Status: "ready"}, {Name: "gpt", Status: "ready"}}
+	m.kitchenStates = []KitchenState{{Name: "claude", Status: "ready", Remaining: -1, Trend: ""}, {Name: "gpt", Status: "ready", Remaining: -1, Trend: ""}}
 
 	conv := conversation.New("conv-1", "b1", "finish the task")
 	conv.AppendTurn(conversation.RoleAssistant, "claude", "working on it")
@@ -493,7 +493,7 @@ func TestExecutePaletteCommand_BackReversesAutoSwitch(t *testing.T) {
 	}
 
 	m := NewModel(nil)
-	m.kitchenStates = []KitchenState{{Name: "claude", Status: "ready"}, {Name: "gemini", Status: "ready"}}
+	m.kitchenStates = []KitchenState{{Name: "claude", Status: "ready", Remaining: -1, Trend: ""}, {Name: "gemini", Status: "ready", Remaining: -1, Trend: ""}}
 
 	block := Block{ID: "b1", Prompt: "search the web for the latest incident notes", StartedAt: time.Now(), State: StateStreaming}
 	conv, err := orch.Run(context.Background(), orchestrator.RunRequest{
@@ -610,8 +610,8 @@ func TestExecutePaletteCommand_BackReusesUnavailableKitchenHandling(t *testing.T
 
 	m := NewModel(nil)
 	m.kitchenStates = []KitchenState{
-		{Name: "claude", Status: "exhausted", ResetsAt: "22:00"},
-		{Name: "gpt", Status: "ready"},
+		{Name: "claude", Status: "exhausted", ResetsAt: "22:00", Remaining: -1, Trend: ""},
+		{Name: "gpt", Status: "ready", Remaining: -1, Trend: ""},
 	}
 	m.runtimeEvents = []observability.Event{{
 		Kind: "switch",

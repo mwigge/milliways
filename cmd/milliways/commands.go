@@ -139,7 +139,8 @@ func buildKitchenStates(cfg *maitre.Config, reg *kitchen.Registry, pdb *pantry.D
 
 	states := make([]tui.KitchenState, 0, len(names))
 	for _, name := range names {
-		state := tui.KitchenState{Name: name}
+		state := tui.KitchenState{Name: name, Remaining: -1}
+		kitchenCfg := cfg.Kitchens[name]
 		k, ok := reg.Get(name)
 		if !ok {
 			state.Status = "not-installed"
@@ -148,13 +149,23 @@ func buildKitchenStates(cfg *maitre.Config, reg *kitchen.Registry, pdb *pantry.D
 		}
 		state.Status = k.Status().String()
 		if pdb != nil {
-			if resetsAt, err := pdb.Quotas().ResetsAt(name); err == nil && !resetsAt.IsZero() && resetsAt.After(time.Now()) {
-				state.Status = "exhausted"
-				state.ResetsAt = resetsAt.In(time.Local).Format("15:04")
-			} else if limit := cfg.Kitchens[name].DailyLimit; limit > 0 {
-				if ratio, err := pdb.Quotas().UsageRatio(name, limit); err == nil && ratio >= cfg.Kitchens[name].EffectiveWarnThreshold() && ratio < 1.0 && state.Status == "ready" {
-					state.Status = "warning"
+			state.Trend, _ = pdb.Quotas().Trend(name)
+
+			exhausted, err := pdb.Quotas().IsExhausted(name, kitchenCfg.DailyLimit)
+			if err == nil && exhausted {
+				if resetsAt, resetErr := pdb.Quotas().ResetsAt(name, kitchenCfg.DailyLimit); resetErr == nil && !resetsAt.IsZero() && resetsAt.After(time.Now()) {
+					state.Status = "exhausted"
+					state.ResetsAt = resetsAt.In(time.Local).Format("15:04")
+				}
+			}
+
+			if limit := kitchenCfg.DailyLimit; limit > 0 {
+				state.Remaining, _ = pdb.Quotas().Remaining(name, limit)
+				if ratio, err := pdb.Quotas().UsageRatio(name, limit); err == nil {
 					state.UsageRatio = ratio
+					if ratio >= kitchenCfg.EffectiveWarnThreshold() && ratio < 1.0 && state.Status == "ready" {
+						state.Status = "warning"
+					}
 				}
 			}
 		}
