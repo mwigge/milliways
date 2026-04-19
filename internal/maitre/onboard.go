@@ -2,10 +2,16 @@ package maitre
 
 import (
 	"fmt"
+	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mwigge/milliways/internal/kitchen"
+	"golang.org/x/term"
+	"gopkg.in/yaml.v3"
 )
 
 // KitchenHealth summarizes a kitchen's readiness.
@@ -129,4 +135,213 @@ func SetupKitchen(k kitchen.Kitchen) error {
 	}
 
 	return fmt.Errorf("unknown status for %s: %s", k.Name(), status)
+}
+
+func isTTY() bool {
+	return term.IsTerminal(int(os.Stdout.Fd()))
+}
+
+// UpdateKitchenAuth updates the named kitchen's HTTP auth key in carte.yaml.
+func UpdateKitchenAuth(kitchenName, apiKey string) error {
+	configPath := DefaultConfigPath()
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("reading config %s: %w", configPath, err)
+	}
+
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return fmt.Errorf("parsing config %s: %w", configPath, err)
+	}
+
+	document := &root
+	if root.Kind == yaml.DocumentNode && len(root.Content) > 0 {
+		document = root.Content[0]
+	}
+
+	kitchensNode, ok := yamlMapValue(document, "kitchens")
+	if !ok {
+		return fmt.Errorf("config %s does not define kitchens", configPath)
+	}
+
+	kitchenNode, ok := yamlMapValue(kitchensNode, kitchenName)
+	if !ok {
+		return fmt.Errorf("kitchen %q not found in %s", kitchenName, configPath)
+	}
+
+	httpClientNode, ok := yamlMapValue(kitchenNode, "http_client")
+	if !ok {
+		return fmt.Errorf("kitchen %q is not an HTTPClient type", kitchenName)
+	}
+
+	setYAMLMapValue(httpClientNode, "auth_key", strings.TrimSpace(apiKey))
+
+	backupPath := configPath + ".bak"
+	if err := os.WriteFile(backupPath, data, 0o644); err != nil {
+		return fmt.Errorf("writing backup %s: %w", backupPath, err)
+	}
+
+	updated, err := yaml.Marshal(&root)
+	if err != nil {
+		return fmt.Errorf("encoding updated config %s: %w", configPath, err)
+	}
+
+	tempFile, err := os.CreateTemp(filepath.Dir(configPath), filepath.Base(configPath)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp config for %s: %w", configPath, err)
+	}
+	tempPath := tempFile.Name()
+	defer func() {
+		_ = os.Remove(tempPath)
+	}()
+
+	if _, err := tempFile.Write(updated); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("writing temp config for %s: %w", configPath, err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("closing temp config for %s: %w", configPath, err)
+	}
+
+	if err := os.Rename(tempPath, configPath); err != nil {
+		return fmt.Errorf("replacing config %s: %w", configPath, err)
+	}
+
+	return nil
+}
+
+// LoginKitchen starts the appropriate authentication flow for a kitchen.
+func LoginKitchen(kitchenName string) error {
+	switch kitchenName {
+	case "claude":
+		return loginCLIOAuth("claude", "claude", "auth", "login")
+	case "gemini":
+		return loginCLIOAuth("gemini", "gemini", "auth", "login")
+	case "opencode":
+		return loginInteractiveTUI("opencode", "opencode", "providers")
+	case "minimax":
+		return loginAPIKey("minimax")
+	case "groq":
+		return loginEnvVar("groq", "GROQ_API_KEY", "https://console.groq.com/keys")
+	case "ollama":
+		return loginOllama()
+	case "aider":
+		return loginEnvVar("aider", "ANTHROPIC_API_KEY", "https://aider.chat/docs/usage.html")
+	case "goose":
+		return loginEnvVar("goose", "GOOSE_API_KEY", "https://github.com/gooseai/goose")
+	case "cline":
+		return loginEnvVar("cline", "ANTHROPIC_API_KEY", "https://github.com/cline/cline")
+	default:
+		return fmt.Errorf("unknown kitchen: %s", kitchenName)
+	}
+}
+
+func loginCLIOAuth(name, cli string, subcmd ...string) error {
+	args := strings.Join(append([]string{cli}, subcmd...), " ")
+	fmt.Printf("Running %s login: %s\n", name, args)
+
+	cmd := exec.Command(cli, subcmd...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("running %s login command %q: %w", name, args, err)
+	}
+
+	return nil
+}
+
+func loginInteractiveTUI(name, cli string, args ...string) error {
+	cmd := exec.Command(cli, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("running %s interactive login: %w", name, err)
+	}
+
+	return nil
+}
+
+func loginAPIKey(name string) error {
+	if !isTTY() {
+		fmt.Printf("%s login requires an interactive terminal. Re-run this command in a TTY to enter your API key.\n", name)
+		return nil
+	}
+
+	fmt.Print("Enter your API key: ")
+	secret, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println()
+	if err != nil {
+		return fmt.Errorf("reading %s API key: %w", name, err)
+	}
+
+	key := strings.TrimSpace(string(secret))
+	if key == "" {
+		return fmt.Errorf("%s API key cannot be empty", name)
+	}
+
+	if err := UpdateKitchenAuth(name, key); err != nil {
+		return fmt.Errorf("updating %s auth: %w", name, err)
+	}
+
+	return nil
+}
+
+func loginEnvVar(name, envVar, docsURL string) error {
+	fmt.Printf("%s uses the %s environment variable.\n  Set it in your shell profile:\n    export %s=your_key_here\n  Get your key at: %s\n", name, envVar, envVar, docsURL)
+	return nil
+}
+
+func loginOllama() error {
+	fmt.Println("Ollama uses no authentication. Verifying service...")
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://localhost:11434")
+	if err != nil {
+		fmt.Println("✗ Ollama is not running at localhost:11434. Start it with: ollama serve")
+		return nil
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+
+	fmt.Println("✓ Ollama is running")
+	return nil
+}
+
+func yamlMapValue(node *yaml.Node, key string) (*yaml.Node, bool) {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil, false
+	}
+
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1], true
+		}
+	}
+
+	return nil, false
+}
+
+func setYAMLMapValue(node *yaml.Node, key, value string) {
+	if node.Kind != yaml.MappingNode {
+		node.Kind = yaml.MappingNode
+		node.Tag = "!!map"
+		node.Content = nil
+	}
+
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			node.Content[i+1].Kind = yaml.ScalarNode
+			node.Content[i+1].Tag = "!!str"
+			node.Content[i+1].Value = value
+			return
+		}
+	}
+
+	node.Content = append(node.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
+	)
 }

@@ -1,6 +1,10 @@
 package maitre
 
 import (
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mwigge/milliways/internal/kitchen"
@@ -86,4 +90,142 @@ func TestSetupKitchen_Disabled(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for disabled kitchen")
 	}
+}
+
+func TestUpdateKitchenAuth(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	configDir := filepath.Join(tmpDir, ".config", "milliways")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	original := `kitchens:
+  minimax:
+    http_client:
+      base_url: https://api.minimaxi.com/v1/text
+      auth_key: OLD_KEY
+      auth_type: bearer
+      model: M2-her
+      stations: [reason]
+      tier: cloud
+      response_format: minimax
+      timeout_seconds: 300
+    enabled: true
+  claude:
+    cmd: claude
+    args: ["-p"]
+routing:
+  default: claude
+`
+
+	configPath := DefaultConfigPath()
+	if err := os.WriteFile(configPath, []byte(original), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := UpdateKitchenAuth("minimax", "NEW_KEY"); err != nil {
+		t.Fatalf("UpdateKitchenAuth: %v", err)
+	}
+
+	updatedCfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got := updatedCfg.Kitchens["minimax"].HTTPClient.AuthKey; got != "NEW_KEY" {
+		t.Fatalf("AuthKey = %q, want NEW_KEY", got)
+	}
+	if got := updatedCfg.Kitchens["claude"].Cmd; got != "claude" {
+		t.Fatalf("claude cmd = %q, want claude", got)
+	}
+
+	backup, err := os.ReadFile(configPath + ".bak")
+	if err != nil {
+		t.Fatalf("ReadFile backup: %v", err)
+	}
+	if string(backup) != original {
+		t.Fatalf("backup mismatch\n got: %s\nwant: %s", string(backup), original)
+	}
+}
+
+func TestUpdateKitchenAuth_ReturnsErrorForNonHTTPKitchen(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	configDir := filepath.Join(tmpDir, ".config", "milliways")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	configPath := DefaultConfigPath()
+	config := `kitchens:
+  claude:
+    cmd: claude
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err := UpdateKitchenAuth("claude", "NEW_KEY")
+	if err == nil {
+		t.Fatal("expected error for non-HTTP kitchen")
+	}
+	if !strings.Contains(err.Error(), "is not an HTTPClient type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoginKitchen_MinimaxNonTTY(t *testing.T) {
+	if isTTY() {
+		t.Skip("requires non-interactive stdout")
+	}
+
+	output := captureStdout(t, func() {
+		if err := LoginKitchen("minimax"); err != nil {
+			t.Fatalf("LoginKitchen: %v", err)
+		}
+	})
+
+	if !strings.Contains(output, "minimax") {
+		t.Fatalf("expected minimax instructions, got %q", output)
+	}
+}
+
+func TestLoginKitchen_UnknownKitchen(t *testing.T) {
+	err := LoginKitchen("unknown")
+	if err == nil {
+		t.Fatal("expected error for unknown kitchen")
+	}
+	if got, want := err.Error(), "unknown kitchen: unknown"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
+	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+
+	originalStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+
+	os.Stdout = w
+	defer func() {
+		os.Stdout = originalStdout
+	}()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close writer: %v", err)
+	}
+
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	return string(data)
 }
