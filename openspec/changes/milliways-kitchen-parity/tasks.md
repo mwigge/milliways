@@ -172,8 +172,8 @@
 
 ### Course KP-22: Manual verification [1 SP]
 
-- [ ] KP-22.1 Manual TUI: `/switch`, `/stick`, `/back`, `/kitchens` all behave as described
-- [ ] KP-22.2 Manual TUI: auto-switch on realistic prompt like "now search the web for X"
+- [x] KP-22.1 Manual TUI: `/switch`, `/stick`, `/back`, `/kitchens` all behave as described
+- [x] KP-22.2 Manual TUI: auto-switch on realistic prompt like "now search the web for X"
 - [x] KP-22.3 Manual headless: `milliways --session foo --switch-to codex "continue"` works against a real paused session
 - [x] KP-22.4 Manual: upgrade path from legacy conversation SQLite to MemPalace substrate works on a pre-existing install
 

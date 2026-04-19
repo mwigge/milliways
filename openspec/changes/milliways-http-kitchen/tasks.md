@@ -96,10 +96,10 @@
 
 ### HK-5.2 Manual verification [0.25 SP]
 
-- [ ] TUI shows MiniMax, Groq, Ollama in kitchen list with correct status (NeedsAuth or Ready)
-- [ ] `@kitchen groq "say hello"` forces Groq routing — Groq API key in env → streams output
-- [ ] `@kitchen minimax "say hello"` forces MiniMax — MiniMax API key in env → streams output
-- [ ] `@kitchen ollama "say hello"` forces Ollama — no API key needed → streams output
+- [x] TUI shows MiniMax, Groq, Ollama in kitchen list with correct status (NeedsAuth or Ready)
+- [x] `@kitchen groq "say hello"` forces Groq routing — Groq API key in env → streams output
+- [x] `@kitchen minimax "say hello"` forces MiniMax — MiniMax API key in env → streams output
+- [x] `@kitchen ollama "say hello"` forces Ollama — no API key needed → streams output
 
 ---
 
