@@ -506,6 +506,16 @@ func formatRuntimeActivityEvent(evt observability.Event) []string {
 		}
 	}
 
+	if evt.Kind == "context.project_hits" {
+		lines := []string{"context: " + evt.Text}
+		for _, key := range []string{"wings", "rooms", "sources"} {
+			if value := strings.TrimSpace(evt.Fields[key]); value != "" {
+				lines = append(lines, key+": "+value)
+			}
+		}
+		return lines
+	}
+
 	label := evt.Kind
 	if evt.Provider != "" && evt.Provider != "milliways" {
 		label = evt.Provider + " " + evt.Kind

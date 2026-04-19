@@ -625,6 +625,23 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 	case tea.KeyCtrlLeft, tea.KeyCtrlK:
 		m.rewindSidePanel()
 		return nil
+	// Viewport scrolling in normal mode.
+	case tea.KeyUp:
+		if !m.overlayActive {
+			m.output.ScrollUp(3)
+		}
+	case tea.KeyDown:
+		if !m.overlayActive {
+			m.output.ScrollDown(3)
+		}
+	case tea.KeyHome:
+		if !m.overlayActive {
+			m.output.GotoTop()
+		}
+	case tea.KeyEnd:
+		if !m.overlayActive {
+			m.output.GotoBottom()
+		}
 	// On Mac, Cmd+] / Cmd+[ send Alt+]/Alt+[ in most terminal emulators.
 	// We treat these the same as Ctrl+J / Ctrl+K for panel cycling.
 	case tea.KeyRunes:
