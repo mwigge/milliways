@@ -104,7 +104,7 @@ based on what each tool does best.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// TUI is the default when no prompt args are given, or when -tui is explicitly set.
 			if tuiFlag || len(args) == 0 {
-				opts := tui.RunOpts{SessionName: sessionName}
+				opts := tui.RunOpts{SessionName: sessionName, ConfigPath: configPath}
 				if resumeFlag {
 					resume := sessionName
 					if resume == "" {

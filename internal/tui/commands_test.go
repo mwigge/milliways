@@ -1,6 +1,11 @@
 package tui
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestHandleProjectCommand(t *testing.T) {
 	t.Parallel()
@@ -143,4 +148,81 @@ func TestExecutePaletteCommand_Project(t *testing.T) {
 	if got := m.blocks[0].Lines[0].Text; got != "Project: milliways" {
 		t.Fatalf("first line = %q, want %q", got, "Project: milliways")
 	}
+}
+
+func TestExecutePaletteCommand_LoginListsKitchenAuthStatus(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "carte.yaml")
+	config := `kitchens:
+  ollama:
+    http_client:
+      base_url: http://localhost:11434
+      model: llama3
+      response_format: ollama
+      timeout_seconds: 1
+  groq:
+    http_client:
+      base_url: https://api.groq.com/openai/v1
+      auth_key: GROQ_API_KEY
+      auth_type: bearer
+      model: mixtral-8x7b-32768
+      response_format: openai
+      timeout_seconds: 1
+  claude:
+    cmd: true
+    args: []
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	m := NewModel(nil)
+	m.configPath = configPath
+
+	m.executePaletteCommand("login")
+
+	if len(m.blocks) != 1 {
+		t.Fatalf("blocks = %d, want 1", len(m.blocks))
+	}
+	if got := m.blocks[0].Prompt; got != "/login" {
+		t.Fatalf("prompt = %q, want /login", got)
+	}
+
+	rendered := strings.Join(blockLineTexts(m.blocks[0]), "\n")
+	for _, want := range []string{
+		"Kitchen      Status              Auth Method           Action",
+		"claude       ✓ ready              Browser OAuth         ready",
+		"groq         ! needs-auth         Env var (GROQ_API_KEY) milliways login groq",
+		"ollama       ✓ ready              None                  ready",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("login output missing %q in %q", want, rendered)
+		}
+	}
+}
+
+func TestExecutePaletteCommand_LoginKitchenCapturesOutput(t *testing.T) {
+	m := NewModel(nil)
+
+	m.executePaletteCommand("login ollama")
+
+	if len(m.blocks) != 1 {
+		t.Fatalf("blocks = %d, want 1", len(m.blocks))
+	}
+	if got := m.blocks[0].Prompt; got != "/login ollama" {
+		t.Fatalf("prompt = %q, want /login ollama", got)
+	}
+
+	rendered := strings.Join(blockLineTexts(m.blocks[0]), "\n")
+	if !strings.Contains(rendered, "Ollama uses no authentication. Verifying service...") {
+		t.Fatalf("login output = %q", rendered)
+	}
+}
+
+func blockLineTexts(block Block) []string {
+	lines := make([]string, 0, len(block.Lines))
+	for _, line := range block.Lines {
+		lines = append(lines, line.Text)
+	}
+	return lines
 }
