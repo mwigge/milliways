@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mwigge/milliways/internal/kitchen"
+	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/sommelier"
 )
@@ -47,6 +48,24 @@ routing:
 	// Build registry
 	reg := kitchen.NewRegistry()
 	for name, kc := range cfg.Kitchens {
+		if kc.HTTPClient != nil {
+			httpKitchen, err := adapter.NewHTTPKitchen(name, adapter.HTTPKitchenConfig{
+				BaseURL:        kc.HTTPClient.BaseURL,
+				AuthKey:        kc.HTTPClient.AuthKey,
+				AuthType:       kc.HTTPClient.AuthType,
+				Model:          kc.HTTPClient.Model,
+				Stations:       kc.HTTPClient.Stations,
+				Tier:           kitchen.ParseCostTier(kc.HTTPClient.Tier),
+				ResponseFormat: kc.HTTPClient.ResponseFormat,
+				Timeout:        time.Duration(kc.HTTPClient.Timeout) * time.Second,
+			}, kc.Stations, kitchen.ParseCostTier(kc.CostTier))
+			if err != nil {
+				t.Fatalf("NewHTTPKitchen: %v", err)
+			}
+			reg.Register(httpKitchen)
+			continue
+		}
+
 		reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{
 			Name:     name,
 			Cmd:      kc.Cmd,

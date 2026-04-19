@@ -12,6 +12,7 @@ import (
 
 	"github.com/mwigge/milliways/internal/conversation"
 	"github.com/mwigge/milliways/internal/kitchen"
+	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/maitre"
 	"github.com/mwigge/milliways/internal/observability"
 	"github.com/mwigge/milliways/internal/sommelier"
@@ -43,6 +44,28 @@ func TestBestContinuationKitchen_PrefersResumeCapableProvider(t *testing.T) {
 	}
 	if caps.StructuredEvents != true {
 		t.Fatalf("expected structured continuity capabilities for codex")
+	}
+}
+
+func TestCapabilitiesForKitchen_HTTPKitchen(t *testing.T) {
+	t.Setenv("TEST_HTTP_KITCHEN_CAPS", "secret")
+	reg := kitchen.NewRegistry()
+	httpKitchen, err := adapter.NewHTTPKitchen("api", adapter.HTTPKitchenConfig{
+		BaseURL: "https://api.example.test",
+		AuthKey: "TEST_HTTP_KITCHEN_CAPS",
+		Model:   "gpt-4.1",
+	}, []string{"code"}, kitchen.Cloud)
+	if err != nil {
+		t.Fatalf("NewHTTPKitchen() error = %v", err)
+	}
+	reg.Register(httpKitchen)
+
+	caps := capabilitiesForKitchen(reg, "api")
+	if !caps.StructuredEvents {
+		t.Fatal("expected structured events for HTTP kitchen")
+	}
+	if caps.NativeResume {
+		t.Fatal("expected HTTP kitchen to not support native resume")
 	}
 }
 

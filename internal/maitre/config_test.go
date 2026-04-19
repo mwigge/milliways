@@ -136,4 +136,65 @@ func TestKitchenConfig_IsEnabled(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_HTTPClientKitchen(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "carte.yaml")
+
+	yaml := `
+kitchens:
+  api-kitchen:
+    stations: [code]
+    http_client:
+      base_url: https://api.example.test
+      auth_key: TEST_API_KEY
+      model: gpt-4.1
+      auth_type: apikey
+      response_format: anthropic
+      timeout_seconds: 42
+      tier: cloud
+      stations: [review]
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	kitchenCfg, ok := cfg.Kitchens["api-kitchen"]
+	if !ok {
+		t.Fatal("expected api-kitchen in config")
+	}
+	if kitchenCfg.HTTPClient == nil {
+		t.Fatal("expected http_client config")
+	}
+	if kitchenCfg.HTTPClient.BaseURL != "https://api.example.test" {
+		t.Fatalf("BaseURL = %q, want https://api.example.test", kitchenCfg.HTTPClient.BaseURL)
+	}
+	if kitchenCfg.HTTPClient.AuthKey != "TEST_API_KEY" {
+		t.Fatalf("AuthKey = %q, want TEST_API_KEY", kitchenCfg.HTTPClient.AuthKey)
+	}
+	if kitchenCfg.HTTPClient.AuthType != "apikey" {
+		t.Fatalf("AuthType = %q, want apikey", kitchenCfg.HTTPClient.AuthType)
+	}
+	if kitchenCfg.HTTPClient.Model != "gpt-4.1" {
+		t.Fatalf("Model = %q, want gpt-4.1", kitchenCfg.HTTPClient.Model)
+	}
+	if kitchenCfg.HTTPClient.ResponseFormat != "anthropic" {
+		t.Fatalf("ResponseFormat = %q, want anthropic", kitchenCfg.HTTPClient.ResponseFormat)
+	}
+	if kitchenCfg.HTTPClient.Timeout != 42 {
+		t.Fatalf("Timeout = %d, want 42", kitchenCfg.HTTPClient.Timeout)
+	}
+	if kitchenCfg.HTTPClient.Tier != "cloud" {
+		t.Fatalf("Tier = %q, want cloud", kitchenCfg.HTTPClient.Tier)
+	}
+	if len(kitchenCfg.HTTPClient.Stations) != 1 || kitchenCfg.HTTPClient.Stations[0] != "review" {
+		t.Fatalf("Stations = %v, want [review]", kitchenCfg.HTTPClient.Stations)
+	}
+}
+
 func boolPtr(b bool) *bool { return &b }

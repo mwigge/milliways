@@ -18,6 +18,18 @@ type Config struct {
 	ProjectContextLimit int                      `yaml:"project_context_limit" json:"project_context_limit"`
 }
 
+// HTTPClientConfig describes an HTTP API-based kitchen.
+type HTTPClientConfig struct {
+	BaseURL        string   `yaml:"base_url"`
+	AuthKey        string   `yaml:"auth_key"`
+	AuthType       string   `yaml:"auth_type"`
+	Model          string   `yaml:"model"`
+	Stations       []string `yaml:"stations"`
+	Tier           string   `yaml:"tier"`
+	ResponseFormat string   `yaml:"response_format"`
+	Timeout        int      `yaml:"timeout_seconds"`
+}
+
 // KitchenConfig defines a kitchen's CLI command and capabilities.
 type KitchenConfig struct {
 	Cmd           string            `yaml:"cmd"`
@@ -29,6 +41,7 @@ type KitchenConfig struct {
 	DailyLimit    int               `yaml:"daily_limit"`    // max dispatches per day (0 = unlimited)
 	DailyMinutes  float64           `yaml:"daily_minutes"`  // max total minutes per day (0 = unlimited)
 	WarnThreshold float64           `yaml:"warn_threshold"` // warning at this fraction of limit (default 0.8)
+	HTTPClient    *HTTPClientConfig `yaml:"http_client"`
 }
 
 // EffectiveWarnThreshold returns the warn threshold, defaulting to 0.8.
