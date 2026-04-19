@@ -279,23 +279,6 @@ func isSidePanelKey(sidePanelIdx int, msg tea.KeyMsg) bool {
 	return false
 }
 
-func isSnippetPanelKey(msg tea.KeyMsg) bool {
-	switch msg.String() {
-	case "up", "down", "enter", "tab", "shift+tab", "backspace", "ctrl+h":
-		return true
-	default:
-		return msg.Type == tea.KeyRunes
-	}
-}
-
-func (m *Model) refreshSnippetIndexOnEntry() {
-	if m.sidePanelIdx != int(SidePanelSnippets) {
-		return
-	}
-	// snippets are loaded once at startup; nothing to refresh
-	m.snippetSelected = 0
-}
-
 func (m *Model) refreshOpenSpecOnEntry() {
 	if m.sidePanelIdx != int(SidePanelOpenSpec) {
 		return

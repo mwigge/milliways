@@ -68,13 +68,6 @@ type procInfo struct {
 	Exe   string
 }
 
-type snippet struct {
-	Name string
-	Body string
-	Tags []string
-	Lang string
-}
-
 type diffFile struct {
 	Path     string
 	Status   string
@@ -186,6 +179,7 @@ func NewModel(store *pantry.TicketStore) Model {
 
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
+	initialSnippets := cloneSnippets(defaultSnippets)
 
 	return Model{
 		input:                  ti,
@@ -197,6 +191,7 @@ func NewModel(store *pantry.TicketStore) Model {
 		prog:                   new(*tea.Program),
 		mu:                     &sync.Mutex{},
 		maxConcurrent:          defaultMaxConcurrent,
+		snippetIndex:           initialSnippets,
 		openSpecChanges:        []openSpecChange{},
 		openSpecCourses:        []openSpecCourse{},
 		openSpecSelected:       0,
@@ -555,6 +550,21 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 		if m.overlayActive && m.overlayMode == OverlayRunIn {
 			return m.handleRunTargetSelection()
 		}
+		if !m.overlayActive && m.sidePanelIdx == int(SidePanelSnippets) {
+			if len(m.snippetIndex) == 0 {
+				return nil
+			}
+			if m.snippetSelected < 0 {
+				m.snippetSelected = 0
+			}
+			if m.snippetSelected >= len(m.snippetIndex) {
+				m.snippetSelected = len(m.snippetIndex) - 1
+			}
+			selected := m.snippetIndex[m.snippetSelected]
+			m.input.SetValue(snippetBodyForInput(selected.Body))
+			m.sidePanelIdx = int(SidePanelLedger)
+			return nil
+		}
 		// Palette selection.
 		if m.overlayActive && m.overlayMode == OverlayPalette {
 			command := resolvePaletteCommand(strings.TrimSpace(m.overlayInput.Value()), "")
@@ -730,9 +740,25 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 		}
 
 	case "tab":
+		if !m.overlayActive && m.sidePanelIdx == int(SidePanelSnippets) {
+			m.refreshSnippetIndex()
+			if m.snippetSelected < len(m.snippetIndex)-1 {
+				m.snippetSelected++
+			}
+			return nil
+		}
 		// Cycle focus to next block.
 		if len(m.blocks) > 0 && !m.overlayActive {
 			m.focusedIdx = (m.focusedIdx + 1) % len(m.blocks)
+			return nil
+		}
+
+	case "shift+tab":
+		if !m.overlayActive && m.sidePanelIdx == int(SidePanelSnippets) {
+			m.refreshSnippetIndex()
+			if m.snippetSelected > 0 {
+				m.snippetSelected--
+			}
 			return nil
 		}
 
@@ -776,6 +802,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 			m.moveRunTargetSelection(-1)
 			return nil
 		}
+		if !m.overlayActive && m.sidePanelIdx == int(SidePanelSnippets) {
+			m.refreshSnippetIndex()
+			if m.snippetSelected > 0 {
+				m.snippetSelected--
+			}
+			return nil
+		}
 		// In palette/search, navigate up.
 		if m.overlayActive && m.overlayMode == OverlayPalette {
 			if m.palette.Selected > 0 {
@@ -796,6 +829,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 	case "down":
 		if m.overlayActive && m.overlayMode == OverlayRunIn {
 			m.moveRunTargetSelection(1)
+			return nil
+		}
+		if !m.overlayActive && m.sidePanelIdx == int(SidePanelSnippets) {
+			m.refreshSnippetIndex()
+			if m.snippetSelected < len(m.snippetIndex)-1 {
+				m.snippetSelected++
+			}
 			return nil
 		}
 		// In palette/search, navigate down.
@@ -850,6 +890,21 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 			m.input.Focus()
 			return nil
 		}
+
+	case "backspace", "ctrl+h":
+		if !m.overlayActive && m.sidePanelIdx == int(SidePanelSnippets) && m.snippetFilter != "" {
+			m.snippetFilter = trimLastRune(m.snippetFilter)
+			m.refreshSnippetIndex()
+			m.snippetSelected = 0
+			return nil
+		}
+	}
+
+	if !m.overlayActive && m.sidePanelIdx == int(SidePanelSnippets) && msg.Type == tea.KeyRunes {
+		m.snippetFilter += string(msg.Runes)
+		m.refreshSnippetIndex()
+		m.snippetSelected = 0
+		return nil
 	}
 
 	return cmds
@@ -857,6 +912,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 
 func (m *Model) advanceSidePanel() {
 	m.sidePanelIdx = (m.sidePanelIdx + 1) % int(sidePanelCount)
+	m.refreshSnippetIndexOnEntry()
 }
 
 func (m *Model) rewindSidePanel() {
@@ -864,6 +920,55 @@ func (m *Model) rewindSidePanel() {
 	if m.sidePanelIdx < 0 {
 		m.sidePanelIdx = int(sidePanelCount) - 1
 	}
+	m.refreshSnippetIndexOnEntry()
+}
+
+func (m *Model) refreshSnippetIndexOnEntry() {
+	if m.sidePanelIdx != int(SidePanelSnippets) {
+		return
+	}
+	m.refreshSnippetIndex()
+	m.snippetSelected = 0
+}
+
+func (m *Model) refreshSnippetIndex() {
+	all := loadAllSnippets()
+	if m.snippetFilter == "" {
+		m.snippetIndex = all
+	} else {
+		m.snippetIndex = filterSnippets(all, m.snippetFilter)
+	}
+	if len(m.snippetIndex) == 0 {
+		m.snippetSelected = 0
+		return
+	}
+	if m.snippetSelected >= len(m.snippetIndex) {
+		m.snippetSelected = len(m.snippetIndex) - 1
+	}
+	if m.snippetSelected < 0 {
+		m.snippetSelected = 0
+	}
+}
+
+func isSnippetPanelKey(msg tea.KeyMsg) bool {
+	switch msg.String() {
+	case "up", "down", "enter", "tab", "shift+tab", "backspace", "ctrl+h":
+		return true
+	default:
+		return msg.Type == tea.KeyRunes
+	}
+}
+
+func trimLastRune(value string) string {
+	runes := []rune(value)
+	if len(runes) == 0 {
+		return ""
+	}
+	return string(runes[:len(runes)-1])
+}
+
+func snippetBodyForInput(body string) string {
+	return strings.ReplaceAll(body, "\n", " ")
 }
 
 func (m *Model) openRunTargetChooser(prompt string) {
