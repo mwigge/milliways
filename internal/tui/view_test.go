@@ -21,18 +21,17 @@ func TestRenderJobsPanel(t *testing.T) {
 	}{
 		{
 			name:     "hidden when terminal too short",
-			model:    Model{height: 15},
+			model:    Model{},
 			wantSame: "",
 		},
 		{
 			name:     "hidden when there are no tickets",
-			model:    Model{height: 30},
+			model:    Model{},
 			wantSame: "",
 		},
 		{
 			name: "renders milliways tickets only",
 			model: Model{
-				height:     30,
 				jobTickets: []pantry.Ticket{{Status: "complete", Prompt: "test prompt", Kitchen: "k1"}},
 			},
 			want:    []string{"Jobs", "✓", "test prompt", "k1"},
@@ -41,7 +40,6 @@ func TestRenderJobsPanel(t *testing.T) {
 		{
 			name: "truncates long prompts",
 			model: Model{
-				height:     30,
 				jobTickets: []pantry.Ticket{{Status: "pending", Prompt: "abcdefghijklmnopqrstuvwxyz", Kitchen: "k1"}},
 			},
 			want:    []string{"abcdefghijklmnopqrst…"},
@@ -54,21 +52,77 @@ func TestRenderJobsPanel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := tt.model.renderJobsPanel()
+			got := tt.model.renderJobsPanel(40, 8)
 			if tt.wantSame != "" || got == "" {
 				if got != tt.wantSame {
-					t.Fatalf("renderJobsPanel() = %q, want %q", got, tt.wantSame)
+					t.Fatalf("renderJobsPanel(40, 8) = %q, want %q", got, tt.wantSame)
 				}
 			}
 			for _, want := range tt.want {
 				if !strings.Contains(got, want) {
-					t.Fatalf("renderJobsPanel() = %q, want contains %q", got, want)
+					t.Fatalf("renderJobsPanel(40, 8) = %q, want contains %q", got, want)
 				}
 			}
 			for _, notWant := range tt.notWant {
 				if strings.Contains(got, notWant) {
-					t.Fatalf("renderJobsPanel() = %q, should not contain %q", got, notWant)
+					t.Fatalf("renderJobsPanel(40, 8) = %q, should not contain %q", got, notWant)
 				}
+			}
+		})
+	}
+}
+
+func TestRenderActiveSidePanel(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty when height too small", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewModel(nil)
+		if got := m.renderActiveSidePanel(24, 3); got != "" {
+			t.Fatalf("renderActiveSidePanel(24, 3) = %q, want empty", got)
+		}
+	})
+
+	t.Run("renders active panel with border and title", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewModel(nil)
+		m.sidePanelIdx = int(SidePanelJobs)
+		m.jobTickets = []pantry.Ticket{{Status: "complete", Prompt: "test prompt", Kitchen: "k1"}}
+
+		got := m.renderActiveSidePanel(24, 8)
+		for _, want := range []string{"Jobs", "ctrl+[/ctrl+]", "╭", "✓"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("renderActiveSidePanel(24, 8) = %q, want contains %q", got, want)
+			}
+		}
+	})
+}
+
+func TestStubPanelsReturnNonEmpty(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil)
+	tests := []struct {
+		name string
+		run  func() string
+	}{
+		{name: "cost", run: func() string { return m.renderCostPanel(24, 8) }},
+		{name: "routing", run: func() string { return m.renderRoutingPanel(24, 8) }},
+		{name: "system", run: func() string { return m.renderSystemPanel(24, 8) }},
+		{name: "snippets", run: func() string { return m.renderSnippetsPanel(24, 8) }},
+		{name: "diff", run: func() string { return m.renderDiffPanel(24, 8) }},
+		{name: "compare", run: func() string { return m.renderComparePanel(24, 8) }},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := tt.run(); strings.TrimSpace(got) == "" {
+				t.Fatalf("%s panel rendered empty content", tt.name)
 			}
 		})
 	}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -32,6 +33,60 @@ type ConversationRecorder func(prompt string, duration float64, exitCode int, co
 // ConversationReplayer restores conversation state and activity from persisted runtime data.
 type ConversationReplayer func(conversationID, blockID, prompt string, exitCode int) (*conversation.Conversation, []observability.Event, error)
 
+type costAccumulator struct {
+	Calls, InputToks, OutputToks, CacheRead, CacheWrite int
+	TotalUSD                                            float64
+}
+
+func (a *costAccumulator) add(c *adapter.CostInfo) {
+	if c == nil {
+		return
+	}
+
+	a.Calls++
+	a.InputToks += c.InputTokens
+	a.OutputToks += c.OutputTokens
+	a.CacheRead += c.CacheRead
+	a.CacheWrite += c.CacheWrite
+	a.TotalUSD += c.USD
+}
+
+type routingEntry struct {
+	Kitchen string
+	Tier    string
+	Reason  string
+	Signals map[string]float64
+	At      time.Time
+}
+
+type procInfo struct {
+	PID   int
+	CPU   float64
+	MemMB float64
+	Exe   string
+}
+
+type snippet struct {
+	Name string
+	Body string
+	Tags []string
+	Lang string
+}
+
+type diffFile struct {
+	Path     string
+	Status   string
+	Selected bool
+}
+
+type compareResult struct {
+	Kitchen string
+	Output  string
+	Percent float64
+	Done    bool
+	Error   string
+}
+
 // Model is the main Bubble Tea application model for the Milliways TUI.
 type Model struct {
 	input      textinput.Model
@@ -46,6 +101,7 @@ type Model struct {
 	maxConcurrent int
 	activeCount   int
 	blockCounter  int
+	sidePanelIdx  int
 
 	providerFactory ProviderFactory
 	hydrator        orchestrator.ContextHydrator
@@ -59,8 +115,19 @@ type Model struct {
 	ready      bool
 
 	// Jobs panel (async tickets from pantry).
-	jobTickets  []pantry.Ticket
-	ticketStore *pantry.TicketStore
+	jobTickets             []pantry.Ticket
+	ticketStore            *pantry.TicketStore
+	costByKitchen          map[string]costAccumulator
+	costTotalUSD           float64
+	routingHistory         []routingEntry
+	procStats              map[string]procInfo
+	mu                     *sync.Mutex
+	snippetIndex           []snippet
+	snippetFilter          string
+	snippetSelected        int
+	changedFiles           []diffFile
+	compareResults         map[string][]compareResult
+	compareSelectedKitchen string
 
 	// DB access for ledger sink.
 	pdb *pantry.DB
@@ -118,6 +185,7 @@ func NewModel(store *pantry.TicketStore) Model {
 		historyIdx:    -1,
 		ticketStore:   store,
 		prog:          new(*tea.Program),
+		mu:            &sync.Mutex{},
 		maxConcurrent: defaultMaxConcurrent,
 	}
 }
@@ -327,6 +395,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // handleKey processes key messages and returns commands.
 func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 	var cmds []tea.Cmd
+
+	switch msg.Type {
+	case tea.KeyCtrlCloseBracket, tea.KeyCtrlJ:
+		m.advanceSidePanel()
+		return nil
+	case tea.KeyCtrlK:
+		m.rewindSidePanel()
+		return nil
+	case tea.KeyCtrlOpenBracket:
+		if !m.overlayActive {
+			m.rewindSidePanel()
+			return nil
+		}
+	}
 
 	switch msg.String() {
 	case "ctrl+d":
@@ -645,6 +727,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 	}
 
 	return cmds
+}
+
+func (m *Model) advanceSidePanel() {
+	m.sidePanelIdx = (m.sidePanelIdx + 1) % int(sidePanelCount)
+}
+
+func (m *Model) rewindSidePanel() {
+	m.sidePanelIdx--
+	if m.sidePanelIdx < 0 {
+		m.sidePanelIdx = int(sidePanelCount) - 1
+	}
 }
 
 func (m *Model) openRunTargetChooser(prompt string) {
