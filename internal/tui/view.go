@@ -379,7 +379,48 @@ func (m Model) renderDiffPanel(width, height int) string {
 }
 
 func (m Model) renderComparePanel(width, height int) string {
-	return mutedStyle.Render("(compare panel)")
+	results := m.activeCompareResults()
+	if m.activeCompareID == "" {
+		return mutedStyle.Render("ctrl+shift+enter / alt+enter to compare all kitchens")
+	}
+	if len(results) == 0 {
+		return mutedStyle.Render("running comparisons...")
+	}
+
+	innerWidth := max(1, width-4)
+	lines := make([]string, 0, len(results)+4)
+	for i, result := range results {
+		prefix := "  "
+		if i == m.compareSelected {
+			prefix = "> "
+		}
+
+		icon := mutedStyle.Render("░")
+		switch {
+		case result.Done:
+			icon = successStyle.Render("✓")
+		case result.Error != "":
+			icon = failureStyle.Render("✗")
+		}
+
+		line := fmt.Sprintf("%s%s %s", prefix, icon, KitchenBadge(result.Kitchen))
+		if result.Error != "" {
+			line += " " + mutedStyle.Render(truncate(result.Error, max(1, innerWidth-10)))
+		}
+		lines = append(lines, truncate(line, innerWidth+2))
+	}
+
+	selected := results[m.compareSelected]
+	output := strings.TrimSpace(selected.Output)
+	if output != "" {
+		lines = append(lines, "", mutedStyle.Render(truncate(output, innerWidth)))
+	}
+	lines = append(lines, "", mutedStyle.Render("[↑↓] navigate"))
+
+	if height > 0 && len(lines) > height {
+		lines = lines[:height]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) runtimeActivityLines(limit int) []string {
