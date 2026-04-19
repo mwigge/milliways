@@ -90,7 +90,7 @@ func TestExecuteSanitizesPreviousCourseContextInPrompt(t *testing.T) {
 	registry.Register(first)
 	registry.Register(second)
 
-	engine := NewEngine(registry, false)
+	engine := NewEngine(registry, false, StrategyStop)
 	steps := []Step{{Station: "think", Kitchen: "first"}, {Station: "code", Kitchen: "second"}}
 
 	_, err := engine.Execute(context.Background(), steps, "ship it", nil, nil)

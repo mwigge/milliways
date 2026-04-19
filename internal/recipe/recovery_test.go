@@ -2,6 +2,7 @@ package recipe
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -107,6 +108,61 @@ func TestHandleFailure_RetryCourse_Success(t *testing.T) {
 	if retryResult.Result.ExitCode != 0 {
 		t.Errorf("retry exit code: %d", retryResult.Result.ExitCode)
 	}
+	if retryResult.RetryAttempt != 1 {
+		t.Errorf("retry attempt = %d, want 1", retryResult.RetryAttempt)
+	}
+}
+
+func TestHandleFailure_RetryCourse_RetriesWithBackoff(t *testing.T) {
+	t.Parallel()
+
+	reg := kitchen.NewRegistry()
+	retryKitchen := &retryRecoveryKitchen{
+		name: "retry-test",
+		results: []kitchen.Result{
+			{ExitCode: 1, Output: "retry failed once"},
+			{ExitCode: 0, Output: "retry succeeded"},
+		},
+	}
+	reg.Register(retryKitchen)
+
+	failed := CourseResult{
+		Step:         Step{Station: "code", Kitchen: "retry-test"},
+		Index:        1,
+		Result:       kitchen.Result{ExitCode: 1, Output: "initial failure"},
+		RetryAttempt: 0,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	shouldContinue, retryResult := HandleFailure(ctx, StrategyRetryCourse, failed, reg, nil)
+	elapsed := time.Since(start)
+
+	if !shouldContinue {
+		t.Fatal("retry succeeded — should continue")
+	}
+	if retryResult == nil {
+		t.Fatal("expected retry result")
+	}
+	if retryResult.Result.ExitCode != 0 {
+		t.Fatalf("retry exit code = %d, want 0", retryResult.Result.ExitCode)
+	}
+	if retryResult.RetryAttempt != 2 {
+		t.Fatalf("retry attempt = %d, want 2", retryResult.RetryAttempt)
+	}
+	if retryKitchen.calls() != 2 {
+		t.Fatalf("retry calls = %d, want 2", retryKitchen.calls())
+	}
+	if elapsed < retryBackoff(0) {
+		t.Fatalf("elapsed = %v, want at least %v", elapsed, retryBackoff(0))
+	}
+	if got := retryKitchen.prompts(); len(got) != 2 {
+		t.Fatalf("prompt count = %d, want 2", len(got))
+	} else if !strings.Contains(got[1], "retry failed once") {
+		t.Fatalf("second prompt = %q, want latest retry failure output", got[1])
+	}
 }
 
 func TestHandleFailure_RetryCourse_KitchenUnavailable(t *testing.T) {
@@ -136,6 +192,14 @@ type recoveryTestLogRecord struct {
 type recoveryTestLogCapture struct {
 	mu      sync.Mutex
 	entries []recoveryTestLogRecord
+}
+
+type retryRecoveryKitchen struct {
+	mu              sync.Mutex
+	name            string
+	results         []kitchen.Result
+	recordedPrompts []string
+	idx             int
 }
 
 func installRecoveryTestLogger(t *testing.T) *recoveryTestLogCapture {
@@ -177,3 +241,48 @@ func (c *recoveryTestLogCapture) records() []recoveryTestLogRecord {
 	copy(clone, c.entries)
 	return clone
 }
+
+func (k *retryRecoveryKitchen) Name() string {
+	return k.name
+}
+
+func (k *retryRecoveryKitchen) Exec(_ context.Context, task kitchen.Task) (kitchen.Result, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	k.recordedPrompts = append(k.recordedPrompts, task.Prompt)
+	if k.idx >= len(k.results) {
+		return kitchen.Result{}, fmt.Errorf("unexpected retry call %d", k.idx+1)
+	}
+	result := k.results[k.idx]
+	k.idx++
+	return result, nil
+}
+
+func (k *retryRecoveryKitchen) Stations() []string {
+	return []string{"code"}
+}
+
+func (k *retryRecoveryKitchen) CostTier() kitchen.CostTier {
+	return kitchen.Local
+}
+
+func (k *retryRecoveryKitchen) Status() kitchen.Status {
+	return kitchen.Ready
+}
+
+func (k *retryRecoveryKitchen) calls() int {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.idx
+}
+
+func (k *retryRecoveryKitchen) prompts() []string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	clone := make([]string, len(k.recordedPrompts))
+	copy(clone, k.recordedPrompts)
+	return clone
+}
+
+var _ kitchen.Kitchen = (*retryRecoveryKitchen)(nil)

@@ -17,7 +17,7 @@ func newTestRegistry() *kitchen.Registry {
 
 func TestExecute_SingleCourse(t *testing.T) {
 	t.Parallel()
-	eng := NewEngine(newTestRegistry(), false)
+	eng := NewEngine(newTestRegistry(), false, StrategyStop)
 
 	steps := []Step{{Station: "think", Kitchen: "echo-kitchen"}}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -37,7 +37,7 @@ func TestExecute_SingleCourse(t *testing.T) {
 
 func TestExecute_MultiCourse(t *testing.T) {
 	t.Parallel()
-	eng := NewEngine(newTestRegistry(), false)
+	eng := NewEngine(newTestRegistry(), false, StrategyStop)
 
 	steps := []Step{
 		{Station: "think", Kitchen: "echo-kitchen"},
@@ -65,7 +65,7 @@ func TestExecute_MultiCourse(t *testing.T) {
 
 func TestExecute_StopsOnFailure(t *testing.T) {
 	t.Parallel()
-	eng := NewEngine(newTestRegistry(), false)
+	eng := NewEngine(newTestRegistry(), false, StrategyStop)
 
 	steps := []Step{
 		{Station: "think", Kitchen: "echo-kitchen"},
@@ -89,7 +89,7 @@ func TestExecute_UnavailableKitchenSkipped(t *testing.T) {
 	reg := kitchen.NewRegistry()
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "echo-kitchen", Cmd: "echo", Enabled: true}))
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "missing", Cmd: "nonexistent-xyz", Enabled: true}))
-	eng := NewEngine(reg, false)
+	eng := NewEngine(reg, false, StrategyStop)
 
 	steps := []Step{
 		{Station: "think", Kitchen: "missing"},
@@ -116,7 +116,7 @@ func TestExecute_UnavailableKitchenSkipped(t *testing.T) {
 
 func TestExecute_EmptyRecipe(t *testing.T) {
 	t.Parallel()
-	eng := NewEngine(newTestRegistry(), false)
+	eng := NewEngine(newTestRegistry(), false, StrategyStop)
 
 	_, err := eng.Execute(context.Background(), nil, "hello", nil, nil)
 	if err == nil {
@@ -126,7 +126,7 @@ func TestExecute_EmptyRecipe(t *testing.T) {
 
 func TestExecute_ContextPassedBetweenCourses(t *testing.T) {
 	t.Parallel()
-	eng := NewEngine(newTestRegistry(), false)
+	eng := NewEngine(newTestRegistry(), false, StrategyStop)
 
 	steps := []Step{
 		{Station: "think", Kitchen: "echo-kitchen"},

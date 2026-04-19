@@ -330,7 +330,7 @@ func dispatchRecipe(recipeName, prompt string, verbose bool, configPath string, 
 	}
 
 	reg := buildRegistry(cfg)
-	eng := recipe.NewEngine(reg, keepContext)
+	eng := recipe.NewEngine(reg, keepContext, recipe.StrategyStop)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
