@@ -163,9 +163,11 @@ type Model struct {
 	recentRepos   RecentRepos
 
 	// Structured runtime activity for transparency.
-	runtimeEvents []observability.Event
-	renderedLines []string
-	configPath    string
+	runtimeEvents    []observability.Event
+	renderedLines    []string
+	screenLineMap    []int          // maps screen row → renderedLines index; -1 = non-content row
+	collapsedHeaders map[int]*Block // maps screen row → collapsed block whose header was clicked
+	configPath       string
 
 	// Run target chooser state.
 	runTargets          []RunTargetOption
@@ -471,6 +473,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	cmds = append(cmds, inputCmd)
 	m.refreshRenderedLines()
+	m.refreshScreenLineMap()
 
 	// Update viewport.
 	var vpCmd tea.Cmd
@@ -1169,6 +1172,62 @@ func (m *Model) setNormalMode() {
 
 func (m *Model) refreshRenderedLines() {
 	m.renderedLines = buildRenderedLines(m.blocks)
+}
+
+// refreshScreenLineMap builds screenLineMap and collapsedHeaders.
+// Must be called after refreshRenderedLines() so that renderedLines is valid.
+func (m *Model) refreshScreenLineMap() {
+	m.screenLineMap = nil
+	m.collapsedHeaders = nil
+
+	// Total screen rows consumed above the block stack:
+	// Row 0: title (1 line)
+	screenRow := 1
+
+	// Project header: either 3 rows (border + content + border) or empty
+	if header := m.renderProjectHeader(); header != "" {
+		// Count newlines in rendered header to get exact row count
+		screenRow += strings.Count(header, "\n") + 1
+	}
+
+	// Block stack rows
+	renderedIdx := 0
+	for i := range m.blocks {
+		b := &m.blocks[i]
+		// Border top: 1 row
+		screenRow++
+		// Header: 1 row
+		screenRow++
+
+		if b.Collapsed {
+			// Collapsed: no body; header row is clickable to expand
+			if m.collapsedHeaders == nil {
+				m.collapsedHeaders = make(map[int]*Block)
+			}
+			m.collapsedHeaders[screenRow-1] = b
+			// Border bottom: 1 row
+			screenRow++
+		} else {
+			// Expanded: separator (1 row) + body lines
+			// Separator: 1 row
+			screenRow++
+			// Body: len(b.Lines) content rows → map to renderedLines
+			for range b.Lines {
+				if m.screenLineMap == nil {
+					m.screenLineMap = make([]int, 0, 64)
+				}
+				// Extend slice if needed (screen rows may not be consecutive initially)
+				for len(m.screenLineMap) <= screenRow {
+					m.screenLineMap = append(m.screenLineMap, -1)
+				}
+				m.screenLineMap[screenRow] = renderedIdx
+				renderedIdx++
+				screenRow++
+			}
+			// Border bottom: 1 row
+			screenRow++
+		}
+	}
 }
 
 func (m *Model) refreshSnippetIndexOnEntry() {
@@ -1966,6 +2025,7 @@ func (m *Model) appendCommandFeedback(prompt, text string) {
 	m.blocks = append(m.blocks, block)
 	m.focusedIdx = len(m.blocks) - 1
 	m.refreshRenderedLines()
+	m.refreshScreenLineMap()
 }
 
 func (m *Model) appendRuntimeEvent(event observability.Event) {
