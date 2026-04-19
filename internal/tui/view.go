@@ -59,11 +59,11 @@ func (m Model) View() string {
 		inputBar = RenderPalette(m.palette.Matches, m.palette.Selected, m.overlayInput.Value(), m.width)
 	case m.overlayActive && m.overlayMode == OverlaySearch:
 		inputBar = RenderSearch(m.search.Matches, m.search.Selected, m.overlayInput.Value(), m.width)
-	case m.overlayActive && m.overlayMode == OverlayPanel:
+	case m.vimMode == VimNormal:
 		inputBar = panelBorder.Width(m.width - 2).Render(
 			lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#F59E0B")).
-				Render("Panel: " + m.currentSidePanelName() + "  ·  h/l to switch  ·  ↑↓ to navigate  ·  Esc to exit"),
+				Foreground(lipgloss.Color("#10B981")).
+				Render("[N]  h/l switch panels · ↑↓ navigate · i or Esc to type"),
 		)
 	case m.overlayActive:
 		overlayBorder := lipgloss.NewStyle().

@@ -142,6 +142,8 @@ type Model struct {
 	overlayInput  textinput.Model
 	overlayActive bool
 	overlayMode   OverlayMode
+	vimMode       VimMode
+	mouse         mouseState
 
 	// Task queue for overflow beyond maxConcurrent.
 	queue taskQueue
@@ -162,6 +164,7 @@ type Model struct {
 
 	// Structured runtime activity for transparency.
 	runtimeEvents []observability.Event
+	renderedLines []string
 	configPath    string
 
 	// Run target chooser state.
@@ -217,6 +220,7 @@ func NewModel(store *pantry.TicketStore) Model {
 		compareResults:         map[string][]compareResult{},
 		activeCompareID:        "",
 		compareSelected:        0,
+		vimMode:                VimInsert,
 		openSpecChanges:        []openSpecChange{},
 		openSpecCourses:        []openSpecCourse{},
 		openSpecSelected:       0,
@@ -256,9 +260,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Route arrow keys to side panel when in panel mode OR when no overlay is active.
 		// During overlays (palette, search), the overlay itself handles arrow keys.
-		inPanelMode := m.overlayActive && m.overlayMode == OverlayPanel
-		skipInputUpdate = (!m.overlayActive || inPanelMode) && isSidePanelKey(m.sidePanelIdx, msg, inPanelMode)
+		inPanelMode := m.vimMode == VimNormal || (m.overlayActive && m.overlayMode == OverlayPanel)
+		skipInputUpdate = inPanelMode && isSidePanelKey(m.sidePanelIdx, msg, inPanelMode)
 		cmds = append(cmds, m.handleKey(msg)...)
+
+	case tea.MouseMsg:
+		cmds = append(cmds, m.handleMouse(msg))
 
 	case blockRoutedMsg:
 		if b := m.findBlock(msg.BlockID); b != nil {
@@ -418,7 +425,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if skipInputUpdate {
 		inputCmd = nil
 	} else if m.overlayActive {
-		if m.overlayMode != OverlayRunIn {
+		if m.overlayMode != OverlayRunIn && m.overlayMode != OverlayPanel {
 			m.overlayInput, inputCmd = m.overlayInput.Update(msg)
 		}
 
@@ -463,6 +470,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	cmds = append(cmds, inputCmd)
+	m.refreshRenderedLines()
 
 	// Update viewport.
 	var vpCmd tea.Cmd
@@ -627,13 +635,15 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 				return nil
 			}
 		}
-		// Vim-style h/l for panel cycling — works in panel mode or normal mode.
-		if (!m.overlayActive || (m.overlayActive && m.overlayMode == OverlayPanel)) && !msg.Alt && len(msg.Runes) == 1 {
+		if m.vimMode == VimNormal && !msg.Alt && len(msg.Runes) == 1 {
 			switch msg.Runes[0] {
-			case 'l':
+			case 'i':
+				m.setInsertMode()
+				return nil
+			case 'l', 'j':
 				m.advanceSidePanel()
 				return nil
-			case 'h':
+			case 'h', 'k':
 				m.rewindSidePanel()
 				return nil
 			}
@@ -655,6 +665,22 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 			if m.diffSelected > 0 {
 				m.diffSelected--
 			}
+			return nil
+		}
+		if !m.overlayActive && m.vimMode == VimInsert {
+			m.input.SetValue("")
+			return nil
+		}
+
+	case "ctrl+a":
+		if !m.overlayActive && m.vimMode == VimInsert {
+			m.input.SetCursor(0)
+			return nil
+		}
+
+	case "ctrl+e":
+		if !m.overlayActive && m.vimMode == VimInsert {
+			m.input.SetCursor(len(m.input.Value()))
 			return nil
 		}
 
@@ -722,6 +748,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 				m.overlayActive = false
 				m.overlayMode = OverlayNone
 				m.palette.Active = false
+				m.vimMode = VimInsert
 				m.input.Focus()
 				if cmd != nil {
 					return []tea.Cmd{cmd}
@@ -737,6 +764,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 			m.overlayActive = false
 			m.overlayMode = OverlayNone
 			m.search.Active = false
+			m.vimMode = VimInsert
 			m.input.Focus()
 			return nil
 		}
@@ -852,27 +880,23 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 	case "g":
 		if m.overlayActive && m.overlayMode == OverlayFeedback {
 			m.rateLastDispatch(true)
-			m.overlayActive = false
-			m.overlayMode = OverlayNone
+			m.setInsertMode()
 			return nil
 		}
 	case "b":
 		if m.overlayActive && m.overlayMode == OverlayFeedback {
 			m.rateLastDispatch(false)
-			m.overlayActive = false
-			m.overlayMode = OverlayNone
+			m.setInsertMode()
 			return nil
 		}
 	case "s":
 		if m.overlayActive && m.overlayMode == OverlayFeedback {
-			m.overlayActive = false
-			m.overlayMode = OverlayNone
+			m.setInsertMode()
 			return nil
 		}
 	case "q":
 		if m.overlayActive && m.overlayMode == OverlaySummary {
-			m.overlayActive = false
-			m.overlayMode = OverlayNone
+			m.setInsertMode()
 			return nil
 		}
 
@@ -1068,21 +1092,21 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 	case "ctrl+o":
 		// Toggle panel navigation mode.
 		if m.overlayActive && m.overlayMode == OverlayPanel {
-			m.overlayActive = false
-			m.overlayMode = OverlayNone
-			m.input.Focus()
+			m.setInsertMode()
 			return nil
 		}
 		if !m.overlayActive {
-			m.overlayActive = true
-			m.overlayMode = OverlayPanel
-			m.input.Blur()
+			m.setNormalMode()
 			return nil
 		}
 
 	case "esc":
-		// Close any overlay (including panel mode).
+		if m.vimMode == VimNormal {
+			m.setInsertMode()
+			return nil
+		}
 		if m.overlayActive {
+			m.vimMode = VimInsert
 			m.overlayActive = false
 			m.overlayMode = OverlayNone
 			m.palette.Active = false
@@ -1092,6 +1116,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 			m.input.Focus()
 			return nil
 		}
+		m.setNormalMode()
+		return nil
 
 	case "backspace", "ctrl+h":
 		if !m.overlayActive && m.sidePanelIdx == int(SidePanelSnippets) && m.snippetFilter != "" {
@@ -1125,6 +1151,24 @@ func (m *Model) rewindSidePanel() {
 	}
 	m.refreshSnippetIndexOnEntry()
 	m.refreshDiffPanelOnEntry()
+}
+
+func (m *Model) setInsertMode() {
+	m.vimMode = VimInsert
+	m.overlayActive = false
+	m.overlayMode = OverlayNone
+	m.input.Focus()
+}
+
+func (m *Model) setNormalMode() {
+	m.vimMode = VimNormal
+	m.overlayActive = true
+	m.overlayMode = OverlayPanel
+	m.input.Blur()
+}
+
+func (m *Model) refreshRenderedLines() {
+	m.renderedLines = buildRenderedLines(m.blocks)
 }
 
 func (m *Model) refreshSnippetIndexOnEntry() {
@@ -1313,6 +1357,7 @@ func RunWithOpts(providerFactory ProviderFactory, hydrator orchestrator.ContextH
 	p := tea.NewProgram(
 		m,
 		tea.WithAltScreen(),
+		tea.WithMouseAllMotion(),
 	)
 	*m.prog = p
 	finalModel, err := p.Run()
@@ -1920,6 +1965,7 @@ func (m *Model) appendCommandFeedback(prompt, text string) {
 	}
 	m.blocks = append(m.blocks, block)
 	m.focusedIdx = len(m.blocks) - 1
+	m.refreshRenderedLines()
 }
 
 func (m *Model) appendRuntimeEvent(event observability.Event) {

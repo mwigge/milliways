@@ -85,6 +85,16 @@ const (
 	OverlayPanel // h/l cycles panels, arrow keys navigate, Esc exits
 )
 
+// VimMode distinguishes insert (typing) vs normal (navigation) mode.
+type VimMode int
+
+const (
+	// VimInsert keeps typing enabled.
+	VimInsert VimMode = iota
+	// VimNormal enables vi-style navigation.
+	VimNormal
+)
+
 // SidePanelMode identifies the active sidebar panel.
 type SidePanelMode int
 

@@ -121,3 +121,38 @@ func TestHandleKey_CyclesSidePanelsBackward(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleKey_VimNormalCyclesSidePanelsWithRunes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		key   tea.KeyMsg
+		start int
+		want  int
+	}{
+		{name: "l advances", key: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}}, start: 0, want: 1},
+		{name: "j advances", key: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}}, start: 1, want: 2},
+		{name: "h rewinds", key: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}}, start: 2, want: 1},
+		{name: "k rewinds", key: tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}}, start: 2, want: 1},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			m := NewModel(nil)
+			m.vimMode = VimNormal
+			m.sidePanelIdx = tt.start
+
+			cmds := m.handleKey(tt.key)
+			if len(cmds) != 0 {
+				t.Fatalf("expected no commands, got %d", len(cmds))
+			}
+			if m.sidePanelIdx != tt.want {
+				t.Fatalf("sidePanelIdx = %d, want %d", m.sidePanelIdx, tt.want)
+			}
+		})
+	}
+}
