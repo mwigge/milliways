@@ -130,6 +130,12 @@ type Model struct {
 	changedFiles           []diffFile
 	compareResults         map[string][]compareResult
 	compareSelectedKitchen string
+	openSpecChanges        []openSpecChange
+	openSpecCourses        []openSpecCourse
+	openSpecStatusMessage  string
+	openSpecExpanded       bool
+	openSpecSelected       int
+	openSpecCourseSelected int
 
 	// DB access for ledger sink.
 	pdb *pantry.DB
@@ -182,15 +188,19 @@ func NewModel(store *pantry.TicketStore) Model {
 	vp.SetContent("")
 
 	return Model{
-		input:         ti,
-		output:        vp,
-		historyIdx:    -1,
-		ticketStore:   store,
-		costByKitchen: make(map[string]costAccumulator),
-		procStats:     make(map[string]procInfo),
-		prog:          new(*tea.Program),
-		mu:            &sync.Mutex{},
-		maxConcurrent: defaultMaxConcurrent,
+		input:                  ti,
+		output:                 vp,
+		historyIdx:             -1,
+		ticketStore:            store,
+		costByKitchen:          make(map[string]costAccumulator),
+		procStats:              make(map[string]procInfo),
+		prog:                   new(*tea.Program),
+		mu:                     &sync.Mutex{},
+		maxConcurrent:          defaultMaxConcurrent,
+		openSpecChanges:        []openSpecChange{},
+		openSpecCourses:        []openSpecCourse{},
+		openSpecSelected:       0,
+		openSpecCourseSelected: 0,
 	}
 }
 
@@ -207,11 +217,12 @@ func NewAdapterModel(providerFactory ProviderFactory, hydrator orchestrator.Cont
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, jobsRefreshCmd(m.ticketStore), m.startSystemMonitor())
+	return tea.Batch(textinput.Blink, jobsRefreshCmd(m.ticketStore), m.startSystemMonitor(), initialOpenSpecRefreshCmd(), scheduleOpenSpecRefresh())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	skipInputUpdate := false
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -223,6 +234,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ready = true
 
 	case tea.KeyMsg:
+		skipInputUpdate = !m.overlayActive && isSidePanelKey(m.sidePanelIdx, msg)
 		cmds = append(cmds, m.handleKey(msg)...)
 
 	case blockRoutedMsg:
@@ -370,11 +382,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case systemMonitorTickMsg:
 		m.refreshProcStats()
 		cmds = append(cmds, m.startSystemMonitor())
+
+	case openSpecRefreshMsg:
+		_ = m.refreshOpenSpecData()
+		cmds = append(cmds, scheduleOpenSpecRefresh())
 	}
 
 	// Update input or overlay.
 	var inputCmd tea.Cmd
-	if m.overlayActive {
+	if skipInputUpdate {
+		inputCmd = nil
+	} else if m.overlayActive {
 		if m.overlayMode != OverlayRunIn {
 			m.overlayInput, inputCmd = m.overlayInput.Update(msg)
 		}

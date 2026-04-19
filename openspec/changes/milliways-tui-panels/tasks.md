@@ -456,7 +456,7 @@ func (m Model) renderSnippetsPanel(width, height int) string {
 
 ## Course SPS-6: OpenSpec panel [1 SP]
 
-### SPS-6.1 — Data types + refresh
+### [x] SPS-6.1 — Data types + refresh
 
 In `internal/tui/openspec_panel.go`:
 ```go
@@ -507,7 +507,7 @@ func (m *Model) refreshOpenSpecData() error {
 
 Refresh via `tea.Tick(30*time.Second)` — separate from block tick. Also refresh on panel activation (when `sidePanelIdx == SidePanelOpenSpec`).
 
-### SPS-6.2 — parseTasksMD
+### [x] SPS-6.2 — parseTasksMD
 
 ```go
 func parseTasksMD(path string) ([]openSpecCourse, error) {
@@ -522,7 +522,7 @@ func parseTasksMD(path string) ([]openSpecCourse, error) {
 }
 ```
 
-### SPS-6.3 — renderOpenSpecPanel implementation
+### [x] SPS-6.3 — renderOpenSpecPanel implementation
 
 ```go
 func (m Model) renderOpenSpecPanel(width, height int) string {
@@ -571,7 +571,7 @@ func (m Model) renderOpenSpecPanel(width, height int) string {
 }
 ```
 
-### SPS-6.4 — Interaction key handling
+### [x] SPS-6.4 — Interaction key handling
 
 In `app.go` key handling when `m.sidePanelIdx == SidePanelOpenSpec`:
 - `↑/↓`: move `m.openSpecSelected` (or `m.openSpecCourseSelected` when expanded)
@@ -579,10 +579,10 @@ In `app.go` key handling when `m.sidePanelIdx == SidePanelOpenSpec`:
 - `b`: when expanded, set `m.openSpecExpanded = false`
 - `ctrl+o`: global shortcut to jump to OpenSpec panel
 
-### SPS-6.5 — Tests
+### [x] SPS-6.5 — Tests
 
 - `parseTasksMD` correctly counts `- [x]` vs `- [ ]` across 3+ courses
-- Course with all tasks done shows 100%
+- Course with all tasks done shows full bar
 - Empty tasks.md → "(no tasks)"
 - `refreshOpenSpecData` handles missing openspec CLI gracefully
 
