@@ -11,13 +11,22 @@ func TestHandleMouseTracksSelection(t *testing.T) {
 
 	m := NewModel(nil)
 	m.renderedLines = []string{"line0", "line1", "line2"}
+	// Simulate real screen layout:
+	// Row 0: title (non-content, -1)
+	// Row 1: project header (non-content, -1)
+	// Rows 2-4: block body content → maps to renderedLines[0..2]
+	m.screenLineMap = []int{-1, -1, 0, 1, 2}
 
-	m.handleMouse(tea.MouseMsg{X: 0, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	m.handleMouse(tea.MouseMsg{X: 0, Y: 2, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	if !m.mouse.selecting {
 		t.Fatal("selection should start on mouse press")
 	}
+	if m.mouse.selStartRow != 0 {
+		t.Fatalf("selStartRow = %d, want 0", m.mouse.selStartRow)
+	}
 
-	m.handleMouse(tea.MouseMsg{X: 3, Y: 2, Action: tea.MouseActionMotion})
+	// Y=4 maps to renderedLine 2 (line2)
+	m.handleMouse(tea.MouseMsg{X: 3, Y: 4, Action: tea.MouseActionMotion})
 	if m.mouse.selEndRow != 2 || m.mouse.selEndCol != 3 {
 		t.Fatalf("selEnd = (%d,%d), want (2,3)", m.mouse.selEndRow, m.mouse.selEndCol)
 	}
