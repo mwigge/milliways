@@ -93,6 +93,7 @@ const (
 	SidePanelCost
 	SidePanelRouting
 	SidePanelSystem
+	SidePanelOpenSpec
 	SidePanelSnippets
 	SidePanelDiff
 	SidePanelCompare
@@ -105,6 +106,7 @@ var sidePanelNames = []string{
 	"Cost",
 	"Routing",
 	"System",
+	"OpenSpec",
 	"Snippets",
 	"Diff",
 	"Compare",

@@ -46,6 +46,9 @@ type tickMsg time.Time
 // systemMonitorTickMsg triggers a process stats refresh.
 type systemMonitorTickMsg time.Time
 
+// openSpecRefreshMsg triggers an OpenSpec data refresh.
+type openSpecRefreshMsg time.Time
+
 // jobsRefreshMsg carries a fresh slice of recent tickets.
 type jobsRefreshMsg []pantry.Ticket
 

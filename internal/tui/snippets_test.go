@@ -167,7 +167,7 @@ func TestHandleKeySnippetPanel(t *testing.T) {
 		t.Parallel()
 
 		m := NewModel(nil)
-		m.sidePanelIdx = int(SidePanelSystem)
+		m.sidePanelIdx = int(SidePanelOpenSpec)
 		m.snippetFilter = "review"
 
 		cmds := m.handleKey(tea.KeyMsg{Type: tea.KeyCtrlCloseBracket})
