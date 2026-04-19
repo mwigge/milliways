@@ -84,6 +84,32 @@ const (
 	OverlaySearch
 )
 
+// SidePanelMode identifies the active sidebar panel.
+type SidePanelMode int
+
+const (
+	SidePanelLedger SidePanelMode = iota
+	SidePanelJobs
+	SidePanelCost
+	SidePanelRouting
+	SidePanelSystem
+	SidePanelSnippets
+	SidePanelDiff
+	SidePanelCompare
+	sidePanelCount
+)
+
+var sidePanelNames = []string{
+	"Ledger",
+	"Jobs",
+	"Cost",
+	"Routing",
+	"System",
+	"Snippets",
+	"Diff",
+	"Compare",
+}
+
 // KitchenState represents a kitchen's availability for the status bar.
 type KitchenState struct {
 	Name       string
