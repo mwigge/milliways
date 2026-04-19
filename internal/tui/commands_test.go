@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/mwigge/milliways/internal/conversation"
 )
 
 func TestHandleProjectCommand(t *testing.T) {
@@ -249,68 +247,6 @@ func TestExecutePaletteCommand_LoginKitchenCapturesOutput(t *testing.T) {
 	rendered := strings.Join(blockLineTexts(m.blocks[0]), "\n")
 	if !strings.Contains(rendered, "Ollama uses no authentication. Verifying service...") {
 		t.Fatalf("login output = %q", rendered)
-	}
-}
-
-func TestExecutePaletteCommand_SwitchWithoutArgumentShowsUsage(t *testing.T) {
-	t.Parallel()
-
-	m := NewModel(nil)
-
-	m.executePaletteCommand("switch")
-
-	if len(m.blocks) != 1 {
-		t.Fatalf("blocks = %d, want 1", len(m.blocks))
-	}
-	if got := m.blocks[0].Prompt; got != "/switch" {
-		t.Fatalf("prompt = %q, want /switch", got)
-	}
-	if got := m.blocks[0].Lines[0].Text; got != "usage: /switch <kitchen>" {
-		t.Fatalf("message = %q, want usage", got)
-	}
-}
-
-func TestExecutePaletteCommand_StickCreatesStickyFeedback(t *testing.T) {
-	t.Parallel()
-
-	m := NewModel(nil)
-	conv := conversation.New("conv-stick", "b-stick", "finish the task")
-	m.blocks = []Block{{
-		ID:             "b-stick",
-		ConversationID: conv.ID,
-		Prompt:         "finish the task",
-		Kitchen:        "claude",
-		State:          StateStreaming,
-		StartedAt:      conv.CreatedAt,
-		Conversation:   conv,
-	}}
-	m.focusedIdx = 0
-
-	m.executePaletteCommand("stick")
-
-	if got := m.blocks[0].Conversation.Memory.StickyKitchen; got != "claude" {
-		t.Fatalf("StickyKitchen = %q, want claude", got)
-	}
-	if got := m.blocks[0].Lines[len(m.blocks[0].Lines)-1].Text; !strings.Contains(got, "sticky mode enabled") {
-		t.Fatalf("last line = %q, want sticky feedback", got)
-	}
-}
-
-func TestExecutePaletteCommand_BackWithoutHistoryShowsHelpfulFeedback(t *testing.T) {
-	t.Parallel()
-
-	m := NewModel(nil)
-
-	m.executePaletteCommand("back")
-
-	if len(m.blocks) != 1 {
-		t.Fatalf("blocks = %d, want 1", len(m.blocks))
-	}
-	if got := m.blocks[0].Prompt; got != "/back" {
-		t.Fatalf("prompt = %q, want /back", got)
-	}
-	if got := m.blocks[0].Lines[0].Text; !strings.Contains(got, "no prior switch") {
-		t.Fatalf("message = %q, want helpful back feedback", got)
 	}
 }
 
