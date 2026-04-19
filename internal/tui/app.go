@@ -605,17 +605,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 	var cmds []tea.Cmd
 
 	switch msg.Type {
-	case tea.KeyCtrlCloseBracket, tea.KeyCtrlJ:
+	case tea.KeyCtrlRight, tea.KeyCtrlJ:
 		m.advanceSidePanel()
 		return nil
-	case tea.KeyCtrlK:
-		m.rewindSidePanel()
-		return nil
-	case tea.KeyCtrlOpenBracket:
+	case tea.KeyCtrlLeft, tea.KeyCtrlK:
 		if !m.overlayActive {
 			m.rewindSidePanel()
-			return nil
 		}
+		return nil
 	}
 
 	switch msg.String() {
