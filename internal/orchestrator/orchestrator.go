@@ -98,6 +98,7 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 		conv.Status = conversation.StatusFailed
 		return conv, err
 	}
+	emitProjectContextHits(sink, conv.ID, conv.BlockID, conv.Context.ProjectHits)
 	if err := o.evaluate(ctx, conv); err != nil {
 		conv.Status = conversation.StatusFailed
 		return conv, err
@@ -369,6 +370,7 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 				conv.Status = conversation.StatusFailed
 				return conv, err
 			}
+			emitProjectContextHits(sink, conv.ID, conv.BlockID, conv.Context.ProjectHits)
 			if err := o.evaluate(ctx, conv); err != nil {
 				conv.Status = conversation.StatusFailed
 				return conv, err
@@ -528,6 +530,54 @@ func deriveAutoSwitchTrigger(reason string) string {
 	default:
 		return ""
 	}
+}
+
+// emitProjectContextHits emits a structured event summarizing MemPalace project hits.
+func emitProjectContextHits(sink observability.Sink, convID, blockID string, hits []conversation.ProjectHit) {
+	if sink == nil || len(hits) == 0 {
+		return
+	}
+	wingSet := make(map[string]struct{})
+	roomSet := make(map[string]struct{})
+	pathSet := make(map[string]struct{})
+	for _, h := range hits {
+		if h.Wing != "" {
+			wingSet[h.Wing] = struct{}{}
+		}
+		if h.Room != "" {
+			roomSet[h.Room] = struct{}{}
+		}
+		if h.PalacePath != "" {
+			pathSet[h.PalacePath] = struct{}{}
+		}
+	}
+	var wings, rooms, paths []string
+	for w := range wingSet {
+		wings = append(wings, w)
+	}
+	for r := range roomSet {
+		rooms = append(rooms, r)
+	}
+	for p := range pathSet {
+		paths = append(paths, p)
+	}
+	slices.Sort(wings)
+	slices.Sort(rooms)
+	slices.Sort(paths)
+	sink.Emit(observability.Event{
+		ConversationID: convID,
+		BlockID:        blockID,
+		Kind:           "context.project_hits",
+		Provider:       "milliways",
+		Text:           fmt.Sprintf("project context: %d hits from %d wing(s)", len(hits), len(wings)),
+		At:             time.Now(),
+		Fields: map[string]string{
+			"hit_count": fmt.Sprintf("%d", len(hits)),
+			"wings":     strings.Join(wings, ","),
+			"rooms":     strings.Join(rooms, ","),
+			"sources":   strings.Join(paths, ","),
+		},
+	})
 }
 
 func emitMemoryPromotionEvents(sink observability.Sink, conv *conversation.Conversation, segmentID string) {
