@@ -20,20 +20,29 @@ func IsCmdAllowed(cmd string) bool {
 	return allowedCmds[filepath.Base(cmd)]
 }
 
+// IsCmdAllowedKitchen returns true when either the command path/basename or the
+// configured kitchen name is in the allowlist.
+func IsCmdAllowedKitchen(cmd string, kitchenName string) bool {
+	return IsCmdAllowed(cmd) || IsCmdAllowed(kitchenName)
+}
+
 // allowedCmds is the set of CLI tools Milliways will execute.
 var allowedCmds = map[string]bool{
-	"claude":   true,
-	"codex":    true,
-	"gpt":      true,
-	"opencode": true,
-	"gemini":   true,
-	"aider":    true,
-	"goose":    true,
-	"cline":    true,
-	"echo":     true, // for testing
-	"false":    true, // for testing non-zero exit codes
-	"true":     true, // for testing
-	"sleep":    true, // for testing timeouts
+	"claude":                 true,
+	"codex":                  true,
+	"gpt":                    true,
+	"opencode":               true,
+	"gemini":                 true,
+	"aider":                  true,
+	"goose":                  true,
+	"cline":                  true,
+	"echo":                   true, // for testing
+	"false":                  true, // for testing non-zero exit codes
+	"true":                   true, // for testing
+	"sleep":                  true, // for testing timeouts
+	"fake-claude-web-search": true, // smoke testing
+	"fake-claude-streaming":  true, // smoke testing
+	"fake-kitchen-question":  true, // smoke testing
 }
 
 // GenericConfig holds configuration for a GenericKitchen.
@@ -94,7 +103,7 @@ func (k *GenericKitchen) Exec(ctx context.Context, task Task) (Result, error) {
 		return Result{ExitCode: 1}, fmt.Errorf("%s kitchen not ready: %s", k.cfg.Name, k.Status())
 	}
 
-	if !IsCmdAllowed(k.cfg.Cmd) {
+	if !IsCmdAllowedKitchen(k.cfg.Cmd, k.cfg.Name) {
 		return Result{ExitCode: 1}, fmt.Errorf("command %q not in allowed list", k.cfg.Cmd)
 	}
 

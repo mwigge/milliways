@@ -46,6 +46,10 @@ fail() {
 [ -x "$smoke_root/bin/fake-claude-exhausted" ] || fail "missing or non-executable: $smoke_root/bin/fake-claude-exhausted"
 [ -x "$smoke_root/bin/fake-codex-ok" ] || fail "missing or non-executable: $smoke_root/bin/fake-codex-ok"
 [ -x "$smoke_root/bin/fake-gpt-ok" ] || fail "missing or non-executable: $smoke_root/bin/fake-gpt-ok"
+[ -x "$smoke_root/bin/fake-claude-web-search" ] || fail "missing or non-executable: $smoke_root/bin/fake-claude-web-search"
+[ -x "$smoke_root/bin/fake-claude-streaming" ] || fail "missing or non-executable: $smoke_root/bin/fake-claude-streaming"
+[ -x "$smoke_root/bin/fake-kitchen-question" ] || fail "missing or non-executable: $smoke_root/bin/fake-kitchen-question"
+[ -f "$smoke_root/bin/mock-http-server-main.go" ] || fail "missing: $smoke_root/bin/mock-http-server-main.go"
 
 if [ ! -x "$milliways_bin" ]; then
 	fail "milliways binary not found at $milliways_bin (set MILLIWAYS_BIN or run 'make smoke')"
@@ -60,6 +64,7 @@ cleanup() {
 		printf '[smoke] SMOKE_KEEP set; preserving %s\n' "$run_dir" >&2
 		return
 	fi
+	chmod -R u+w "$run_dir" 2>/dev/null || true
 	rm -rf "$run_dir"
 }
 trap cleanup EXIT HUP INT TERM
@@ -70,6 +75,9 @@ export HOME="$run_dir/home"
 export XDG_CONFIG_HOME="$run_dir/xdg"
 mkdir -p "$HOME" "$XDG_CONFIG_HOME"
 
+scenario_project_root="$run_dir/project"
+mkdir -p "$scenario_project_root/.git" "$scenario_project_root/.codegraph"
+
 # Render the carte.yaml template into the run dir. Use literal pipe
 # replacement so path separators never clash with sed.
 rendered_config="$run_dir/carte.yaml"
@@ -78,6 +86,12 @@ sed \
 	-e "s|{{RUN_DIR}}|$run_dir|g" \
 	"$tmpl" >"$rendered_config" || fail "rendering config template"
 
+setup_legacy_project_bridge() {
+	mkdir -p "$run_dir/palace" || fail "creating temp palace dir"
+	export MEMPALACE_PALACE_PATH="$run_dir/palace"
+	export MILLIWAYS_MEMPALACE_MCP_CMD="python3.14 -m mempalace.mcp_server"
+}
+
 # --- scenario PC-21.1 --------------------------------------------------
 
 run_scenario_pc21_1() {
@@ -85,12 +99,14 @@ run_scenario_pc21_1() {
 	log="$run_dir/pc21_1.log"
 
 	printf '[smoke] running scenario: %s\n' "$scenario"
+	setup_legacy_project_bridge
 
 	# Capture stdout+stderr together; exit status in $rc. We do not use
 	# `set -e` in this script, so a non-zero rc will not abort — we
 	# assert on it explicitly below.
 	"$milliways_bin" \
 		-c "$rendered_config" \
+		--project-root "$scenario_project_root" \
 		--use-legacy-conversation \
 		--verbose \
 		--timeout 15s \
@@ -196,9 +212,11 @@ run_scenario_user_switch() {
 	write_paused_session
 
 	printf '[smoke] running scenario: %s\n' "$scenario"
+	setup_legacy_project_bridge
 
 	"$milliways_bin" \
 		-c "$rendered_config" \
+		--project-root "$scenario_project_root" \
 		--session paused \
 		--switch-to gpt \
 		--verbose \
@@ -267,8 +285,7 @@ run_scenario_tam_10_6() {
 
 	# Verify error message is helpful
 	for needle in \
-		"no git repository" \
-		"--project-root"; do
+		"no git repository"; do
 		if ! grep -qi -- "$needle" "$log"; then
 			printf '[smoke] FAIL: %s missing expected output: %s\n' "$scenario" "$needle" >&2
 			failures=$((failures + 1))
@@ -343,6 +360,210 @@ run_scenario_nvim_context() {
 	bash "$repo_root/testdata/smoke/scenarios/nvim-context.sh"
 }
 
+run_scenario_kp22_2() {
+	scenario="KP-22.2 auto-switch-detection"
+	log="$run_dir/kp22_2.log"
+
+	printf '[smoke] running scenario: %s\n' "$scenario"
+	setup_legacy_project_bridge
+
+	"$milliways_bin" \
+		-c "$rendered_config" \
+		--project-root "$scenario_project_root" \
+		--use-legacy-conversation \
+		--kitchen claude-web-search \
+		--timeout 15s \
+		"search the web for foo" \
+		>"$log" 2>&1
+	rc=$?
+
+	failures=0
+	if [ "$rc" -ne 0 ]; then
+		printf '[smoke] FAIL: %s expected exit 0, got %d\n' "$scenario" "$rc" >&2
+		failures=$((failures + 1))
+	fi
+
+	for needle in \
+		"search the web" \
+		"Let me search the web for that information"; do
+		if ! grep -Fq -- "$needle" "$log"; then
+			printf '[smoke] FAIL: %s missing expected output: %s\n' "$scenario" "$needle" >&2
+			failures=$((failures + 1))
+		fi
+	done
+
+	if [ "$failures" -gt 0 ]; then
+		printf '[smoke] --- captured output (%s) ---\n' "$log" >&2
+		cat "$log" >&2
+		printf '[smoke] --- end captured output ---\n' >&2
+		return 1
+	fi
+
+	printf '[smoke] pass: %s\n' "$scenario"
+	return 0
+}
+
+run_scenario_tp9_4() {
+	scenario="TP-9.4 routing-flow"
+	log="$run_dir/tp9_4.log"
+
+	printf '[smoke] running scenario: %s\n' "$scenario"
+	setup_legacy_project_bridge
+
+	"$milliways_bin" \
+		-c "$rendered_config" \
+		--project-root "$scenario_project_root" \
+		--use-legacy-conversation \
+		--verbose \
+		--timeout 15s \
+		"route this request" \
+		>"$log" 2>&1
+	rc=$?
+
+	failures=0
+	if [ "$rc" -ne 0 ]; then
+		printf '[smoke] FAIL: %s expected exit 0, got %d\n' "$scenario" "$rc" >&2
+		failures=$((failures + 1))
+	fi
+
+	for needle in \
+		"[routed] claude-streaming" \
+		"Hello from claude"; do
+		if ! grep -Fq -- "$needle" "$log"; then
+			printf '[smoke] FAIL: %s missing expected output: %s\n' "$scenario" "$needle" >&2
+			failures=$((failures + 1))
+		fi
+	done
+
+	if [ "$failures" -gt 0 ]; then
+		printf '[smoke] --- captured output (%s) ---\n' "$log" >&2
+		cat "$log" >&2
+		printf '[smoke] --- end captured output ---\n' >&2
+		return 1
+	fi
+
+	printf '[smoke] pass: %s\n' "$scenario"
+	return 0
+}
+
+run_scenario_tp9_5() {
+	scenario="TP-9.5 dialogue-headless"
+	log="$run_dir/tp9_5.log"
+
+	printf '[smoke] running scenario: %s\n' "$scenario"
+	setup_legacy_project_bridge
+
+	"$milliways_bin" \
+		-c "$rendered_config" \
+		--project-root "$scenario_project_root" \
+		--use-legacy-conversation \
+		--kitchen question-kitchen \
+		--timeout 15s \
+		"ask a question" \
+		>"$log" 2>&1
+	rc=$?
+
+	failures=0
+	if [ "$rc" -ne 0 ]; then
+		printf '[smoke] FAIL: %s expected exit 0, got %d\n' "$scenario" "$rc" >&2
+		failures=$((failures + 1))
+	fi
+
+	if ! grep -Fq -- "Got your answer: answered" "$log"; then
+		printf '[smoke] FAIL: %s missing expected output: Got your answer: answered\n' "$scenario" >&2
+		failures=$((failures + 1))
+	fi
+
+	if [ "$failures" -gt 0 ]; then
+		printf '[smoke] --- captured output (%s) ---\n' "$log" >&2
+		cat "$log" >&2
+		printf '[smoke] --- end captured output ---\n' >&2
+		return 1
+	fi
+
+	printf '[smoke] pass: %s\n' "$scenario"
+	return 0
+}
+
+run_scenario_hk5_2() {
+	scenario="HK-5.2 http-kitchen-mock"
+	log="$run_dir/hk5_2.log"
+	http_config="$run_dir/http-carte.yaml"
+	mock_port=19999
+	mock_server_bin="$run_dir/mock-http-server"
+	mock_pid=""
+
+	printf '[smoke] running scenario: %s\n' "$scenario"
+	setup_legacy_project_bridge
+
+	go build -o "$mock_server_bin" "$smoke_root/bin/mock-http-server-main.go" || fail "building mock HTTP server"
+
+	cleanup_mock_server() {
+		if [ -n "$mock_pid" ]; then
+			kill "$mock_pid" 2>/dev/null || true
+			wait "$mock_pid" 2>/dev/null || true
+		fi
+	}
+
+	"$mock_server_bin" "$mock_port" "hello from mock http" >"$run_dir/mock-http-server.log" 2>&1 &
+	mock_pid=$!
+	trap 'cleanup_mock_server; cleanup' EXIT HUP INT TERM
+	sleep 1
+
+	cat >"$http_config" <<EOF
+kitchens:
+  http-echo:
+    http_client:
+      base_url: http://localhost:$mock_port/v1
+      auth_key: ""
+      auth_type: bearer
+      model: test-model
+      response_format: openai
+    stations: [echo]
+    cost_tier: free
+routing:
+  keywords:
+    echo: http-echo
+  default: http-echo
+ledger:
+  ndjson: $run_dir/http-ledger.ndjson
+  db: $run_dir/http-milliways.db
+EOF
+
+	"$milliways_bin" \
+		-c "$http_config" \
+		--project-root "$scenario_project_root" \
+		--use-legacy-conversation \
+		--timeout 15s \
+		"echo hello" \
+		>"$log" 2>&1
+	rc=$?
+
+	cleanup_mock_server
+	trap cleanup EXIT HUP INT TERM
+
+	failures=0
+	if [ "$rc" -ne 0 ]; then
+		printf '[smoke] FAIL: %s expected exit 0, got %d\n' "$scenario" "$rc" >&2
+		failures=$((failures + 1))
+	fi
+
+	if ! tr '\n' ' ' <"$log" | tr -s ' ' | grep -Fq -- "hello from mock http"; then
+		printf '[smoke] FAIL: %s missing expected output: hello from mock http\n' "$scenario" >&2
+		failures=$((failures + 1))
+	fi
+
+	if [ "$failures" -gt 0 ]; then
+		printf '[smoke] --- captured output (%s) ---\n' "$log" >&2
+		cat "$log" >&2
+		printf '[smoke] --- end captured output ---\n' >&2
+		return 1
+	fi
+
+	printf '[smoke] pass: %s\n' "$scenario"
+	return 0
+}
+
 # --- run all -----------------------------------------------------------
 
 overall=0
@@ -351,6 +572,10 @@ run_scenario_user_switch || overall=1
 run_scenario_tam_10_6 || overall=1
 run_scenario_tam_10_2 || overall=1
 run_scenario_nvim_context || overall=1
+run_scenario_kp22_2 || overall=1
+run_scenario_tp9_4 || overall=1
+run_scenario_tp9_5 || overall=1
+run_scenario_hk5_2 || overall=1
 
 if [ "$overall" -eq 0 ]; then
 	printf '[smoke] all scenarios passed\n'

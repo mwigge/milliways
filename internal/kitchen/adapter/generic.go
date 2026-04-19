@@ -33,7 +33,7 @@ func NewGenericAdapter(k *kitchen.GenericKitchen, opts AdapterOpts) *GenericAdap
 func (a *GenericAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Event, error) {
 	cfg := a.kitchen.Config()
 
-	if !kitchen.IsCmdAllowed(cfg.Cmd) && !kitchen.IsCmdAllowed(cfg.Name) {
+	if !kitchen.IsCmdAllowedKitchen(cfg.Cmd, cfg.Name) {
 		return nil, fmt.Errorf("command %q not in allowed list", cfg.Cmd)
 	}
 
