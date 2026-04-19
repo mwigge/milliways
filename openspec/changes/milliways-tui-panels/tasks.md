@@ -5,7 +5,7 @@
 
 ## Prerequisites
 
-- [ ] JP-extra: Integrate `milliways-jobs-panel` rendering into the swappable panel system (extract from existing jobs-panel change, wire into `renderActiveSidePanel`)
+- [ ] JP-extra: **Depends on `milliways-jobs-panel` JP-3 being complete.** Once `renderJobsPanel()` exists (written in JP-3, NOT in SPS-1), extract it as a `renderJobsPanel(width, height int)` method and wire it into `renderActiveSidePanel` as `case SidePanelJobs`. The milliways-tui-panels change does NOT own the rendering logic — it only integrates the rendering already built in JP-3.
 
 ---
 
