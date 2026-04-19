@@ -14,16 +14,12 @@ import (
 )
 
 func TestNewHTTPKitchen_RequiresFieldsAndDefaults(t *testing.T) {
-	tests := []struct {
+	// Error cases — run in parallel (no t.Setenv)
+	errorCases := []struct {
 		name    string
 		cfg     HTTPKitchenConfig
 		wantErr string
 	}{
-		{
-			name:    "missing auth key",
-			cfg:     HTTPKitchenConfig{BaseURL: "https://api.example.test", Model: "gpt-4.1"},
-			wantErr: "auth_key is required",
-		},
 		{
 			name:    "missing base url",
 			cfg:     HTTPKitchenConfig{AuthKey: "TEST_API_KEY", Model: "gpt-4.1"},
@@ -35,17 +31,35 @@ func TestNewHTTPKitchen_RequiresFieldsAndDefaults(t *testing.T) {
 			wantErr: "model is required",
 		},
 	}
-
-	for _, tt := range tests {
+	for _, tt := range errorCases {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := NewHTTPKitchen("api", tt.cfg, []string{"code"}, kitchen.Cloud)
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+			if err == nil {
+				t.Fatalf("err = nil, want substring %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("err = %v, want substring %q", err, tt.wantErr)
 			}
 		})
 	}
 
+	// Valid empty auth (Ollama no-auth) — no t.Setenv needed
+	t.Run("empty auth key is valid for local kitchens", func(t *testing.T) {
+		k, err := NewHTTPKitchen("ollama", HTTPKitchenConfig{
+			BaseURL: "http://localhost:11434",
+			Model:   "llama3",
+		}, []string{"local"}, kitchen.Free)
+		if err != nil {
+			t.Fatalf("NewHTTPKitchen() error = %v, want no error", err)
+		}
+		if k.Status() != kitchen.Ready {
+			t.Fatalf("Status() = %s, want ready (empty authKey means no credential needed)", k.Status())
+		}
+	})
+
+	// Defaults applied — needs t.Setenv, run last
 	t.Setenv("TEST_HTTP_DEFAULTS", "")
 	k, err := NewHTTPKitchen("api", HTTPKitchenConfig{
 		BaseURL: "https://api.example.test/",

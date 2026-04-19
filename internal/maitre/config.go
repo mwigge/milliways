@@ -184,6 +184,42 @@ func defaultConfig() *Config {
 				Stations: []string{"fleet", "parallel"},
 				CostTier: "cloud",
 			},
+			"minimax": {
+				HTTPClient: &HTTPClientConfig{
+					BaseURL:        "https://api.minimaxi.com/v1/text",
+					AuthKey:        "MINIMAX_API_KEY",
+					AuthType:       "bearer",
+					Model:          "M2-her",
+					Stations:       []string{"reason", "analyze", "write"},
+					Tier:           "cloud",
+					ResponseFormat: "minimax",
+					Timeout:        300,
+				},
+			},
+			"groq": {
+				HTTPClient: &HTTPClientConfig{
+					BaseURL:        "https://api.groq.com/openai/v1",
+					AuthKey:        "GROQ_API_KEY",
+					AuthType:       "bearer",
+					Model:          "mixtral-8x7b-32768",
+					Stations:       []string{"fast", "simple"},
+					Tier:           "free",
+					ResponseFormat: "openai",
+					Timeout:        300,
+				},
+			},
+			"ollama": {
+				HTTPClient: &HTTPClientConfig{
+					BaseURL:        "http://localhost:11434",
+					AuthKey:        "",
+					AuthType:       "bearer",
+					Model:          "llama3",
+					Stations:       []string{"local", "private"},
+					Tier:           "free",
+					ResponseFormat: "ollama",
+					Timeout:        300,
+				},
+			},
 		},
 		Routing: RoutingConfig{
 			Keywords: map[string]string{
@@ -194,6 +230,8 @@ func defaultConfig() *Config {
 				"refactor": "aider",
 				"search":   "gemini", "research": "gemini", "compare": "gemini",
 				"tools": "goose", "database": "goose",
+				"fast": "groq", "quick": "groq",
+				"local": "ollama", "private": "ollama",
 			},
 			Default:        "claude",
 			BudgetFallback: "opencode",

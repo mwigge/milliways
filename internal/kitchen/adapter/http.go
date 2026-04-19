@@ -45,9 +45,6 @@ var _ kitchen.Kitchen = (*HTTPKitchen)(nil)
 
 // NewHTTPKitchen creates an HTTP-backed kitchen.
 func NewHTTPKitchen(name string, cfg HTTPKitchenConfig, stations []string, tier kitchen.CostTier) (*HTTPKitchen, error) {
-	if cfg.AuthKey == "" {
-		return nil, fmt.Errorf("http kitchen %q: auth_key is required", name)
-	}
 	if cfg.BaseURL == "" {
 		return nil, fmt.Errorf("http kitchen %q: base_url is required", name)
 	}
@@ -104,7 +101,11 @@ func (k *HTTPKitchen) Stations() []string { return append([]string(nil), k.stati
 func (k *HTTPKitchen) CostTier() kitchen.CostTier { return k.costTier }
 
 // Status reports whether the kitchen has the required API credential.
+// Kitchens with no authKey (e.g. local Ollama) are always Ready.
 func (k *HTTPKitchen) Status() kitchen.Status {
+	if k.authKey == "" {
+		return kitchen.Ready
+	}
 	if os.Getenv(k.authKey) == "" {
 		return kitchen.NeedsAuth
 	}
@@ -118,9 +119,13 @@ func (k *HTTPKitchen) Exec(ctx context.Context, task kitchen.Task) (kitchen.Resu
 		return kitchen.Result{ExitCode: 1, Duration: time.Since(start)}, fmt.Errorf("%s kitchen not ready: %s", k.name, k.Status())
 	}
 
-	apiKey := os.Getenv(k.authKey)
-	if apiKey == "" {
-		return kitchen.Result{ExitCode: 1, Duration: time.Since(start)}, fmt.Errorf("%s: API key not set", k.authKey)
+	// Only inject auth header if authKey is configured (local kitchens like Ollama have none)
+	var apiKey string
+	if k.authKey != "" {
+		apiKey = os.Getenv(k.authKey)
+		if apiKey == "" {
+			return kitchen.Result{ExitCode: 1, Duration: time.Since(start)}, fmt.Errorf("%s: API key not set", k.authKey)
+		}
 	}
 
 	reqBody, err := k.buildRequestBody(task.Prompt)
