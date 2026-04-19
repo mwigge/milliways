@@ -82,6 +82,7 @@ const (
 	OverlaySummary
 	OverlayPalette
 	OverlaySearch
+	OverlayPanel // h/l cycles panels, arrow keys navigate, Esc exits
 )
 
 // SidePanelMode identifies the active sidebar panel.

@@ -59,6 +59,12 @@ func (m Model) View() string {
 		inputBar = RenderPalette(m.palette.Matches, m.palette.Selected, m.overlayInput.Value(), m.width)
 	case m.overlayActive && m.overlayMode == OverlaySearch:
 		inputBar = RenderSearch(m.search.Matches, m.search.Selected, m.overlayInput.Value(), m.width)
+	case m.overlayActive && m.overlayMode == OverlayPanel:
+		inputBar = panelBorder.Width(m.width - 2).Render(
+			lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#F59E0B")).
+				Render("Panel: " + m.currentSidePanelName() + "  ·  h/l to switch  ·  ↑↓ to navigate  ·  Esc to exit"),
+		)
 	case m.overlayActive:
 		overlayBorder := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -118,7 +124,7 @@ func (m Model) renderActiveSidePanel(width, height int) string {
 	}
 
 	contentHeight := height - 2
-	header := fmt.Sprintf("┌─ %s ␇ ctrl+←/ctrl+→ ─", m.currentSidePanelName())
+	header := fmt.Sprintf("┌─ %s ␇ ⌃O panel  h/l switch  ↑↓ navigate ─", m.currentSidePanelName())
 	content := m.renderCurrentPanel(width, contentHeight)
 
 	return lipgloss.JoinVertical(lipgloss.Left,

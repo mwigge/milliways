@@ -94,7 +94,7 @@ func TestRenderActiveSidePanel(t *testing.T) {
 		m.jobTickets = []pantry.Ticket{{Status: "complete", Prompt: "test prompt", Kitchen: "k1"}}
 
 		got := m.renderActiveSidePanel(24, 8)
-		for _, want := range []string{"Jobs", "ctrl+←/ctrl+→", "╭", "✓"} {
+		for _, want := range []string{"Jobs", "h/l", "╭", "✓"} {
 			if !strings.Contains(got, want) {
 				t.Fatalf("renderActiveSidePanel(24, 8) = %q, want contains %q", got, want)
 			}

@@ -254,7 +254,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ready = true
 
 	case tea.KeyMsg:
-		skipInputUpdate = !m.overlayActive && isSidePanelKey(m.sidePanelIdx, msg)
+		// Route arrow keys to side panel when in panel mode OR when no overlay is active.
+		// During overlays (palette, search), the overlay itself handles arrow keys.
+		inPanelMode := m.overlayActive && m.overlayMode == OverlayPanel
+		skipInputUpdate = (!m.overlayActive || inPanelMode) && isSidePanelKey(m.sidePanelIdx, msg, inPanelMode)
 		cmds = append(cmds, m.handleKey(msg)...)
 
 	case blockRoutedMsg:
@@ -609,10 +612,32 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 		m.advanceSidePanel()
 		return nil
 	case tea.KeyCtrlLeft, tea.KeyCtrlK:
-		if !m.overlayActive {
-			m.rewindSidePanel()
-		}
+		m.rewindSidePanel()
 		return nil
+	// On Mac, Cmd+] / Cmd+[ send Alt+]/Alt+[ in most terminal emulators.
+	// We treat these the same as Ctrl+J / Ctrl+K for panel cycling.
+	case tea.KeyRunes:
+		if msg.Alt && len(msg.Runes) == 1 {
+			switch msg.Runes[0] {
+			case ']':
+				m.advanceSidePanel()
+				return nil
+			case '[':
+				m.rewindSidePanel()
+				return nil
+			}
+		}
+		// Vim-style h/l for panel cycling — works in panel mode or normal mode.
+		if (!m.overlayActive || (m.overlayActive && m.overlayMode == OverlayPanel)) && !msg.Alt && len(msg.Runes) == 1 {
+			switch msg.Runes[0] {
+			case 'l':
+				m.advanceSidePanel()
+				return nil
+			case 'h':
+				m.rewindSidePanel()
+				return nil
+			}
+		}
 	}
 
 	switch msg.String() {
@@ -943,6 +968,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 			}
 			return nil
 		}
+		// In panel mode, navigate courses within the OpenSpec panel.
+		if m.overlayActive && m.overlayMode == OverlayPanel && m.sidePanelIdx == int(SidePanelOpenSpec) {
+			if m.openSpecCourseSelected > 0 {
+				m.openSpecCourseSelected--
+			}
+			return nil
+		}
 		// In palette/search, navigate up.
 		if m.overlayActive && m.overlayMode == OverlayPalette {
 			if m.palette.Selected > 0 {
@@ -986,6 +1018,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 			}
 			return nil
 		}
+		// In panel mode, navigate courses within the OpenSpec panel.
+		if m.overlayActive && m.overlayMode == OverlayPanel && m.sidePanelIdx == int(SidePanelOpenSpec) {
+			if m.openSpecCourseSelected < len(m.openSpecCourses)-1 {
+				m.openSpecCourseSelected++
+			}
+			return nil
+		}
 		// In palette/search, navigate down.
 		if m.overlayActive && m.overlayMode == OverlayPalette {
 			if m.palette.Selected < len(m.palette.Matches)-1 {
@@ -1026,8 +1065,23 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 			return nil
 		}
 
+	case "ctrl+o":
+		// Toggle panel navigation mode.
+		if m.overlayActive && m.overlayMode == OverlayPanel {
+			m.overlayActive = false
+			m.overlayMode = OverlayNone
+			m.input.Focus()
+			return nil
+		}
+		if !m.overlayActive {
+			m.overlayActive = true
+			m.overlayMode = OverlayPanel
+			m.input.Blur()
+			return nil
+		}
+
 	case "esc":
-		// Close any overlay.
+		// Close any overlay (including panel mode).
 		if m.overlayActive {
 			m.overlayActive = false
 			m.overlayMode = OverlayNone
