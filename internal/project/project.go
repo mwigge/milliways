@@ -27,17 +27,18 @@ func DefaultAccessRules() AccessRules {
 
 // ProjectContext captures repository metadata and local tool availability.
 type ProjectContext struct {
-	RepoRoot         string      `json:"repo_root"`
-	RepoName         string      `json:"repo_name"`
-	Branch           string      `json:"branch"`
-	Commit           string      `json:"commit"`
-	CodeGraphExists  bool        `json:"codegraph_exists"`
-	CodeGraphPath    string      `json:"codegraph_path"`
-	CodeGraphSymbols int         `json:"codegraph_symbols"`
-	PalacePath       *string     `json:"palace_path,omitempty"`
-	PalaceExists     bool        `json:"palace_exists"`
-	PalaceDrawers    *int        `json:"palace_drawers,omitempty"`
-	AccessRules      AccessRules `json:"access_rules"`
+	RepoRoot          string      `json:"repo_root"`
+	RepoName          string      `json:"repo_name"`
+	Branch            string      `json:"branch"`
+	Commit            string      `json:"commit"`
+	CodeGraphExists   bool        `json:"codegraph_exists"`
+	CodeGraphIndexing bool        `json:"codegraph_indexing"`
+	CodeGraphPath     string      `json:"codegraph_path"`
+	CodeGraphSymbols  int         `json:"codegraph_symbols"`
+	PalacePath        *string     `json:"palace_path,omitempty"`
+	PalaceExists      bool        `json:"palace_exists"`
+	PalaceDrawers     *int        `json:"palace_drawers,omitempty"`
+	AccessRules       AccessRules `json:"access_rules"`
 }
 
 // DetectCodeGraph reports whether a CodeGraph data directory exists at the repository root.
@@ -143,21 +144,39 @@ func ResolveProject(overrideRoot string) (*ProjectContext, error) {
 	return newProjectContext(repoRoot), nil
 }
 
+// DetectStartupProject resolves project context for TUI startup.
+// It walks up from workingDir to find a git repository and returns nil when
+// Milliways is started outside any repository.
+func DetectStartupProject(workingDir string) (*ProjectContext, error) {
+	repoRoot, err := FindRepoRoot(workingDir)
+	if err != nil {
+		if errors.Is(err, ErrNoRepository) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return newProjectContext(repoRoot), nil
+}
+
 func newProjectContext(repoRoot string) *ProjectContext {
 	codegraphPath, codegraphExists := DetectCodeGraph(repoRoot)
+	codegraphIndexing := false
 	if err := InitCodeGraph(repoRoot); err != nil {
+		codegraphIndexing = !codegraphExists
 		slog.Default().Error("codegraph unavailable", "repo_root", repoRoot, "error", err)
 	}
 
 	palacePath, palaceExists := DetectPalace(repoRoot)
 
 	ctx := &ProjectContext{
-		RepoRoot:        repoRoot,
-		RepoName:        filepath.Base(repoRoot),
-		CodeGraphPath:   codegraphPath,
-		CodeGraphExists: codegraphExists,
-		PalaceExists:    palaceExists,
-		AccessRules:     DefaultAccessRules(),
+		RepoRoot:          repoRoot,
+		RepoName:          filepath.Base(repoRoot),
+		CodeGraphPath:     codegraphPath,
+		CodeGraphExists:   codegraphExists,
+		CodeGraphIndexing: codegraphIndexing,
+		PalaceExists:      palaceExists,
+		AccessRules:       DefaultAccessRules(),
 	}
 
 	if palaceExists {

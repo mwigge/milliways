@@ -22,6 +22,23 @@ func TestRenderCompactStatus(t *testing.T) {
 	}
 }
 
+func TestRenderCompactStatus_ShowsIndexingAndMissingPalaceHint(t *testing.T) {
+	t.Parallel()
+
+	state := ProjectState{
+		RepoName:          "acme-saas",
+		RepoRoot:          "/Users/me/projects/acme-saas",
+		CodeGraphIndexing: true,
+	}
+
+	rendered := RenderCompactStatus(state, "", 0)
+	for _, want := range []string{"acme-saas", "codegraph indexing...", "palace (none — run /palace init)"} {
+		if !containsPlain(rendered, want) {
+			t.Fatalf("compact status missing %q in %q", want, rendered)
+		}
+	}
+}
+
 func TestRenderFullStatus(t *testing.T) {
 	t.Parallel()
 
@@ -38,6 +55,23 @@ func TestRenderFullStatus(t *testing.T) {
 
 	rendered := RenderFullStatus(state)
 	for _, want := range []string{"repo:", "branch:", "12,450 symbols", "342 drawers", "last accessed: 2026-04-18 12:34"} {
+		if !containsPlain(rendered, want) {
+			t.Fatalf("full status missing %q in %q", want, rendered)
+		}
+	}
+}
+
+func TestRenderFullStatus_ShowsIndexingAndMissingPalaceHint(t *testing.T) {
+	t.Parallel()
+
+	state := ProjectState{
+		RepoName:          "acme-saas",
+		RepoRoot:          "/Users/me/projects/acme-saas",
+		CodeGraphIndexing: true,
+	}
+
+	rendered := RenderFullStatus(state)
+	for _, want := range []string{"codegraph: indexing...", "palace: (none — run /palace init)"} {
 		if !containsPlain(rendered, want) {
 			t.Fatalf("full status missing %q in %q", want, rendered)
 		}

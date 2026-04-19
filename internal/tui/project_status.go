@@ -25,8 +25,8 @@ func RenderCompactStatus(state ProjectState, kitchenName string, reposCount int)
 	}
 
 	parts := []string{lipgloss.NewStyle().Bold(true).Render(state.RepoName)}
-	parts = append(parts, compactAvailability("codegraph", state.CodeGraphExists))
-	parts = append(parts, compactAvailability("palace", state.PalaceExists))
+	parts = append(parts, compactCodeGraphStatus(state))
+	parts = append(parts, compactPalaceStatus(state))
 	if kitchenName != "" {
 		parts = append(parts, kitchenName)
 	}
@@ -91,7 +91,24 @@ func compactAvailability(label string, ok bool) string {
 	return label + " " + mutedStyle.Render("✗")
 }
 
+func compactCodeGraphStatus(state ProjectState) string {
+	if state.CodeGraphIndexing {
+		return "codegraph " + runningStyle.Render("indexing...")
+	}
+	return compactAvailability("codegraph", state.CodeGraphExists)
+}
+
+func compactPalaceStatus(state ProjectState) string {
+	if state.PalaceExists {
+		return compactAvailability("palace", true)
+	}
+	return "palace " + mutedStyle.Render(formatMissingPalaceHint(state))
+}
+
 func formatCodeGraphStatus(state ProjectState) string {
+	if state.CodeGraphIndexing {
+		return runningStyle.Render("indexing...")
+	}
 	if !state.CodeGraphExists {
 		return mutedStyle.Render("not available")
 	}
@@ -104,13 +121,20 @@ func formatCodeGraphStatus(state ProjectState) string {
 
 func formatPalaceStatus(state ProjectState) string {
 	if !state.PalaceExists {
-		return mutedStyle.Render("not available")
+		return mutedStyle.Render(formatMissingPalaceHint(state))
 	}
 	status := fmt.Sprintf("%s drawers", formatCount(state.PalaceDrawers))
 	if state.PalacePath != "" {
 		status += " │ " + state.PalacePath
 	}
 	return status
+}
+
+func formatMissingPalaceHint(state ProjectState) string {
+	if strings.TrimSpace(state.RepoRoot) != "" {
+		return "(none — run /palace init)"
+	}
+	return "(none)"
 }
 
 func displayRepoRoot(state ProjectState) string {

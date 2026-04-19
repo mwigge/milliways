@@ -113,34 +113,8 @@ based on what each tool does best.
 					opts.ResumeSession = resume
 				}
 
-				// Auto-detect project root from cwd if not set via env var.
-				if projectRootEnv := os.Getenv("MILLIWAYS_PROJECT_ROOT"); projectRootEnv == "" {
-					// No env var set — try auto-detecting from current working directory.
-					if cwd, err := os.Getwd(); err == nil {
-						// Try resolving project from cwd (walk up for .git/, check for .mempalace/).
-						if pc, err := project.ResolveProject(cwd); err == nil && pc.RepoRoot != "" {
-							ps := tui.ProjectState{
-								RepoRoot: pc.RepoRoot,
-								RepoName: pc.RepoName,
-								PalacePath: func() string {
-									if pc.PalacePath != nil {
-										return *pc.PalacePath
-									}
-									return ""
-								}(),
-								PalaceDrawers: func() int {
-									if pc.PalaceDrawers != nil {
-										return *pc.PalaceDrawers
-									}
-									return 0
-								}(),
-								CodeGraphSymbols: pc.CodeGraphSymbols,
-								AccessReadRule:   pc.AccessRules.Read,
-								AccessWriteRule:  pc.AccessRules.Write,
-							}
-							opts.ProjectState = ps
-						}
-					}
+				if pc, err := detectTUIProjectContext(); err == nil && pc != nil && pc.RepoRoot != "" {
+					opts.ProjectState = projectContextToTUIState(pc)
 				}
 
 				// Try to fetch palace stats via MCP.

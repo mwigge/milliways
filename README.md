@@ -225,11 +225,61 @@ Or put them in your shell profile (`~/.zshrc`, `~/.bashrc`) for persistence.
 
 With project memory enabled:
 1. Milliways detects `.mempalace/` and `.codegraph/` in your repo root
-2. On each turn, relevant memories are injected into the context bundle
-3. Citations to project facts are tracked per-turn and stored with the conversation
-4. `/project`, `/repos`, `/palace`, `/codegraph` commands show project state
+2. Startup outside a git repo works normally; startup inside a repo without a palace degrades gracefully
+3. If CodeGraph is still being created, the TUI shows `indexing...`
+4. If no palace exists yet, the TUI shows `(none — run /palace init)`
+5. On each turn, relevant memories are injected into the context bundle
+6. Citations to project facts are tracked per-turn and stored with the conversation
+7. `/project`, `/repos`, `/palace`, `/codegraph` commands show project state
 
 Without these directories, milliways operates without project context (graceful degradation).
+
+### Project registry: `~/.milliways/projects.yaml`
+
+Use the optional registry to control cross-palace read/write access:
+
+```yaml
+projects:
+  default:
+    access:
+      read: all
+      write: project
+
+  shared-libs:
+    paths:
+      - ~/dev/src/pprojects/shared-lib
+      - ~/dev/src/pprojects/design-system
+    access:
+      read: all
+      write: none
+
+  client-work:
+    paths:
+      - ~/dev/src/pprojects/client-a
+    access:
+      read: project
+      write: project
+```
+
+Schema:
+
+- `projects.<name>.paths`: repo roots matched against palace paths
+- `projects.<name>.access.read`: `all`, `project`, or `none`
+- `projects.<name>.access.write`: `project` or `none`
+- `projects.default.access`: fallback rules when no explicit project matches
+
+### Project commands
+
+Inside the TUI:
+
+- `/project` — show active repo, CodeGraph, palace, and access rules
+- `/repos` — list repos accessed in the current session
+- `/palace` — show palace status
+- `/palace init` — reserved for palace bootstrap wiring
+- `/palace search <query>` — reserved for palace search wiring
+- `/codegraph` or `/codegraph status` — show CodeGraph status
+- `/codegraph reindex` — reserved for reindex wiring
+- `/codegraph search <query>` — reserved for CodeGraph search wiring
 
 ## Circuit Breaker
 

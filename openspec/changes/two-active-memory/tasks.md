@@ -9,7 +9,7 @@
 - [x] 1.5 Implement CodeGraph auto-init: trigger background indexing if missing
 - [x] 1.6 Implement project palace detection: check for `.mempalace/` in repo root
 - [x] 1.7 Unit tests: repo detection, flag override, graceful degradation
-- [ ] 1.8 Integration test: milliways startup with/without repo, with/without palace
+- [x] 1.8 Integration test: milliways startup with/without repo, with/without palace
 
 ## 2. Schema Changes (mempalace-milliways)
 
@@ -30,7 +30,7 @@
 - [x] 3.5 Wire context injection into orchestrator turn flow
 - [x] 3.6 Add `project_context_limit` to carte.yaml config
 - [x] 3.7 Unit tests: topic extraction, context injection, citation creation
-- [ ] 3.8 Integration test: turn with palace results injected
+- [x] 3.8 Integration test: turn with palace results injected
 
 ## 4. Cross-Palace Citations
 
@@ -53,8 +53,8 @@
 - [x] 6.1 Add project status to TUI header (project name, codegraph, palace)
 - [x] 6.2 Implement compact status bar format for narrow terminals
 - [x] 6.3 Track repos accessed per session in orchestrator state
-- [ ] 6.4 Display "indexing..." status during CodeGraph init
-- [ ] 6.5 Display "(none)" for missing palace with init hint
+- [x] 6.4 Display "indexing..." status during CodeGraph init
+- [x] 6.5 Display "(none)" for missing palace with init hint
 - [x] 6.6 Render tests: various project states display correctly
 
 ## 7. TUI Commands
@@ -94,7 +94,7 @@
 
 ## 11. Documentation
 
-- [ ] 11.1 Update milliways README with project context features
-- [ ] 11.2 Document `~/.milliways/projects.yaml` schema and examples
-- [ ] 11.3 Document new TUI commands in README
+- [x] 11.1 Update milliways README with project context features
+- [x] 11.2 Document `~/.milliways/projects.yaml` schema and examples
+- [x] 11.3 Document new TUI commands in README
 - [x] 11.4 Add CHANGELOG entry for two-active-memory feature

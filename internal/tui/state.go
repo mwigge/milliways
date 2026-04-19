@@ -104,6 +104,7 @@ type ProjectState struct {
 	PalaceRooms          int
 	PalaceExists         bool
 	CodeGraphExists      bool
+	CodeGraphIndexing    bool
 	CodeGraphSymbols     int
 	CodeGraphLastIndexed string
 	AccessReadRule       string

@@ -112,6 +112,9 @@ func formatProjectCommandIndented(value string) string {
 }
 
 func formatPalaceSummary(state ProjectState) string {
+	if !state.PalaceExists {
+		return formatMissingPalaceHint(state)
+	}
 	return fmt.Sprintf("%s drawers | %s wings | %s rooms", formatCount(state.PalaceDrawers), formatCount(state.PalaceWings), formatCount(state.PalaceRooms))
 }
 
