@@ -2,29 +2,29 @@
 
 ## TP-1: Dispatch state machine [1 SP]
 
-- [ ] TP-1.1 Define `DispatchState` type (iota) with 9 constants in `internal/tui/app.go`: `StateIdle`, `StateRouting`, `StateRouted`, `StateStreaming`, `StateDone`, `StateFailed`, `StateCancelled`, `StateAwaiting`, `StateConfirming`
-- [ ] TP-1.2 Replace `dispatching bool` on `Model` with `dispatchState DispatchState`; update all guards (`m.dispatching` → `m.dispatchState != StateIdle`)
-- [ ] TP-1.3 Add `stateIcon(s DispatchState) string` and `stateLabel(s DispatchState) string` pure functions mapping each state to its icon and label (see design D1)
-- [ ] TP-1.4 Update `renderProcessMap()` to use `stateIcon`/`stateLabel` and apply correct lipgloss colour per state
-- [ ] TP-1.5 Table-driven unit tests with named subtests: verify stateIcon and stateLabel for all 9 states; verify dispatchState transitions on KeyMsg enter/ctrl+c
+- [x] TP-1.1 Define `DispatchState` type (iota) with 9 constants in `internal/tui/app.go`: `StateIdle`, `StateRouting`, `StateRouted`, `StateStreaming`, `StateDone`, `StateFailed`, `StateCancelled`, `StateAwaiting`, `StateConfirming`
+- [x] TP-1.2 Replace `dispatching bool` on `Model` with `dispatchState DispatchState`; update all guards (`m.dispatching` → `m.dispatchState != StateIdle`)
+- [x] TP-1.3 Add `stateIcon(s DispatchState) string` and `stateLabel(s DispatchState) string` pure functions mapping each state to its icon and label (see design D1)
+- [x] TP-1.4 Update `renderProcessMap()` to use `stateIcon`/`stateLabel` and apply correct lipgloss colour per state
+- [x] TP-1.5 Table-driven unit tests with named subtests: verify stateIcon and stateLabel for all 9 states; verify dispatchState transitions on KeyMsg enter/ctrl+c
 
 ## TP-2: DispatchOptions + routedMsg [1 SP]
 
-- [ ] TP-2.1 Define `DispatchOptions` struct in `internal/tui/app.go` with `OnRouted func(sommelier.Decision)` field; zero value must be valid (nil = no-op)
-- [ ] TP-2.2 Update `DispatchFunc` type signature to accept `opts DispatchOptions` as fourth parameter (replaces any ad-hoc onRouted parameter)
-- [ ] TP-2.3 Add `routedMsg` struct: `{ kitchen string; decision sommelier.Decision }`
-- [ ] TP-2.4 Store `*tea.Program` on `Model` (set via a `WithProgram(*tea.Program)` option or passed at `Run` time); `startDispatch()` wires `opts.OnRouted = func(d) { m.prog.Send(routedMsg{...}) }` — `tea.Program.Send` is goroutine-safe
-- [ ] TP-2.5 In `startDispatch()`, prepend `"▶ " + prompt` and a separator line to `m.outputLines` *before* calling `m.input.SetValue("")`
-- [ ] TP-2.6 Handle `routedMsg` in `Update()`: set `m.dispatchState = StateRouted`, update `m.processMap.kitchen`
-- [ ] TP-2.7 Update `cmd/milliways/main.go` dispatch wiring to pass `DispatchOptions{}` (zero value) for headless paths; TUI path passes options with `OnRouted` set
-- [ ] TP-2.8 Unit tests: echo line is first outputLine on startDispatch; routedMsg sets correct kitchen and state; DispatchOptions zero value is safe to call
+- [x] TP-2.1 Define `DispatchOptions` struct in `internal/tui/app.go` with `OnRouted func(sommelier.Decision)` field; zero value must be valid (nil = no-op)
+- [x] TP-2.2 Update `DispatchFunc` type signature to accept `opts DispatchOptions` as fourth parameter (replaces any ad-hoc onRouted parameter)
+- [x] TP-2.3 Add `routedMsg` struct: `{ kitchen string; decision sommelier.Decision }`
+- [x] TP-2.4 Store `*tea.Program` on `Model` (set via a `WithProgram(*tea.Program)` option or passed at `Run` time); `startDispatch()` wires `opts.OnRouted = func(d) { m.prog.Send(routedMsg{...}) }` — `tea.Program.Send` is goroutine-safe
+- [x] TP-2.5 In `startDispatch()`, prepend `"▶ " + prompt` and a separator line to `m.outputLines` *before* calling `m.input.SetValue("")`
+- [x] TP-2.6 Handle `routedMsg` in `Update()`: set `m.dispatchState = StateRouted`, update `m.processMap.kitchen`
+- [x] TP-2.7 Update `cmd/milliways/main.go` dispatch wiring to pass `DispatchOptions{}` (zero value) for headless paths; TUI path passes options with `OnRouted` set
+- [x] TP-2.8 Unit tests: echo line is first outputLine on startDispatch; routedMsg sets correct kitchen and state; DispatchOptions zero value is safe to call
 
 ## TP-3: Process map state display [1 SP]
 
-- [ ] TP-3.1 `renderProcessMap()` shows kitchen badge only when `dispatchState >= StateRouted`; shows "routing..." in muted style during `StateRouting`
-- [ ] TP-3.2 Status line: `stateIcon(m.dispatchState) + " " + stateLabel(m.dispatchState) + "  " + elapsed`
-- [ ] TP-3.3 Handle `lineMsg` in `Update()`: if `dispatchState == StateRouted`, transition to `StateStreaming`
-- [ ] TP-3.4 Render tests (string-match on View output): Routing, Routed, Streaming, Done, Failed states produce expected icon and label
+- [x] TP-3.1 `renderProcessMap()` shows kitchen badge only when `dispatchState >= StateRouted`; shows "routing..." in muted style during `StateRouting`
+- [x] TP-3.2 Status line: `stateIcon(m.dispatchState) + " " + stateLabel(m.dispatchState) + "  " + elapsed`
+- [x] TP-3.3 Handle `lineMsg` in `Update()`: if `dispatchState == StateRouted`, transition to `StateStreaming`
+- [x] TP-3.4 Render tests (string-match on View output): Routing, Routed, Streaming, Done, Failed states produce expected icon and label
 
 ## TP-4: Dialogue protocol constants + Task fields [1 SP]
 
@@ -52,21 +52,21 @@
 
 ## TP-6: TUI overlay + Awaiting/Confirming states [2 SP]
 
-- [ ] TP-6.1 Add to `Model`: `overlayInput textinput.Model`, `overlayActive bool`, `answerCh chan string` (bidirectional; sent to Task as `<-chan string`)
-- [ ] TP-6.2 Add `questionMsg { text string }` and `confirmMsg { text string }` message types
-- [ ] TP-6.3 `startDispatch()` creates `m.answerCh = make(chan string, 1)` and assigns `task.AnswerCh = m.answerCh`
-- [ ] TP-6.4 Handle `questionMsg` in `Update()`: `m.dispatchState = StateAwaiting`, set `m.overlayActive = true`, configure `m.overlayInput` with question as placeholder, `m.overlayInput.Focus()`
-- [ ] TP-6.5 Handle `confirmMsg` in `Update()`: `m.dispatchState = StateConfirming`, append `"[confirm] " + text + " [y/N]"` to outputLines in highlight style
-- [ ] TP-6.6 Key routing when `m.overlayActive`: `enter` → `m.answerCh <- m.overlayInput.Value()`, clear overlay, set `m.dispatchState = StateStreaming`; all other keys → route to `m.overlayInput.Update(msg)` only
-- [ ] TP-6.7 Key routing when `m.dispatchState == StateConfirming`: `y` → send `"y"`, `n` / `enter` → send `"n"`, both → `m.dispatchState = StateStreaming`
-- [ ] TP-6.8 `View()`: when `m.overlayActive`, render `m.overlayInput` styled with amber/yellow border above the main input bar
-- [ ] TP-6.9 Unit tests (table-driven, named subtests): questionMsg activates overlay; enter submits to answerCh; confirmMsg appends prompt line; y resolves "y", enter resolves "n"; overlay hidden after resolution
+- [x] TP-6.1 Add to `Model`: `overlayInput textinput.Model`, `overlayActive bool`, `answerCh chan string` (bidirectional; sent to Task as `<-chan string`)
+- [x] TP-6.2 Add `questionMsg { text string }` and `confirmMsg { text string }` message types
+- [x] TP-6.3 `startDispatch()` creates `m.answerCh = make(chan string, 1)` and assigns `task.AnswerCh = m.answerCh`
+- [x] TP-6.4 Handle `questionMsg` in `Update()`: `m.dispatchState = StateAwaiting`, set `m.overlayActive = true`, configure `m.overlayInput` with question as placeholder, `m.overlayInput.Focus()`
+- [x] TP-6.5 Handle `confirmMsg` in `Update()`: `m.dispatchState = StateConfirming`, append `"[confirm] " + text + " [y/N]"` to outputLines in highlight style
+- [x] TP-6.6 Key routing when `m.overlayActive`: `enter` → `m.answerCh <- m.overlayInput.Value()`, clear overlay, set `m.dispatchState = StateStreaming`; all other keys → route to `m.overlayInput.Update(msg)` only
+- [x] TP-6.7 Key routing when `m.dispatchState == StateConfirming`: `y` → send `"y"`, `n` / `enter` → send `"n"`, both → `m.dispatchState = StateStreaming`
+- [x] TP-6.8 `View()`: when `m.overlayActive`, render `m.overlayInput` styled with amber/yellow border above the main input bar
+- [x] TP-6.9 Unit tests (table-driven, named subtests): questionMsg activates overlay; enter submits to answerCh; confirmMsg appends prompt line; y resolves "y", enter resolves "n"; overlay hidden after resolution
 
 ## TP-7: Ctrl+I context injection [0.5 SP]
 
-- [ ] TP-7.1 Handle `ctrl+i` in `Update()` when `m.dispatchState == StateStreaming`: set `m.overlayActive = true`, configure `m.overlayInput` with placeholder `"+ context"`, focus
-- [ ] TP-7.2 On overlay submit during context injection: send value to `m.answerCh`, append `"[+context] " + value` to outputLines in mutedStyle, clear overlay, remain in StateStreaming
-- [ ] TP-7.3 Unit test: ctrl+i opens overlay; submit appends muted context line and writes to channel
+- [x] TP-7.1 Handle `ctrl+i` in `Update()` when `m.dispatchState == StateStreaming`: set `m.overlayActive = true`, configure `m.overlayInput` with placeholder `"+ context"`, focus
+- [x] TP-7.2 On overlay submit during context injection: send value to `m.answerCh`, append `"[+context] " + value` to outputLines in mutedStyle, clear overlay, remain in StateStreaming
+- [x] TP-7.3 Unit test: ctrl+i opens overlay; submit appends muted context line and writes to channel
 
 ## TP-8: Headless --verbose routing line [0.5 SP]
 
