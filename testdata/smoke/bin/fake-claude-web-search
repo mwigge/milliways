@@ -1,0 +1,4 @@
+#!/bin/sh
+
+printf '%s\n' 'Let me search the web for that information'
+exit 0
