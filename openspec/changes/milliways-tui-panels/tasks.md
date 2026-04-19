@@ -5,7 +5,7 @@
 
 ## Prerequisites
 
-- [ ] JP-extra: **Depends on `milliways-jobs-panel` JP-3 being complete.** Once `renderJobsPanel()` exists (written in JP-3, NOT in SPS-1), extract it as a `renderJobsPanel(width, height int)` method and wire it into `renderActiveSidePanel` as `case SidePanelJobs`. The milliways-tui-panels change does NOT own the rendering logic — it only integrates the rendering already built in JP-3.
+- [x] JP-extra: **Depends on `milliways-jobs-panel` JP-3 being complete.** Once `renderJobsPanel()` exists (written in JP-3, NOT in SPS-1), extract it as a `renderJobsPanel(width, height int)` method and wire it into `renderActiveSidePanel` as `case SidePanelJobs`. The milliways-tui-panels change does NOT own the rendering logic — it only integrates the rendering already built in JP-3.
 
 ---
 
@@ -699,9 +699,9 @@ func (m Model) renderComparePanel(width, height int) string {
 
 ## Course SPS-9: Integration + cleanup [0.5 SP]
 
-- [ ] SPS-9.1 `go test ./internal/tui/...` passes — all panel render tests green
-- [ ] SPS-9.2 `go vet ./...` passes
-- [ ] SPS-9.3 `go test -race ./internal/tui/...` passes — procStats goroutine access is safe
+- [x] SPS-9.1 `go test ./internal/tui/...` passes — all panel render tests green
+- [x] SPS-9.2 `go vet ./...` passes
+- [x] SPS-9.3 `go test -race ./internal/tui/...` passes — procStats goroutine access is safe
 - [ ] SPS-9.4 Panel cycling keybindings work in all overlay modes (except when input is active)
 - [ ] SPS-9.5 Manual: `milliways --tui` → `ctrl+]` cycles through all 10 panels with correct names
 - [ ] SPS-9.6 Manual: Cost panel accumulates across 3 dispatches
