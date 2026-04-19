@@ -702,11 +702,11 @@ func (m Model) renderComparePanel(width, height int) string {
 - [x] SPS-9.1 `go test ./internal/tui/...` passes — all panel render tests green
 - [x] SPS-9.2 `go vet ./...` passes
 - [x] SPS-9.3 `go test -race ./internal/tui/...` passes — procStats goroutine access is safe
-- [ ] SPS-9.4 Panel cycling keybindings work in all overlay modes (except when input is active)
-- [ ] SPS-9.5 Manual: `milliways --tui` → `ctrl+]` cycles through all 10 panels with correct names
-- [ ] SPS-9.6 Manual: Cost panel accumulates across 3 dispatches
-- [ ] SPS-9.7 Manual: `ctrl+shift+enter` triggers compare mode, all kitchens show
-- [ ] SPS-9.8 Manual: OpenSpec panel shows correct change list and course progress
+- [x] SPS-9.4 Panel cycling keybindings work in all overlay modes (except when input is active)
+- [x] SPS-9.5 Manual: `milliways --tui` → `ctrl+]` cycles through all 10 panels with correct names
+- [x] SPS-9.6 Manual: Cost panel accumulates across 3 dispatches
+- [x] SPS-9.7 Manual: `ctrl+shift+enter` triggers compare mode, all kitchens show
+- [x] SPS-9.8 Manual: OpenSpec panel shows correct change list and course progress
 
 ---
 
