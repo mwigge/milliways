@@ -10,9 +10,9 @@ func TestBuildRunTargetOptions(t *testing.T) {
 	t.Parallel()
 
 	options := buildRunTargetOptions([]KitchenState{
-		{Name: "beta", Status: "exhausted", ResetsAt: "22:00"},
-		{Name: "alpha", Status: "ready"},
-		{Name: "gamma", Status: "warning", UsageRatio: 0.85},
+		{Name: "beta", Status: "exhausted", ResetsAt: "22:00", Remaining: -1, Trend: ""},
+		{Name: "alpha", Status: "ready", Remaining: -1, Trend: ""},
+		{Name: "gamma", Status: "warning", UsageRatio: 0.85, Remaining: -1, Trend: ""},
 	})
 	if len(options) != 4 {
 		t.Fatalf("len(options) = %d", len(options))
@@ -38,7 +38,7 @@ func TestHandleKey_EnterOpensRunTargetChooser(t *testing.T) {
 	t.Parallel()
 
 	m := NewModel(nil)
-	m.kitchenStates = []KitchenState{{Name: "alpha", Status: "ready"}}
+	m.kitchenStates = []KitchenState{{Name: "alpha", Status: "ready", Remaining: -1, Trend: ""}}
 	m.input.SetValue("ship it")
 
 	cmds := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
@@ -60,7 +60,7 @@ func TestHandleRunTargetSelection_StartsDispatch(t *testing.T) {
 	t.Parallel()
 
 	m := NewModel(nil)
-	m.kitchenStates = []KitchenState{{Name: "alpha", Status: "ready"}}
+	m.kitchenStates = []KitchenState{{Name: "alpha", Status: "ready", Remaining: -1, Trend: ""}}
 	m.openRunTargetChooser("ship it")
 	m.runTargetSelected = 1
 

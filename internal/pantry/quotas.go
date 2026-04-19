@@ -99,7 +99,8 @@ func (s *QuotaStore) MarkExhausted(kitchen string, resetsAt time.Time) error {
 // ResetsAt returns the time when a kitchen's quota resets.
 // For externally rate-limited kitchens, returns the override time.
 // For daily-limit kitchens, returns midnight UTC of the next day.
-func (s *QuotaStore) ResetsAt(kitchen string) (time.Time, error) {
+// Returns a zero time when the kitchen has no configured daily limit.
+func (s *QuotaStore) ResetsAt(kitchen string, dailyLimit int) (time.Time, error) {
 	// Check external override first
 	var resetsAtStr string
 	err := s.db.QueryRow(
@@ -111,12 +112,92 @@ func (s *QuotaStore) ResetsAt(kitchen string) (time.Time, error) {
 		if parseErr == nil && time.Now().Before(resetsAt) {
 			return resetsAt, nil
 		}
+		_, _ = s.db.Exec("DELETE FROM mw_quota_overrides WHERE kitchen = ?", kitchen)
+	}
+
+	if dailyLimit <= 0 {
+		return time.Time{}, nil
 	}
 
 	// Default: midnight UTC tomorrow
 	now := time.Now().UTC()
 	midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
 	return midnight, nil
+}
+
+// Remaining returns dispatches left until daily limit is reached.
+// Returns -1 when the kitchen has no configured daily limit.
+func (s *QuotaStore) Remaining(kitchen string, dailyLimit int) (int, error) {
+	if dailyLimit <= 0 {
+		return -1, nil
+	}
+
+	dispatches, err := s.DailyDispatches(kitchen)
+	if err != nil {
+		return 0, err
+	}
+
+	remaining := dailyLimit - dispatches
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	return remaining, nil
+}
+
+// Trend compares today's dispatch rate to yesterday's over the same elapsed UTC window.
+// It returns "↑N%", "↓N%", "±0%", "↑new", "↓new", or "" when there is no data.
+func (s *QuotaStore) Trend(kitchen string) (string, error) {
+	now := time.Now().UTC()
+	todayDate := now.Format("2006-01-02")
+	yesterdayDate := now.AddDate(0, 0, -1).Format("2006-01-02")
+	currentHour := now.Hour()
+
+	var todayDispatches int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM mw_ledger
+		WHERE kitchen = ?
+		  AND date(ts) = ?
+		  AND CAST(strftime('%H', ts) AS INTEGER) < ?
+	`, kitchen, todayDate, currentHour).Scan(&todayDispatches)
+	if err != nil {
+		return "", fmt.Errorf("querying today's dispatch trend: %w", err)
+	}
+
+	var yesterdayDispatches int
+	err = s.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM mw_ledger
+		WHERE kitchen = ?
+		  AND date(ts) = ?
+		  AND CAST(strftime('%H', ts) AS INTEGER) < ?
+	`, kitchen, yesterdayDate, currentHour).Scan(&yesterdayDispatches)
+	if err != nil {
+		return "", fmt.Errorf("querying yesterday's dispatch trend: %w", err)
+	}
+
+	if todayDispatches == 0 && yesterdayDispatches == 0 {
+		return "", nil
+	}
+	if yesterdayDispatches == 0 {
+		return "↑new", nil
+	}
+	if todayDispatches == 0 {
+		return "↓new", nil
+	}
+
+	ratio := float64(todayDispatches) / float64(yesterdayDispatches)
+	pctChange := (ratio - 1.0) * 100
+
+	switch {
+	case pctChange > 5:
+		return fmt.Sprintf("↑%.0f%%", pctChange), nil
+	case pctChange < -5:
+		return fmt.Sprintf("↓%.0f%%", -pctChange), nil
+	default:
+		return "±0%", nil
+	}
 }
 
 // UsageRatio returns the dispatches/dailyLimit ratio (0.0-1.0).

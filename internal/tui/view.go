@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -281,7 +282,19 @@ func (m Model) renderStatusBar() string {
 	for _, ks := range m.kitchenStates {
 		switch ks.Status {
 		case "ready":
-			parts = append(parts, successStyle.Render(ks.Name+" ✓"))
+			if ks.Remaining >= 0 {
+				total := ks.Remaining
+				if ks.UsageRatio > 0 && ks.UsageRatio < 1 {
+					total = int(math.Round(float64(ks.Remaining) / (1 - ks.UsageRatio)))
+				}
+				label := fmt.Sprintf("%s %d/%d", ks.Name, ks.Remaining, total)
+				if ks.Trend != "" {
+					label += " " + ks.Trend
+				}
+				parts = append(parts, successStyle.Render(label))
+			} else {
+				parts = append(parts, successStyle.Render(ks.Name+" ✓"))
+			}
 		case "exhausted":
 			label := ks.Name + " ✗"
 			if ks.ResetsAt != "" {
@@ -290,6 +303,13 @@ func (m Model) renderStatusBar() string {
 			parts = append(parts, failureStyle.Render(label))
 		case "warning":
 			label := fmt.Sprintf("%s ⚠ %.0f%%", ks.Name, ks.UsageRatio*100)
+			if ks.Remaining >= 0 {
+				label += fmt.Sprintf(" (%d left", ks.Remaining)
+				if ks.Trend != "" {
+					label += " " + ks.Trend
+				}
+				label += ")"
+			}
 			parts = append(parts, runningStyle.Render(label))
 		default:
 			// not-installed, disabled — omit from status bar

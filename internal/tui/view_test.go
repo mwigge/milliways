@@ -136,3 +136,66 @@ func TestRuntimeActivityLines_RendersSwitchDecisionPayload(t *testing.T) {
 		t.Fatalf("expected indented tier line, got %q", lines[2])
 	}
 }
+
+func TestRenderStatusBar(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		states  []KitchenState
+		want    string
+		notWant string
+	}{
+		{
+			name:   "empty states",
+			states: []KitchenState{},
+			want:   "",
+		},
+		{
+			name:   "unlimited ready kitchen",
+			states: []KitchenState{{Name: "claude", Status: "ready", Remaining: -1}},
+			want:   "claude ✓",
+		},
+		{
+			name:   "limited ready kitchen with remaining",
+			states: []KitchenState{{Name: "claude", Status: "ready", Remaining: 12, UsageRatio: 0.76}},
+			want:   "claude 12/50",
+		},
+		{
+			name:   "limited ready with trend",
+			states: []KitchenState{{Name: "claude", Status: "ready", Remaining: 12, UsageRatio: 0.76, Trend: "↑8%"}},
+			want:   "claude 12/50 ↑8%",
+		},
+		{
+			name:   "exhausted with resets at",
+			states: []KitchenState{{Name: "gemini", Status: "exhausted", ResetsAt: "02:00"}},
+			want:   "gemini ✗ (02:00)",
+		},
+		{
+			name:   "warning with usage ratio",
+			states: []KitchenState{{Name: "claude", Status: "warning", UsageRatio: 0.85}},
+			want:   "⚠ 85%",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			m := Model{kitchenStates: tt.states}
+			got := m.renderStatusBar()
+			if tt.want == "" {
+				if got != "" {
+					t.Errorf("renderStatusBar() = %q, want empty", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Errorf("renderStatusBar() = %q, want contains %q", got, tt.want)
+			}
+			if tt.notWant != "" && strings.Contains(got, tt.notWant) {
+				t.Errorf("renderStatusBar() = %q, should NOT contain %q", got, tt.notWant)
+			}
+		})
+	}
+}

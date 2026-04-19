@@ -6,8 +6,8 @@ func TestStateIcon(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		state    DispatchState
-		wantNon  string // should NOT be empty
+		state   DispatchState
+		wantNon string // should NOT be empty
 	}{
 		{StateIdle, ""},
 		{StateRouting, ""},
@@ -72,8 +72,8 @@ func TestRenderStatusBar_Ready(t *testing.T) {
 
 	m := Model{
 		kitchenStates: []KitchenState{
-			{Name: "claude", Status: "ready"},
-			{Name: "opencode", Status: "ready"},
+			{Name: "claude", Status: "ready", Remaining: -1, Trend: ""},
+			{Name: "opencode", Status: "ready", Remaining: -1, Trend: ""},
 		},
 	}
 	bar := m.renderStatusBar()
@@ -87,7 +87,7 @@ func TestRenderStatusBar_Exhausted(t *testing.T) {
 
 	m := Model{
 		kitchenStates: []KitchenState{
-			{Name: "claude", Status: "exhausted", ResetsAt: "20:00"},
+			{Name: "claude", Status: "exhausted", ResetsAt: "20:00", Remaining: -1, Trend: ""},
 		},
 	}
 	bar := m.renderStatusBar()
@@ -111,7 +111,7 @@ func TestRenderStatusBar_NotInstalled_Omitted(t *testing.T) {
 
 	m := Model{
 		kitchenStates: []KitchenState{
-			{Name: "aider", Status: "not-installed"},
+			{Name: "aider", Status: "not-installed", Remaining: -1, Trend: ""},
 		},
 	}
 	bar := m.renderStatusBar()

@@ -90,6 +90,8 @@ type KitchenState struct {
 	Status     string  // "ready", "exhausted", "warning", "not-installed", "disabled"
 	ResetsAt   string  // "HH:MM" for exhausted kitchens
 	UsageRatio float64 // 0.0-1.0 for warning display
+	Remaining  int     // dispatches left until limit, -1 if unlimited
+	Trend      string  // "↑N%", "↓N%", "±0%", "" when no data
 }
 
 // ProjectState represents the active project context for the TUI.
