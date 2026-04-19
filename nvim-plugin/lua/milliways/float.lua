@@ -5,12 +5,17 @@ local M = {}
 -- Module-local window state
 local float_buf = nil
 local float_win = nil
+local user_cursor_moved = false
+local suppress_cursor_guard = false
 
 -- Configure float dimensions (fraction of editor).
 M.config = {
   width = 0.8,
   height = 0.8,
 }
+
+M.recent_dispatches = {}
+M.recent_idx = 0
 
 function M.configure(opts)
   if opts.float_width then M.config.width = opts.float_width end
@@ -23,6 +28,7 @@ end
 function M.open(content, streaming)
   -- Close any existing float
   M.close()
+  user_cursor_moved = false
 
   float_buf = vim.api.nvim_create_buf(false, true) -- scratch buffer
   vim.bo[float_buf].bufhidden = "wipe"
@@ -66,6 +72,36 @@ function M.open(content, streaming)
     vim.notify("Copied to clipboard", vim.log.levels.INFO)
   end, { buffer = float_buf, desc = "Yank output to clipboard" })
 
+  vim.keymap.set("n", "<Tab>", function()
+    M.cycle_recent()
+  end, { buffer = float_buf, desc = "Cycle recent conversations", silent = true })
+
+  local function on_cursor_moved()
+    if suppress_cursor_guard then
+      return
+    end
+    user_cursor_moved = true
+  end
+
+  vim.api.nvim_create_autocmd("CursorMoved", {
+    buffer = float_buf,
+    callback = on_cursor_moved,
+  })
+
+  local movement_keys = { "j", "k", "<Up>", "<Down>", "<LeftMouse>", "<ScrollWheelUp>", "<ScrollWheelDown>" }
+  for _, key in ipairs(movement_keys) do
+    vim.keymap.set("n", key, function()
+      user_cursor_moved = true
+      return key
+    end, {
+      buffer = float_buf,
+      desc = "Milliways cursor movement",
+      expr = true,
+      silent = true,
+      replace_keycodes = false,
+    })
+  end
+
   return float_buf, float_win
 end
 
@@ -94,15 +130,69 @@ function M.append(lines)
       lines = vim.split(lines, "\n", { plain = true })
     end
     -- Append at the end
-    local end_line = vim.api.nvim_buf_line_count(float_buf) - 1
     vim.api.nvim_buf_set_lines(float_buf, -1, -1, false, lines)
     -- Autoscroll to bottom
-    if float_win and vim.api.nvim_win_is_valid(float_win) then
+    if not user_cursor_moved and float_win and vim.api.nvim_win_is_valid(float_win) then
+      suppress_cursor_guard = true
       vim.api.nvim_win_set_cursor(float_win, {
         vim.api.nvim_buf_line_count(float_buf),
         0
       })
+      vim.schedule(function()
+        suppress_cursor_guard = false
+      end)
     end
+  end)
+end
+
+---Resume automatic scrolling for the active float window.
+function M.resume_autoscroll()
+  user_cursor_moved = false
+  suppress_cursor_guard = false
+end
+
+---Track a recent dispatch for cycling previews.
+---@param prompt string
+---@param kitchen string|nil
+function M.add_recent(prompt, kitchen)
+  table.insert(M.recent_dispatches, 1, {
+    prompt = prompt,
+    kitchen = kitchen,
+    ts = os.time(),
+  })
+  if #M.recent_dispatches > 3 then
+    table.remove(M.recent_dispatches)
+  end
+  M.recent_idx = 0
+end
+
+---Cycle through recent dispatches and preview them in the float.
+function M.cycle_recent()
+  if #M.recent_dispatches == 0 then
+    vim.notify("No recent conversations", vim.log.levels.INFO)
+    return
+  end
+
+  M.recent_idx = (M.recent_idx % #M.recent_dispatches) + 1
+  local conv = M.recent_dispatches[M.recent_idx]
+
+  vim.schedule(function()
+    if not float_buf or not vim.api.nvim_buf_is_valid(float_buf) then
+      return
+    end
+
+    local preview = {
+      "--- Recent: " .. (conv.prompt or "?"),
+      "Kitchen: " .. (conv.kitchen or "?"),
+      "---",
+      "",
+    }
+    local current = vim.api.nvim_buf_get_lines(float_buf, 0, 4, false)
+    if #current >= 3 and vim.startswith(current[1], "--- Recent:") then
+      vim.api.nvim_buf_set_lines(float_buf, 0, math.min(4, #current), false, preview)
+      return
+    end
+    vim.api.nvim_buf_set_lines(float_buf, 0, 0, false, preview)
   end)
 end
 
@@ -116,12 +206,16 @@ function M.close()
     pcall(vim.api.nvim_buf_delete, float_buf, { force = true })
     float_buf = nil
   end
+  suppress_cursor_guard = false
 end
 
 -- Update title (e.g. when kitchen changes mid-dispatch).
 function M.set_title(title)
   if float_win and vim.api.nvim_win_is_valid(float_win) then
-    vim.api.nvim_win_set_option(float_win, "title", " " .. title .. " ")
+    local config = vim.api.nvim_win_get_config(float_win)
+    config.title = " " .. title .. " "
+    config.title_pos = "center"
+    vim.api.nvim_win_set_config(float_win, config)
   end
 end
 
