@@ -95,4 +95,13 @@ function M.list_kitchens()
   }
 end
 
+-- List kitchen names only.
+function M.list_kitchen_names()
+  local names = {}
+  for _, kitchen in ipairs(M.list_kitchens()) do
+    table.insert(names, kitchen.name)
+  end
+  return names
+end
+
 return M

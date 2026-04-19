@@ -66,6 +66,30 @@ function M.setup(opts)
     commands.detached()
   end, { desc = "List detached dispatches" })
 
+  vim.api.nvim_create_user_command("MilliwaysSwitch", function(args)
+    commands.switch(args.args)
+  end, {
+    nargs = "?",
+    complete = commands.kitchen_complete,
+    desc = "Switch to a specific kitchen",
+  })
+
+  vim.api.nvim_create_user_command("MilliwaysStick", function()
+    commands.stick()
+  end, { nargs = 0, desc = "Toggle sticky kitchen mode" })
+
+  vim.api.nvim_create_user_command("MilliwaysBack", function()
+    commands.back()
+  end, { nargs = 0, desc = "Switch back to the previous kitchen" })
+
+  vim.api.nvim_create_user_command("MilliwaysReroute", function()
+    commands.reroute()
+  end, { nargs = 0, desc = "Reroute the current task" })
+
+  vim.api.nvim_create_user_command("MilliwaysKitchens", function()
+    commands.open_kitchens_picker()
+  end, { desc = "Pick a kitchen and switch to it" })
+
   -- Register keybindings
   if M.config.keybindings then
     local leader = M.config.leader
@@ -76,6 +100,18 @@ function M.setup(opts)
     vim.keymap.set("n", leader .. "s", ":MilliwaysStatus<CR>", { desc = "Milliways: status" })
     vim.keymap.set("n", leader .. "r", ":MilliwaysRecipe ", { desc = "Milliways: recipe" })
     vim.keymap.set("n", leader .. "k", ":MilliwaysKitchen ", { desc = "Milliways: pick kitchen" })
+    vim.keymap.set("n", "<leader>ms", ":MilliwaysSwitch ", { desc = "switch kitchen" })
+    vim.keymap.set("n", "<leader>m.", ":MilliwaysSwitch ", { desc = "switch kitchen" })
+    vim.keymap.set("n", "<leader>m,", ":MilliwaysBack<CR>", { desc = "back" })
+    vim.keymap.set("n", "<leader>mK", ":MilliwaysKitchens<CR>", { desc = "kitchens" })
+
+    pcall(function()
+      require("which-key").register({
+        ["<leader>ms"] = { "MilliwaysSwitch", "switch kitchen" },
+        ["<leader>m,"] = { "MilliwaysBack", "back to previous" },
+        ["<leader>mK"] = { "MilliwaysKitchens", "pick kitchen" },
+      })
+    end)
   end
 end
 

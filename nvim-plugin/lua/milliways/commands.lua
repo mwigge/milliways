@@ -6,6 +6,18 @@ local float = require("milliways.float")
 local context = require("milliways.context")
 local kitchens = require("milliways.kitchens")
 
+local kitchen_names = { "claude", "opencode", "gemini", "minimax", "groq", "ollama", "aider", "goose", "cline" }
+
+local function kitchen_complete(arglead, _, _)
+  local matches = {}
+  for _, kitchen in ipairs(kitchen_names) do
+    if vim.startswith(kitchen, arglead) then
+      table.insert(matches, kitchen)
+    end
+  end
+  return matches
+end
+
 -- Module config (set by init.lua setup()).
 M.config = {
   bin = "milliways",
@@ -65,14 +77,23 @@ function M.run_sync(cmd, callback)
   callback(result)
 end
 
--- Dispatch a prompt to the best kitchen.
-function M.dispatch(prompt)
-  if not prompt or prompt == "" then
-    prompt = vim.fn.input("Milliways> ")
-    if prompt == "" then return end
+local function render_output(output)
+  local ok, result = pcall(vim.json.decode, output)
+  if ok and result then
+    local lines = {}
+    table.insert(lines, "Kitchen: " .. (result.kitchen or "?"))
+    table.insert(lines, "Tier:    " .. (result.tier or "?"))
+    table.insert(lines, "")
+    for line in (result.output or ""):gmatch("[^\n]+") do
+      table.insert(lines, line)
+    end
+    float.set_content(lines)
+    return
   end
+  float.set_content(vim.split(output, "\n"))
+end
 
-  -- Build context bundle
+local function run_dispatch_command(prompt, header)
   local bundle = context.build({ include_selection = false })
   local bundle_json = vim.json.encode(bundle)
 
@@ -84,21 +105,19 @@ function M.dispatch(prompt)
   end
   table.insert(cmd, prompt)
 
-  run_async(cmd, { streaming = true }, function(output)
-    local ok, result = pcall(vim.json.decode, output)
-    if ok and result then
-      local lines = {}
-      table.insert(lines, "Kitchen: " .. (result.kitchen or "?"))
-      table.insert(lines, "Tier:    " .. (result.tier or "?"))
-      table.insert(lines, "")
-      for line in (result.output or ""):gmatch("[^\n]+") do
-        table.insert(lines, line)
-      end
-      float.set_content(lines)
-    else
-      float.set_content(vim.split(output, "\n"))
-    end
+  M.run_async(cmd, { streaming = true, header = header }, function(output)
+    render_output(output)
   end)
+end
+
+-- Dispatch a prompt to the best kitchen.
+function M.dispatch(prompt)
+  if not prompt or prompt == "" then
+    prompt = vim.fn.input("Milliways> ")
+    if prompt == "" then return end
+  end
+
+  run_dispatch_command(prompt, "Milliways...")
 end
 
 -- Show routing decision without executing.
@@ -118,7 +137,7 @@ function M.explain(prompt)
   end
   table.insert(cmd, prompt)
 
-  run_async(cmd, { streaming = false }, function(output)
+  M.run_async(cmd, { streaming = false }, function(output)
     local ok, result = pcall(vim.json.decode, output)
     if ok and result then
       local lines = {
@@ -157,9 +176,73 @@ function M.pick_kitchen(prompt)
     table.insert(cmd, prompt)
 
     float.open("Milliways — " .. choice .. "...", true)
-    run_async(cmd, { streaming = true }, function(output)
+    M.run_async(cmd, { streaming = true }, function(output)
       float.set_content(vim.split(output, "\n"))
     end)
+  end)
+end
+
+-- Dispatch a switch command to a named kitchen.
+function M.switch(kitchen)
+  kitchen = vim.trim(kitchen or "")
+  if kitchen == "" then
+    vim.ui.select(kitchens.list_kitchen_names(), { prompt = "Switch kitchen:" }, function(choice)
+      if not choice then
+        return
+      end
+      M.switch(choice)
+    end)
+    return
+  end
+
+  M.dispatch("switch " .. kitchen)
+end
+
+-- Toggle sticky kitchen mode.
+function M.stick()
+  M.dispatch("stick")
+end
+
+-- Reverse the most recent switch.
+function M.back()
+  M.dispatch("back")
+end
+
+-- Ask milliways to reroute the current task.
+function M.reroute()
+  M.dispatch("reroute")
+end
+
+-- Return kitchen completion candidates for user commands.
+function M.kitchen_complete(arglead, cmdline, cursorpos)
+  return kitchen_complete(arglead, cmdline, cursorpos)
+end
+
+-- Open a kitchen picker and switch to the selected kitchen.
+function M.open_kitchens_picker()
+  local function on_choice(choice)
+    if not choice then
+      return
+    end
+    M.switch(choice)
+  end
+
+  local has_telescope = pcall(require, "telescope")
+  if has_telescope then
+    kitchens.pick(on_choice)
+    return
+  end
+
+  vim.ui.select(kitchens.list_kitchens(), {
+    prompt = "Milliways Kitchens:",
+    format_item = function(item)
+      return item.display
+    end,
+  }, function(choice)
+    if not choice then
+      return
+    end
+    on_choice(choice.name)
   end)
 end
 
@@ -185,7 +268,7 @@ function M.pick_recipe(prompt)
     table.insert(cmd, prompt)
 
     float.open("Milliways — recipe: " .. choice .. "...", true)
-    run_async(cmd, { streaming = true }, function(output)
+    M.run_async(cmd, { streaming = true }, function(output)
       float.set_content(vim.split(output, "\n"))
     end)
   end)
@@ -193,14 +276,14 @@ end
 
 -- Show kitchen availability.
 function M.status()
-  run_async({ M.config.bin, "status" }, { streaming = false }, function(output)
+  M.run_async({ M.config.bin, "status" }, { streaming = false }, function(output)
     float.open(output, false)
   end)
 end
 
 -- List detached dispatches.
 function M.detached()
-  run_async({ M.config.bin, "tickets" }, { streaming = false }, function(output)
+  M.run_async({ M.config.bin, "tickets" }, { streaming = false }, function(output)
     float.open(output, false)
   end)
 end
