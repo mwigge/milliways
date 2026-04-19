@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mwigge/milliways/internal/observability"
 	"github.com/mwigge/milliways/internal/pantry"
 )
@@ -112,7 +113,6 @@ func TestStubPanelsReturnNonEmpty(t *testing.T) {
 		{name: "routing", run: func() string { return m.renderRoutingPanel(24, 8) }},
 		{name: "system", run: func() string { return m.renderSystemPanel(24, 8) }},
 		{name: "snippets", run: func() string { return m.renderSnippetsPanel(24, 8) }},
-		{name: "diff", run: func() string { return m.renderDiffPanel(24, 8) }},
 		{name: "compare", run: func() string { return m.renderComparePanel(24, 8) }},
 	}
 
@@ -126,6 +126,125 @@ func TestStubPanelsReturnNonEmpty(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDiffPanelRendersFiles(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil)
+	m.changedFiles = []diffFile{
+		{Path: "internal/tui/app.go", Status: "M"},
+		{Path: "internal/tui/view.go", Status: "M"},
+		{Path: "README.md", Status: "A"},
+	}
+	m.diffSelected = 1
+
+	got := m.renderDiffPanel(50, 20)
+	if !strings.Contains(got, "view.go") {
+		t.Fatalf("expected view.go in output, got: %s", got)
+	}
+	if !strings.Contains(got, "> ") {
+		t.Fatalf("expected selection marker in output, got: %s", got)
+	}
+	for _, want := range []string{"M", "A", "[↑↓] navigate"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in output, got: %s", want, got)
+		}
+	}
+}
+
+func TestDiffPanelEmpty(t *testing.T) {
+	t.Parallel()
+
+	m := NewModel(nil)
+	m.changedFiles = nil
+
+	got := m.renderDiffPanel(50, 20)
+	if !strings.Contains(got, "no changes") {
+		t.Fatalf("expected 'no changes' message, got: %s", got)
+	}
+}
+
+func TestParseDiffNameOutput(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		output     string
+		wantCount  int
+		wantFirst  diffFile
+		wantSecond diffFile
+	}{
+		{name: "modified", output: "M internal/tui/app.go\nM internal/tui/view.go\n", wantCount: 2, wantFirst: diffFile{Path: "internal/tui/app.go", Status: "M"}, wantSecond: diffFile{Path: "internal/tui/view.go", Status: "M"}},
+		{name: "added", output: "A README.md\n", wantCount: 1, wantFirst: diffFile{Path: "README.md", Status: "A"}},
+		{name: "empty", output: "", wantCount: 0},
+		{name: "untracked format", output: "?? newfile.txt\n", wantCount: 1, wantFirst: diffFile{Path: "newfile.txt", Status: "??"}},
+		{name: "plain path", output: "internal/tui/app.go\n", wantCount: 1, wantFirst: diffFile{Path: "internal/tui/app.go", Status: "M"}},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := parseDiffNameOutput(tt.output)
+			if len(got) != tt.wantCount {
+				t.Fatalf("parseDiffNameOutput() got %d files, want %d", len(got), tt.wantCount)
+			}
+			if tt.wantCount > 0 && got[0] != tt.wantFirst {
+				t.Fatalf("parseDiffNameOutput()[0] = %+v, want %+v", got[0], tt.wantFirst)
+			}
+			if tt.wantCount > 1 && got[1] != tt.wantSecond {
+				t.Fatalf("parseDiffNameOutput()[1] = %+v, want %+v", got[1], tt.wantSecond)
+			}
+		})
+	}
+}
+
+func TestDiffNavigation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("down clamps at end", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewModel(nil)
+		m.sidePanelIdx = int(SidePanelDiff)
+		m.changedFiles = []diffFile{{Path: "a.txt", Status: "M"}, {Path: "b.txt", Status: "M"}, {Path: "c.txt", Status: "M"}}
+
+		if cmds := m.handleKey(tea.KeyMsg{Type: tea.KeyDown}); len(cmds) != 0 {
+			t.Fatalf("expected no commands, got %d", len(cmds))
+		}
+		if cmds := m.handleKey(tea.KeyMsg{Type: tea.KeyDown}); len(cmds) != 0 {
+			t.Fatalf("expected no commands, got %d", len(cmds))
+		}
+		if cmds := m.handleKey(tea.KeyMsg{Type: tea.KeyDown}); len(cmds) != 0 {
+			t.Fatalf("expected no commands, got %d", len(cmds))
+		}
+
+		if m.diffSelected != 2 {
+			t.Fatalf("diffSelected = %d, want 2", m.diffSelected)
+		}
+	})
+
+	t.Run("up clamps at start", func(t *testing.T) {
+		t.Parallel()
+
+		m := NewModel(nil)
+		m.sidePanelIdx = int(SidePanelDiff)
+		m.changedFiles = []diffFile{{Path: "a.txt", Status: "M"}, {Path: "b.txt", Status: "M"}, {Path: "c.txt", Status: "M"}}
+		m.diffSelected = 1
+
+		if cmds := m.handleKey(tea.KeyMsg{Type: tea.KeyUp}); len(cmds) != 0 {
+			t.Fatalf("expected no commands, got %d", len(cmds))
+		}
+		if cmds := m.handleKey(tea.KeyMsg{Type: tea.KeyUp}); len(cmds) != 0 {
+			t.Fatalf("expected no commands, got %d", len(cmds))
+		}
+
+		if m.diffSelected != 0 {
+			t.Fatalf("diffSelected = %d, want 0", m.diffSelected)
+		}
+	})
 }
 
 func TestRuntimeActivityLines_FocusedConversation(t *testing.T) {

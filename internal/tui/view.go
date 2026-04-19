@@ -360,7 +360,22 @@ func (m Model) renderSnippetsPanel(width, height int) string {
 }
 
 func (m Model) renderDiffPanel(width, height int) string {
-	return mutedStyle.Render("(diff panel)")
+	if len(m.changedFiles) == 0 {
+		return mutedStyle.Render("(no changes in this session)")
+	}
+
+	innerWidth := max(1, width-6)
+	lines := make([]string, 0, len(m.changedFiles)+2)
+	for i, file := range m.changedFiles {
+		prefix := "  "
+		if i == m.diffSelected {
+			prefix = "> "
+		}
+		line := fmt.Sprintf("%s%s  %s", prefix, mutedStyle.Render(file.Status), truncate(file.Path, innerWidth))
+		lines = append(lines, line)
+	}
+	lines = append(lines, "", mutedStyle.Render("[↑↓] navigate"))
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderComparePanel(width, height int) string {

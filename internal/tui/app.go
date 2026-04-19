@@ -121,6 +121,7 @@ type Model struct {
 	snippetFilter          string
 	snippetSelected        int
 	changedFiles           []diffFile
+	diffSelected           int
 	compareResults         map[string][]compareResult
 	compareSelectedKitchen string
 	openSpecChanges        []openSpecChange
@@ -192,6 +193,8 @@ func NewModel(store *pantry.TicketStore) Model {
 		mu:                     &sync.Mutex{},
 		maxConcurrent:          defaultMaxConcurrent,
 		snippetIndex:           initialSnippets,
+		changedFiles:           []diffFile{},
+		diffSelected:           0,
 		openSpecChanges:        []openSpecChange{},
 		openSpecCourses:        []openSpecCourse{},
 		openSpecSelected:       0,
@@ -333,6 +336,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				_, cmd := m.startBlockDispatch(task.Prompt, task.KitchenForce)
 				cmds = append(cmds, cmd)
 			}
+			m.refreshChangedFiles()
 		}
 
 	case tickMsg:
@@ -513,6 +517,66 @@ func parseProcStatsOutput(pid int, output string) (procInfo, error) {
 	}, nil
 }
 
+// refreshChangedFiles updates the session diff panel from git state.
+func (m *Model) refreshChangedFiles() {
+	n := m.activeCount
+	if n == 0 {
+		n = 1
+	}
+
+	cmd := exec.Command("git", "diff", "--name-status", "HEAD~"+strconv.Itoa(n), "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		cmd = exec.Command("git", "diff", "--name-status")
+		out, err = cmd.Output()
+		if err != nil {
+			m.changedFiles = []diffFile{}
+			m.diffSelected = 0
+			return
+		}
+	}
+
+	changed := parseDiffNameOutput(string(out))
+
+	cmd = exec.Command("git", "ls-files", "--others", "--exclude-standard")
+	if untrackedOut, err := cmd.Output(); err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(untrackedOut)), "\n") {
+			if line == "" {
+				continue
+			}
+			changed = append(changed, diffFile{Path: line, Status: "??"})
+		}
+	}
+
+	m.diffSelected = 0
+	m.changedFiles = changed
+}
+
+func parseDiffNameOutput(output string) []diffFile {
+	if strings.TrimSpace(output) == "" {
+		return nil
+	}
+
+	files := make([]diffFile, 0)
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if line == "" {
+			continue
+		}
+
+		parts := strings.SplitN(line, " ", 2)
+		status := "M"
+		path := line
+		if len(parts) == 2 {
+			status = parts[0]
+			path = parts[1]
+		}
+
+		files = append(files, diffFile{Path: path, Status: status})
+	}
+
+	return files
+}
+
 // handleKey processes key messages and returns commands.
 func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 	var cmds []tea.Cmd
@@ -533,7 +597,21 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 
 	switch msg.String() {
 	case "ctrl+d":
+		if !m.overlayActive && m.sidePanelIdx == int(SidePanelDiff) {
+			if m.diffSelected < len(m.changedFiles)-1 {
+				m.diffSelected++
+			}
+			return nil
+		}
 		return []tea.Cmd{tea.Quit}
+
+	case "ctrl+u":
+		if !m.overlayActive && m.sidePanelIdx == int(SidePanelDiff) {
+			if m.diffSelected > 0 {
+				m.diffSelected--
+			}
+			return nil
+		}
 
 	case "ctrl+c":
 		// Cancel focused block if active; otherwise quit.
@@ -802,6 +880,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 			m.moveRunTargetSelection(-1)
 			return nil
 		}
+		if !m.overlayActive && m.sidePanelIdx == int(SidePanelDiff) {
+			if m.diffSelected > 0 {
+				m.diffSelected--
+			}
+			return nil
+		}
 		if !m.overlayActive && m.sidePanelIdx == int(SidePanelSnippets) {
 			m.refreshSnippetIndex()
 			if m.snippetSelected > 0 {
@@ -829,6 +913,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 	case "down":
 		if m.overlayActive && m.overlayMode == OverlayRunIn {
 			m.moveRunTargetSelection(1)
+			return nil
+		}
+		if !m.overlayActive && m.sidePanelIdx == int(SidePanelDiff) {
+			if m.diffSelected < len(m.changedFiles)-1 {
+				m.diffSelected++
+			}
 			return nil
 		}
 		if !m.overlayActive && m.sidePanelIdx == int(SidePanelSnippets) {
@@ -913,6 +1003,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 func (m *Model) advanceSidePanel() {
 	m.sidePanelIdx = (m.sidePanelIdx + 1) % int(sidePanelCount)
 	m.refreshSnippetIndexOnEntry()
+	m.refreshDiffPanelOnEntry()
 }
 
 func (m *Model) rewindSidePanel() {
@@ -921,6 +1012,7 @@ func (m *Model) rewindSidePanel() {
 		m.sidePanelIdx = int(sidePanelCount) - 1
 	}
 	m.refreshSnippetIndexOnEntry()
+	m.refreshDiffPanelOnEntry()
 }
 
 func (m *Model) refreshSnippetIndexOnEntry() {
@@ -929,6 +1021,25 @@ func (m *Model) refreshSnippetIndexOnEntry() {
 	}
 	m.refreshSnippetIndex()
 	m.snippetSelected = 0
+}
+
+func (m *Model) refreshDiffPanelOnEntry() {
+	if m.sidePanelIdx != int(SidePanelDiff) {
+		return
+	}
+	if len(m.changedFiles) == 0 {
+		m.refreshChangedFiles()
+	}
+	if len(m.changedFiles) == 0 {
+		m.diffSelected = 0
+		return
+	}
+	if m.diffSelected >= len(m.changedFiles) {
+		m.diffSelected = len(m.changedFiles) - 1
+	}
+	if m.diffSelected < 0 {
+		m.diffSelected = 0
+	}
 }
 
 func (m *Model) refreshSnippetIndex() {
