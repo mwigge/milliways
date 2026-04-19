@@ -13,22 +13,6 @@ $ milliways --kitchen aider "refactor"    → forces aider
 
 ## Install
 
-### macOS
-
-```bash
-# Homebrew
-brew install mwigge/tap/milliways
-
-# Or curl
-curl -fsSL https://raw.githubusercontent.com/mwigge/milliways/master/install.sh | sh
-```
-
-### Linux
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/mwigge/milliways/master/install.sh | sh
-```
-
 ### From source
 
 ```bash
@@ -44,6 +28,8 @@ Verify: `milliways --version` or `milliways status`
 ```bash
 go install github.com/mwigge/milliways/cmd/milliways@latest
 ```
+
+Requires: Go 1.21+
 
 ### Neovim plugin
 
