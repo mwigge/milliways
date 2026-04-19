@@ -5,18 +5,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mwigge/milliways/internal/kitchen"
 )
 
 // GenericAdapter is the fallback adapter for kitchens without structured output.
-// It reads stdout line-by-line and emits EventText for each line.
+// It reads stdout line-by-line, detecting dialogue markers when present.
 type GenericAdapter struct {
-	kitchen *kitchen.GenericKitchen
-	opts    AdapterOpts
+	kitchen   *kitchen.GenericKitchen
+	opts      AdapterOpts
+	mu        sync.Mutex
+	stdinPipe io.WriteCloser
 }
 
 // NewGenericAdapter creates a fallback line-by-line adapter.
@@ -58,11 +62,22 @@ func (a *GenericAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Ev
 		return nil, fmt.Errorf("starting %s: %w", a.kitchen.Name(), err)
 	}
 
+	a.mu.Lock()
+	a.stdinPipe = stdinPipe
+	a.mu.Unlock()
+
 	ch := make(chan Event, 64)
 
 	go func() {
 		defer close(ch)
-		defer stdinPipe.Close()
+		defer func() {
+			a.mu.Lock()
+			if a.stdinPipe != nil {
+				_ = a.stdinPipe.Close()
+				a.stdinPipe = nil
+			}
+			a.mu.Unlock()
+		}()
 
 		name := a.kitchen.Name()
 		var output strings.Builder
@@ -76,6 +91,30 @@ func (a *GenericAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Ev
 			// Call legacy OnLine if set
 			if task.OnLine != nil {
 				task.OnLine(line)
+			}
+
+			if kitchen.IsQuestion(line) {
+				question := kitchen.StripPrefix(line)
+				ch <- Event{Type: EventQuestion, Kitchen: name, Text: question}
+				if task.OnQuestion != nil {
+					task.OnQuestion(question)
+				} else if err := a.Send(ctx, ""); err != nil && !errors.Is(err, context.Canceled) {
+					ch <- Event{Type: EventError, Kitchen: name, Text: fmt.Sprintf("sending question response: %v", err)}
+					return
+				}
+				continue
+			}
+
+			if kitchen.IsConfirm(line) {
+				question := kitchen.StripPrefix(line)
+				ch <- Event{Type: EventConfirm, Kitchen: name, Text: question}
+				if task.OnConfirm != nil {
+					task.OnConfirm(question)
+				} else if err := a.Send(ctx, ""); err != nil && !errors.Is(err, context.Canceled) {
+					ch <- Event{Type: EventError, Kitchen: name, Text: fmt.Sprintf("sending confirm response: %v", err)}
+					return
+				}
+				continue
 			}
 
 			ch <- Event{
@@ -109,9 +148,24 @@ func (a *GenericAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Ev
 	return ch, nil
 }
 
-// Send returns ErrNotInteractive — generic kitchens don't support dialogue.
-func (a *GenericAdapter) Send(_ context.Context, _ string) error {
-	return ErrNotInteractive
+// Send writes a text line to the kitchen's stdin.
+func (a *GenericAdapter) Send(ctx context.Context, msg string) error {
+	a.mu.Lock()
+	pipe := a.stdinPipe
+	a.mu.Unlock()
+
+	if pipe == nil {
+		return ErrNotInteractive
+	}
+
+	done := make(chan error, 1)
+	go func() { _, err := fmt.Fprintln(pipe, msg); done <- err }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // SupportsResume returns false for generic kitchens.
@@ -124,7 +178,7 @@ func (a *GenericAdapter) SessionID() string { return "" }
 func (a *GenericAdapter) Capabilities() Capabilities {
 	return Capabilities{
 		NativeResume:        false,
-		InteractiveSend:     false,
+		InteractiveSend:     true,
 		StructuredEvents:    false,
 		ExhaustionDetection: "none",
 	}
