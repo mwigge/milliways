@@ -116,17 +116,22 @@ Approximate layout (your terminal size changes what fits):
 | `Ctrl+F` | Rate the last completed dispatch |
 | `Ctrl+S` | Show a session summary |
 | `Ctrl+G` | Toggle rendered/raw output mode |
-| `Ctrl+O` | Enter panel mode — `h`/`l` switch panels, `↑`/`↓` navigate, `Esc` to exit |
-| `h` | Cycle to the previous sidebar panel (vim-style) |
-| `l` | Cycle to the next sidebar panel (vim-style) |
+| `Ctrl+O` | Enter normal mode — `h`/`l` switch panels, `↑`/`↓` navigate |
+| `Esc` | In insert mode: enter normal mode · In normal mode: return to insert mode · Close overlay |
+| `i` | In normal mode: return to insert mode (type) |
+| `h` / `l` | Cycle to previous / next sidebar panel (in normal mode) |
+| `j` / `k` | Cycle to next / previous sidebar panel (vim-style, in normal mode) |
 | `Ctrl+J` | Cycle to the next sidebar panel |
 | `Ctrl+K` | Cycle to the previous sidebar panel |
 | `⌥]` / `⌥[` | Cycle sidebar panel (Mac Cmd+] / Cmd+[) |
+| `Ctrl+U` | Discard entire input line (kill line) |
+| `Ctrl+A` | Jump cursor to beginning of line |
+| `Ctrl+E` | Jump cursor to end of line |
 | `Tab` | Cycle focus across blocks |
 | `1`-`9` | Jump to a specific block |
 | `c` | Collapse or expand the focused block |
 | `PgUp` / `PgDn` | Scroll the focused block |
-| `Esc` | Close the active overlay |
+| Mouse drag | Select text in output — auto-copied on release |
 
 ### TUI Panels
 
