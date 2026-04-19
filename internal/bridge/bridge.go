@@ -52,7 +52,11 @@ type ProjectBridge struct {
 
 // New creates a new ProjectBridge.
 // If projectCtx does not expose a palace path, it returns nil.
-func New(projectCtx *project.ProjectContext, limit int) (*ProjectBridge, error) {
+// If a client is provided via the optional variadic arg, it is used as the
+// SearchClient (caller is responsible for creation and lifecycle).
+// Otherwise, a client is created from MILLIWAYS_MEMPALACE_MCP_CMD env var
+// (legacy behavior, for backward compatibility).
+func New(projectCtx *project.ProjectContext, limit int, clients ...SearchClient) (*ProjectBridge, error) {
 	if projectCtx == nil || projectCtx.PalacePath == nil || strings.TrimSpace(*projectCtx.PalacePath) == "" {
 		return nil, nil
 	}
@@ -60,13 +64,20 @@ func New(projectCtx *project.ProjectContext, limit int) (*ProjectBridge, error) 
 	if err != nil {
 		return nil, fmt.Errorf("project bridge: %w", err)
 	}
-	cmd := strings.TrimSpace(os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD"))
-	if cmd == "" {
-		return nil, errors.New("project bridge: MILLIWAYS_MEMPALACE_MCP_CMD is not set")
-	}
-	client, err := substrate.New(cmd, splitEnvArgs(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS"))...)
-	if err != nil {
-		return nil, fmt.Errorf("project bridge: %w", err)
+	var client SearchClient
+	if len(clients) > 0 && clients[0] != nil {
+		client = clients[0]
+	} else {
+		// Legacy path: create client from environment.
+		cmd := strings.TrimSpace(os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD"))
+		if cmd == "" {
+			return nil, errors.New("project bridge: MILLIWAYS_MEMPALACE_MCP_CMD is not set")
+		}
+		var err error
+		client, err = substrate.New(cmd, splitEnvArgs(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS"))...)
+		if err != nil {
+			return nil, fmt.Errorf("project bridge: %w", err)
+		}
 	}
 	return newForClient(projectCtx, limit, client, registry), nil
 }
