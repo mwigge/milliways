@@ -92,6 +92,14 @@ type Task struct {
 	Context string
 	Env     map[string]string // extra env vars to pass to kitchen subprocess
 	OnLine  func(string)
+
+	// OnQuestion is called when a ?MW> line is detected during Exec.
+	// Nil means headless auto-answer (writes empty string to stdin).
+	OnQuestion func(question string)
+
+	// OnConfirm is called when a !MW> line is detected during Exec.
+	// Nil means headless auto-answer (writes empty string to stdin).
+	OnConfirm func(question string)
 }
 
 // Result captures the outcome of a kitchen dispatch.
