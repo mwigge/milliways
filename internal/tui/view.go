@@ -31,21 +31,14 @@ func (m Model) View() string {
 	blockListHeight := (m.height - 6) / 2
 	blockListPanel := RenderBlockList(m.blocks, m.focusedIdx, &m.queue, sideWidth, blockListHeight)
 
-	// Ledger panel (right bottom).
-	ledgerHeight := (m.height - 6) - blockListHeight
-	ledgerContent := m.renderLedger()
-	if jobsPanel := m.renderJobsPanel(); jobsPanel != "" {
-		ledgerContent = ledgerContent + "\n\n" + jobsPanel
-	}
-	ledgerPanel := panelBorder.
-		Width(sideWidth).
-		Height(ledgerHeight).
-		Render(ledgerContent)
+	// Swappable side panel (right bottom).
+	bottomPanelHeight := (m.height - 6) - blockListHeight
+	bottomPanel := m.renderActiveSidePanel(sideWidth, bottomPanelHeight)
 
 	// Combine panels.
 	mainArea := lipgloss.JoinHorizontal(lipgloss.Top,
 		outputPanel,
-		lipgloss.JoinVertical(lipgloss.Left, blockListPanel, ledgerPanel),
+		lipgloss.JoinVertical(lipgloss.Left, blockListPanel, bottomPanel),
 	)
 
 	// Input at bottom — overlay-aware.
@@ -117,8 +110,57 @@ func (m Model) renderBlockStack(width int) string {
 	return strings.Join(sections, "\n")
 }
 
-// renderLedger renders the ledger panel showing completed dispatches.
-func (m Model) renderLedger() string {
+// renderActiveSidePanel renders the active bottom-right swappable panel.
+func (m Model) renderActiveSidePanel(width, height int) string {
+	if height < 4 {
+		return ""
+	}
+
+	contentHeight := height - 2
+	header := fmt.Sprintf("┌─ %s ␇ ctrl+[/ctrl+] ─", m.currentSidePanelName())
+	content := m.renderCurrentPanel(width, contentHeight)
+
+	return lipgloss.JoinVertical(lipgloss.Left,
+		panelBorder.Width(width).Render(header),
+		panelBorder.Width(width).Height(contentHeight).Render(content),
+	)
+}
+
+// renderCurrentPanel dispatches to the active side panel renderer.
+func (m Model) renderCurrentPanel(width, height int) string {
+	switch SidePanelMode(m.sidePanelIdx) {
+	case SidePanelLedger:
+		return m.renderLedgerPanel(width, height)
+	case SidePanelJobs:
+		return m.renderJobsPanel(width, height)
+	case SidePanelCost:
+		return m.renderCostPanel(width, height)
+	case SidePanelRouting:
+		return m.renderRoutingPanel(width, height)
+	case SidePanelSystem:
+		return m.renderSystemPanel(width, height)
+	case SidePanelSnippets:
+		return m.renderSnippetsPanel(width, height)
+	case SidePanelDiff:
+		return m.renderDiffPanel(width, height)
+	case SidePanelCompare:
+		return m.renderComparePanel(width, height)
+	default:
+		return mutedStyle.Render("(no panel)")
+	}
+}
+
+func (m Model) currentSidePanelName() string {
+	if m.sidePanelIdx < 0 || m.sidePanelIdx >= len(sidePanelNames) {
+		return "Panel"
+	}
+
+	return sidePanelNames[m.sidePanelIdx]
+}
+
+// renderLedgerPanel renders the ledger panel showing completed dispatches.
+func (m Model) renderLedgerPanel(width, height int) string {
+	innerWidth := max(1, width-4)
 	completed := 0
 	for _, b := range m.blocks {
 		if b.isDone() {
@@ -127,12 +169,14 @@ func (m Model) renderLedger() string {
 	}
 	lines := []string{mutedStyle.Render("Ledger")}
 	if completed == 0 {
-		lines = append(lines, mutedStyle.Render("No completed dispatches yet"))
+		lines = append(lines, truncate("No completed dispatches yet", innerWidth))
 	}
 
-	// Show recent completed blocks (last 8).
+	remaining := max(0, height-len(lines))
+
+	// Show recent completed blocks.
 	count := 0
-	for i := len(m.blocks) - 1; i >= 0 && count < 8; i-- {
+	for i := len(m.blocks) - 1; i >= 0 && count < remaining; i-- {
 		b := &m.blocks[i]
 		if !b.isDone() {
 			continue
@@ -142,17 +186,20 @@ func (m Model) renderLedger() string {
 			status = "failed"
 		}
 		dur := fmt.Sprintf("%.1fs", b.elapsed().Seconds())
-		lines = append(lines, fmt.Sprintf("%s %s %s %s",
+		entry := fmt.Sprintf("%s %s %s %s",
 			mutedStyle.Render(b.StartedAt.Format("15:04")),
 			KitchenBadge(b.Kitchen),
 			dur,
 			StatusIcon(status),
-		))
+		)
+		lines = append(lines, truncate(entry, innerWidth))
 		count++
 	}
 
-	activity := m.runtimeActivityLines(6)
-	if len(activity) > 0 {
+	remaining = max(0, height-len(lines))
+	activityLimit := min(6, max(0, remaining-2))
+	activity := m.runtimeActivityLinesWidth(activityLimit, innerWidth)
+	if len(activity) > 0 && remaining >= 2 {
 		lines = append(lines, "", mutedStyle.Render("Activity"))
 		lines = append(lines, activity...)
 	}
@@ -161,9 +208,8 @@ func (m Model) renderLedger() string {
 }
 
 // renderJobsPanel renders milliways async/detached tickets in the sidebar.
-// Returns "" when m.height < 20 (panel hidden on narrow terminals).
-func (m Model) renderJobsPanel() string {
-	if m.height < 20 {
+func (m Model) renderJobsPanel(width, height int) string {
+	if height < 4 {
 		return ""
 	}
 
@@ -174,13 +220,15 @@ func (m Model) renderJobsPanel() string {
 	var lines []string
 	lines = append(lines, mutedStyle.Render("Jobs"))
 
+	promptWidth := max(1, width-20)
+	maxRows := min(6, height-3)
 	for i, t := range m.jobTickets {
-		if i >= 6 {
+		if i >= maxRows {
 			break
 		}
 		prompt := t.Prompt
-		if len(prompt) > 20 {
-			prompt = prompt[:20] + "…"
+		if len([]rune(prompt)) > promptWidth {
+			prompt = string([]rune(prompt)[:promptWidth]) + "…"
 		}
 		lines = append(lines, fmt.Sprintf("%s %s %s", StatusIcon(t.Status), prompt, t.Kitchen))
 	}
@@ -188,7 +236,35 @@ func (m Model) renderJobsPanel() string {
 	return strings.Join(lines, "\n")
 }
 
+func (m Model) renderCostPanel(width, height int) string {
+	return mutedStyle.Render("(cost panel)")
+}
+
+func (m Model) renderRoutingPanel(width, height int) string {
+	return mutedStyle.Render("(routing panel)")
+}
+
+func (m Model) renderSystemPanel(width, height int) string {
+	return mutedStyle.Render("(system panel)")
+}
+
+func (m Model) renderSnippetsPanel(width, height int) string {
+	return mutedStyle.Render("(snippets panel)")
+}
+
+func (m Model) renderDiffPanel(width, height int) string {
+	return mutedStyle.Render("(diff panel)")
+}
+
+func (m Model) renderComparePanel(width, height int) string {
+	return mutedStyle.Render("(compare panel)")
+}
+
 func (m Model) runtimeActivityLines(limit int) []string {
+	return m.runtimeActivityLinesWidth(limit, 40)
+}
+
+func (m Model) runtimeActivityLinesWidth(limit, width int) []string {
 	if limit <= 0 || len(m.runtimeEvents) == 0 {
 		return nil
 	}
@@ -230,11 +306,11 @@ func (m Model) runtimeActivityLines(limit int) []string {
 			if i == 0 {
 				lines = append(lines, fmt.Sprintf("%s %s",
 					mutedStyle.Render(evt.At.Format("15:04:05")),
-					truncate(line, 40),
+					truncate(line, width),
 				))
 				continue
 			}
-			lines = append(lines, continuationPrefix+truncate(line, 40))
+			lines = append(lines, continuationPrefix+truncate(line, width))
 		}
 	}
 	return lines
