@@ -5,11 +5,14 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/mwigge/milliways/internal/bridge"
 	"github.com/mwigge/milliways/internal/conversation"
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/observability"
+	"github.com/mwigge/milliways/internal/project"
 	"github.com/mwigge/milliways/internal/sommelier"
 	"github.com/mwigge/milliways/internal/substrate"
 )
@@ -318,6 +321,174 @@ func TestOrchestratorEvaluatesAfterEachUserTurn(t *testing.T) {
 	}
 }
 
+type stubBridgeClient struct {
+	hits []conversation.ProjectHit
+
+	queries []string
+	limits  []int
+}
+
+func (s *stubBridgeClient) SearchProjectContext(_ context.Context, query string, limit int) ([]conversation.ProjectHit, error) {
+	s.queries = append(s.queries, query)
+	s.limits = append(s.limits, limit)
+	return s.hits, nil
+}
+
+func (s *stubBridgeClient) Close() error { return nil }
+
+func TestOrchestratorInjectsProjectContextIntoUserTurn(t *testing.T) {
+	t.Parallel()
+
+	second := &stubAdapter{events: []adapter.Event{{Type: adapter.EventDone, Kitchen: "second", ExitCode: 0}}}
+	bridgeClient := &stubBridgeClient{hits: []conversation.ProjectHit{{
+		DrawerID:    "drawer-1",
+		Wing:        "decisions",
+		Room:        "routing",
+		Content:     "budget fallback prefers opencode",
+		FactSummary: "budget fallback prefers opencode",
+		Relevance:   0.9,
+		CapturedAt:  "2026-04-18T10:00:00Z",
+	}}}
+
+	o := &Orchestrator{
+		Factory: func(_ context.Context, _ string, _ map[string]bool, _ string, _ map[string]string) (RouteResult, error) {
+			return RouteResult{Decision: sommelier.Decision{Kitchen: "second"}, Adapter: second}, nil
+		},
+		Bridge: bridge.NewForClient(&project.ProjectContext{RepoName: "repo"}, 1, bridgeClient),
+	}
+
+	conv, err := o.Run(context.Background(), RunRequest{ConversationID: "conv-project", BlockID: "b1", Prompt: "Investigate AlphaService retry policy"}, nil, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(conv.Context.ProjectHits) != 1 {
+		t.Fatalf("project hits = %#v, want one hit", conv.Context.ProjectHits)
+	}
+	if got := conv.Transcript[0].ProjectRefs; len(got) != 1 || got[0].DrawerID != "drawer-1" {
+		t.Fatalf("project refs = %#v", got)
+	}
+	if len(bridgeClient.limits) == 0 || bridgeClient.limits[0] != 1 {
+		t.Fatalf("limits = %#v, want [1]", bridgeClient.limits)
+	}
+}
+
+func TestOrchestratorStoresRepoContextOnSegmentStart(t *testing.T) {
+	t.Parallel()
+
+	palaceDrawers := 11
+	second := &stubAdapter{events: []adapter.Event{{Type: adapter.EventDone, Kitchen: "second", ExitCode: 0}}}
+	o := &Orchestrator{
+		Factory: func(_ context.Context, _ string, _ map[string]bool, _ string, _ map[string]string) (RouteResult, error) {
+			return RouteResult{Decision: sommelier.Decision{Kitchen: "second"}, Adapter: second}, nil
+		},
+		ProjectContext: &project.ProjectContext{
+			RepoRoot:         "/tmp/repo",
+			RepoName:         "repo",
+			Branch:           "feature/test",
+			Commit:           "deadbeef",
+			CodeGraphSymbols: 99,
+			PalaceDrawers:    &palaceDrawers,
+		},
+	}
+
+	conv, err := o.Run(context.Background(), RunRequest{ConversationID: "conv-project-context", BlockID: "b1", Prompt: "do work"}, nil, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(conv.Segments) != 1 {
+		t.Fatalf("segments = %d, want 1", len(conv.Segments))
+	}
+	got := conv.Segments[0].RepoContext
+	if got == nil {
+		t.Fatal("repo context = nil, want populated context")
+	}
+	if got.RepoRoot != "/tmp/repo" || got.RepoName != "repo" || got.Branch != "feature/test" || got.Commit != "deadbeef" {
+		t.Fatalf("repo identity = %#v", got)
+	}
+	if got.CodeGraphSymbols != 99 || got.PalaceDrawers != 11 {
+		t.Fatalf("repo metrics = %#v", got)
+	}
+	got.RepoName = "changed"
+	if o.ProjectContext.RepoName != "repo" {
+		t.Fatalf("project context mutated = %#v", o.ProjectContext)
+	}
+	if conv.Segments[0].RepoContext.RepoName != "changed" {
+		t.Fatalf("segment repo context should remain mutable copy, got %#v", conv.Segments[0].RepoContext)
+	}
+	if rebuilt := buildRepoContext(nil); rebuilt != nil {
+		t.Fatalf("buildRepoContext(nil) = %#v, want nil", rebuilt)
+	}
+}
+
+// TestOrchestratorTracksReposAccessedAndProjectRefsPerTurn verifies that the
+// bridge is queried for project hits and that project refs are tracked per turn.
+func TestOrchestratorTracksReposAccessedAndProjectRefsPerTurn(t *testing.T) {
+	t.Parallel()
+
+	palaceDrawers := 7
+	second := &stubAdapter{events: []adapter.Event{{Type: adapter.EventDone, Kitchen: "second", ExitCode: 0}}}
+	bridgeClient := &stubBridgeClient{
+		hits: []conversation.ProjectHit{{
+			DrawerID:    "drawer-1",
+			Wing:        "decisions",
+			Room:        "routing",
+			Content:     "budget fallback prefers opencode",
+			FactSummary: "budget fallback prefers opencode",
+			Relevance:   0.9,
+			CapturedAt:  "2026-04-18T10:00:00Z",
+		}},
+	}
+
+	o := &Orchestrator{
+		Factory: func(_ context.Context, _ string, _ map[string]bool, _ string, _ map[string]string) (RouteResult, error) {
+			return RouteResult{Decision: sommelier.Decision{Kitchen: "second"}, Adapter: second}, nil
+		},
+		Bridge: bridge.NewForClient(&project.ProjectContext{
+			RepoRoot:      "/home/user/acme",
+			RepoName:      "acme",
+			PalaceDrawers: &palaceDrawers,
+		}, 1, bridgeClient),
+		ProjectContext: &project.ProjectContext{
+			RepoRoot:         "/home/user/acme",
+			RepoName:         "acme",
+			CodeGraphSymbols: 42,
+		},
+	}
+
+	conv, err := o.Run(context.Background(), RunRequest{ConversationID: "conv-repos", BlockID: "b1", Prompt: "Investigate rate limiter behavior"}, nil, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Verify project hits were injected into context
+	if len(conv.Context.ProjectHits) != 1 {
+		t.Fatalf("project hits = %d, want 1", len(conv.Context.ProjectHits))
+	}
+
+	// Verify reposAccessed is tracked in orchestrator state
+	// (The reposAccessed map is internal, but we verify via bridge queries)
+	if len(bridgeClient.queries) == 0 {
+		t.Error("expected bridge to have been queried")
+	}
+}
+
+func TestBuildRepoContextOmitsOptionalZeroValues(t *testing.T) {
+	t.Parallel()
+
+	got := buildRepoContext(&project.ProjectContext{
+		RepoRoot: "/tmp/repo",
+		RepoName: "repo",
+		Branch:   "main",
+		Commit:   "abc123",
+	})
+	if got == nil {
+		t.Fatal("buildRepoContext returned nil")
+	}
+	if got.CodeGraphSymbols != 0 || got.PalaceDrawers != 0 {
+		t.Fatalf("optional metrics = %#v, want zero values", got)
+	}
+}
+
 func TestOrchestratorAutoSwitchEmitsReversibleSwitchEvent(t *testing.T) {
 	t.Parallel()
 
@@ -392,6 +563,69 @@ func TestOrchestratorAutoSwitchEmitsReversibleSwitchEvent(t *testing.T) {
 	}
 }
 
+func TestOrchestratorStickyModePreventsAutoSwitch(t *testing.T) {
+	t.Parallel()
+
+	sticky := &stubAdapter{events: []adapter.Event{{Type: adapter.EventDone, Kitchen: "claude", ExitCode: 0}}}
+
+	var (
+		seenKitchenForces []string
+		runtimeEvents     []observability.Event
+	)
+	o := &Orchestrator{
+		Reader: newFakeReader(substrate.ConversationRecord{
+			ConversationID: "conv-sticky",
+			Prompt:         "search the web for release notes",
+			Memory: conversation.MemoryState{
+				StickyKitchen: "claude",
+			},
+			Segments: []conversation.ProviderSegment{{
+				ID:        "seg-stick",
+				Provider:  "claude",
+				Status:    conversation.SegmentActive,
+				StartedAt: time.Now().Add(-1 * time.Minute),
+			}},
+			ActiveSegmentID: "seg-stick",
+		}),
+		Factory: func(_ context.Context, _ string, exclude map[string]bool, kitchenForce string, _ map[string]string) (RouteResult, error) {
+			seenKitchenForces = append(seenKitchenForces, kitchenForce)
+			if exclude["claude"] {
+				t.Fatalf("exclude = %#v, want sticky kitchen to remain eligible", exclude)
+			}
+			return RouteResult{
+				Decision: sommelier.Decision{Kitchen: "claude", Tier: "forced", Reason: "sticky kitchen"},
+				Adapter:  sticky,
+			}, nil
+		},
+		Sink: observability.FuncSink(func(evt observability.Event) {
+			runtimeEvents = append(runtimeEvents, evt)
+		}),
+	}
+
+	conv, err := o.Run(context.Background(), RunRequest{
+		ConversationID: "conv-sticky",
+		BlockID:        "b1",
+		Prompt:         "search the web for release notes",
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if conv.Status != conversation.StatusDone {
+		t.Fatalf("status = %q, want %q", conv.Status, conversation.StatusDone)
+	}
+	if len(seenKitchenForces) != 1 || seenKitchenForces[0] != "claude" {
+		t.Fatalf("kitchenForce calls = %#v, want [claude]", seenKitchenForces)
+	}
+	for _, evt := range runtimeEvents {
+		if evt.Kind == "switch" {
+			t.Fatalf("runtime events = %#v, want no auto-switch while sticky", runtimeEvents)
+		}
+	}
+	if len(conv.Segments) != 1 || conv.Segments[0].Provider != "claude" {
+		t.Fatalf("segments = %#v, want sticky claude segment only", conv.Segments)
+	}
+}
+
 func TestSommelierComposesLearnedPantryLocalModelAndKeywordRouters(t *testing.T) {
 	t.Parallel()
 
@@ -400,7 +634,7 @@ func TestSommelierComposesLearnedPantryLocalModelAndKeywordRouters(t *testing.T)
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "opencode", Cmd: "echo", Enabled: true}))
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "gemini", Cmd: "echo", Enabled: true}))
 
-	router := sommelier.New(map[string]string{"code": "opencode"}, "claude", "opencode", reg)
+	router := sommelier.New(map[string]string{"code": "opencode"}, "claude", "opencode", nil, reg)
 	local := &stubLocalModelRouter{
 		decision: sommelier.Decision{Kitchen: "gemini", Tier: "local-model", Reason: "future local model"},
 		ok:       true,

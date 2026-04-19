@@ -1,6 +1,10 @@
 package maitre
 
 import (
+	"context"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 )
 
@@ -145,4 +149,97 @@ func TestBuildHookEnv(t *testing.T) {
 			t.Errorf("missing env var for %s", key)
 		}
 	}
+}
+
+func TestHookRunner_LogsStructuredMessages(t *testing.T) {
+	capture := installHookTestLogger(t)
+	runner := NewHookRunner([]HookConfig{{Event: HookPostDispatch, Command: "false", Blocking: false}})
+
+	err := runner.Run(HookPostDispatch, HookContext{})
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	assertHookLogRecord(t, capture.records(), slog.LevelInfo, "hook executing", "command", "false")
+	assertHookLogRecord(t, capture.records(), slog.LevelWarn, "hook failed", "command", "false")
+	assertHookLogRecord(t, capture.records(), slog.LevelWarn, "hook failed", "event", HookPostDispatch)
+
+	for _, record := range capture.records() {
+		if record.Message != "hook failed" {
+			continue
+		}
+		errAttr, ok := record.Attrs["err"].(error)
+		if !ok || !strings.Contains(errAttr.Error(), "exit status") {
+			t.Fatalf("hook failed err = %v, want exit status error", record.Attrs["err"])
+		}
+		return
+	}
+	t.Fatal("hook failed log not found")
+}
+
+var hookTestLoggerMu sync.Mutex
+
+type hookTestLogRecord struct {
+	Level   slog.Level
+	Message string
+	Attrs   map[string]any
+}
+
+type hookTestLogCapture struct {
+	mu      sync.Mutex
+	entries []hookTestLogRecord
+}
+
+func installHookTestLogger(t *testing.T) *hookTestLogCapture {
+	t.Helper()
+	hookTestLoggerMu.Lock()
+	capture := &hookTestLogCapture{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(capture))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+		hookTestLoggerMu.Unlock()
+	})
+	return capture
+}
+
+func (c *hookTestLogCapture) Enabled(context.Context, slog.Level) bool { return true }
+
+func (c *hookTestLogCapture) Handle(_ context.Context, record slog.Record) error {
+	attrs := make(map[string]any, record.NumAttrs())
+	record.Attrs(func(attr slog.Attr) bool {
+		attrs[attr.Key] = attr.Value.Any()
+		return true
+	})
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = append(c.entries, hookTestLogRecord{Level: record.Level, Message: record.Message, Attrs: attrs})
+	return nil
+}
+
+func (c *hookTestLogCapture) WithAttrs(_ []slog.Attr) slog.Handler { return c }
+
+func (c *hookTestLogCapture) WithGroup(string) slog.Handler { return c }
+
+func (c *hookTestLogCapture) records() []hookTestLogRecord {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	clone := make([]hookTestLogRecord, len(c.entries))
+	copy(clone, c.entries)
+	return clone
+}
+
+func assertHookLogRecord(t *testing.T, records []hookTestLogRecord, level slog.Level, message, key string, want any) {
+	t.Helper()
+	for _, record := range records {
+		if record.Level != level || record.Message != message {
+			continue
+		}
+		if got := record.Attrs[key]; got != want {
+			t.Fatalf("log %q attr %q = %v, want %v", message, key, got, want)
+		}
+		return
+	}
+	t.Fatalf("log %q with %s=%v not found", message, key, want)
 }

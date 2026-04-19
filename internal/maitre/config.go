@@ -11,10 +11,23 @@ import (
 
 // Config represents the carte.yaml configuration.
 type Config struct {
-	Kitchens map[string]KitchenConfig `yaml:"kitchens"`
-	Routing  RoutingConfig            `yaml:"routing"`
-	Ledger   LedgerConfig             `yaml:"ledger"`
-	Recipes  map[string][]recipe.Step `yaml:"recipes"`
+	Kitchens            map[string]KitchenConfig `yaml:"kitchens"`
+	Routing             RoutingConfig            `yaml:"routing"`
+	Ledger              LedgerConfig             `yaml:"ledger"`
+	Recipes             map[string][]recipe.Step `yaml:"recipes"`
+	ProjectContextLimit int                      `yaml:"project_context_limit" json:"project_context_limit"`
+}
+
+// HTTPClientConfig describes an HTTP API-based kitchen.
+type HTTPClientConfig struct {
+	BaseURL        string   `yaml:"base_url"`
+	AuthKey        string   `yaml:"auth_key"`
+	AuthType       string   `yaml:"auth_type"`
+	Model          string   `yaml:"model"`
+	Stations       []string `yaml:"stations"`
+	Tier           string   `yaml:"tier"`
+	ResponseFormat string   `yaml:"response_format"`
+	Timeout        int      `yaml:"timeout_seconds"`
 }
 
 // KitchenConfig defines a kitchen's CLI command and capabilities.
@@ -28,6 +41,7 @@ type KitchenConfig struct {
 	DailyLimit    int               `yaml:"daily_limit"`    // max dispatches per day (0 = unlimited)
 	DailyMinutes  float64           `yaml:"daily_minutes"`  // max total minutes per day (0 = unlimited)
 	WarnThreshold float64           `yaml:"warn_threshold"` // warning at this fraction of limit (default 0.8)
+	HTTPClient    *HTTPClientConfig `yaml:"http_client"`
 }
 
 // EffectiveWarnThreshold returns the warn threshold, defaulting to 0.8.
@@ -48,9 +62,10 @@ func (kc KitchenConfig) IsEnabled() bool {
 
 // RoutingConfig defines keyword-to-kitchen routing rules.
 type RoutingConfig struct {
-	Keywords       map[string]string `yaml:"keywords"`
-	Default        string            `yaml:"default"`
-	BudgetFallback string            `yaml:"budget_fallback"`
+	Keywords       map[string]string             `yaml:"keywords"`
+	Default        string                        `yaml:"default"`
+	BudgetFallback string                        `yaml:"budget_fallback"`
+	WeightOn       map[string]map[string]float64 `yaml:"weight_on"`
 }
 
 // LedgerConfig defines ledger file paths.
@@ -111,6 +126,9 @@ func LoadConfig(path string) (*Config, error) {
 	if fileCfg.Routing.BudgetFallback != "" {
 		defaults.Routing.BudgetFallback = fileCfg.Routing.BudgetFallback
 	}
+	if len(fileCfg.Routing.WeightOn) > 0 {
+		defaults.Routing.WeightOn = fileCfg.Routing.WeightOn
+	}
 
 	// Ledger: file overrides paths
 	if fileCfg.Ledger.NDJSON != "" {
@@ -123,6 +141,9 @@ func LoadConfig(path string) (*Config, error) {
 	// Recipes: file replaces defaults if specified
 	if len(fileCfg.Recipes) > 0 {
 		defaults.Recipes = fileCfg.Recipes
+	}
+	if fileCfg.ProjectContextLimit > 0 {
+		defaults.ProjectContextLimit = fileCfg.ProjectContextLimit
 	}
 
 	return defaults, nil
@@ -167,6 +188,42 @@ func defaultConfig() *Config {
 				Stations: []string{"fleet", "parallel"},
 				CostTier: "cloud",
 			},
+			"minimax": {
+				HTTPClient: &HTTPClientConfig{
+					BaseURL:        "https://api.minimaxi.com/v1/text",
+					AuthKey:        "MINIMAX_API_KEY",
+					AuthType:       "bearer",
+					Model:          "M2-her",
+					Stations:       []string{"reason", "analyze", "write"},
+					Tier:           "cloud",
+					ResponseFormat: "minimax",
+					Timeout:        300,
+				},
+			},
+			"groq": {
+				HTTPClient: &HTTPClientConfig{
+					BaseURL:        "https://api.groq.com/openai/v1",
+					AuthKey:        "GROQ_API_KEY",
+					AuthType:       "bearer",
+					Model:          "mixtral-8x7b-32768",
+					Stations:       []string{"fast", "simple"},
+					Tier:           "free",
+					ResponseFormat: "openai",
+					Timeout:        300,
+				},
+			},
+			"ollama": {
+				HTTPClient: &HTTPClientConfig{
+					BaseURL:        "http://localhost:11434",
+					AuthKey:        "",
+					AuthType:       "bearer",
+					Model:          "llama3",
+					Stations:       []string{"local", "private"},
+					Tier:           "free",
+					ResponseFormat: "ollama",
+					Timeout:        300,
+				},
+			},
 		},
 		Routing: RoutingConfig{
 			Keywords: map[string]string{
@@ -177,14 +234,30 @@ func defaultConfig() *Config {
 				"refactor": "aider",
 				"search":   "gemini", "research": "gemini", "compare": "gemini",
 				"tools": "goose", "database": "goose",
+				"fast": "groq", "quick": "groq",
+				"local": "ollama", "private": "ollama",
 			},
 			Default:        "claude",
 			BudgetFallback: "opencode",
+			WeightOn: map[string]map[string]float64{
+				"claude": {
+					"lsp_errors": 0.5,
+					"dirty":      0.3,
+				},
+				"opencode": {
+					"in_test_file": 0.4,
+					"lsp_warnings": 0.2,
+				},
+				"goose": {
+					"language_sql": 0.5,
+				},
+			},
 		},
 		Ledger: LedgerConfig{
 			NDJSON: filepath.Join(DefaultConfigDir(), "ledger.ndjson"),
 			DB:     filepath.Join(DefaultConfigDir(), "ledger.db"),
 		},
+		ProjectContextLimit: 3,
 		Recipes: map[string][]recipe.Step{
 			"implement-feature": {
 				{Station: "think", Kitchen: "claude"},

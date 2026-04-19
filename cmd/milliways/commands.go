@@ -16,6 +16,7 @@ import (
 	"github.com/mwigge/milliways/internal/observability"
 	"github.com/mwigge/milliways/internal/orchestrator"
 	"github.com/mwigge/milliways/internal/pantry"
+	"github.com/mwigge/milliways/internal/project"
 	"github.com/mwigge/milliways/internal/recipe"
 	"github.com/mwigge/milliways/internal/sommelier"
 	"github.com/mwigge/milliways/internal/tui"
@@ -29,7 +30,7 @@ func runTUI(configPath string, tuiOpts tui.RunOpts) error {
 	}
 
 	reg := buildRegistry(cfg)
-	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, reg)
+	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, cfg.Routing.WeightOn, reg)
 
 	// Wire quota checking if pantry is available
 	pdb, pdbErr := openPantryDB()
@@ -51,7 +52,82 @@ func runTUI(configPath string, tuiOpts tui.RunOpts) error {
 	}
 	tuiOpts.KitchenStates = buildKitchenStates(cfg, reg, pdb)
 
-	return tui.RunWithOpts(providerFactory, hydrator, sink, recorder, replayer, ticketStore, tuiOpts)
+	if projectContext, err := detectTUIProjectContext(); err == nil && projectContext != nil {
+		tuiOpts.ProjectState = projectContextToTUIState(projectContext)
+	} else if err != nil {
+		fmt.Fprintf(os.Stderr, "[project] detection failed: %v\n", err)
+	}
+
+	return tui.RunWithOpts(providerFactory, hydrator, sink, recorder, replayer, ticketStore, pdb, tuiOpts)
+}
+
+func detectTUIProjectContext() (*project.ProjectContext, error) {
+	if projectRoot := os.Getenv("MILLIWAYS_PROJECT_ROOT"); projectRoot != "" {
+		fmt.Fprintf(os.Stderr, "[project] detecting from MILLIWAYS_PROJECT_ROOT=%q\n", projectRoot)
+		pc, err := project.ResolveProject(projectRoot)
+		if err != nil {
+			return nil, err
+		}
+		logResolvedProjectContext(pc)
+		return pc, nil
+	}
+
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+
+	pc, err := project.DetectStartupProject(workingDir)
+	if err != nil {
+		return nil, err
+	}
+	if pc == nil {
+		fmt.Fprintf(os.Stderr, "[project] no repository detected from cwd=%q\n", workingDir)
+		return nil, nil
+	}
+	logResolvedProjectContext(pc)
+	return pc, nil
+}
+
+func projectContextToTUIState(pc *project.ProjectContext) tui.ProjectState {
+	if pc == nil {
+		return tui.ProjectState{}
+	}
+
+	state := tui.ProjectState{
+		RepoRoot:          pc.RepoRoot,
+		RepoName:          pc.RepoName,
+		PalaceExists:      pc.PalaceExists,
+		CodeGraphExists:   pc.CodeGraphExists,
+		CodeGraphIndexing: pc.CodeGraphIndexing,
+		CodeGraphSymbols:  pc.CodeGraphSymbols,
+		AccessReadRule:    pc.AccessRules.Read,
+		AccessWriteRule:   pc.AccessRules.Write,
+	}
+	if pc.PalacePath != nil {
+		state.PalacePath = *pc.PalacePath
+	}
+	if pc.PalaceDrawers != nil {
+		state.PalaceDrawers = *pc.PalaceDrawers
+	}
+	return state
+}
+
+func logResolvedProjectContext(pc *project.ProjectContext) {
+	if pc == nil {
+		return
+	}
+
+	palaceStr := "(nil)"
+	if pc.PalacePath != nil {
+		palaceStr = *pc.PalacePath
+	}
+	drawersStr := "(nil)"
+	if pc.PalaceDrawers != nil {
+		drawersStr = fmt.Sprintf("%d", *pc.PalaceDrawers)
+	}
+	fmt.Fprintf(os.Stderr, "[project] resolved: root=%s repo=%s palace=%s drawers=%s\n",
+		pc.RepoRoot, pc.RepoName, palaceStr, drawersStr)
 }
 
 func buildKitchenStates(cfg *maitre.Config, reg *kitchen.Registry, pdb *pantry.DB) []tui.KitchenState {
@@ -88,10 +164,11 @@ func buildKitchenStates(cfg *maitre.Config, reg *kitchen.Registry, pdb *pantry.D
 }
 
 func makeRuntimeSink(pdb *pantry.DB) observability.Sink {
+	otelSink, _ := observability.NewOTelSink()
 	if pdb == nil {
-		return observability.NopSink{}
+		return observability.MultiSink{otelSink}
 	}
-	return observability.FuncSink(func(evt observability.Event) {
+	runtimeSink := observability.FuncSink(func(evt observability.Event) {
 		_, _ = pdb.RuntimeEvents().Insert(pantry.RuntimeEventRecord{
 			ConversationID: evt.ConversationID,
 			BlockID:        evt.BlockID,
@@ -103,6 +180,8 @@ func makeRuntimeSink(pdb *pantry.DB) observability.Sink {
 			Fields:         evt.Fields,
 		})
 	})
+	ledgerSink := ledger.NewLedgerSink(pdb)
+	return observability.MultiSink{runtimeSink, ledgerSink, otelSink}
 }
 
 func makeConversationRecorder(cfg *maitre.Config, pdb *pantry.DB) tui.ConversationRecorder {
@@ -167,7 +246,7 @@ func selectDecision(cfg *maitre.Config, reg *kitchen.Registry, som *sommelier.So
 	}
 
 	var decision sommelier.Decision
-	signals := assembleSignals(cfg, pdb, prompt, false)
+	signals := assembleSignals(cfg, pdb, prompt, false, nil)
 	catalog := maitre.ScanSkills()
 	var hint *sommelier.SkillHint
 	if catalog.Total() > 0 {
@@ -285,7 +364,7 @@ func dispatchRecipe(recipeName, prompt string, verbose bool, configPath string, 
 	}
 
 	reg := buildRegistry(cfg)
-	eng := recipe.NewEngine(reg, keepContext)
+	eng := recipe.NewEngine(reg, keepContext, recipe.StrategyStop)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
@@ -340,7 +419,7 @@ func dispatchAsync(prompt, kitchenForce string, verbose bool, configPath string)
 	}
 
 	reg := buildRegistry(cfg)
-	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, reg)
+	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, cfg.Routing.WeightOn, reg)
 
 	var decision sommelier.Decision
 	if kitchenForce != "" {

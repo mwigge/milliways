@@ -5,6 +5,30 @@ import (
 	"time"
 )
 
+// ProjectRef is a lightweight citation attached to a user turn.
+type ProjectRef struct {
+	PalaceID    string `json:"palace_id"`
+	PalacePath  string `json:"palace_path"`
+	DrawerID    string `json:"drawer_id"`
+	Wing        string `json:"wing"`
+	Room        string `json:"room"`
+	FactSummary string `json:"fact_summary"`
+	CapturedAt  string `json:"captured_at"`
+}
+
+// ProjectHit captures recalled project memory added to the context bundle.
+type ProjectHit struct {
+	PalaceID    string  `json:"palace_id"`
+	PalacePath  string  `json:"palace_path"`
+	DrawerID    string  `json:"drawer_id"`
+	Wing        string  `json:"wing"`
+	Room        string  `json:"room"`
+	Content     string  `json:"content"`
+	FactSummary string  `json:"fact_summary"`
+	Relevance   float64 `json:"relevance"`
+	CapturedAt  string  `json:"captured_at"`
+}
+
 // Status is the lifecycle state of a canonical conversation.
 type Status string
 
@@ -25,10 +49,12 @@ const (
 
 // Turn is one canonical transcript entry owned by Milliways.
 type Turn struct {
-	Role     TurnRole  `json:"role"`
-	Provider string    `json:"provider"`
-	Text     string    `json:"text"`
-	At       time.Time `json:"at"`
+	Role          TurnRole     `json:"role"`
+	Provider      string       `json:"provider"`
+	ReposAccessed []string     `json:"repos_accessed,omitempty"`
+	Text          string       `json:"text"`
+	ProjectRefs   []ProjectRef `json:"project_refs,omitempty"`
+	At            time.Time    `json:"at"`
 }
 
 // MemoryState is a compact working-memory representation for continuation.
@@ -42,10 +68,11 @@ type MemoryState struct {
 
 // ContextBundle captures recovered context used to rebuild continuity.
 type ContextBundle struct {
-	SpecRefs               []string `json:"spec_refs"`
-	CodeGraphText          string   `json:"codegraph_text"`
-	MemPalaceText          string   `json:"mempalace_text"`
-	InvalidatedMemoryCount int      `json:"invalidated_memory_count,omitempty"`
+	SpecRefs               []string     `json:"spec_refs"`
+	CodeGraphText          string       `json:"codegraph_text"`
+	MemPalaceText          string       `json:"mempalace_text"`
+	ProjectHits            []ProjectHit `json:"project_hits,omitempty"`
+	InvalidatedMemoryCount int          `json:"invalidated_memory_count,omitempty"`
 }
 
 // SegmentStatus is the lifecycle of one provider segment.
@@ -67,6 +94,17 @@ type ProviderSegment struct {
 	StartedAt       time.Time     `json:"started_at"`
 	EndedAt         *time.Time    `json:"ended_at,omitempty"`
 	EndReason       string        `json:"end_reason,omitempty"`
+	RepoContext     *RepoContext  `json:"repo_context,omitempty"`
+}
+
+// RepoContext holds repository metadata captured at segment start.
+type RepoContext struct {
+	RepoRoot         string `json:"repo_root"`
+	RepoName         string `json:"repo_name"`
+	Branch           string `json:"branch"`
+	Commit           string `json:"commit"`
+	CodeGraphSymbols int    `json:"codegraph_symbols"`
+	PalaceDrawers    int    `json:"palace_drawers"`
 }
 
 // Conversation is the canonical Milliways-owned task state.
@@ -115,19 +153,45 @@ func (c *Conversation) AppendTurn(role TurnRole, provider, text string) {
 	c.UpdatedAt = now
 }
 
+// AppendTurnWithContext records a transcript turn with repo access and project ref metadata.
+func (c *Conversation) AppendTurnWithContext(role TurnRole, provider, text string, reposAccessed []string, projectRefs []ProjectRef) {
+	if c == nil || text == "" {
+		return
+	}
+	now := time.Now()
+	c.Transcript = append(c.Transcript, Turn{
+		Role:          role,
+		Provider:      provider,
+		ReposAccessed: reposAccessed,
+		Text:          text,
+		ProjectRefs:   projectRefs,
+		At:            now,
+	})
+	c.UpdatedAt = now
+}
+
 // StartSegment adds and activates a provider segment.
-func (c *Conversation) StartSegment(provider string) ProviderSegment {
+func (c *Conversation) StartSegment(provider string, repoContext *RepoContext) ProviderSegment {
 	now := time.Now()
 	seg := ProviderSegment{
-		ID:        fmt.Sprintf("%s-seg-%d", c.ID, len(c.Segments)+1),
-		Provider:  provider,
-		Status:    SegmentActive,
-		StartedAt: now,
+		ID:          fmt.Sprintf("%s-seg-%d", c.ID, len(c.Segments)+1),
+		Provider:    provider,
+		Status:      SegmentActive,
+		StartedAt:   now,
+		RepoContext: cloneRepoContext(repoContext),
 	}
 	c.Segments = append(c.Segments, seg)
 	c.ActiveSegmentID = seg.ID
 	c.UpdatedAt = now
 	return seg
+}
+
+func cloneRepoContext(repoContext *RepoContext) *RepoContext {
+	if repoContext == nil {
+		return nil
+	}
+	clone := *repoContext
+	return &clone
 }
 
 // EndActiveSegment finalizes the current provider segment.

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mwigge/milliways/internal/kitchen"
+	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/sommelier"
 )
@@ -47,6 +48,24 @@ routing:
 	// Build registry
 	reg := kitchen.NewRegistry()
 	for name, kc := range cfg.Kitchens {
+		if kc.HTTPClient != nil {
+			httpKitchen, err := adapter.NewHTTPKitchen(name, adapter.HTTPKitchenConfig{
+				BaseURL:        kc.HTTPClient.BaseURL,
+				AuthKey:        kc.HTTPClient.AuthKey,
+				AuthType:       kc.HTTPClient.AuthType,
+				Model:          kc.HTTPClient.Model,
+				Stations:       kc.HTTPClient.Stations,
+				Tier:           kitchen.ParseCostTier(kc.HTTPClient.Tier),
+				ResponseFormat: kc.HTTPClient.ResponseFormat,
+				Timeout:        time.Duration(kc.HTTPClient.Timeout) * time.Second,
+			}, kc.Stations, kitchen.ParseCostTier(kc.CostTier))
+			if err != nil {
+				t.Fatalf("NewHTTPKitchen: %v", err)
+			}
+			reg.Register(httpKitchen)
+			continue
+		}
+
 		reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{
 			Name:     name,
 			Cmd:      kc.Cmd,
@@ -58,7 +77,7 @@ routing:
 	}
 
 	// Route
-	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, "", reg)
+	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, "", cfg.Routing.WeightOn, reg)
 	decision := som.Route("think about this")
 
 	if decision.Kitchen != "echo-kitchen" {
@@ -143,7 +162,7 @@ func TestDispatchPipeline_NoKeywordFallsToDefault(t *testing.T) {
 		Name: "fallback", Cmd: "echo", Enabled: true,
 	}))
 
-	som := sommelier.New(map[string]string{"think": "missing"}, "fallback", "", reg)
+	som := sommelier.New(map[string]string{"think": "missing"}, "fallback", "", nil, reg)
 	decision := som.Route("something without keywords")
 
 	if decision.Kitchen != "fallback" {
@@ -162,7 +181,7 @@ func TestDispatchPipeline_SingleKitchenMode(t *testing.T) {
 		Name: "only-one", Cmd: "echo", Stations: []string{"everything"}, Enabled: true,
 	}))
 
-	som := sommelier.New(nil, "only-one", "", reg)
+	som := sommelier.New(nil, "only-one", "", nil, reg)
 	decision := som.Route("any task at all")
 
 	if decision.Kitchen != "only-one" {
@@ -178,7 +197,7 @@ func TestDispatchPipeline_ExplainMode(t *testing.T) {
 		Name: "claude", Cmd: "echo", Stations: []string{"think"}, Enabled: true,
 	}))
 
-	som := sommelier.New(map[string]string{"explain": "claude"}, "claude", "", reg)
+	som := sommelier.New(map[string]string{"explain": "claude"}, "claude", "", nil, reg)
 	decision := som.Route("explain the auth flow")
 
 	// Explain mode: we get the decision without executing
@@ -197,7 +216,7 @@ func TestDispatchPipeline_ForceKitchen(t *testing.T) {
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "claude", Cmd: "echo", Enabled: true}))
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "opencode", Cmd: "echo", Enabled: true}))
 
-	som := sommelier.New(map[string]string{"explain": "claude"}, "claude", "", reg)
+	som := sommelier.New(map[string]string{"explain": "claude"}, "claude", "", nil, reg)
 
 	// Force opencode even though "explain" matches claude
 	decision := som.ForceRoute("opencode")

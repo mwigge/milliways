@@ -10,6 +10,10 @@ import (
 // Falls back to GenericAdapter for unknown kitchens.
 // Returns an error if the kitchen is not a *kitchen.GenericKitchen.
 func AdapterFor(k kitchen.Kitchen, opts AdapterOpts) (Adapter, error) {
+	if hk, ok := k.(*HTTPKitchen); ok {
+		return newHTTPKitchenAdapter(hk, opts), nil
+	}
+
 	gk, ok := k.(*kitchen.GenericKitchen)
 	if !ok {
 		return nil, fmt.Errorf("adapter requires *kitchen.GenericKitchen, got %T", k)

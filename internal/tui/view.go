@@ -70,15 +70,15 @@ func (m Model) View() string {
 		inputBar = panelBorder.Width(m.width - 2).Render(m.input.View())
 	}
 
-	// Title with status bar.
-	statusBar := m.renderStatusBar()
-	titleText := "Milliways"
-	if statusBar != "" {
-		titleText += "  " + statusBar
+	// Title with project and kitchen status.
+	title := titleStyle.Width(m.width).Render("Milliways")
+	sections := []string{title}
+	if header := m.renderProjectHeader(); header != "" {
+		sections = append(sections, header)
 	}
-	title := titleStyle.Width(m.width).Render(titleText)
+	sections = append(sections, mainArea, inputBar)
 
-	return lipgloss.JoinVertical(lipgloss.Left, title, mainArea, inputBar)
+	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
 // renderBlockStack renders all blocks as a vertical stack.
@@ -160,15 +160,26 @@ func (m Model) runtimeActivityLines(limit int) []string {
 		return nil
 	}
 
+	// Filter out noisy event types that have dedicated rendering elsewhere.
+	skipKinds := map[string]bool{
+		"provider_output":       true, // too noisy, has dedicated block rendering
+		"provider_output_start": true, // same
+		"provider_output_end":   true, // same
+		"token_usage":           true, // too frequent, shown in telemetry
+	}
 	var filtered []observability.Event
 	if b := m.focusedBlock(); b != nil && b.ConversationID != "" {
 		for _, evt := range m.runtimeEvents {
-			if evt.ConversationID == b.ConversationID {
+			if evt.ConversationID == b.ConversationID && !skipKinds[evt.Kind] {
 				filtered = append(filtered, evt)
 			}
 		}
 	} else {
-		filtered = append(filtered, m.runtimeEvents...)
+		for _, evt := range m.runtimeEvents {
+			if !skipKinds[evt.Kind] {
+				filtered = append(filtered, evt)
+			}
+		}
 	}
 	if len(filtered) == 0 {
 		return nil
@@ -254,6 +265,34 @@ func (m Model) renderStatusBar() string {
 	}
 
 	return strings.Join(parts, "  ")
+}
+
+func (m Model) renderProjectHeader() string {
+	if m.projectState.RepoName == "" {
+		return ""
+	}
+
+	if m.width >= projectStatusCompactWidth {
+		parts := []string{RenderProjectHeader(m.projectState)}
+		if status := m.renderStatusBar(); status != "" {
+			parts = append(parts, "Kitchen: "+status)
+		}
+		return panelBorder.Width(m.width - 2).Render(strings.Join(parts, "\n"))
+	}
+
+	activeKitchen := ""
+	if b := m.focusedBlock(); b != nil {
+		if sticky := b.stickyKitchen(); sticky != "" {
+			activeKitchen = sticky + " (sticky)"
+		} else {
+			activeKitchen = b.Kitchen
+		}
+	}
+	compact := RenderCompactStatus(m.projectState, activeKitchen, len(m.recentRepos.List()))
+	if status := m.renderStatusBar(); status != "" {
+		compact += "  " + status
+	}
+	return panelBorder.Width(m.width - 2).Render(compact)
 }
 
 // rateLastDispatch records a good/bad rating for the most recent completed block.

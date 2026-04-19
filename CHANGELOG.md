@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Two-Active-Memory architecture**: orchestrator is aware of project context (git repo, CodeGraph symbols, MemPalace palace) while maintaining conversation memory. Project context is detected automatically from cwd on startup.
+  - `internal/project/` package: `ProjectContext` detection for git repo root, CodeGraph index, MemPalace palace
+  - `internal/bridge/` package: project memory bridge with topic extraction, palace search, citation creation, and cross-palace resolution
+  - TUI project status bar: shows project name, palace drawer/room/wing counts, CodeGraph symbol count
+  - TUI commands: `/project` (project info), `/repos` (accessed repos), `/palace` (palace status/search), `/codegraph` (codegraph status/search)
+  - Repo context tracking: segments and turns record `repo_context`, `repos_accessed`, and `project_refs` fields
+  - Cross-palace citations: `palace://<palace_id>[/<wing>]/<room>/<drawer_id>` citation syntax with read-only enforcement
+
 - Kitchen switching commands: `/switch <kitchen>`, `/back`, `/stick`, and `/kitchens`.
 - Headless kitchen switching with the `--switch-to <kitchen>` CLI flag.
 - Continuous routing with sommelier re-evaluation at user-turn boundaries.

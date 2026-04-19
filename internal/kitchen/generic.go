@@ -94,7 +94,7 @@ func (k *GenericKitchen) Exec(ctx context.Context, task Task) (Result, error) {
 		return Result{ExitCode: 1}, fmt.Errorf("%s kitchen not ready: %s", k.cfg.Name, k.Status())
 	}
 
-	if !allowedCmds[k.cfg.Cmd] {
+	if !IsCmdAllowed(k.cfg.Cmd) {
 		return Result{ExitCode: 1}, fmt.Errorf("command %q not in allowed list", k.cfg.Cmd)
 	}
 

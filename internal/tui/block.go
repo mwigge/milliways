@@ -144,8 +144,12 @@ func (b *Block) RenderBody(width int, mode RenderMode) string {
 		sections = append(sections, telemetry)
 	}
 
-	if output := b.renderOutput(mode); output != "" {
+	output := b.renderOutput(mode)
+	if output != "" {
 		sections = append(sections, output)
+	} else if len(b.Lines) == 0 && (b.State == StateDone || b.State == StateFailed) {
+		// Silent failure: block completed (done/failed) but captured no output.
+		sections = append(sections, mutedStyle.Render("(no output)"))
 	} else {
 		placeholder := b.renderPlaceholder()
 		if placeholder != "" {

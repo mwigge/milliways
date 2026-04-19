@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
+	"github.com/mwigge/milliways/internal/ledger"
 	"github.com/mwigge/milliways/internal/observability"
 	"github.com/mwigge/milliways/internal/orchestrator"
 	"github.com/mwigge/milliways/internal/pantry"
@@ -55,13 +56,20 @@ func (m *Model) adapterDispatchCmd(ctx context.Context, blockID, prompt, kitchen
 		}
 
 		sink := m.sink
+		var sinks observability.MultiSink
+		if m.pdb != nil {
+			sinks = append(sinks, ledger.NewLedgerSink(m.pdb))
+		}
 		if m.prog != nil && *m.prog != nil {
-			sink = observability.MultiSink{
-				m.sink,
-				observability.FuncSink(func(evt observability.Event) {
-					(*m.prog).Send(runtimeEventMsg{Event: evt})
-				}),
+			sinks = append(sinks, observability.FuncSink(func(evt observability.Event) {
+				(*m.prog).Send(runtimeEventMsg{Event: evt})
+			}))
+		}
+		if len(sinks) > 0 {
+			if m.sink != nil {
+				sinks = append([]observability.Sink{m.sink}, sinks...)
 			}
+			sink = sinks
 		}
 		orch := orchestrator.Orchestrator{
 			Factory: m.providerFactory,
@@ -172,7 +180,7 @@ func (m *Model) startPipelineBlockDispatch(ctx context.Context, blockID, prompt 
 				(*m.prog).Send(msg)
 			}
 
-			if summarizeStep != nil && stepID != "summarize" && status == pipeline.StatusDone || status == pipeline.StatusFailed {
+			if summarizeStep != nil && stepID != "summarize" && (status == pipeline.StatusDone || status == pipeline.StatusFailed) {
 				allDone := true
 				var fanOutSteps []*pipeline.Step
 				for _, s := range pipe.Steps {

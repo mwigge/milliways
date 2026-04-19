@@ -3,13 +3,16 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/mwigge/milliways/internal/bridge"
 	"github.com/mwigge/milliways/internal/conversation"
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/observability"
+	"github.com/mwigge/milliways/internal/project"
 	"github.com/mwigge/milliways/internal/sommelier"
 	"github.com/mwigge/milliways/internal/substrate"
 )
@@ -67,6 +70,10 @@ type Orchestrator struct {
 	// Reader, when set, is consulted before local hydration on each provider
 	// failover to pre-populate conversation state from substrate.
 	Reader substrate.Reader
+	// Bridge, when set, injects project memory into user turns.
+	Bridge *bridge.ProjectBridge
+	// ProjectContext is captured at segment start for repo tracking.
+	ProjectContext *project.ProjectContext
 }
 
 // Run executes a logical conversation with provider failover on exhaustion.
@@ -79,7 +86,18 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 		sink = observability.NopSink{}
 	}
 
+	reposAccessed := make(map[string]bool)
+
 	conv := conversation.New(req.ConversationID, req.BlockID, req.Prompt)
+	if o.Reader != nil {
+		if rec, err := o.Reader.GetConversation(ctx, conv.ID); err == nil {
+			applySubstrateState(conv, rec)
+		}
+	}
+	if err := bridge.InjectProjectContext(ctx, o.Bridge, conv, req.Prompt); err != nil {
+		conv.Status = conversation.StatusFailed
+		return conv, err
+	}
 	if err := o.evaluate(ctx, conv); err != nil {
 		conv.Status = conversation.StatusFailed
 		return conv, err
@@ -89,14 +107,24 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 	kitchenForce := req.KitchenForce
 
 	for {
-		route, err := o.Factory(ctx, currentPrompt, exclude, kitchenForce, conv.NativeSessionIDs())
+		effectiveKitchenForce := kitchenForce
+		if effectiveKitchenForce == "" {
+			if stickyKitchen := strings.TrimSpace(conv.Memory.StickyKitchen); stickyKitchen != "" && !exclude[stickyKitchen] {
+				effectiveKitchenForce = stickyKitchen
+			}
+		}
+
+		route, err := o.Factory(ctx, currentPrompt, exclude, effectiveKitchenForce, conv.NativeSessionIDs())
 		if err != nil {
 			conv.Status = conversation.StatusFailed
 			return conv, err
 		}
 
 		fromKitchen, autoSwitch := autoSwitchSource(conv, route.Decision)
-		seg := conv.StartSegment(route.Decision.Kitchen)
+		if rc := buildRepoContext(o.ProjectContext); rc != nil && rc.RepoRoot != "" {
+			reposAccessed[rc.RepoRoot] = true
+		}
+		seg, startedNewSegment := ensureActiveSegment(conv, route.Decision.Kitchen, buildRepoContext(o.ProjectContext))
 		if autoSwitch {
 			switchText := formatSwitchSystemLine(fromKitchen, route.Decision.Kitchen, route.Decision.Reason)
 			sink.Emit(observability.Event{
@@ -117,15 +145,17 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 				})
 			}
 		}
-		sink.Emit(observability.Event{
-			ConversationID: conv.ID,
-			BlockID:        conv.BlockID,
-			SegmentID:      seg.ID,
-			Kind:           "segment_start",
-			Provider:       route.Decision.Kitchen,
-			Text:           route.Decision.Reason,
-			At:             time.Now(),
-		})
+		if startedNewSegment {
+			sink.Emit(observability.Event{
+				ConversationID: conv.ID,
+				BlockID:        conv.BlockID,
+				SegmentID:      seg.ID,
+				Kind:           "segment_start",
+				Provider:       route.Decision.Kitchen,
+				Text:           route.Decision.Reason,
+				At:             time.Now(),
+			})
+		}
 
 		if onRoute != nil {
 			onRoute(route)
@@ -157,7 +187,12 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 			if sessionID := route.Adapter.SessionID(); sessionID != "" {
 				conv.SetNativeSessionID(route.Decision.Kitchen, sessionID)
 			}
-			o.captureTurn(conv, evt)
+			var reposKeys []string
+			for k := range reposAccessed {
+				reposKeys = append(reposKeys, k)
+			}
+			slices.Sort(reposKeys)
+			o.captureTurn(conv, evt, reposKeys, bridge.BuildProjectRefs(conv.Context.ProjectHits))
 			if onEvent != nil {
 				onEvent(evt)
 			}
@@ -330,6 +365,10 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 				NextProvider: "the next provider",
 			})
 			conv.AppendTurn(conversation.RoleUser, "user", currentPrompt)
+			if err := bridge.InjectProjectContext(ctx, o.Bridge, conv, currentPrompt); err != nil {
+				conv.Status = conversation.StatusFailed
+				return conv, err
+			}
 			if err := o.evaluate(ctx, conv); err != nil {
 				conv.Status = conversation.StatusFailed
 				return conv, err
@@ -386,18 +425,18 @@ func (o *Orchestrator) evaluate(ctx context.Context, conv *conversation.Conversa
 	return nil
 }
 
-func (o *Orchestrator) captureTurn(conv *conversation.Conversation, evt adapter.Event) {
+func (o *Orchestrator) captureTurn(conv *conversation.Conversation, evt adapter.Event, reposAccessed []string, projectRefs []conversation.ProjectRef) {
 	switch evt.Type {
 	case adapter.EventText:
 		role := conversation.RoleAssistant
 		if evt.Kitchen == "milliways" {
 			role = conversation.RoleSystem
 		}
-		conv.AppendTurn(role, evt.Kitchen, evt.Text)
+		conv.AppendTurnWithContext(role, evt.Kitchen, evt.Text, reposAccessed, projectRefs)
 	case adapter.EventCodeBlock:
-		conv.AppendTurn(conversation.RoleAssistant, evt.Kitchen, evt.Code)
+		conv.AppendTurnWithContext(conversation.RoleAssistant, evt.Kitchen, evt.Code, reposAccessed, projectRefs)
 	case adapter.EventError:
-		conv.AppendTurn(conversation.RoleSystem, evt.Kitchen, evt.Text)
+		conv.AppendTurnWithContext(conversation.RoleSystem, evt.Kitchen, evt.Text, reposAccessed, projectRefs)
 	}
 }
 
@@ -552,9 +591,49 @@ func emitMemoryPromotionEvents(sink observability.Sink, conv *conversation.Conve
 	}
 }
 
+func buildRepoContext(pc *project.ProjectContext) *conversation.RepoContext {
+	if pc == nil {
+		return nil
+	}
+	ctx := &conversation.RepoContext{
+		RepoRoot: pc.RepoRoot,
+		RepoName: pc.RepoName,
+		Branch:   pc.Branch,
+		Commit:   pc.Commit,
+	}
+	if pc.CodeGraphSymbols > 0 {
+		ctx.CodeGraphSymbols = pc.CodeGraphSymbols
+	}
+	if pc.PalaceDrawers != nil {
+		ctx.PalaceDrawers = *pc.PalaceDrawers
+	}
+	return ctx
+}
+
+func ensureActiveSegment(conv *conversation.Conversation, provider string, repoContext *conversation.RepoContext) (conversation.ProviderSegment, bool) {
+	if conv != nil {
+		if active := conv.ActiveSegment(); active != nil && active.Provider == provider {
+			return *active, false
+		}
+	}
+	return conv.StartSegment(provider, repoContext), true
+}
+
 // applySubstrateState merges fields from a substrate ConversationRecord into a
 // local Conversation, filling gaps only — locally-set values are never overwritten.
 func applySubstrateState(conv *conversation.Conversation, rec substrate.ConversationRecord) {
+	if shouldRestoreTranscript(conv, rec) {
+		conv.Transcript = append([]conversation.Turn(nil), rec.Transcript...)
+	}
+	if len(conv.Segments) == 0 && len(rec.Segments) > 0 {
+		conv.Segments = append([]conversation.ProviderSegment(nil), rec.Segments...)
+	}
+	if len(conv.Checkpoints) == 0 && len(rec.Checkpoints) > 0 {
+		conv.Checkpoints = append([]conversation.ConversationCheckpoint(nil), rec.Checkpoints...)
+	}
+	if conv.ActiveSegmentID == "" {
+		conv.ActiveSegmentID = rec.ActiveSegmentID
+	}
 	if conv.Memory.WorkingSummary == "" {
 		conv.Memory.WorkingSummary = rec.Memory.WorkingSummary
 	}
@@ -563,6 +642,9 @@ func applySubstrateState(conv *conversation.Conversation, rec substrate.Conversa
 	}
 	if len(conv.Memory.ActiveGoals) == 0 {
 		conv.Memory.ActiveGoals = rec.Memory.ActiveGoals
+	}
+	if conv.Memory.StickyKitchen == "" {
+		conv.Memory.StickyKitchen = rec.Memory.StickyKitchen
 	}
 	if len(conv.Context.SpecRefs) == 0 {
 		conv.Context.SpecRefs = rec.Context.SpecRefs
@@ -573,4 +655,21 @@ func applySubstrateState(conv *conversation.Conversation, rec substrate.Conversa
 	if conv.Context.MemPalaceText == "" {
 		conv.Context.MemPalaceText = rec.Context.MemPalaceText
 	}
+	if len(conv.Context.ProjectHits) == 0 {
+		conv.Context.ProjectHits = rec.Context.ProjectHits
+	}
+}
+
+func shouldRestoreTranscript(conv *conversation.Conversation, rec substrate.ConversationRecord) bool {
+	if conv == nil || len(rec.Transcript) == 0 {
+		return false
+	}
+	if len(conv.Transcript) == 0 {
+		return true
+	}
+	if len(conv.Transcript) != 1 {
+		return false
+	}
+	turn := conv.Transcript[0]
+	return turn.Role == conversation.RoleUser && turn.Provider == "user" && strings.TrimSpace(turn.Text) == strings.TrimSpace(rec.Prompt)
 }

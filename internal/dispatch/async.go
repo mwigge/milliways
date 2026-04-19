@@ -3,6 +3,7 @@ package dispatch
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -20,8 +21,8 @@ import (
 // field pattern below.
 type convWriter interface {
 	Begin(ctx context.Context, convID, blockID, provider, prompt string) error
-	StartSegment(ctx context.Context, provider string) error
-	AppendTurn(ctx context.Context, role conversation.TurnRole, provider, text string) error
+	StartSegment(ctx context.Context, provider string, repoContext *conversation.RepoContext) error
+	AppendTurn(ctx context.Context, role conversation.TurnRole, provider, text string, reposAccessed []string, projectRefs []conversation.ProjectRef) error
 	EndSegment(ctx context.Context, status, reason string) error
 	CheckpointOnExhaustion(ctx context.Context, reason string) (substrate.CheckpointResponse, error)
 	Finish(ctx context.Context, status, reason string) error
@@ -66,29 +67,72 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 		sw = d.substrateNewFn()
 	}
 
+	// Declare result and execErr in the outer scope so the cancellation guard
+	// goroutine can assign to them.
+	var result kitchen.Result
+	var execErr error
+
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
+		defer func() {
+			if p := recover(); p != nil {
+				slog.Error("dispatch async goroutine panicked", "panic", p, "ticket", ticketID)
+				_ = d.pdb.Tickets().UpdateStatus(ticketID, "panicked", 1, nil)
+			}
+		}()
+
+		// Respect parent cancellation: if the dispatch is cancelled (process interrupt,
+		// timeout, etc.) before or during execution, abort early instead of letting
+		// the goroutine run to completion.
+		select {
+		case <-ctx.Done():
+			d.pdb.Tickets().UpdateStatus(ticketID, "cancelled", 130, nil)
+			return
+		default:
+		}
 
 		// Substrate: conversation start + initial user turn + segment start.
 		if sw != nil {
 			if err := sw.Begin(ctx, ticketID, "", k.Name(), prompt); err != nil {
-				fmt.Fprintf(os.Stderr, "[async] substrate Begin warning: %v\n", err)
+				slog.WarnContext(ctx, "async substrate begin", "ticket", ticketID, "err", err)
 			}
-			if err := sw.StartSegment(ctx, k.Name()); err != nil {
-				fmt.Fprintf(os.Stderr, "[async] substrate StartSegment warning: %v\n", err)
+			if err := sw.StartSegment(ctx, k.Name(), nil); err != nil {
+				slog.WarnContext(ctx, "async substrate start segment", "ticket", ticketID, "err", err)
 			}
 		}
 
 		task := kitchen.Task{Prompt: prompt}
 		start := time.Now()
-		result, execErr := k.Exec(ctx, task)
+
+		// Guard k.Exec with ctx.Done() to allow early abort when parent cancels.
+		execCtx := ctx
+		doneCh := make(chan struct{})
+		go func() {
+			defer close(doneCh)
+			defer func() {
+				if p := recover(); p != nil {
+					result = kitchen.Result{ExitCode: 1}
+					execErr = fmt.Errorf("kitchen exec panicked: %v", p)
+				}
+			}()
+			result, execErr = k.Exec(execCtx, task)
+		}()
+		select {
+		case <-doneCh:
+			// k.Exec returned normally.
+		case <-ctx.Done():
+			// Parent cancelled — k.Exec may still be running but will respect
+			// its own context deadline. We record cancellation and exit.
+			d.pdb.Tickets().UpdateStatus(ticketID, "cancelled", 130, nil)
+			return
+		}
 		dur := time.Since(start)
 
 		// Substrate: append assistant turn.
 		if sw != nil && result.Output != "" {
-			if err := sw.AppendTurn(ctx, conversation.RoleAssistant, k.Name(), result.Output); err != nil {
-				fmt.Fprintf(os.Stderr, "[async] substrate AppendTurn warning: %v\n", err)
+			if err := sw.AppendTurn(ctx, conversation.RoleAssistant, k.Name(), result.Output, nil, nil); err != nil {
+				slog.WarnContext(ctx, "async substrate append turn", "ticket", ticketID, "err", err)
 			}
 		}
 
@@ -106,7 +150,7 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 
 		// Update ticket
 		if updateErr := d.pdb.Tickets().UpdateStatus(ticketID, status, exitCode, nil); updateErr != nil {
-			fmt.Fprintf(os.Stderr, "[async] ticket update warning: %v\n", updateErr)
+			slog.WarnContext(ctx, "async ticket update", "ticket", ticketID, "status", status, "exit_code", exitCode, "err", updateErr)
 		}
 
 		// Write ledger entry
@@ -121,7 +165,7 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 		}
 		if ledgerID, ledgerErr := d.pdb.Ledger().Insert(entry); ledgerErr == nil {
 			if updateErr := d.pdb.Tickets().UpdateStatus(ticketID, status, exitCode, &ledgerID); updateErr != nil {
-				fmt.Fprintf(os.Stderr, "[async] ticket update warning: %v\n", updateErr)
+				slog.WarnContext(ctx, "async ticket update ledger", "ticket", ticketID, "ledger_id", ledgerID, "status", status, "exit_code", exitCode, "err", updateErr)
 			}
 		}
 
@@ -130,7 +174,7 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 			exhausted := exitCode != 0 && execErr == nil
 			if exhausted {
 				if _, ckptErr := sw.CheckpointOnExhaustion(ctx, "dispatch-exhausted"); ckptErr != nil {
-					fmt.Fprintf(os.Stderr, "[async] substrate CheckpointOnExhaustion warning: %v\n", ckptErr)
+					slog.WarnContext(ctx, "async substrate checkpoint on exhaustion", "ticket", ticketID, "err", ckptErr)
 				}
 			} else {
 				segStatus := "done"
@@ -138,7 +182,7 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 					segStatus = "failed"
 				}
 				if err := sw.EndSegment(ctx, segStatus, status); err != nil {
-					fmt.Fprintf(os.Stderr, "[async] substrate EndSegment warning: %v\n", err)
+					slog.WarnContext(ctx, "async substrate end segment", "ticket", ticketID, "segment_status", segStatus, "status", status, "err", err)
 				}
 			}
 			convStatus := "done"
@@ -146,7 +190,7 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 				convStatus = "failed"
 			}
 			if err := sw.Finish(ctx, convStatus, status); err != nil {
-				fmt.Fprintf(os.Stderr, "[async] substrate Finish warning: %v\n", err)
+				slog.WarnContext(ctx, "async substrate finish", "ticket", ticketID, "conversation_status", convStatus, "status", status, "err", err)
 			}
 		}
 	}()

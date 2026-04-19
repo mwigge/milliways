@@ -10,8 +10,8 @@ func TestDefaultConfig(t *testing.T) {
 	t.Parallel()
 	cfg := defaultConfig()
 
-	if len(cfg.Kitchens) != 6 {
-		t.Errorf("expected 6 default kitchens, got %d", len(cfg.Kitchens))
+	if len(cfg.Kitchens) != 9 {
+		t.Errorf("expected 9 default kitchens, got %d", len(cfg.Kitchens))
 	}
 
 	claude, ok := cfg.Kitchens["claude"]
@@ -31,6 +31,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Routing.BudgetFallback != "opencode" {
 		t.Errorf("expected budget fallback to opencode, got %q", cfg.Routing.BudgetFallback)
 	}
+	if cfg.Routing.WeightOn["claude"]["lsp_errors"] != 0.5 {
+		t.Errorf("expected default claude lsp_errors weight 0.5, got %v", cfg.Routing.WeightOn["claude"]["lsp_errors"])
+	}
+	if cfg.ProjectContextLimit != 3 {
+		t.Errorf("expected project context limit 3, got %d", cfg.ProjectContextLimit)
+	}
 }
 
 func TestLoadConfig_FileNotFound(t *testing.T) {
@@ -39,7 +45,7 @@ func TestLoadConfig_FileNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error for missing file, got %v", err)
 	}
-	if len(cfg.Kitchens) != 6 {
+	if len(cfg.Kitchens) != 9 {
 		t.Errorf("expected defaults when file missing, got %d kitchens", len(cfg.Kitchens))
 	}
 }
@@ -67,6 +73,12 @@ routing:
     think: claude
     code: opencode
   default: claude
+  weight_on:
+    claude:
+      lsp_errors: 0.5
+    opencode:
+      in_test_file: 0.4
+project_context_limit: 5
 `
 	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
@@ -88,6 +100,12 @@ routing:
 
 	if cfg.Routing.Keywords["think"] != "claude" {
 		t.Errorf("expected think→claude routing, got %q", cfg.Routing.Keywords["think"])
+	}
+	if cfg.Routing.WeightOn["opencode"]["in_test_file"] != 0.4 {
+		t.Errorf("expected opencode in_test_file weight 0.4, got %v", cfg.Routing.WeightOn["opencode"]["in_test_file"])
+	}
+	if cfg.ProjectContextLimit != 5 {
+		t.Errorf("expected project context limit 5, got %d", cfg.ProjectContextLimit)
 	}
 }
 
@@ -126,6 +144,67 @@ func TestKitchenConfig_IsEnabled(t *testing.T) {
 				t.Errorf("IsEnabled() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestLoadConfig_HTTPClientKitchen(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "carte.yaml")
+
+	yaml := `
+kitchens:
+  api-kitchen:
+    stations: [code]
+    http_client:
+      base_url: https://api.example.test
+      auth_key: TEST_API_KEY
+      model: gpt-4.1
+      auth_type: apikey
+      response_format: anthropic
+      timeout_seconds: 42
+      tier: cloud
+      stations: [review]
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	kitchenCfg, ok := cfg.Kitchens["api-kitchen"]
+	if !ok {
+		t.Fatal("expected api-kitchen in config")
+	}
+	if kitchenCfg.HTTPClient == nil {
+		t.Fatal("expected http_client config")
+	}
+	if kitchenCfg.HTTPClient.BaseURL != "https://api.example.test" {
+		t.Fatalf("BaseURL = %q, want https://api.example.test", kitchenCfg.HTTPClient.BaseURL)
+	}
+	if kitchenCfg.HTTPClient.AuthKey != "TEST_API_KEY" {
+		t.Fatalf("AuthKey = %q, want TEST_API_KEY", kitchenCfg.HTTPClient.AuthKey)
+	}
+	if kitchenCfg.HTTPClient.AuthType != "apikey" {
+		t.Fatalf("AuthType = %q, want apikey", kitchenCfg.HTTPClient.AuthType)
+	}
+	if kitchenCfg.HTTPClient.Model != "gpt-4.1" {
+		t.Fatalf("Model = %q, want gpt-4.1", kitchenCfg.HTTPClient.Model)
+	}
+	if kitchenCfg.HTTPClient.ResponseFormat != "anthropic" {
+		t.Fatalf("ResponseFormat = %q, want anthropic", kitchenCfg.HTTPClient.ResponseFormat)
+	}
+	if kitchenCfg.HTTPClient.Timeout != 42 {
+		t.Fatalf("Timeout = %d, want 42", kitchenCfg.HTTPClient.Timeout)
+	}
+	if kitchenCfg.HTTPClient.Tier != "cloud" {
+		t.Fatalf("Tier = %q, want cloud", kitchenCfg.HTTPClient.Tier)
+	}
+	if len(kitchenCfg.HTTPClient.Stations) != 1 || kitchenCfg.HTTPClient.Stations[0] != "review" {
+		t.Fatalf("Stations = %v, want [review]", kitchenCfg.HTTPClient.Stations)
 	}
 }
 

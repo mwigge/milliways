@@ -1,0 +1,9 @@
+#!/bin/sh
+# Fake for TAM-10.2 scenario: milliways handles missing palace gracefully.
+# This binary is actually never invoked because milliways detects the
+# missing palace before routing to a kitchen. It exists only to keep
+# the preflight checks in smoke.sh happy.
+cat <<'EVENTS'
+{"type":"item.completed","item":{"item_type":"assistant_message","text":"hello from fake without palace"}}
+EVENTS
+exit 0

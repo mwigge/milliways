@@ -13,6 +13,10 @@ type PaletteItem struct {
 }
 
 var paletteItems = []PaletteItem{
+	{"project", "Show active project details"},
+	{"palace", "Project palace operations: status, init, search"},
+	{"codegraph", "CodeGraph operations: status, reindex, search"},
+	{"login", "List kitchen auth status or start login"},
 	{"switch", "Request a kitchen switch"},
 	{"back", "Reverse the most recent switch"},
 	{"kitchens", "List kitchens and status"},
@@ -24,6 +28,7 @@ var paletteItems = []PaletteItem{
 	{"collapse all", "Collapse all blocks"},
 	{"expand all", "Expand all blocks"},
 	{"history", "Search dispatch history"},
+	{"repos", "Show repositories accessed this session"},
 	{"session save", "Save session to file"},
 	{"session load", "Load a saved session"},
 	{"summary", "Show session summary"},

@@ -172,7 +172,7 @@ func applyRuntimeRecords(conv *conversation.Conversation, records []RuntimeEvent
 
 		switch rec.Kind {
 		case "segment_start":
-			seg := conv.StartSegment(rec.Provider)
+			seg := conv.StartSegment(rec.Provider, nil)
 			conv.Segments[len(conv.Segments)-1].StartedAt = at
 			if rec.SegmentID != "" {
 				conv.Segments[len(conv.Segments)-1].ID = rec.SegmentID

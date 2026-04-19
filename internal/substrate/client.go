@@ -39,6 +39,9 @@ type ConnectionError struct {
 	Err error
 }
 
+// ErrProjectRefNotFound indicates a cited project drawer could not be found.
+var ErrProjectRefNotFound = errors.New("project ref not found")
+
 func (e *ConnectionError) Error() string {
 	return fmt.Sprintf("substrate connection %s: %v", e.Op, e.Err)
 }
@@ -55,6 +58,14 @@ type Client struct {
 	mu      sync.Mutex // guards mcp, closer, closed during reconnect / close
 	closed  bool
 }
+
+var (
+	_ ConversationStore = (*Client)(nil)
+	_ ProjectSearch     = (*Client)(nil)
+	_ CitationResolver  = (*Client)(nil)
+	_ PalaceStatsReader = (*Client)(nil)
+	_ MCPConnector      = (*Client)(nil)
+)
 
 // New creates a Client that dials an MCP server via stdio.
 // The client owns the subprocess; call Close when done.
@@ -84,7 +95,7 @@ func NewWithCaller(caller Caller) *Client {
 
 // --- Connection management ---
 
-// Ping verifies that the MemPalace MCP server is reachable by issuing a
+// Ping implements MCPConnector by verifying that the MemPalace MCP server is reachable by issuing a
 // lightweight list call. Returns a *ConnectionError on failure.
 func (c *Client) Ping(ctx context.Context) error {
 	_, err := c.mcp.CallTool(ctx, "mempalace_conversation_list", map[string]any{})
@@ -94,7 +105,7 @@ func (c *Client) Ping(ctx context.Context) error {
 	return nil
 }
 
-// Close shuts down the underlying MCP subprocess, if the client owns one.
+// Close implements MCPConnector by shutting down the underlying MCP subprocess, if the client owns one.
 // It is safe to call Close more than once; subsequent calls are no-ops.
 func (c *Client) Close() error {
 	c.mu.Lock()
@@ -109,7 +120,7 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// Reconnect restarts the underlying MCP subprocess. It is only supported for
+// Reconnect implements MCPConnector by restarting the underlying MCP subprocess. It is only supported for
 // clients created via New. Reconnect must not be called concurrently with
 // in-flight tool calls; callers are responsible for quiescing activity first.
 func (c *Client) Reconnect(ctx context.Context) error {
@@ -150,7 +161,7 @@ type StartResponse struct {
 	CreatedAt      time.Time `json:"created_at"`
 }
 
-// ConversationStart creates a new conversation record in MemPalace.
+// ConversationStart implements ConversationStore by creating a new conversation record in MemPalace.
 func (c *Client) ConversationStart(ctx context.Context, req StartRequest) (StartResponse, error) {
 	args := map[string]any{
 		"conversation_id": req.ConversationID,
@@ -171,7 +182,7 @@ type EndRequest struct {
 	Reason         string `json:"reason,omitempty"`
 }
 
-// ConversationEnd finalises a conversation.
+// ConversationEnd implements ConversationStore by finalising a conversation.
 func (c *Client) ConversationEnd(ctx context.Context, req EndRequest) error {
 	args := map[string]any{
 		"conversation_id": req.ConversationID,
@@ -201,7 +212,7 @@ type ConversationRecord struct {
 	ActiveSegmentID string                                `json:"active_segment_id,omitempty"`
 }
 
-// ConversationGet retrieves a full conversation record by ID.
+// ConversationGet implements ConversationStore by retrieving a full conversation record by ID.
 func (c *Client) ConversationGet(ctx context.Context, conversationID string) (ConversationRecord, error) {
 	args := map[string]any{
 		"conversation_id": conversationID,
@@ -225,7 +236,7 @@ type ConversationSummary struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
-// ConversationList returns summaries of all stored conversations.
+// ConversationList implements ConversationStore by returning summaries of all stored conversations.
 func (c *Client) ConversationList(ctx context.Context) ([]ConversationSummary, error) {
 	raw, err := c.mcp.CallTool(ctx, "mempalace_conversation_list", map[string]any{})
 	if err != nil {
@@ -242,17 +253,33 @@ func (c *Client) ConversationList(ctx context.Context) ([]ConversationSummary, e
 
 // AppendTurnRequest is the input for ConversationAppendTurn.
 type AppendTurnRequest struct {
-	ConversationID string            `json:"conversation_id"`
-	Turn           conversation.Turn `json:"turn"`
+	ConversationID string                    `json:"conversation_id"`
+	Turn           conversation.Turn         `json:"turn"`
+	ReposAccessed  []string                  `json:"repos_accessed,omitempty"`
+	ProjectRefs    []conversation.ProjectRef `json:"project_refs,omitempty"`
 }
 
-// ConversationAppendTurn appends a single transcript turn.
+// ConversationAppendTurn implements ConversationStore by appending a single transcript turn.
 func (c *Client) ConversationAppendTurn(ctx context.Context, req AppendTurnRequest) error {
 	args := map[string]any{
 		"conversation_id": req.ConversationID,
 		"role":            string(req.Turn.Role),
 		"provider":        req.Turn.Provider,
 		"text":            req.Turn.Text,
+	}
+	if len(req.ReposAccessed) > 0 {
+		raJSON, err := json.Marshal(req.ReposAccessed)
+		if err != nil {
+			return fmt.Errorf("substrate: marshal repos_accessed: %w", err)
+		}
+		args["repos_accessed"] = json.RawMessage(raJSON)
+	}
+	if len(req.ProjectRefs) > 0 {
+		prJSON, err := json.Marshal(req.ProjectRefs)
+		if err != nil {
+			return fmt.Errorf("substrate: marshal project_refs: %w", err)
+		}
+		args["project_refs"] = json.RawMessage(prJSON)
 	}
 	_, err := c.mcp.CallTool(ctx, "mempalace_conversation_append_turn", args)
 	if err != nil {
@@ -265,8 +292,9 @@ func (c *Client) ConversationAppendTurn(ctx context.Context, req AppendTurnReque
 
 // StartSegmentRequest is the input for ConversationStartSegment.
 type StartSegmentRequest struct {
-	ConversationID string `json:"conversation_id"`
-	Provider       string `json:"provider"`
+	ConversationID string                    `json:"conversation_id"`
+	Provider       string                    `json:"provider"`
+	RepoContext    *conversation.RepoContext `json:"repo_context,omitempty"`
 }
 
 // StartSegmentResponse is returned by ConversationStartSegment.
@@ -275,11 +303,18 @@ type StartSegmentResponse struct {
 	StartedAt time.Time `json:"started_at"`
 }
 
-// ConversationStartSegment opens a new provider segment.
+// ConversationStartSegment implements ConversationStore by opening a new provider segment.
 func (c *Client) ConversationStartSegment(ctx context.Context, req StartSegmentRequest) (StartSegmentResponse, error) {
 	args := map[string]any{
 		"conversation_id": req.ConversationID,
 		"provider":        req.Provider,
+	}
+	if req.RepoContext != nil {
+		rcJSON, err := json.Marshal(req.RepoContext)
+		if err != nil {
+			return StartSegmentResponse{}, fmt.Errorf("substrate: marshal repo_context: %w", err)
+		}
+		args["repo_context"] = json.RawMessage(rcJSON)
 	}
 	raw, err := c.mcp.CallTool(ctx, "mempalace_conversation_start_segment", args)
 	if err != nil {
@@ -300,7 +335,7 @@ type EndSegmentRequest struct {
 	Reason         string `json:"reason,omitempty"`
 }
 
-// ConversationEndSegment closes an active provider segment.
+// ConversationEndSegment implements ConversationStore by closing an active provider segment.
 func (c *Client) ConversationEndSegment(ctx context.Context, req EndSegmentRequest) error {
 	args := map[string]any{
 		"conversation_id": req.ConversationID,
@@ -317,7 +352,7 @@ func (c *Client) ConversationEndSegment(ctx context.Context, req EndSegmentReque
 
 // --- Working Memory ---
 
-// ConversationWorkingMemoryGet retrieves working memory for a conversation.
+// ConversationWorkingMemoryGet implements ConversationStore by retrieving working memory for a conversation.
 func (c *Client) ConversationWorkingMemoryGet(ctx context.Context, conversationID string) (conversation.MemoryState, error) {
 	args := map[string]any{
 		"conversation_id": conversationID,
@@ -333,7 +368,7 @@ func (c *Client) ConversationWorkingMemoryGet(ctx context.Context, conversationI
 	return mem, nil
 }
 
-// ConversationWorkingMemorySet writes working memory for a conversation.
+// ConversationWorkingMemorySet implements ConversationStore by writing working memory for a conversation.
 func (c *Client) ConversationWorkingMemorySet(ctx context.Context, conversationID string, mem conversation.MemoryState) error {
 	memJSON, err := json.Marshal(mem)
 	if err != nil {
@@ -352,7 +387,7 @@ func (c *Client) ConversationWorkingMemorySet(ctx context.Context, conversationI
 
 // --- Context Bundle ---
 
-// ConversationContextBundleGet retrieves the context bundle for a conversation.
+// ConversationContextBundleGet implements ConversationStore by retrieving the context bundle for a conversation.
 func (c *Client) ConversationContextBundleGet(ctx context.Context, conversationID string) (conversation.ContextBundle, error) {
 	args := map[string]any{
 		"conversation_id": conversationID,
@@ -368,7 +403,7 @@ func (c *Client) ConversationContextBundleGet(ctx context.Context, conversationI
 	return bundle, nil
 }
 
-// ConversationContextBundleSet persists a context bundle for a conversation.
+// ConversationContextBundleSet implements ConversationStore by persisting a context bundle for a conversation.
 func (c *Client) ConversationContextBundleSet(ctx context.Context, conversationID string, bundle conversation.ContextBundle) error {
 	bundleJSON, err := json.Marshal(bundle)
 	if err != nil {
@@ -395,7 +430,7 @@ type Event struct {
 	At             time.Time `json:"at,omitempty"`
 }
 
-// ConversationEventsAppend records an event for a conversation.
+// ConversationEventsAppend implements ConversationStore by recording an event for a conversation.
 func (c *Client) ConversationEventsAppend(ctx context.Context, ev Event) error {
 	args := map[string]any{
 		"conversation_id": ev.ConversationID,
@@ -416,7 +451,7 @@ type EventsQueryRequest struct {
 	Limit          int    `json:"limit,omitempty"`
 }
 
-// ConversationEventsQuery retrieves events for a conversation.
+// ConversationEventsQuery implements ConversationStore by retrieving events for a conversation.
 func (c *Client) ConversationEventsQuery(ctx context.Context, req EventsQueryRequest) ([]Event, error) {
 	args := map[string]any{
 		"conversation_id": req.ConversationID,
@@ -448,7 +483,7 @@ type CheckpointResponse struct {
 	TakenAt      time.Time `json:"taken_at"`
 }
 
-// ConversationCheckpoint creates a named checkpoint for a conversation.
+// ConversationCheckpoint implements ConversationStore by creating a named checkpoint for a conversation.
 func (c *Client) ConversationCheckpoint(ctx context.Context, req CheckpointRequest) (CheckpointResponse, error) {
 	args := map[string]any{
 		"conversation_id": req.ConversationID,
@@ -479,7 +514,7 @@ type ResumeResponse struct {
 	Context        conversation.ContextBundle `json:"context"`
 }
 
-// ConversationResume restores a conversation from a checkpoint.
+// ConversationResume implements ConversationStore by restoring a conversation from a checkpoint.
 func (c *Client) ConversationResume(ctx context.Context, req ResumeRequest) (ResumeResponse, error) {
 	args := map[string]any{
 		"conversation_id": req.ConversationID,
@@ -510,7 +545,7 @@ type LineageResponse struct {
 	Edges []LineageEdge `json:"edges"`
 }
 
-// ConversationLineage records a lineage edge and/or retrieves the lineage graph
+// ConversationLineage implements ConversationStore by recording a lineage edge and/or retrieving the lineage graph
 // for a conversation. Pass an empty ToID to query only.
 func (c *Client) ConversationLineage(ctx context.Context, edge LineageEdge) (LineageResponse, error) {
 	args := map[string]any{
@@ -527,6 +562,173 @@ func (c *Client) ConversationLineage(ctx context.Context, edge LineageEdge) (Lin
 		return LineageResponse{}, fmt.Errorf("substrate: parse conversation_lineage: %w", err)
 	}
 	return resp, nil
+}
+
+// SearchProjectContext implements ProjectSearch by querying MemPalace project memory via semantic search.
+func (c *Client) SearchProjectContext(ctx context.Context, query string, limit int) ([]conversation.ProjectHit, error) {
+	args := map[string]any{
+		"query": query,
+		"limit": limit,
+	}
+	raw, err := c.mcp.CallTool(ctx, "mempalace_search", args)
+	if err != nil {
+		return nil, fmt.Errorf("substrate: project_context_search %q: %w", query, err)
+	}
+
+	// MemPalace returns: {"content": [{"type": "text", "text": "{\"query\":..., \"results\":[...]}}]}
+	// First unwrap the MCP content wrapper.
+	var wrapper struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return nil, fmt.Errorf("substrate: parse content wrapper %q: %w", query, err)
+	}
+	if len(wrapper.Content) == 0 {
+		return nil, nil
+	}
+
+	// Parse the inner JSON (the text field contains a JSON string).
+	var inner struct {
+		Results []struct {
+			Text       string  `json:"text"`
+			Wing       string  `json:"wing"`
+			Room       string  `json:"room"`
+			Similarity float64 `json:"similarity"`
+			FiledAt    string  `json:"created_at"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(wrapper.Content[0].Text), &inner); err != nil {
+		return nil, fmt.Errorf("substrate: parse search inner %q: %w", query, err)
+	}
+
+	hits := make([]conversation.ProjectHit, 0, len(inner.Results))
+	for _, item := range inner.Results {
+		hits = append(hits, conversation.ProjectHit{
+			DrawerID:   "", // MemPalace search doesn't return drawer IDs in search results
+			Wing:       item.Wing,
+			Room:       item.Room,
+			Content:    item.Text,
+			Relevance:  item.Similarity,
+			CapturedAt: item.FiledAt,
+		})
+	}
+	return hits, nil
+}
+
+// PalaceStats holds palace statistics from mempalace_status.
+type PalaceStats struct {
+	TotalDrawers int
+	Wings        int
+	Rooms        int
+}
+
+// GetPalaceStats implements PalaceStatsReader by querying the MemPalace MCP server for palace statistics.
+func (c *Client) GetPalaceStats(ctx context.Context) (*PalaceStats, error) {
+	raw, err := c.mcp.CallTool(ctx, "mempalace_status", map[string]any{})
+	if err != nil {
+		return nil, fmt.Errorf("substrate: mempalace_status: %w", err)
+	}
+
+	// Unwrap MCP content wrapper.
+	var wrapper struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return nil, fmt.Errorf("substrate: parse mempalace_status wrapper: %w", err)
+	}
+	if len(wrapper.Content) == 0 {
+		return nil, nil
+	}
+
+	var inner struct {
+		TotalDrawers int `json:"total_drawers"`
+		Wings        int `json:"wings"`
+		Rooms        int `json:"rooms"`
+	}
+	if err := json.Unmarshal([]byte(wrapper.Content[0].Text), &inner); err != nil {
+		return nil, fmt.Errorf("substrate: parse mempalace_status inner: %w", err)
+	}
+
+	return &PalaceStats{
+		TotalDrawers: inner.TotalDrawers,
+		Wings:        inner.Wings,
+		Rooms:        inner.Rooms,
+	}, nil
+}
+
+// ResolveProjectRef implements CitationResolver by fetching drawer content for a cited project reference.
+func (c *Client) ResolveProjectRef(ctx context.Context, ref conversation.ProjectRef) (conversation.ProjectHit, error) {
+	args := map[string]any{
+		"query": ref.DrawerID,
+		"limit": 20,
+	}
+	if ref.Wing != "" {
+		args["wing"] = ref.Wing
+	}
+	raw, err := c.mcp.CallTool(ctx, "mempalace_search", args)
+	if err != nil {
+		return conversation.ProjectHit{}, fmt.Errorf("substrate: resolve project ref %q: %w", ref.DrawerID, err)
+	}
+
+	// MemPalace returns: {"content": [{"type": "text", "text": "{\"query\":..., \"results\":[...]}}]}
+	var wrapper struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err != nil {
+		return conversation.ProjectHit{}, fmt.Errorf("substrate: parse content wrapper %q: %w", ref.DrawerID, err)
+	}
+	if len(wrapper.Content) == 0 {
+		return conversation.ProjectHit{}, ErrProjectRefNotFound
+	}
+
+	var inner struct {
+		Results []struct {
+			Text       string  `json:"text"`
+			Wing       string  `json:"wing"`
+			Room       string  `json:"room"`
+			Similarity float64 `json:"similarity"`
+			FiledAt    string  `json:"created_at"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(wrapper.Content[0].Text), &inner); err != nil {
+		return conversation.ProjectHit{}, fmt.Errorf("substrate: parse search inner %q: %w", ref.DrawerID, err)
+	}
+
+	for _, item := range inner.Results {
+		if ref.Room != "" && item.Room != ref.Room {
+			continue
+		}
+		return conversation.ProjectHit{
+			PalaceID:    ref.PalaceID,
+			PalacePath:  ref.PalacePath,
+			DrawerID:    ref.DrawerID,
+			Wing:        item.Wing,
+			Room:        item.Room,
+			Content:     item.Text,
+			FactSummary: ref.FactSummary,
+			Relevance:   item.Similarity,
+			CapturedAt:  item.FiledAt,
+		}, nil
+	}
+	return conversation.ProjectHit{}, ErrProjectRefNotFound
+}
+
+// VerifyProjectRef implements CitationResolver by checking whether a cited project reference still resolves.
+func (c *Client) VerifyProjectRef(ctx context.Context, ref conversation.ProjectRef) error {
+	_, err := c.ResolveProjectRef(ctx, ref)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 // --- internal helpers ---

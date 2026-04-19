@@ -3,6 +3,7 @@ package recipe
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -15,10 +16,23 @@ type FailureStrategy string
 
 const (
 	StrategyStop        FailureStrategy = "stop"         // halt recipe (default)
-	StrategyRetryCourse FailureStrategy = "retry-course" // retry failed course once
+	StrategyRetryCourse FailureStrategy = "retry-course" // retry failed course with backoff
 	StrategySkipCourse  FailureStrategy = "skip-course"  // skip and continue
 	StrategyRestartFrom FailureStrategy = "restart-from" // restart from N courses back
+
+	retryBaseDelay   = 1 * time.Second
+	retryMaxDelay    = 30 * time.Second
+	retryMaxAttempts = 3
 )
+
+func retryBackoff(attempt int) time.Duration {
+	base := retryBaseDelay * (1 << attempt)
+	if base > retryMaxDelay {
+		base = retryMaxDelay
+	}
+	jitter := time.Duration(attempt*13+7) * base / 100
+	return base + jitter
+}
 
 // ParseStrategy converts a string to a FailureStrategy.
 func ParseStrategy(s string) FailureStrategy {
@@ -54,33 +68,50 @@ func HandleFailure(ctx context.Context, strategy FailureStrategy, failedResult C
 		return true, nil
 
 	case StrategyRetryCourse:
-		// Retry the same course once
 		k, ok := registry.Get(failedResult.Step.Kitchen)
 		if !ok || k.Status() != kitchen.Ready {
 			return false, nil
 		}
 
-		task := kitchen.Task{
-			Prompt: fmt.Sprintf("Retry (previous attempt failed): %s", failedResult.Result.Output),
-			OnLine: onLine,
+		lastResult := failedResult
+		for attempt := 1; attempt <= retryMaxAttempts; attempt++ {
+			delay := retryBackoff(attempt - 1)
+			if onLine != nil {
+				onLine(fmt.Sprintf("retrying in %v...", delay))
+			}
+			if err := waitForRetry(ctx, delay); err != nil {
+				return false, nil
+			}
+
+			task := kitchen.Task{
+				Prompt: fmt.Sprintf("Retry (previous attempt failed): %s", lastResult.Result.Output),
+				OnLine: onLine,
+			}
+
+			start := time.Now()
+			result, err := k.Exec(ctx, task)
+			dur := time.Since(start)
+
+			cr := &CourseResult{
+				Step:         failedResult.Step,
+				Index:        failedResult.Index,
+				Result:       result,
+				Error:        err,
+				Duration:     dur,
+				RetryAttempt: attempt,
+			}
+
+			if err == nil && result.ExitCode == 0 {
+				return true, cr
+			}
+
+			lastResult = *cr
+			if attempt == retryMaxAttempts {
+				return false, cr
+			}
 		}
 
-		start := time.Now()
-		result, err := k.Exec(ctx, task)
-		dur := time.Since(start)
-
-		cr := &CourseResult{
-			Step:     failedResult.Step,
-			Index:    failedResult.Index,
-			Result:   result,
-			Error:    err,
-			Duration: dur,
-		}
-
-		if err != nil || result.ExitCode != 0 {
-			return false, cr // retry also failed
-		}
-		return true, cr
+		return false, nil
 
 	case StrategyStop:
 		// Save partial output for user inspection
@@ -89,6 +120,18 @@ func HandleFailure(ctx context.Context, strategy FailureStrategy, failedResult C
 
 	default:
 		return false, nil
+	}
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
@@ -103,5 +146,5 @@ func savePartial(result CourseResult) {
 		result.Result.ExitCode, result.Result.Output)
 	_ = os.WriteFile(path, []byte(content), 0o600)
 
-	fmt.Fprintf(os.Stderr, "[recipe] partial output saved to %s\n", path)
+	slog.Info("recipe partial output saved", "path", path)
 }

@@ -1,8 +1,12 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -10,7 +14,9 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mwigge/milliways/internal/conversation"
+	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
+	"github.com/mwigge/milliways/internal/maitre"
 	"github.com/mwigge/milliways/internal/observability"
 	"github.com/mwigge/milliways/internal/orchestrator"
 	"github.com/mwigge/milliways/internal/pantry"
@@ -56,6 +62,9 @@ type Model struct {
 	jobTickets  []pantry.Ticket
 	ticketStore *pantry.TicketStore
 
+	// DB access for ledger sink.
+	pdb *pantry.DB
+
 	// Dialogue overlay.
 	overlayInput  textinput.Model
 	overlayActive bool
@@ -75,9 +84,12 @@ type Model struct {
 
 	// Kitchen status for status bar.
 	kitchenStates []KitchenState
+	projectState  ProjectState
+	recentRepos   RecentRepos
 
 	// Structured runtime activity for transparency.
 	runtimeEvents []observability.Event
+	configPath    string
 
 	// Run target chooser state.
 	runTargets          []RunTargetOption
@@ -111,13 +123,14 @@ func NewModel(store *pantry.TicketStore) Model {
 }
 
 // NewAdapterModel creates the TUI model with adapter-based dispatch.
-func NewAdapterModel(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator, sink observability.Sink, recorder ConversationRecorder, replayer ConversationReplayer, store *pantry.TicketStore) Model {
+func NewAdapterModel(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator, sink observability.Sink, recorder ConversationRecorder, replayer ConversationReplayer, store *pantry.TicketStore, pdb *pantry.DB) Model {
 	m := NewModel(store)
 	m.providerFactory = providerFactory
 	m.hydrator = hydrator
 	m.sink = sink
 	m.recorder = recorder
 	m.replayer = replayer
+	m.pdb = pdb
 	return m
 }
 
@@ -184,7 +197,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					exitCode = 1
 				}
 			}
-
+			// Preserve the actual measured duration, not a recalculated wall-clock value.
+			if msg.Duration > 0 {
+				b.Duration = msg.Duration
+			}
 			var cost *adapter.CostInfo
 			if msg.Duration > 0 {
 				cost = &adapter.CostInfo{DurationMs: int(msg.Duration.Milliseconds())}
@@ -715,17 +731,23 @@ type RunOpts struct {
 	ResumeSession string // session name to resume ("" = no resume, "last" = resume last)
 	SessionName   string // named session ("" = use "last")
 	KitchenStates []KitchenState
+	ProjectState  ProjectState // detected project context (optional)
+	ConfigPath    string
 }
 
 // Run starts the TUI with adapter-based dispatch.
-func Run(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator, sink observability.Sink, recorder ConversationRecorder, replayer ConversationReplayer, store *pantry.TicketStore) error {
-	return RunWithOpts(providerFactory, hydrator, sink, recorder, replayer, store, RunOpts{})
+func Run(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator, sink observability.Sink, recorder ConversationRecorder, replayer ConversationReplayer, store *pantry.TicketStore, pdb *pantry.DB) error {
+	return RunWithOpts(providerFactory, hydrator, sink, recorder, replayer, store, pdb, RunOpts{})
 }
 
 // RunWithOpts starts the TUI with adapter-based dispatch and options.
-func RunWithOpts(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator, sink observability.Sink, recorder ConversationRecorder, replayer ConversationReplayer, store *pantry.TicketStore, opts RunOpts) error {
-	m := NewAdapterModel(providerFactory, hydrator, sink, recorder, replayer, store)
+func RunWithOpts(providerFactory ProviderFactory, hydrator orchestrator.ContextHydrator, sink observability.Sink, recorder ConversationRecorder, replayer ConversationReplayer, store *pantry.TicketStore, pdb *pantry.DB, opts RunOpts) error {
+	m := NewAdapterModel(providerFactory, hydrator, sink, recorder, replayer, store, pdb)
+	m.configPath = opts.ConfigPath
 	m.SetKitchenStates(opts.KitchenStates)
+	if opts.ProjectState.RepoRoot != "" {
+		m.SetProjectState(opts.ProjectState)
+	}
 
 	// Resume session if requested.
 	sessionName := opts.SessionName
@@ -792,6 +814,17 @@ func (m *Model) SetKitchenStates(states []KitchenState) {
 	m.kitchenStates = states
 }
 
+// SetProjectState updates the active project context for the TUI.
+func (m *Model) SetProjectState(state ProjectState) {
+	m.projectState = state
+	m.AddRecentRepo(state.RepoName)
+}
+
+// AddRecentRepo records a repository as accessed in this session.
+func (m *Model) AddRecentRepo(repoName string) {
+	m.recentRepos.Add(repoName)
+}
+
 // SetPipelineSupport enables pipeline orchestration on the model.
 func (m *Model) SetPipelineSupport(planner *pipeline.Planner, factory pipeline.AdapterFactory) {
 	m.planner = planner
@@ -851,6 +884,15 @@ func containsProvider(chain []string, provider string) bool {
 func (m *Model) executePaletteCommand(command string) tea.Cmd {
 	command = strings.TrimSpace(command)
 	switch {
+	case command == "project":
+		m.appendCommandFeedback("/project", m.HandleProjectCommand())
+		return nil
+	case command == "palace":
+		m.appendCommandFeedback("/palace", m.HandlePalaceCommand(""))
+		return nil
+	case command == "codegraph":
+		m.appendCommandFeedback("/codegraph", m.HandleCodeGraphCommand(""))
+		return nil
 	case command == "switch":
 		m.appendCommandFeedback("/switch", "usage: /switch <kitchen>")
 		return nil
@@ -865,6 +907,16 @@ func (m *Model) executePaletteCommand(command string) tea.Cmd {
 		return nil
 	case command == "kitchens":
 		m.appendCommandFeedback("/kitchens", formatKitchenStates(m.kitchenStates))
+		return nil
+	case command == "repos":
+		m.appendCommandFeedback("/repos", RenderReposList(m.recentRepos.List(), m.projectState.RepoName))
+		return nil
+	case command == "login":
+		m.handleLoginCommand("")
+		return nil
+	case strings.HasPrefix(command, "login "):
+		kitchen := strings.TrimSpace(strings.TrimPrefix(command, "login "))
+		m.handleLoginCommand(kitchen)
 		return nil
 	}
 
@@ -963,6 +1015,46 @@ func (m *Model) handleSwitchCommand(kitchen string) {
 	m.executeSwitch(kitchen, "user requested")
 }
 
+// handleLoginCommand handles /login and /login <kitchen> palette commands.
+func (m *Model) handleLoginCommand(kitchen string) {
+	configPath := strings.TrimSpace(m.configPath)
+	if configPath == "" {
+		configPath = maitre.DefaultConfigPath()
+	}
+
+	cfg, err := maitre.LoadConfig(configPath)
+	if err != nil {
+		m.appendCommandFeedback("/login", fmt.Sprintf("failed to load config: %v", err))
+		return
+	}
+
+	if kitchen == "" {
+		health := maitre.Diagnose(buildRegistry(cfg))
+		sort.Slice(health, func(i, j int) bool {
+			return health[i].Name < health[j].Name
+		})
+
+		lines := []string{
+			"Kitchen      Status              Auth Method           Action",
+			"───────      ──────              ───────────           ──────",
+		}
+		for _, h := range health {
+			lines = append(lines, fmt.Sprintf("%-12s %s %-18s %-21s %s",
+				h.Name,
+				h.Status.Symbol(),
+				h.Status,
+				authMethodForKitchen(h.Name),
+				loginActionForKitchen(h),
+			))
+		}
+		m.appendCommandFeedback("/login", strings.Join(lines, "\n"))
+		return
+	}
+
+	result := captureLoginOutput(kitchen)
+	m.appendCommandFeedback("/login "+kitchen, result)
+}
+
 func (m *Model) executeSwitch(kitchen, reason string) {
 	kitchen = strings.TrimSpace(kitchen)
 	if kitchen == "" {
@@ -997,7 +1089,7 @@ func (m *Model) executeSwitch(kitchen, reason string) {
 
 	fromKitchen := active.Provider
 	b.Conversation.EndActiveSegment(conversation.SegmentDone, "user_switch")
-	segment := b.Conversation.StartSegment(kitchen)
+	segment := b.Conversation.StartSegment(kitchen, nil)
 	b.ContinuationPrompt = conversation.BuildContinuationPrompt(conversation.ContinueInput{
 		Conversation: b.Conversation,
 		NextProvider: kitchen,
@@ -1097,12 +1189,14 @@ func (m *Model) mostRecentSwitchSource() (string, bool) {
 }
 
 func (m *Model) appendCommandFeedback(prompt, text string) {
+	now := time.Now()
 	block := Block{
 		ID:        m.nextBlockID(),
 		Prompt:    prompt,
 		Kitchen:   "milliways",
-		State:     StateRouted,
-		StartedAt: time.Now(),
+		State:     StateDone,
+		StartedAt: now,
+		Duration:  1 * time.Second, // stable value so elapsed() doesn't drift
 	}
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
@@ -1130,7 +1224,7 @@ func resolvePaletteCommand(input, fallback string) string {
 	if input == "" {
 		return fallback
 	}
-	if input == "back" || input == "kitchens" || input == "stick" || input == "switch" || strings.HasPrefix(input, "switch ") {
+	if input == "back" || input == "codegraph" || input == "kitchens" || input == "login" || input == "palace" || input == "project" || input == "repos" || input == "stick" || input == "switch" || strings.HasPrefix(input, "login ") || strings.HasPrefix(input, "switch ") {
 		return input
 	}
 	for _, item := range paletteItems {
@@ -1217,4 +1311,131 @@ func truncateQueue(s string, max int) string {
 		return s
 	}
 	return string(runes[:max-1]) + "…"
+}
+
+// captureLoginOutput runs maitre.LoginKitchen and captures stdout/stderr.
+func captureLoginOutput(kitchen string) string {
+	originalStdout := os.Stdout
+	originalStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		return fmt.Sprintf("Error: creating login output pipe: %v", err)
+	}
+
+	os.Stdout = w
+	os.Stderr = w
+	loginErr := maitre.LoginKitchen(kitchen)
+	_ = w.Close()
+	os.Stdout = originalStdout
+	os.Stderr = originalStderr
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	_ = r.Close()
+
+	output := strings.TrimSpace(buf.String())
+	if loginErr != nil {
+		if output == "" {
+			return fmt.Sprintf("Error: %v", loginErr)
+		}
+		return output + fmt.Sprintf("\nError: %v", loginErr)
+	}
+	if output == "" {
+		return fmt.Sprintf("Login command completed for %s.", kitchen)
+	}
+	return output
+}
+
+func authMethodForKitchen(name string) string {
+	switch name {
+	case "claude", "gemini":
+		return "Browser OAuth"
+	case "opencode":
+		return "Interactive TUI"
+	case "minimax":
+		return "API key (carte.yaml)"
+	case "groq":
+		return "Env var (GROQ_API_KEY)"
+	case "ollama":
+		return "None"
+	case "aider", "cline":
+		return "Env var (ANTHROPIC_API_KEY)"
+	case "goose":
+		return "Env var (GOOSE_API_KEY)"
+	default:
+		return "Unknown"
+	}
+}
+
+func loginActionForKitchen(h maitre.KitchenHealth) string {
+	switch h.Status {
+	case kitchen.Ready:
+		return "ready"
+	case kitchen.Disabled:
+		return "(disabled in carte.yaml)"
+	case kitchen.NotInstalled:
+		if h.InstallCmd != "" {
+			return h.InstallCmd
+		}
+		return fmt.Sprintf("milliways setup %s", h.Name)
+	case kitchen.NeedsAuth:
+		return fmt.Sprintf("milliways login %s", h.Name)
+	default:
+		return "check configuration"
+	}
+}
+
+func buildRegistry(cfg *maitre.Config) *kitchen.Registry {
+	reg := kitchen.NewRegistry()
+
+	installCmds := map[string]string{
+		"claude":   "brew install claude",
+		"opencode": "brew install opencode",
+		"gemini":   "npm install -g @google/gemini-cli",
+		"aider":    "pip install aider-chat",
+		"goose":    "brew install goose",
+		"cline":    "npm install -g cline",
+	}
+
+	authCmds := map[string]string{
+		"claude":   "claude (interactive login)",
+		"opencode": "none (uses Ollama)",
+		"gemini":   "gcloud auth login",
+		"aider":    "set ANTHROPIC_API_KEY or OPENAI_API_KEY",
+		"goose":    "goose configure",
+		"cline":    "cline --login",
+	}
+
+	for name, kc := range cfg.Kitchens {
+		if kc.HTTPClient != nil {
+			httpKitchen, err := adapter.NewHTTPKitchen(name, adapter.HTTPKitchenConfig{
+				BaseURL:        kc.HTTPClient.BaseURL,
+				AuthKey:        kc.HTTPClient.AuthKey,
+				AuthType:       kc.HTTPClient.AuthType,
+				Model:          kc.HTTPClient.Model,
+				Stations:       kc.HTTPClient.Stations,
+				Tier:           kitchen.ParseCostTier(kc.HTTPClient.Tier),
+				ResponseFormat: kc.HTTPClient.ResponseFormat,
+				Timeout:        time.Duration(kc.HTTPClient.Timeout) * time.Second,
+			}, kc.Stations, kitchen.ParseCostTier(kc.CostTier))
+			if err != nil {
+				continue
+			}
+			reg.Register(httpKitchen)
+			continue
+		}
+
+		reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{
+			Name:       name,
+			Cmd:        kc.Cmd,
+			Args:       kc.Args,
+			Stations:   kc.Stations,
+			Tier:       kitchen.ParseCostTier(kc.CostTier),
+			Enabled:    kc.IsEnabled(),
+			InstallCmd: installCmds[name],
+			AuthCmd:    authCmds[name],
+		}))
+	}
+
+	return reg
 }

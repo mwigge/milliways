@@ -1,0 +1,9 @@
+#!/bin/sh
+# Fake for TAM-10.6 scenario: milliways errors when not in a git repo.
+# This binary is actually never invoked because milliways detects the
+# missing git repo before routing to a kitchen. It exists only to keep
+# the preflight checks in smoke.sh happy.
+cat <<'EVENTS'
+{"type":"item.completed","item":{"item_type":"assistant_message","text":"should not reach here"}}
+EVENTS
+exit 0

@@ -6,15 +6,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/mwigge/milliways/internal/bridge"
 	"github.com/mwigge/milliways/internal/conversation"
+	"github.com/mwigge/milliways/internal/editorcontext"
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/ledger"
@@ -22,6 +27,7 @@ import (
 	"github.com/mwigge/milliways/internal/migration"
 	"github.com/mwigge/milliways/internal/orchestrator"
 	"github.com/mwigge/milliways/internal/pantry"
+	"github.com/mwigge/milliways/internal/project"
 	"github.com/mwigge/milliways/internal/sommelier"
 	"github.com/mwigge/milliways/internal/substrate"
 	"github.com/mwigge/milliways/internal/tui"
@@ -32,10 +38,12 @@ var version = "0.1.0"
 
 // dispatchOpts groups the parameters for the dispatch function.
 type dispatchOpts struct {
-	prompt, kitchenForce, configPath, switchTo, sessionName string
-	jsonOutput, explain, verbose                            bool
-	useLegacyConversation                                   bool
-	timeout                                                 time.Duration
+	prompt, kitchenForce, configPath, switchTo, sessionName, projectRoot string
+	contextJSON, contextFile                                             string
+	jsonOutput, explain, verbose, contextStdin                           bool
+	useLegacyConversation                                                bool
+	bundle                                                               *editorcontext.Bundle
+	timeout                                                              time.Duration
 }
 
 // exitError wraps an error with a specific exit code.
@@ -72,6 +80,10 @@ func rootCmd() *cobra.Command {
 		useLegacyConversation bool
 		sessionName           string
 		switchToKitchen       string
+		projectRoot           string
+		contextJSON           string
+		contextFile           string
+		contextStdin          bool
 		timeoutDur            time.Duration
 	)
 
@@ -85,12 +97,14 @@ based on what each tool does best.
   milliways "explain the auth flow"        → routes to claude
   milliways "code a rate limiter"          → routes to opencode
   milliways "search for DORA-EU Article 25" → routes to gemini
+	  milliways login <kitchen>              → authenticate to a specific kitchen
   milliways --kitchen aider "refactor auth" → forces aider`,
 		Version: version,
 		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if tuiFlag {
-				opts := tui.RunOpts{SessionName: sessionName}
+			// TUI is the default when no prompt args are given, or when -tui is explicitly set.
+			if tuiFlag || len(args) == 0 {
+				opts := tui.RunOpts{SessionName: sessionName, ConfigPath: configPath}
 				if resumeFlag {
 					resume := sessionName
 					if resume == "" {
@@ -98,6 +112,15 @@ based on what each tool does best.
 					}
 					opts.ResumeSession = resume
 				}
+
+				if pc, err := detectTUIProjectContext(); err == nil && pc != nil && pc.RepoRoot != "" {
+					opts.ProjectState = projectContextToTUIState(pc)
+				}
+
+				// Try to fetch palace stats via MCP.
+				mcpCmd, mcpArgs := detectMempalaceMCP(opts.ProjectState.PalacePath)
+				opts.ProjectState = fetchPalaceStatsForTUI(opts.ProjectState, mcpCmd, mcpArgs)
+
 				return runTUI(configPath, opts)
 			}
 			if len(args) == 0 {
@@ -105,6 +128,13 @@ based on what each tool does best.
 			}
 			if switchToKitchen != "" && sessionName == "" {
 				return fmt.Errorf("--switch-to requires --session")
+			}
+			projectContext, err := project.ResolveProject(projectRoot)
+			if err != nil {
+				return err
+			}
+			if verbose {
+				fmt.Fprintf(os.Stderr, "[project] root=%s repo=%s read=%s write=%s\n", projectContext.RepoRoot, projectContext.RepoName, projectContext.AccessRules.Read, projectContext.AccessRules.Write)
 			}
 			prompt := strings.Join(args, " ")
 			if recipeFlag != "" {
@@ -116,16 +146,25 @@ based on what each tool does best.
 			if detachFlag {
 				return dispatchDetach(prompt, kitchenFlag, verbose, configPath)
 			}
+			bundle, err := loadDispatchContextBundle(os.Stdin, contextStdin, contextJSON, contextFile)
+			if err != nil {
+				return err
+			}
 			return dispatch(dispatchOpts{
 				prompt:                prompt,
 				kitchenForce:          kitchenFlag,
 				configPath:            configPath,
 				switchTo:              switchToKitchen,
 				sessionName:           sessionName,
+				projectRoot:           projectRoot,
+				contextJSON:           contextJSON,
+				contextFile:           contextFile,
 				jsonOutput:            jsonFlag,
 				explain:               explainFlag,
 				verbose:               verbose,
+				contextStdin:          contextStdin,
 				useLegacyConversation: useLegacyConversation,
+				bundle:                bundle,
 				timeout:               timeoutDur,
 			})
 		},
@@ -135,7 +174,7 @@ based on what each tool does best.
 	cmd.Flags().StringVarP(&kitchenFlag, "kitchen", "k", "", "Force a specific kitchen (e.g., claude, opencode, gemini)")
 	cmd.Flags().BoolVarP(&jsonFlag, "json", "j", false, "Output structured JSON result")
 	cmd.Flags().BoolVarP(&explainFlag, "explain", "e", false, "Show routing decision without executing")
-	cmd.Flags().StringVarP(&configPath, "config", "c", maitre.DefaultConfigPath(), "Path to carte.yaml")
+	cmd.PersistentFlags().StringVarP(&configPath, "config", "c", maitre.DefaultConfigPath(), "Path to carte.yaml")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print sommelier reasoning to stderr")
 	cmd.Flags().StringVarP(&recipeFlag, "recipe", "r", "", "Execute a multi-course recipe")
 	cmd.Flags().BoolVar(&asyncFlag, "async", false, "Dispatch asynchronously, return ticket ID")
@@ -145,6 +184,10 @@ based on what each tool does best.
 	cmd.Flags().BoolVar(&resumeFlag, "resume", false, "Resume last TUI session")
 	cmd.Flags().StringVar(&sessionName, "session", "", "Named TUI session")
 	cmd.Flags().StringVar(&switchToKitchen, "switch-to", "", "Switch an existing session to a kitchen in headless mode")
+	cmd.Flags().StringVar(&projectRoot, "project-root", "", "Override project repository root")
+	cmd.Flags().StringVar(&contextJSON, "context-json", "", "Pass editor context bundle JSON directly on the CLI")
+	cmd.Flags().StringVar(&contextFile, "context-file", "", "Read editor context bundle JSON from a file")
+	cmd.Flags().BoolVar(&contextStdin, "context-stdin", false, "Read editor context bundle JSON from stdin")
 	cmd.Flags().BoolVar(&useLegacyConversation, "use-legacy-conversation", false, "Use pantry conversation storage instead of substrate")
 	cmd.Flags().DurationVar(&timeoutDur, "timeout", 5*time.Minute, "Dispatch timeout for headless mode")
 
@@ -155,8 +198,112 @@ based on what each tool does best.
 	cmd.AddCommand(ticketCmd())
 	cmd.AddCommand(ticketsCmd())
 	cmd.AddCommand(rateCmd())
+	cmd.AddCommand(loginCmd())
 
 	return cmd
+}
+
+func loginCmd() *cobra.Command {
+	var listFlag bool
+
+	cmd := &cobra.Command{
+		Use:   "login <kitchen>",
+		Short: "Authenticate to a kitchen",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if listFlag {
+				configPath, err := cmd.Root().PersistentFlags().GetString("config")
+				if err != nil || strings.TrimSpace(configPath) == "" {
+					return listLoginStatus()
+				}
+				return listLoginStatusWithConfig(configPath)
+			}
+			if len(args) == 0 {
+				fmt.Println("usage: milliways login <kitchen>")
+				fmt.Println("  milliways login --list  show all kitchens and auth status")
+				return fmt.Errorf("kitchen name required")
+			}
+
+			kitchenName := args[0]
+			if err := maitre.LoginKitchen(kitchenName); err != nil {
+				fmt.Fprintf(os.Stderr, "Login failed: %v\n", err)
+				return err
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&listFlag, "list", false, "List all kitchens with auth status")
+	return cmd
+}
+
+func listLoginStatus() error {
+	return listLoginStatusWithConfig(maitre.DefaultConfigPath())
+}
+
+func listLoginStatusWithConfig(configPath string) error {
+	cfg, err := maitre.LoadConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	health := maitre.Diagnose(buildRegistry(cfg))
+	sort.Slice(health, func(i, j int) bool {
+		return health[i].Name < health[j].Name
+	})
+
+	fmt.Println("Kitchen      Status              Auth Method           Action")
+	fmt.Println("───────      ──────              ───────────           ──────")
+	for _, h := range health {
+		fmt.Printf("%-12s %s %-18s %-21s %s\n",
+			h.Name,
+			h.Status.Symbol(),
+			h.Status,
+			authMethodForKitchen(h.Name),
+			loginActionForKitchen(h),
+		)
+	}
+
+	return nil
+}
+
+func authMethodForKitchen(name string) string {
+	switch name {
+	case "claude", "gemini":
+		return "Browser OAuth"
+	case "opencode":
+		return "Interactive TUI"
+	case "minimax":
+		return "API key (carte.yaml)"
+	case "groq":
+		return "Env var (GROQ_API_KEY)"
+	case "ollama":
+		return "None"
+	case "aider", "cline":
+		return "Env var (ANTHROPIC_API_KEY)"
+	case "goose":
+		return "Env var (GOOSE_API_KEY)"
+	default:
+		return "Unknown"
+	}
+}
+
+func loginActionForKitchen(h maitre.KitchenHealth) string {
+	switch h.Status {
+	case kitchen.Ready:
+		return "ready"
+	case kitchen.Disabled:
+		return "(disabled in carte.yaml)"
+	case kitchen.NotInstalled:
+		if h.InstallCmd != "" {
+			return h.InstallCmd
+		}
+		return fmt.Sprintf("milliways setup %s", h.Name)
+	case kitchen.NeedsAuth:
+		return fmt.Sprintf("milliways login %s", h.Name)
+	default:
+		return "check configuration"
+	}
 }
 
 func dispatch(opts dispatchOpts) error {
@@ -185,6 +332,17 @@ func dispatch(opts dispatchOpts) error {
 	var hydrator orchestrator.ContextHydrator = makeConversationHydrator(pdb, opts.prompt)
 	var sink = makeRuntimeSink(pdb)
 	var substrateReader substrate.Reader
+	projectContext, err := project.ResolveProject(opts.projectRoot)
+	if err != nil {
+		return err
+	}
+	projectBridge, err := bridge.New(projectContext, cfg.ProjectContextLimit)
+	if err != nil && projectContext.PalacePath != nil {
+		return err
+	}
+	if projectBridge != nil {
+		defer func() { _ = projectBridge.Close() }()
+	}
 
 	if !opts.useLegacyConversation {
 		substrateClient, err := openSubstrateClient()
@@ -220,7 +378,7 @@ func dispatch(opts dispatchOpts) error {
 		substrateReader = substrate.NewCachedReader(substrateClient)
 	}
 
-	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, reg)
+	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, cfg.Routing.WeightOn, reg)
 
 	// Circuit breaker check
 	mode := maitre.ReadMode()
@@ -236,7 +394,7 @@ func dispatch(opts dispatchOpts) error {
 	if opts.kitchenForce != "" {
 		decision = som.ForceRoute(opts.kitchenForce)
 	} else {
-		signals := assembleSignals(cfg, pdb, opts.prompt, opts.verbose)
+		signals := assembleSignals(cfg, pdb, opts.prompt, opts.verbose, opts.bundle)
 
 		var skillHint *sommelier.SkillHint
 		catalog := maitre.ScanSkills()
@@ -285,10 +443,12 @@ func dispatch(opts dispatchOpts) error {
 
 	providerFactory := makeProviderFactory(cfg, reg, som, pdb, opts.verbose)
 	orch := orchestrator.Orchestrator{
-		Factory: providerFactory,
-		Hydrate: hydrator,
-		Sink:    sink,
-		Reader:  substrateReader,
+		Factory:        providerFactory,
+		Hydrate:        hydrator,
+		Sink:           sink,
+		Reader:         substrateReader,
+		Bridge:         projectBridge,
+		ProjectContext: projectContext,
 	}
 
 	start := time.Now()
@@ -527,7 +687,7 @@ func prepareHeadlessSwitch(block *tui.Block, nextKitchen, userPrompt string) (st
 
 	fromKitchen := active.Provider
 	block.Conversation.EndActiveSegment(conversation.SegmentDone, "user_switch")
-	block.Conversation.StartSegment(nextKitchen)
+	block.Conversation.StartSegment(nextKitchen, nil)
 	block.ContinuationPrompt = conversation.BuildContinuationPrompt(conversation.ContinueInput{
 		Conversation: block.Conversation,
 		NextProvider: nextKitchen,
@@ -829,11 +989,74 @@ func fetchMemPalaceContext(ctx context.Context, task string) string {
 	return strings.Join(lines, "\n")
 }
 
+// fetchPalaceStatsForTUI queries the MemPalace MCP server for palace statistics
+// and returns an updated ProjectState with drawer/wing/room counts.
+func fetchPalaceStatsForTUI(ps tui.ProjectState, mempalaceCmd string, mempalaceArgs []string) tui.ProjectState {
+	if mempalaceCmd == "" || ps.PalacePath == "" {
+		return ps
+	}
+	client, err := substrate.New(mempalaceCmd, mempalaceArgs...)
+	if err != nil {
+		return ps
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	stats, err := client.GetPalaceStats(ctx)
+	if err != nil || stats == nil {
+		return ps
+	}
+	ps.PalaceDrawers = stats.TotalDrawers
+	ps.PalaceWings = stats.Wings
+	ps.PalaceRooms = stats.Rooms
+	return ps
+}
+
 func splitEnvArgs(raw string) []string {
 	if raw == "" {
 		return nil
 	}
 	return strings.Fields(raw)
+}
+
+// detectMempalaceMCP tries to find the mempalace MCP server command and args.
+// It checks in order:
+//  1. MILLIWAYS_MEMPALACE_MCP_CMD env var (if set)
+//  2. python3 -m mempalace.mcp_server (system Python with mempalace installed)
+//  3. ~/dev/src/pprojects/mempalace-milliways/.venv/bin/python -m mempalace.mcp_server
+//
+// Returns (cmd, args). If not found, returns ("", nil).
+func detectMempalaceMCP(palacePath string) (string, []string) {
+	// 1. Env var override.
+	if cmd := os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD"); cmd != "" {
+		return cmd, splitEnvArgs(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS"))
+	}
+
+	// 2. System python3 with mempalace package.
+	if cmdPath, err := exec.LookPath("python3"); err == nil {
+		args := []string{"-m", "mempalace.mcp_server"}
+		if palacePath != "" {
+			args = append(args, "--palace", palacePath)
+		}
+		return cmdPath, args
+	}
+
+	// 3. Known venv location.
+	home, err := os.UserHomeDir()
+	if err == nil {
+		venvPython := filepath.Join(home, "dev/src/pprojects/mempalace-milliways/.venv/bin/python")
+		if _, err := os.Stat(venvPython); err == nil {
+			args := []string{"-m", "mempalace.mcp_server"}
+			if palacePath != "" {
+				args = append(args, "--palace", palacePath)
+			}
+			return venvPython, args
+		}
+	}
+
+	return "", nil
 }
 
 func printJSON(v any, asJSON bool) error {
@@ -855,8 +1078,44 @@ func printJSON(v any, asJSON bool) error {
 	return nil
 }
 
-func assembleSignals(_ *maitre.Config, pdb *pantry.DB, prompt string, verbose bool) *sommelier.Signals {
-	if pdb == nil {
+func loadDispatchContextBundle(stdin io.Reader, contextStdin bool, contextJSON, contextFile string) (*editorcontext.Bundle, error) {
+	if contextStdin {
+		data, err := io.ReadAll(stdin)
+		if err != nil {
+			return nil, fmt.Errorf("reading --context-stdin: %w", err)
+		}
+		bundle, err := editorcontext.ParseBundle(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing --context-stdin: %w", err)
+		}
+		return bundle, nil
+	}
+
+	if strings.TrimSpace(contextJSON) != "" {
+		bundle, err := editorcontext.ParseBundle([]byte(contextJSON))
+		if err != nil {
+			return nil, fmt.Errorf("parsing --context-json: %w", err)
+		}
+		return bundle, nil
+	}
+
+	if strings.TrimSpace(contextFile) != "" {
+		data, err := os.ReadFile(contextFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading --context-file: %w", err)
+		}
+		bundle, err := editorcontext.ParseBundle(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing --context-file: %w", err)
+		}
+		return bundle, nil
+	}
+
+	return nil, nil
+}
+
+func assembleSignals(_ *maitre.Config, pdb *pantry.DB, prompt string, verbose bool, bundle *editorcontext.Bundle) *sommelier.Signals {
+	if pdb == nil && bundle == nil {
 		if verbose {
 			fmt.Fprintf(os.Stderr, "[pantry] signals unavailable: no database\n")
 		}
@@ -865,18 +1124,52 @@ func assembleSignals(_ *maitre.Config, pdb *pantry.DB, prompt string, verbose bo
 
 	signals := sommelier.NewSignals()
 
-	taskType := sommelier.ClassifyTaskType(prompt)
-	best, rate, err := pdb.Routing().BestKitchen(taskType, "", 5)
-	if err == nil && best != "" {
-		signals.LearnedKitchen = best
-		signals.LearnedRate = rate
+	if pdb == nil {
+		if verbose {
+			fmt.Fprintf(os.Stderr, "[pantry] signals unavailable: no database\n")
+		}
+	} else {
+		taskType := sommelier.ClassifyTaskType(prompt)
+		best, rate, err := pdb.Routing().BestKitchen(taskType, "", 5)
+		if err == nil && best != "" {
+			signals.LearnedKitchen = best
+			signals.LearnedRate = rate
+		}
+
+		if verbose && signals.LearnedKitchen != "" {
+			fmt.Fprintf(os.Stderr, "[pantry] learned: %s@%.0f%% for task_type=%s\n", signals.LearnedKitchen, signals.LearnedRate, taskType)
+		}
 	}
 
-	if verbose && signals.LearnedKitchen != "" {
-		fmt.Fprintf(os.Stderr, "[pantry] learned: %s@%.0f%% for task_type=%s\n", signals.LearnedKitchen, signals.LearnedRate, taskType)
-	}
+	mergeEditorSignals(signals, bundle)
 
 	return signals
+}
+
+func mergeEditorSignals(signals *sommelier.Signals, bundle *editorcontext.Bundle) {
+	if signals == nil || bundle == nil {
+		return
+	}
+
+	editorSignals := bundle.Signals()
+	if editorSignals.LSPErrors > 0 {
+		signals.LSPErrors = editorSignals.LSPErrors
+	}
+	if editorSignals.LSPWarnings > 0 {
+		signals.LSPWarnings = editorSignals.LSPWarnings
+	}
+	if editorSignals.Dirty {
+		signals.Dirty = true
+	}
+	if editorSignals.InTestFile {
+		signals.InTestFile = true
+	}
+	if editorSignals.Language != "" {
+		signals.Language = editorSignals.Language
+	}
+	if editorSignals.FilesChanged > signals.FilesChanged {
+		signals.FilesChanged = editorSignals.FilesChanged
+	}
 }
 
 func openPantryDB() (*pantry.DB, error) {
@@ -966,6 +1259,24 @@ func buildRegistry(cfg *maitre.Config) *kitchen.Registry {
 	}
 
 	for name, kc := range cfg.Kitchens {
+		if kc.HTTPClient != nil {
+			httpKitchen, err := adapter.NewHTTPKitchen(name, adapter.HTTPKitchenConfig{
+				BaseURL:        kc.HTTPClient.BaseURL,
+				AuthKey:        kc.HTTPClient.AuthKey,
+				AuthType:       kc.HTTPClient.AuthType,
+				Model:          kc.HTTPClient.Model,
+				Stations:       kc.HTTPClient.Stations,
+				Tier:           kitchen.ParseCostTier(kc.HTTPClient.Tier),
+				ResponseFormat: kc.HTTPClient.ResponseFormat,
+				Timeout:        time.Duration(kc.HTTPClient.Timeout) * time.Second,
+			}, kc.Stations, kitchen.ParseCostTier(kc.CostTier))
+			if err != nil {
+				continue
+			}
+			reg.Register(httpKitchen)
+			continue
+		}
+
 		reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{
 			Name:       name,
 			Cmd:        kc.Cmd,

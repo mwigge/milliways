@@ -10,6 +10,8 @@ func newTestRegistry() *kitchen.Registry {
 	reg := kitchen.NewRegistry()
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "claude", Cmd: "echo", Stations: []string{"think", "plan", "review"}, Tier: kitchen.Cloud, Enabled: true}))
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "opencode", Cmd: "echo", Stations: []string{"code", "test"}, Tier: kitchen.Local, Enabled: true}))
+	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "aider", Cmd: "echo", Stations: []string{"multi-file", "git-commit"}, Tier: kitchen.Cloud, Enabled: true}))
+	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "goose", Cmd: "echo", Stations: []string{"tools", "database"}, Tier: kitchen.Local, Enabled: true}))
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "gemini", Cmd: "echo", Stations: []string{"search"}, Tier: kitchen.Free, Enabled: true}))
 	return reg
 }
@@ -17,7 +19,7 @@ func newTestRegistry() *kitchen.Registry {
 func TestRoute_KeywordMatch(t *testing.T) {
 	t.Parallel()
 	keywords := map[string]string{"explain": "claude", "code": "opencode", "search": "gemini"}
-	s := New(keywords, "claude", "opencode", newTestRegistry())
+	s := New(keywords, "claude", "opencode", nil, newTestRegistry())
 
 	tests := []struct {
 		name, prompt, wantKitchen, wantTier string
@@ -44,7 +46,7 @@ func TestRoute_KeywordMatch(t *testing.T) {
 func TestRoute_LongestMatchWins(t *testing.T) {
 	t.Parallel()
 	keywords := map[string]string{"search": "gemini", "code": "opencode", "search for": "gemini"}
-	s := New(keywords, "claude", "opencode", newTestRegistry())
+	s := New(keywords, "claude", "opencode", nil, newTestRegistry())
 	d := s.Route("search for code patterns")
 	if d.Kitchen != "gemini" {
 		t.Errorf("expected gemini (longest match), got %q", d.Kitchen)
@@ -53,7 +55,7 @@ func TestRoute_LongestMatchWins(t *testing.T) {
 
 func TestRoute_DeterministicOrder(t *testing.T) {
 	t.Parallel()
-	s := New(map[string]string{"auth": "claude", "code": "opencode"}, "claude", "opencode", newTestRegistry())
+	s := New(map[string]string{"auth": "claude", "code": "opencode"}, "claude", "opencode", nil, newTestRegistry())
 	results := make(map[string]int)
 	for range 100 {
 		results[s.Route("auth code both").Kitchen]++
@@ -68,7 +70,7 @@ func TestRoute_UnavailableKitchen(t *testing.T) {
 	reg := kitchen.NewRegistry()
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "claude", Cmd: "nonexistent-xyz", Enabled: true}))
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "opencode", Cmd: "echo", Enabled: true}))
-	s := New(map[string]string{"think": "claude"}, "claude", "opencode", reg)
+	s := New(map[string]string{"think": "claude"}, "claude", "opencode", nil, reg)
 	d := s.Route("think about this")
 	if d.Kitchen == "claude" {
 		t.Error("should skip unavailable claude")
@@ -77,7 +79,7 @@ func TestRoute_UnavailableKitchen(t *testing.T) {
 
 func TestRoute_NoKitchensAvailable(t *testing.T) {
 	t.Parallel()
-	s := New(nil, "claude", "opencode", kitchen.NewRegistry())
+	s := New(nil, "claude", "opencode", nil, kitchen.NewRegistry())
 	if d := s.Route("anything"); d.Kitchen != "" {
 		t.Errorf("expected empty, got %q", d.Kitchen)
 	}
@@ -85,7 +87,7 @@ func TestRoute_NoKitchensAvailable(t *testing.T) {
 
 func TestForceRoute(t *testing.T) {
 	t.Parallel()
-	s := New(nil, "claude", "opencode", newTestRegistry())
+	s := New(nil, "claude", "opencode", nil, newTestRegistry())
 	d := s.ForceRoute("gemini")
 	if d.Kitchen != "gemini" || d.Tier != "forced" {
 		t.Errorf("got %q/%q", d.Kitchen, d.Tier)
@@ -94,7 +96,7 @@ func TestForceRoute(t *testing.T) {
 
 func TestForceRoute_Unknown(t *testing.T) {
 	t.Parallel()
-	s := New(nil, "claude", "opencode", newTestRegistry())
+	s := New(nil, "claude", "opencode", nil, newTestRegistry())
 	d := s.ForceRoute("nonexistent")
 	if d.Kitchen != "nonexistent" {
 		t.Errorf("expected passthrough, got %q", d.Kitchen)
@@ -105,7 +107,7 @@ func TestForceRoute_Unknown(t *testing.T) {
 
 func TestRouteEnriched_HighRiskOverrides(t *testing.T) {
 	t.Parallel()
-	s := New(map[string]string{"refactor": "opencode"}, "claude", "opencode", newTestRegistry())
+	s := New(map[string]string{"refactor": "opencode"}, "claude", "opencode", nil, newTestRegistry())
 	signals := &Signals{FileStability: "volatile", FileChurn90d: 45, Complexity: 34, Coverage: 30}
 	d := s.RouteEnriched("refactor the auth module", signals, nil)
 	if d.Kitchen != "claude" {
@@ -118,7 +120,7 @@ func TestRouteEnriched_HighRiskOverrides(t *testing.T) {
 
 func TestRouteEnriched_LowRiskKeepsKeyword(t *testing.T) {
 	t.Parallel()
-	s := New(map[string]string{"refactor": "opencode"}, "claude", "opencode", newTestRegistry())
+	s := New(map[string]string{"refactor": "opencode"}, "claude", "opencode", nil, newTestRegistry())
 	signals := &Signals{FileStability: "stable", FileChurn90d: 1, Complexity: 5, Coverage: 90}
 	d := s.RouteEnriched("refactor the auth module", signals, nil)
 	if d.Kitchen != "opencode" || d.Tier != "keyword" {
@@ -128,7 +130,7 @@ func TestRouteEnriched_LowRiskKeepsKeyword(t *testing.T) {
 
 func TestRouteEnriched_NilSignals(t *testing.T) {
 	t.Parallel()
-	s := New(map[string]string{"code": "opencode"}, "claude", "opencode", newTestRegistry())
+	s := New(map[string]string{"code": "opencode"}, "claude", "opencode", nil, newTestRegistry())
 	d := s.RouteEnriched("code a handler", nil, nil)
 	if d.Kitchen != "opencode" || d.Signals != nil {
 		t.Errorf("nil signals: got %q, signals=%v", d.Kitchen, d.Signals)
@@ -139,7 +141,7 @@ func TestRouteEnriched_NilSignals(t *testing.T) {
 
 func TestRouteEnriched_LearnedOverrides(t *testing.T) {
 	t.Parallel()
-	s := New(map[string]string{"refactor": "opencode"}, "claude", "opencode", newTestRegistry())
+	s := New(map[string]string{"refactor": "opencode"}, "claude", "opencode", nil, newTestRegistry())
 	signals := &Signals{FileStability: "active", Complexity: 10, Coverage: 80, LearnedKitchen: "claude", LearnedRate: 95.0}
 	d := s.RouteEnriched("refactor the module", signals, nil)
 	if d.Kitchen != "claude" || d.Tier != "learned" {
@@ -152,7 +154,7 @@ func TestRouteEnriched_LearnedUnavailable(t *testing.T) {
 	reg := kitchen.NewRegistry()
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "claude", Cmd: "nonexistent-xyz", Enabled: true}))
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "opencode", Cmd: "echo", Enabled: true}))
-	s := New(map[string]string{"refactor": "opencode"}, "opencode", "opencode", reg)
+	s := New(map[string]string{"refactor": "opencode"}, "opencode", "opencode", nil, reg)
 	signals := &Signals{LearnedKitchen: "claude", LearnedRate: 90.0}
 	d := s.RouteEnriched("refactor module", signals, nil)
 	if d.Kitchen != "opencode" {
@@ -164,7 +166,7 @@ func TestRouteEnriched_LearnedUnavailable(t *testing.T) {
 
 func TestRouteEnriched_SkillHintBoost(t *testing.T) {
 	t.Parallel()
-	s := New(map[string]string{"review": "opencode"}, "claude", "opencode", newTestRegistry())
+	s := New(map[string]string{"review": "opencode"}, "claude", "opencode", nil, newTestRegistry())
 	hint := &SkillHint{Kitchen: "claude", SkillName: "security-review"}
 	d := s.RouteEnriched("review the security changes", nil, hint)
 	if d.Kitchen != "claude" {
@@ -180,7 +182,7 @@ func TestRouteEnriched_SkillHintKitchenUnavailable(t *testing.T) {
 	reg := kitchen.NewRegistry()
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "claude", Cmd: "nonexistent-xyz", Enabled: true}))
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{Name: "opencode", Cmd: "echo", Enabled: true}))
-	s := New(map[string]string{"review": "opencode"}, "opencode", "opencode", reg)
+	s := New(map[string]string{"review": "opencode"}, "opencode", "opencode", nil, reg)
 	hint := &SkillHint{Kitchen: "claude", SkillName: "security-review"}
 	d := s.RouteEnriched("review security", nil, hint)
 	// claude unavailable → fall through to keyword
@@ -191,11 +193,38 @@ func TestRouteEnriched_SkillHintKitchenUnavailable(t *testing.T) {
 
 func TestRouteEnriched_NilSkillHint(t *testing.T) {
 	t.Parallel()
-	s := New(map[string]string{"code": "opencode"}, "claude", "opencode", newTestRegistry())
+	s := New(map[string]string{"code": "opencode"}, "claude", "opencode", nil, newTestRegistry())
 	d := s.RouteEnriched("code something", nil, nil)
 	if d.Kitchen != "opencode" {
 		t.Errorf("nil hint: expected opencode, got %q", d.Kitchen)
 	}
+}
+
+func TestRouteEnriched_EditorContextBoost(t *testing.T) {
+	t.Parallel()
+
+	t.Run("test files prefer opencode", func(t *testing.T) {
+		t.Parallel()
+		s := New(map[string]string{"review": "claude"}, "claude", "opencode", nil, newTestRegistry())
+		d := s.RouteEnriched("review auth tests", &Signals{InTestFile: true, Language: "go"}, nil)
+		if d.Kitchen != "opencode" {
+			t.Fatalf("Kitchen = %q, want opencode", d.Kitchen)
+		}
+		if d.Tier != "enriched" {
+			t.Fatalf("Tier = %q, want enriched", d.Tier)
+		}
+	})
+
+	t.Run("weight_on can favor goose for sql", func(t *testing.T) {
+		t.Parallel()
+		s := New(map[string]string{"review": "claude"}, "claude", "opencode", map[string]map[string]float64{
+			"goose": {"language_sql": 0.5},
+		}, newTestRegistry())
+		d := s.RouteEnriched("review query", &Signals{Language: "sql"}, nil)
+		if d.Kitchen != "goose" {
+			t.Fatalf("Kitchen = %q, want goose", d.Kitchen)
+		}
+	})
 }
 
 // mockQuotaChecker implements QuotaChecker for testing.
@@ -211,7 +240,7 @@ func TestRoute_QuotaExhausted_SkipsToFallback(t *testing.T) {
 	t.Parallel()
 
 	keywords := map[string]string{"explain": "claude", "code": "opencode"}
-	s := New(keywords, "claude", "opencode", newTestRegistry())
+	s := New(keywords, "claude", "opencode", nil, newTestRegistry())
 	s.SetQuotaChecker(&mockQuotaChecker{exhausted: map[string]bool{"claude": true}}, nil)
 
 	d := s.Route("explain the auth flow")
@@ -228,11 +257,13 @@ func TestRoute_QuotaExhausted_AllExhausted(t *testing.T) {
 	t.Parallel()
 
 	keywords := map[string]string{"explain": "claude"}
-	s := New(keywords, "claude", "opencode", newTestRegistry())
+	s := New(keywords, "claude", "opencode", nil, newTestRegistry())
 	s.SetQuotaChecker(&mockQuotaChecker{exhausted: map[string]bool{
 		"claude":   true,
 		"opencode": true,
+		"aider":    true,
 		"gemini":   true,
+		"goose":    true,
 	}}, nil)
 
 	d := s.Route("explain something")
@@ -245,7 +276,7 @@ func TestRoute_QuotaNotSet_NoEffect(t *testing.T) {
 	t.Parallel()
 
 	keywords := map[string]string{"explain": "claude"}
-	s := New(keywords, "claude", "opencode", newTestRegistry())
+	s := New(keywords, "claude", "opencode", nil, newTestRegistry())
 	// No SetQuotaChecker call — nil checker
 
 	d := s.Route("explain the flow")
@@ -258,7 +289,7 @@ func TestRoute_QuotaLimitsFromConfig(t *testing.T) {
 	t.Parallel()
 
 	keywords := map[string]string{"explain": "claude"}
-	s := New(keywords, "claude", "opencode", newTestRegistry())
+	s := New(keywords, "claude", "opencode", nil, newTestRegistry())
 	// Checker that checks limits
 	checker := &mockQuotaChecker{exhausted: map[string]bool{"claude": true}}
 	s.SetQuotaChecker(checker, map[string]int{"claude": 50})

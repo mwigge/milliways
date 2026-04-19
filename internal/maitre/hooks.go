@@ -2,6 +2,7 @@ package maitre
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,7 +71,7 @@ func (r *HookRunner) Run(event HookEvent, ctx HookContext) error {
 			}
 		}
 
-		fmt.Fprintf(os.Stderr, "[hook] executing: %s (from carte.yaml)\n", h.Command)
+		slog.Info("hook executing", "command", h.Command)
 		env := buildHookEnv(ctx)
 		err := executeHook(h, env)
 		if err != nil && h.Blocking {
@@ -78,7 +79,7 @@ func (r *HookRunner) Run(event HookEvent, ctx HookContext) error {
 		}
 		// Non-blocking hook errors are logged but don't stop the pipeline
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[hook] %s %s failed (non-blocking): %v\n", event, h.Command, err)
+			slog.Warn("hook failed", "event", event, "command", h.Command, "err", err)
 		}
 	}
 	return nil

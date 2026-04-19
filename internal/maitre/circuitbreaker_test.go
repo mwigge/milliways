@@ -3,6 +3,7 @@ package maitre
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -77,5 +78,69 @@ func TestPathAllowed_PrivateMode(t *testing.T) {
 				t.Errorf("unexpected error for %s in private mode: %v", tt.path, err)
 			}
 		})
+	}
+}
+
+func TestPathAllowed_ResolvesSymlinksBeforeCheckingPrefixes(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("user home dir: %v", err)
+	}
+
+	blockedTarget := filepath.Join(home, "dev", "src", "ghorg", "blocked-project-test-symlink")
+	allowedAlias := filepath.Join(home, "dev", "src", "ai_local", "allowed-link-test-symlink")
+	t.Cleanup(func() {
+		_ = os.RemoveAll(allowedAlias)
+		_ = os.RemoveAll(blockedTarget)
+	})
+
+	if err := os.MkdirAll(filepath.Dir(blockedTarget), 0o755); err != nil {
+		t.Fatalf("mkdir blocked parent: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(allowedAlias), 0o755); err != nil {
+		t.Fatalf("mkdir allowed parent: %v", err)
+	}
+	if err := os.MkdirAll(blockedTarget, 0o755); err != nil {
+		t.Fatalf("mkdir blocked target: %v", err)
+	}
+	if err := os.Symlink(blockedTarget, allowedAlias); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	err = PathAllowed(allowedAlias, ModePrivate)
+	if err == nil {
+		t.Fatal("expected symlinked blocked path to be rejected")
+	}
+	if got, want := err.Error(), "path blocked in private mode — switch: mode company"; got != want {
+		t.Fatalf("PathAllowed() error = %q, want %q", got, want)
+	}
+	if strings.Contains(err.Error(), blockedTarget) || strings.Contains(err.Error(), allowedAlias) {
+		t.Fatalf("error %q should not leak filesystem paths", err)
+	}
+}
+
+func TestPathAllowed_DoesNotLeakBlockedPathInError(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("user home dir: %v", err)
+	}
+
+	blockedPath := filepath.Join(home, "dev", "src", "pprojects", "milliways-test-blocked-path")
+	t.Cleanup(func() {
+		_ = os.RemoveAll(blockedPath)
+	})
+	if err := os.MkdirAll(blockedPath, 0o755); err != nil {
+		t.Fatalf("mkdir blocked path: %v", err)
+	}
+
+	err = PathAllowed(blockedPath, ModeCompany)
+	if err == nil {
+		t.Fatal("expected blocked path to be rejected")
+	}
+	if got, want := err.Error(), "path blocked in company mode — switch: mode private"; got != want {
+		t.Fatalf("PathAllowed() error = %q, want %q", got, want)
+	}
+	if strings.Contains(err.Error(), blockedPath) {
+		t.Fatalf("error %q should not leak filesystem paths", err)
 	}
 }

@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -92,6 +94,9 @@ const mcpDefaultTimeout = 30 * time.Second
 // mcpMaxResponseLines is the maximum number of response lines to read before giving up.
 const mcpMaxResponseLines = 10000
 
+// mcpMaxRetries is the maximum retry attempts for transient connection errors.
+const mcpMaxRetries = 3
+
 // callResult holds the result of a background read operation.
 type callResult struct {
 	data json.RawMessage
@@ -100,16 +105,52 @@ type callResult struct {
 
 // Call sends a JSON-RPC request and waits for the response.
 // The context controls the overall timeout for the call.
+// Transient connection errors (EPIPE, ECONNRESET, unexpected EOF) are retried
+// up to mcpMaxRetries times with exponential backoff and jitter.
 func (c *MCPClient) Call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	var lastErr error
+	for attempt := 0; attempt <= mcpMaxRetries; attempt++ {
+		data, err := c.callOne(ctx, method, params)
+		if err == nil {
+			return data, nil
+		}
+		if !isRetryable(err) {
+			return nil, err
+		}
+		lastErr = err
+		if attempt < mcpMaxRetries {
+			backoff := time.Duration(1<<attempt) * 100 * time.Millisecond
+			if backoff > 10*time.Second {
+				backoff = 10 * time.Second
+			}
+			// Add jitter: up to 25% randomness.
+			jitter := time.Duration(attempt*13+7) * backoff / 100
+			sleep := backoff + jitter
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("MCP call %s (retry %d/%d): %w", method, attempt+1, mcpMaxRetries, ctx.Err())
+			case <-time.After(sleep):
+			}
+		}
+	}
+	return nil, fmt.Errorf("MCP call %s: %w", method, lastErr)
+}
+
+// callOne performs a single RPC call while holding the mutex.
+// Returns retryable errors for transient connection failures.
+func (c *MCPClient) callOne(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Apply default timeout if no deadline is set
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
+	// Apply default timeout if no deadline is set; always use a derived context
+	// so that defer cancel() fires at the right scope regardless of which branch runs.
+	var cancel context.CancelFunc
+	if _, hasDeadline := ctx.Deadline(); hasDeadline {
+		ctx, cancel = context.WithCancel(ctx)
+	} else {
 		ctx, cancel = context.WithTimeout(ctx, mcpDefaultTimeout)
-		defer cancel()
 	}
+	defer cancel()
 
 	id := c.nextID.Add(1)
 
@@ -164,6 +205,30 @@ func (c *MCPClient) Call(ctx context.Context, method string, params any) (json.R
 	case result := <-ch:
 		return result.data, result.err
 	}
+}
+
+// isRetryable returns true if err is a transient connection error worth retrying.
+func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	// EOF and unexpected EOF indicate a broken connection.
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
+	}
+	// EPIPE and ECONNRESET indicate the subprocess died.
+	if strings.Contains(errStr, "epipe") ||
+		strings.Contains(errStr, "broken pipe") ||
+		strings.Contains(errStr, "econnreset") ||
+		strings.Contains(errStr, "connection reset by peer") {
+		return true
+	}
+	// "read from closed pipe" or "write to closed pipe" are also retryable.
+	if strings.Contains(errStr, "closed pipe") {
+		return true
+	}
+	return false
 }
 
 // CallTool invokes an MCP tool and returns the result.

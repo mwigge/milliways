@@ -174,6 +174,115 @@ Tier:    learned
 Risk:    high
 ```
 
+## Project Memory (CodeGraph + MemPalace)
+
+Milliways can optionally use CodeGraph (code structure search) and MemPalace (project memory) to inject relevant context before routing.
+
+### Setup
+
+**MemPalace** — project-specific memory store:
+
+```bash
+# Install mempalace CLI
+pip install mempalace
+
+# Initialize a palace in your project (creates .mempalace/)
+cd ~/dev/src/projects/myproject
+mempalace init .mempalace
+
+# Mine project files into the palace
+mempalace mine .
+
+# Search your palace
+mempalace search "why did we switch to GraphQL"
+```
+
+**CodeGraph** — semantic code search (optional):
+
+```bash
+# Install codegraph CLI
+npm install -g @opencode/codegraph
+
+# Initialize in your project
+cd ~/dev/src/projects/myproject
+codegraph init
+```
+
+### Environment Variables
+
+When MemPalace and/or CodeGraph are available in your project, set the MCP server commands:
+
+```bash
+export MILLIWAYS_MEMPALACE_MCP_CMD="python3 -m mempalace.mcp_server"
+export MILLIWAYS_MEMPALACE_MCP_ARGS="--palace /path/to/project/.mempalace"
+export MILLIWAYS_CODEGRAPH_MCP_CMD="codegraph"
+export MILLIWAYS_CODEGRAPH_MCP_ARGS="mcp"
+```
+
+Or put them in your shell profile (`~/.zshrc`, `~/.bashrc`) for persistence.
+
+Milliways kitchen parity requires the `mempalace-milliways` fork at commit `e5e705ea43bfab283fd9c16eedec1f5068d10f44` or later so the conversation MCP tools and checkpoint/resume schema are available.
+
+### How It Works
+
+With project memory enabled:
+1. Milliways detects `.mempalace/` and `.codegraph/` in your repo root
+2. Startup outside a git repo works normally; startup inside a repo without a palace degrades gracefully
+3. If CodeGraph is still being created, the TUI shows `indexing...`
+4. If no palace exists yet, the TUI shows `(none — run /palace init)`
+5. On each turn, relevant memories are injected into the context bundle
+6. Citations to project facts are tracked per-turn and stored with the conversation
+7. `/project`, `/repos`, `/palace`, `/codegraph` commands show project state
+
+Without these directories, milliways operates without project context (graceful degradation).
+
+### Project registry: `~/.milliways/projects.yaml`
+
+Use the optional registry to control cross-palace read/write access:
+
+```yaml
+projects:
+  default:
+    access:
+      read: all
+      write: project
+
+  shared-libs:
+    paths:
+      - ~/dev/src/pprojects/shared-lib
+      - ~/dev/src/pprojects/design-system
+    access:
+      read: all
+      write: none
+
+  client-work:
+    paths:
+      - ~/dev/src/pprojects/client-a
+    access:
+      read: project
+      write: project
+```
+
+Schema:
+
+- `projects.<name>.paths`: repo roots matched against palace paths
+- `projects.<name>.access.read`: `all`, `project`, or `none`
+- `projects.<name>.access.write`: `project` or `none`
+- `projects.default.access`: fallback rules when no explicit project matches
+
+### Project commands
+
+Inside the TUI:
+
+- `/project` — show active repo, CodeGraph, palace, and access rules
+- `/repos` — list repos accessed in the current session
+- `/palace` — show palace status
+- `/palace init` — reserved for palace bootstrap wiring
+- `/palace search <query>` — reserved for palace search wiring
+- `/codegraph` or `/codegraph status` — show CodeGraph status
+- `/codegraph reindex` — reserved for reindex wiring
+- `/codegraph search <query>` — reserved for CodeGraph search wiring
+
 ## Circuit Breaker
 
 Milliways respects the company/private mode from `~/.claude/mode`:
