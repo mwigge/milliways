@@ -93,21 +93,21 @@
 
 ### Course NC-12: Line-by-line streaming [0.5 SP]
 
-- [ ] NC-12.1 Switch `jobstart` from `stdout_buffered=true` to per-line streaming
-- [ ] NC-12.2 Append each line to the float buffer as it arrives; autoscroll unless user cursor has moved
-- [ ] NC-12.3 plenary.nvim spec with a fake binary emitting one line per 100ms
+- [x] NC-12.1 Switch `jobstart` from `stdout_buffered=true` to per-line streaming
+- [x] NC-12.2 Append each line to the float buffer as it arrives; autoscroll unless user cursor has moved
+- [x] NC-12.3 plenary.nvim spec with a fake binary emitting one line per 100ms
 
 ### Course NC-13: Lineage header [0.5 SP]
 
-- [ ] NC-13.1 First line of float shows `claude → codex | sticky | <Tab> recent <leader>mK kitchens` (dynamic)
-- [ ] NC-13.2 Updated in place on segment change
-- [ ] NC-13.3 plenary.nvim spec: header reflects segment-change events from the substrate
+- [x] NC-13.1 First line of float shows `claude → codex | sticky | <Tab> recent <leader>mK kitchens` (dynamic)
+- [x] NC-13.2 Updated in place on segment change
+- [x] NC-13.3 plenary.nvim spec: header reflects segment-change events from the substrate
 
 ### Course NC-14: `<Tab>` recent conversations [0.5 SP]
 
-- [ ] NC-14.1 `<Tab>` inside float cycles through 3 most recent conversations from MemPalace
-- [ ] NC-14.2 Preview shown above the input line; `<CR>` resumes in place
-- [ ] NC-14.3 Fallback behaviour when MemPalace substrate is unavailable — `<Tab>` is a no-op with a notice
+- [x] NC-14.1 `<Tab>` inside float cycles through 3 most recent conversations from MemPalace
+- [x] NC-14.2 Preview shown above the input line; `<CR>` resumes in place
+- [x] NC-14.3 Fallback behaviour when MemPalace substrate is unavailable — `<Tab>` is a no-op with a notice
 
 - [ ] 🍋 **Palate Cleanser 4** — The floating window streams as work happens, shows current provider lineage, and can cycle through recent conversations without leaving the buffer.
 
@@ -117,20 +117,20 @@
 
 ### Course NC-15: plenary.nvim test suite [0.5 SP]
 
-- [ ] NC-15.1 `nvim-plugin/tests/` directory with spec files per module
-- [ ] NC-15.2 `make plugin-test` target runs the specs against a pinned headless nvim
-- [ ] NC-15.3 CI step runs `make plugin-test` after `make smoke`
+- [x] NC-15.1 `nvim-plugin/tests/` directory with spec files per module
+- [x] NC-15.2 `make plugin-test` target runs the specs against a pinned headless nvim
+- [x] NC-15.3 CI step runs `make plugin-test` after `make smoke`
 
 ### Course NC-16: End-to-end smoke scenario [0.5 SP]
 
-- [ ] NC-16.1 `testdata/smoke/scenarios/nvim-context.sh` — invokes milliways binary with a representative JSON bundle and asserts routing picks up editor-context signals
-- [ ] NC-16.2 Integrated into the existing `scripts/smoke.sh` matrix
-- [ ] NC-16.3 Scenario is deterministic — no real nvim required, just a pre-built JSON bundle fixture
+- [x] NC-16.1 `testdata/smoke/scenarios/nvim-context.sh` — invokes milliways binary with a representative JSON bundle and asserts routing picks up editor-context signals
+- [x] NC-16.2 Integrated into the existing `scripts/smoke.sh` matrix
+- [x] NC-16.3 Scenario is deterministic — no real nvim required, just a pre-built JSON bundle fixture
 
 ### Course NC-17: Documentation [0.5 SP]
 
-- [ ] NC-17.1 Update `nvim-plugin/README.md` with L2 context hydration, new commands, Telescope support, keybindings
-- [ ] NC-17.2 Add section on privacy: what's collected, what's sent, how to opt out per-collector
-- [ ] NC-17.3 Add troubleshooting section: LSP not installed, git not in repo, Telescope not installed
+- [x] NC-17.1 Update `nvim-plugin/README.md` with L2 context hydration, new commands, Telescope support, keybindings
+- [x] NC-17.2 Add section on privacy: what's collected, what's sent, how to opt out per-collector
+- [x] NC-17.3 Add troubleshooting section: LSP not installed, git not in repo, Telescope not installed
 
 - [ ] 🍽️ **Grand Service** — The nvim plugin is a first-class milliways surface. Editor context reaches the sommelier automatically. Switch commands behave identically to their TUI counterparts. Collection stays under the 50ms budget. Existing plugin users see no regression.
