@@ -28,27 +28,27 @@
 
 ## TP-4: Dialogue protocol constants + Task fields [1 SP]
 
-- [ ] TP-4.1 Create `internal/kitchen/dialogue.go`:
+- [x] TP-4.1 Create `internal/kitchen/dialogue.go`:
   - Exported constants `QuestionPrefix = "?MW> "` and `ConfirmPrefix = "!MW> "`
   - `IsQuestion(line string) bool`, `IsConfirm(line string) bool`, `StripPrefix(line string) string` pure helpers
-- [ ] TP-4.2 Add to `Task` in `internal/kitchen/kitchen.go`:
+- [x] TP-4.2 Add to `Task` in `internal/kitchen/kitchen.go`:
   ```go
   OnQuestion func(question string)  // nil = headless
   OnConfirm  func(question string)  // nil = headless
   AnswerCh   <-chan string           // nil = headless; receive-only enforces TUI owns the send end
   ```
-- [ ] TP-4.3 Unit tests for dialogue.go: IsQuestion/IsConfirm/StripPrefix cover prefix match, no-match, empty string, prefix-only (no body)
+- [x] TP-4.3 Unit tests for dialogue.go: IsQuestion/IsConfirm/StripPrefix cover prefix match, no-match, empty string, prefix-only (no body)
 
 ## TP-5: GenericKitchen stdin pipe + dialogue interception [2 SP]
 
-- [ ] TP-5.1 In `GenericKitchen.Exec()`, always create a stdin pipe via `cmd.StdinPipe()`; close it with `defer stdinPipe.Close()` — pipe held open for duration of process
-- [ ] TP-5.2 In the stdout scanner loop, call `dialogue.IsQuestion` and `dialogue.IsConfirm` before `task.OnLine`:
+- [x] TP-5.1 In `GenericKitchen.Exec()`, always create a stdin pipe via `cmd.StdinPipe()`; close it with `defer stdinPipe.Close()` — pipe held open for duration of process
+- [x] TP-5.2 In the stdout scanner loop, call `dialogue.IsQuestion` and `dialogue.IsConfirm` before `task.OnLine`:
   - If `?MW>` and `OnQuestion != nil`: call `OnQuestion(dialogue.StripPrefix(line))`, then `select { case ans := <-task.AnswerCh: fmt.Fprintln(stdinPipe, ans); case <-ctx.Done(): return ctx.Err() }`
   - If `?MW>` and `OnQuestion == nil` (headless): write `""` to stdin, continue
   - Same pattern for `!MW>` / `OnConfirm`
   - All other lines: call `task.OnLine(line)` as before
-- [ ] TP-5.3 Add `goleak.VerifyTestMain` to `TestMain` in `internal/kitchen/` test package to catch goroutine leaks
-- [ ] TP-5.4 Unit tests — fake kitchen via an `io.Pipe`: (a) emits `?MW> Which runner?`, verifies `OnQuestion` fires, answer written to stdin; (b) emits `!MW> Delete? `, verifies `OnConfirm` fires; (c) ctx cancel while awaiting answer — goroutine exits, no leak; (d) nil OnQuestion/AnswerCh (headless) — auto-answers `""`, no block
+- [x] TP-5.3 Add `goleak.VerifyTestMain` to `TestMain` in `internal/kitchen/` test package to catch goroutine leaks
+- [x] TP-5.4 Unit tests — fake kitchen via an `io.Pipe`: (a) emits `?MW> Which runner?`, verifies `OnQuestion` fires, answer written to stdin; (b) emits `!MW> Delete? `, verifies `OnConfirm` fires; (c) ctx cancel while awaiting answer — goroutine exits, no leak; (d) nil OnQuestion/AnswerCh (headless) — auto-answers `""`, no block
 
 ## TP-6: TUI overlay + Awaiting/Confirming states [2 SP]
 
@@ -70,14 +70,14 @@
 
 ## TP-8: Headless --verbose routing line [0.5 SP]
 
-- [ ] TP-8.1 In headless dispatch path in `cmd/milliways/main.go`, pass `DispatchOptions{OnRouted: func(d sommelier.Decision) { if verbose { fmt.Fprintf(os.Stderr, "[routed] %s\n", d.Kitchen) } }}`
-- [ ] TP-8.2 Unit test: with verbose=true, OnRouted prints `[routed] <kitchen>` to stderr; with verbose=false, nothing printed
+- [x] TP-8.1 In headless dispatch path in `cmd/milliways/main.go`, pass `DispatchOptions{OnRouted: func(d sommelier.Decision) { if verbose { fmt.Fprintf(os.Stderr, "[routed] %s\n", d.Kitchen) } }}`
+- [x] TP-8.2 Unit test: with verbose=true, OnRouted prints `[routed] <kitchen>` to stderr; with verbose=false, nothing printed
 
 ## TP-9: Integration + cleanup [0.5 SP]
 
-- [ ] TP-9.1 All existing unit tests pass after DispatchFunc signature change (DispatchOptions added)
-- [ ] TP-9.2 `go test -race ./internal/tui/... ./internal/kitchen/...` passes — race detector validates goroutine-safe p.Send usage and AnswerCh ownership
-- [ ] TP-9.3 `go vet ./...` passes — no shadow variables, no unused fields
+- [x] TP-9.1 All existing unit tests pass after DispatchFunc signature change (DispatchOptions added)
+- [x] TP-9.2 `go test -race ./internal/tui/... ./internal/kitchen/...` passes — race detector validates goroutine-safe p.Send usage and AnswerCh ownership
+- [x] TP-9.3 `go vet ./...` passes — no shadow variables, no unused fields
 - [ ] TP-9.4 Manual smoke test: `milliways --tui` → type prompt → see echo line + "routing..." → see kitchen badge appear → see "streaming" → see output → see "done"
 - [ ] TP-9.5 Manual dialogue test: run a test script that writes `?MW> Which test runner?` to stdout, verify TUI shows overlay, answer flows back to stdin
 
