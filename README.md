@@ -13,7 +13,17 @@ $ milliways --kitchen aider "refactor"    → forces aider
 
 ## Install
 
-### Quick install (macOS/Linux)
+### macOS
+
+```bash
+# Homebrew
+brew install mwigge/tap/milliways
+
+# Or curl
+curl -fsSL https://raw.githubusercontent.com/mwigge/milliways/master/install.sh | sh
+```
+
+### Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mwigge/milliways/master/install.sh | sh
@@ -27,11 +37,41 @@ cd milliways
 go build -o ~/.local/bin/milliways ./cmd/milliways/
 ```
 
+Verify: `milliways --version` or `milliways status`
+
 ### Go install
 
 ```bash
 go install github.com/mwigge/milliways/cmd/milliways@latest
 ```
+
+### Neovim plugin
+
+See [nvim-plugin/README.md](nvim-plugin/README.md) for full documentation.
+
+```lua
+-- lazy.nvim
+{
+  "mwigge/milliways",
+  config = function()
+    require("milliways").setup({
+      bin = "milliways",       -- path to binary (must be on PATH)
+      keybindings = true,      -- register default keybindings
+      leader = "<leader>m",    -- keybinding prefix
+      float_width = 0.8,       -- floating window dimensions
+      float_height = 0.8,
+    })
+  end,
+}
+```
+
+Requires: Neovim 0.10+, `milliways` binary on PATH.
+
+Commands: `:Milliways`, `:MilliwaysExplain`, `:MilliwaysKitchen`, `:MilliwaysRecipe`, `:MilliwaysStatus`, `:MilliwaysSwitch`, `:MilliwaysStick`, `:MilliwaysBack`, `:MilliwaysKitchens`
+
+Keybindings: `<leader>mm` dispatch, `<leader>me` explain, `<leader>ms` status, `<leader>mk` kitchen, `<leader>mK` telescope picker, `<leader>m.` reroute
+
+Features: L2 context hydration (git branch, LSP diagnostics, cursor position, quickfix), visual selection as context, floating window output with yank support.
 
 ## How It Works
 
