@@ -264,7 +264,7 @@ func progressPercent(done, total int) string {
 	return fmt.Sprintf("%d%%", (done*100)/total)
 }
 
-func isSidePanelKey(sidePanelIdx int, msg tea.KeyMsg) bool {
+func isSidePanelKey(sidePanelIdx int, msg tea.KeyMsg, panelMode bool) bool {
 	if sidePanelIdx == int(SidePanelSnippets) {
 		return isSnippetPanelKey(msg)
 	}
@@ -290,6 +290,13 @@ func isSidePanelKey(sidePanelIdx int, msg tea.KeyMsg) bool {
 			return true
 		default:
 			return false
+		}
+	}
+	// In panel mode, up/down arrows always route to the panel (e.g., for OpenSpec course nav).
+	if panelMode {
+		switch msg.String() {
+		case "up", "down":
+			return true
 		}
 	}
 	return false

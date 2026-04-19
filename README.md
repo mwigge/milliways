@@ -45,7 +45,7 @@ The left side shows the currently focused dispatch in full. The right side shows
 │ (main output)                                │ [1 ●] [2 ◐] [3 ✓] [4 ✗]      │
 │                                              ├───────────────────────────────┤
 │ • prompt                                     │ Swappable panel               │
-│ • selected kitchen                           │ ctrl+→ / ctrl+← cycles:       │
+│ • selected kitchen                           │ ctrl+o: panel mode  h/l: switch  ↑↓: navigate │
 │ • streamed output                            │  - Ledger                     │
 │ • runtime events                             │  - Jobs                       │
 │ • inline confirms/questions                  │  - Cost                       │
@@ -71,7 +71,7 @@ And here is the same idea as a more concrete screen sketch:
 │  │                    │  ├─────────────────┤         │
 │  │                    │  │ Ledger          │ ← panel │
 │  │                    │  │ 14:32 claude ✓  │   cycle │
-│  └────────────────────┘  └─────────────────┘  ctrl+← │
+│  └────────────────────┘  └─────────────────┘  ⌥]/⌥[ │
 │                          ┌─────────────────┐         │
 │                          │ > your prompt   │         │
 │                          └─────────────────┘         │
@@ -116,8 +116,12 @@ Approximate layout (your terminal size changes what fits):
 | `Ctrl+F` | Rate the last completed dispatch |
 | `Ctrl+S` | Show a session summary |
 | `Ctrl+G` | Toggle rendered/raw output mode |
-| `Ctrl+→` | Cycle to the next sidebar panel |
-| `Ctrl+[` | Cycle to the previous sidebar panel |
+| `Ctrl+O` | Enter panel mode — `h`/`l` switch panels, `↑`/`↓` navigate, `Esc` to exit |
+| `h` | Cycle to the previous sidebar panel (vim-style) |
+| `l` | Cycle to the next sidebar panel (vim-style) |
+| `Ctrl+J` | Cycle to the next sidebar panel |
+| `Ctrl+K` | Cycle to the previous sidebar panel |
+| `⌥]` / `⌥[` | Cycle sidebar panel (Mac Cmd+] / Cmd+[) |
 | `Tab` | Cycle focus across blocks |
 | `1`-`9` | Jump to a specific block |
 | `c` | Collapse or expand the focused block |
