@@ -45,6 +45,7 @@ func (r *resumeAdapter) Exec(_ context.Context, task kitchen.Task) (<-chan adapt
 func (r *resumeAdapter) Send(context.Context, string) error { return nil }
 func (r *resumeAdapter) SupportsResume() bool               { return true }
 func (r *resumeAdapter) SessionID() string                  { return r.sessionID }
+func (r *resumeAdapter) ProcessID() int                     { return 0 }
 func (r *resumeAdapter) Capabilities() adapter.Capabilities {
 	return adapter.Capabilities{NativeResume: true, InteractiveSend: true, StructuredEvents: true}
 }

@@ -142,9 +142,9 @@ func TestTierBadge(t *testing.T) {
 		t.Run(tc.tier, func(t *testing.T) {
 			t.Parallel()
 
-			got := tierBadge(tc.tier)
+			got := TierBadge(tc.tier)
 			if !strings.Contains(got, tc.want) {
-				t.Fatalf("tierBadge(%q) = %q, want contains %q", tc.tier, got, tc.want)
+				t.Fatalf("TierBadge(%q) = %q, want contains %q", tc.tier, got, tc.want)
 			}
 		})
 	}

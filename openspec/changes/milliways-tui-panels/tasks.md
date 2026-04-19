@@ -158,7 +158,7 @@ Each stub returns `mutedStyle.Render("(not implemented)")`. This ensures View() 
 
 ## Course SPS-2: Cost panel [1 SP]
 
-### SPS-2.1 — costAccumulator type
+### [x] SPS-2.1 — costAccumulator type
 
 In `internal/tui/app.go`:
 ```go
@@ -180,7 +180,7 @@ func (a *costAccumulator) add(c *adapter.CostInfo) {
 }
 ```
 
-### SPS-2.2 — Collect cost events
+### [x] SPS-2.2 — Collect cost events
 
 In `app.go` `Update()`, handle `blockDoneMsg`:
 ```go
@@ -211,7 +211,7 @@ case blockEventMsg:
     // ... existing blockEventMsg handling
 ```
 
-### SPS-2.3 — renderCostPanel implementation
+### [x] SPS-2.3 — renderCostPanel implementation
 
 ```go
 func (m Model) renderCostPanel(width, height int) string {
@@ -230,7 +230,7 @@ func (m Model) renderCostPanel(width, height int) string {
 }
 ```
 
-### SPS-2.4 — Tests
+### [x] SPS-2.4 — Tests
 
 - `TestCostPanelAccumulates`: dispatch 2 events to same kitchen → cumulative USD correct
 - `TestCostPanelEmpty`: no events → "(no cost data yet)"
@@ -240,7 +240,7 @@ func (m Model) renderCostPanel(width, height int) string {
 
 ## Course SPS-3: Routing audit panel [1 SP]
 
-### SPS-3.1 — routingEntry type + collection
+### [x] SPS-3.1 — routingEntry type + collection
 
 ```go
 type routingEntry struct {
@@ -271,7 +271,7 @@ case blockRoutedMsg:
 
 Note: If `sommelier.Decision` doesn't yet have `SignalScores`, add it — it's needed for the audit panel to show the full picture.
 
-### SPS-3.2 — renderRoutingPanel implementation
+### [x] SPS-3.2 — renderRoutingPanel implementation
 
 ```go
 func (m Model) renderRoutingPanel(width, height int) string {
@@ -299,7 +299,7 @@ func tierBadge(tier string) string {
 }
 ```
 
-### SPS-3.3 — Tests
+### [x] SPS-3.3 — Tests
 
 - `TestRoutingHistoryGrowsAndTrims`: push 25 entries → len == 20
 - `TestRoutingPanelEmpty`: empty history → "(no routing decisions yet)"
@@ -309,7 +309,7 @@ func tierBadge(tier string) string {
 
 ## Course SPS-4: System resources panel [1 SP]
 
-### SPS-4.1 — procInfo type + refresh goroutine
+### [x] SPS-4.1 — procInfo type + refresh goroutine
 
 ```go
 type procInfo struct {
@@ -350,11 +350,11 @@ func (m *Model) refreshProcStats() {
 
 Add `procStats map[string]procInfo` and `mu sync.Mutex` to Model.
 
-### SPS-4.2 — Block.PID tracking
+### [x] SPS-4.2 — Block.PID tracking
 
 `Block` struct needs a `PID int` field. Set in `adapterDispatchCmd` — the orchestrator knows the PID from the adapter. Or: track via `runtimeEventMsg` where `Kind == "segment_start"` and `Fields["pid"]` is present.
 
-### SPS-4.3 — renderSystemPanel implementation
+### [x] SPS-4.3 — renderSystemPanel implementation
 
 ```go
 func (m Model) renderSystemPanel(width, height int) string {
@@ -380,7 +380,7 @@ func (m Model) renderSystemPanel(width, height int) string {
 }
 ```
 
-### SPS-4.4 — Tests
+### [x] SPS-4.4 — Tests
 
 - Mock `ps` output → correct parsing
 - Empty procStats → "(idle)"
