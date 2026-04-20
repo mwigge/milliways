@@ -12,6 +12,10 @@ type Model string
 const (
 	// ModelMiniMax identifies the MiniMax chat-completions backend.
 	ModelMiniMax Model = "minimax"
+	// ModelCodes identifies the Codes chat-completions backend.
+	ModelCodes Model = "codes"
+	// ModelGemini identifies the Gemini generateContent backend.
+	ModelGemini Model = "gemini"
 )
 
 // Request describes one provider request.

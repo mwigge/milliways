@@ -2,10 +2,15 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"sort"
+	"strings"
 	"sync"
+	"time"
 
+	"github.com/mwigge/milliways/internal/observability"
 	"github.com/mwigge/milliways/internal/provider"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // ToolHandler executes one tool call.
@@ -13,9 +18,10 @@ type ToolHandler func(ctx context.Context, args map[string]any) (string, error)
 
 // Registry stores tool handlers and definitions.
 type Registry struct {
-	mu    sync.RWMutex
-	tools map[string]ToolHandler
-	defs  map[string]provider.ToolDef
+	mu      sync.RWMutex
+	tools   map[string]ToolHandler
+	defs    map[string]provider.ToolDef
+	emitter *observability.TraceEmitter
 }
 
 // NewRegistry returns an empty tool registry.
@@ -24,6 +30,13 @@ func NewRegistry() *Registry {
 		tools: make(map[string]ToolHandler),
 		defs:  make(map[string]provider.ToolDef),
 	}
+}
+
+// NewRegistryWithEmitter returns an empty tool registry with trace emission.
+func NewRegistryWithEmitter(emitter *observability.TraceEmitter) *Registry {
+	r := NewRegistry()
+	r.emitter = emitter
+	return r
 }
 
 // Register stores a tool handler and its definition.
@@ -63,4 +76,45 @@ func (r *Registry) List() []provider.ToolDef {
 		return defs[i].Name < defs[j].Name
 	})
 	return defs
+}
+
+// ExecTool runs a tool and records a trace event when configured.
+func (r *Registry) ExecTool(ctx context.Context, sessionID, name string, args map[string]any) (string, error) {
+	handler, ok := r.Get(name)
+	if !ok {
+		return "", errors.New("tool not found")
+	}
+
+	start := time.Now()
+	toolCtx, span := observability.StartAgentToolSpan(ctx, sessionID, name, 0, false)
+	defer span.End()
+
+	result, err := handler(toolCtx, args)
+	durMS := int(time.Since(start).Milliseconds())
+	blocked := traceBlockedError(err)
+	span.SetAttributes(
+		attribute.Int(observability.AttrToolDur, durMS),
+		attribute.Bool(observability.AttrToolBlocked, blocked),
+	)
+	if r != nil && r.emitter != nil {
+		_ = r.emitter.Emit(toolCtx, observability.AgentTraceEvent{
+			SessionID:   sessionID,
+			Type:        observability.AgentTraceTool,
+			Description: name,
+			Data: map[string]any{
+				"tool_name": name,
+				"tool":      name,
+				"dur_ms":    durMS,
+				"blocked":   blocked,
+			},
+		})
+	}
+	if err != nil {
+		return "", err
+	}
+	return result, nil
+}
+
+func traceBlockedError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "blocked")
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/mwigge/milliways/internal/commands"
+	"github.com/mwigge/milliways/internal/config"
 	"github.com/mwigge/milliways/internal/hooks"
 	"gopkg.in/yaml.v3"
 )
@@ -75,6 +76,9 @@ func (l PluginLoader) Load(root string) (*Plugin, error) {
 
 func loadManifest(root string) (pluginManifest, error) {
 	path := filepath.Join(root, ".claude-plugin", "plugin.json")
+	if err := config.GuardReadPath(path); err != nil {
+		return pluginManifest{}, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return pluginManifest{}, fmt.Errorf("read plugin manifest %q: %w", path, err)
@@ -89,6 +93,12 @@ func loadManifest(root string) (pluginManifest, error) {
 
 func loadAgents(root string) ([]Agent, error) {
 	dir := filepath.Join(root, "agents")
+	if err := config.GuardReadPath(dir); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -120,6 +130,9 @@ type agentFrontmatter struct {
 }
 
 func loadAgentFile(path string) (Agent, error) {
+	if err := config.GuardReadPath(path); err != nil {
+		return Agent{}, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Agent{}, fmt.Errorf("read agent %q: %w", path, err)

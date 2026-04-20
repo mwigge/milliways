@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/mwigge/milliways/internal/config"
 )
 
 // ErrSessionNotFound indicates that a stored session does not exist.
@@ -34,6 +36,9 @@ func (s *FileStore) Save(session Session) error {
 	}
 	dir, err := s.resolveDir()
 	if err != nil {
+		return err
+	}
+	if err := config.GuardWritePath(dir); err != nil {
 		return err
 	}
 	if session.CreatedAt.IsZero() {
@@ -80,6 +85,9 @@ func (s *FileStore) Load(id string) (Session, error) {
 	if s == nil {
 		return Session{}, errors.New("nil file store")
 	}
+	if err := config.GuardReadPath(s.filePath(id)); err != nil {
+		return Session{}, err
+	}
 	data, err := os.ReadFile(s.filePath(id))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -101,6 +109,9 @@ func (s *FileStore) List() ([]SessionSummary, error) {
 	}
 	dir, err := s.resolveDir()
 	if err != nil {
+		return nil, err
+	}
+	if err := config.GuardReadPath(dir); err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(dir)
@@ -145,6 +156,9 @@ func (s *FileStore) resolveDir() (string, error) {
 	dir := s.dir
 	if strings.TrimSpace(dir) == "" {
 		dir = defaultSessionDir()
+	}
+	if err := config.GuardWritePath(dir); err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("create session dir %q: %w", dir, err)
