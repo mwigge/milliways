@@ -157,6 +157,9 @@ func TestRegistryExecToolEmitsTraceEvent(t *testing.T) {
 	if events[0].Type != "agent.tool" {
 		t.Fatalf("event type = %q, want agent.tool", events[0].Type)
 	}
+	if got := events[0].Data["dur_ms"]; got == nil {
+		t.Fatal("expected dur_ms in trace event")
+	}
 	if got := events[0].Data["blocked"]; got != false {
 		t.Fatalf("blocked = %v, want false", got)
 	}
@@ -186,6 +189,9 @@ func TestRegistryExecToolMarksBlockedError(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if got := events[0].Data["dur_ms"]; got == nil {
+		t.Fatal("expected dur_ms in trace event")
 	}
 	if got := events[0].Data["blocked"]; got != false {
 		t.Fatalf("blocked = %v, want false for non-blocking error", got)

@@ -6,9 +6,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mwigge/milliways/internal/observability"
 	"github.com/mwigge/milliways/internal/provider"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // ToolHandler executes one tool call.
@@ -83,15 +85,27 @@ func (r *Registry) ExecTool(ctx context.Context, sessionID, name string, args ma
 		return "", errors.New("tool not found")
 	}
 
-	result, err := handler(ctx, args)
+	start := time.Now()
+	toolCtx, span := observability.StartAgentToolSpan(ctx, sessionID, name, 0, false)
+	defer span.End()
+
+	result, err := handler(toolCtx, args)
+	durMS := int(time.Since(start).Milliseconds())
+	blocked := traceBlockedError(err)
+	span.SetAttributes(
+		attribute.Int(observability.AttrToolDur, durMS),
+		attribute.Bool(observability.AttrToolBlocked, blocked),
+	)
 	if r != nil && r.emitter != nil {
-		_ = r.emitter.Emit(ctx, observability.AgentTraceEvent{
+		_ = r.emitter.Emit(toolCtx, observability.AgentTraceEvent{
 			SessionID:   sessionID,
 			Type:        observability.AgentTraceTool,
 			Description: name,
 			Data: map[string]any{
 				"tool_name": name,
-				"blocked":   err != nil && strings.Contains(strings.ToLower(err.Error()), "blocked"),
+				"tool":      name,
+				"dur_ms":    durMS,
+				"blocked":   blocked,
 			},
 		})
 	}
@@ -99,4 +113,8 @@ func (r *Registry) ExecTool(ctx context.Context, sessionID, name string, args ma
 		return "", err
 	}
 	return result, nil
+}
+
+func traceBlockedError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "blocked")
 }
