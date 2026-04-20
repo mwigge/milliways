@@ -27,6 +27,7 @@ type Config struct {
 	Schema           string                     `json:"$schema,omitempty"`
 	Provider         string                     `json:"provider"`
 	MiniMax          MiniMaxConfig              `json:"minimax"`
+	Providers        map[string]ProviderConfig  `json:"providers,omitempty"`
 	Memory           MemoryConfig               `json:"memory"`
 	MCPServers       map[string]MCPServerConfig `json:"mcpServers,omitempty"`
 	Plugins          []string                   `json:"plugins,omitempty"`
@@ -42,6 +43,13 @@ type MiniMaxConfig struct {
 	BaseURL   string `json:"base_url"`
 	Model     string `json:"model"`
 	MaxTokens int    `json:"max_tokens,omitempty"`
+}
+
+// ProviderConfig contains one provider configuration entry.
+type ProviderConfig struct {
+	APIKey  string `json:"apiKey"`
+	BaseURL string `json:"baseURL"`
+	Model   string `json:"model"`
 }
 
 // MemoryConfig contains session and MemPalace configuration.
@@ -83,6 +91,9 @@ func Load(path string) (Config, error) {
 		resolvedPath = defaultConfigPath
 	}
 	resolvedPath = expandHome(resolvedPath)
+	if err := GuardReadPath(resolvedPath); err != nil {
+		return Config{}, err
+	}
 
 	data, err := os.ReadFile(resolvedPath)
 	if err != nil {
@@ -121,6 +132,32 @@ func applyDefaults(cfg *Config) {
 	if cfg.MiniMax.Model == "" {
 		cfg.MiniMax.Model = defaultMiniMaxModel
 	}
+	if len(cfg.Providers) == 0 {
+		cfg.Providers = map[string]ProviderConfig{
+			"minimax": {
+				APIKey:  cfg.MiniMax.APIKey,
+				BaseURL: cfg.MiniMax.BaseURL,
+				Model:   cfg.MiniMax.Model,
+			},
+		}
+	}
+	for name, provider := range cfg.Providers {
+		if name == "minimax" {
+			if provider.APIKey == "" {
+				provider.APIKey = cfg.MiniMax.APIKey
+			}
+			if provider.BaseURL == "" {
+				provider.BaseURL = defaultMiniMaxBaseURL
+			}
+			if provider.Model == "" {
+				provider.Model = defaultMiniMaxModel
+			}
+			cfg.MiniMax.APIKey = provider.APIKey
+			cfg.MiniMax.BaseURL = provider.BaseURL
+			cfg.MiniMax.Model = provider.Model
+		}
+		cfg.Providers[name] = provider
+	}
 	if cfg.Memory.SessionDir == "" {
 		cfg.Memory.SessionDir = defaultSessionDir
 	}
@@ -150,6 +187,24 @@ func applyDefaults(cfg *Config) {
 		server.Command = expandHome(server.Command)
 		cfg.MCPServers[name] = server
 	}
+}
+
+// ProviderConfigs returns the normalized provider configuration map.
+func (c Config) ProviderConfigs() map[string]ProviderConfig {
+	if len(c.Providers) == 0 {
+		return map[string]ProviderConfig{
+			"minimax": {
+				APIKey:  c.MiniMax.APIKey,
+				BaseURL: c.MiniMax.BaseURL,
+				Model:   c.MiniMax.Model,
+			},
+		}
+	}
+	result := make(map[string]ProviderConfig, len(c.Providers))
+	for name, provider := range c.Providers {
+		result[name] = provider
+	}
+	return result
 }
 
 func substituteEnv(value any) any {
@@ -192,5 +247,8 @@ func expandHome(path string) string {
 
 // EnsureConfigDir creates the default config directory if needed.
 func EnsureConfigDir() error {
+	if err := GuardWritePath(DefaultPath()); err != nil {
+		return err
+	}
 	return os.MkdirAll(filepath.Dir(DefaultPath()), defaultConfigPermissions)
 }

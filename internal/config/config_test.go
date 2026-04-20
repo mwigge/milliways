@@ -45,6 +45,13 @@ func TestLoadSubstitutesEnvAndAppliesDefaults(t *testing.T) {
 	if cfg.MiniMax.Model != "MiniMax-Text-01" {
 		t.Fatalf("MiniMax.Model = %q", cfg.MiniMax.Model)
 	}
+	providerCfg, ok := cfg.ProviderConfigs()["minimax"]
+	if !ok {
+		t.Fatal("expected minimax provider config")
+	}
+	if providerCfg.APIKey != "secret-key" {
+		t.Fatalf("providerCfg.APIKey = %q, want secret-key", providerCfg.APIKey)
+	}
 	if cfg.Memory.MemPalaceMCPCmd != "mempalace" {
 		t.Fatalf("Memory.MemPalaceMCPCmd = %q", cfg.Memory.MemPalaceMCPCmd)
 	}
@@ -79,6 +86,43 @@ func TestLoadSubstitutesEnvAndAppliesDefaults(t *testing.T) {
 	}
 	if !cfg.Editor.SyntaxHighlight {
 		t.Fatal("Editor.SyntaxHighlight = false, want true")
+	}
+}
+
+func TestLoadSupportsMultiProviderConfig(t *testing.T) {
+	t.Setenv("TEST_CODES_API_KEY", "codes-secret")
+	t.Setenv("TEST_GEMINI_API_KEY", "gemini-secret")
+
+	tempDir := t.TempDir()
+	configPath := filepath.Join(tempDir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{
+		"provider": "codes",
+		"providers": {
+			"codes": {"apiKey": "${TEST_CODES_API_KEY}", "model": "gpt-5.4"},
+			"gemini": {"apiKey": "${TEST_GEMINI_API_KEY}", "model": "gemini-2.5-pro"}
+		},
+		"memory": {
+			"mempalace_mcp_cmd": "mempalace",
+			"mempalace_mcp_args": "serve --stdio"
+		}
+	}`), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	providers := cfg.ProviderConfigs()
+	if providers["codes"].APIKey != "codes-secret" {
+		t.Fatalf("codes api key = %q", providers["codes"].APIKey)
+	}
+	if providers["gemini"].APIKey != "gemini-secret" {
+		t.Fatalf("gemini api key = %q", providers["gemini"].APIKey)
+	}
+	if providers["codes"].BaseURL != "" {
+		t.Fatalf("codes base url = %q, want empty for provider defaults", providers["codes"].BaseURL)
 	}
 }
 
