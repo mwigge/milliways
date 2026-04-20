@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // ErrSessionNotFound indicates that a stored session does not exist.
@@ -31,15 +32,45 @@ func (s *FileStore) Save(session Session) error {
 	if strings.TrimSpace(session.ID) == "" {
 		return errors.New("session id is required")
 	}
-	if err := os.MkdirAll(s.dir, 0o755); err != nil {
-		return fmt.Errorf("create session dir %q: %w", s.dir, err)
+	dir, err := s.resolveDir()
+	if err != nil {
+		return err
+	}
+	if session.CreatedAt.IsZero() {
+		now := time.Now().UTC()
+		session.CreatedAt = now
+		if session.UpdatedAt.IsZero() {
+			session.UpdatedAt = now
+		}
+	}
+	if session.UpdatedAt.IsZero() {
+		session.UpdatedAt = session.CreatedAt
 	}
 	data, err := json.MarshalIndent(session, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal session %q: %w", session.ID, err)
 	}
-	if err := os.WriteFile(s.filePath(session.ID), data, 0o600); err != nil {
-		return fmt.Errorf("write session %q: %w", session.ID, err)
+	tempFile, err := os.CreateTemp(dir, session.ID+"-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp session %q: %w", session.ID, err)
+	}
+	tempPath := tempFile.Name()
+	defer func() {
+		_ = os.Remove(tempPath)
+	}()
+	if _, err := tempFile.Write(data); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("write temp session %q: %w", session.ID, err)
+	}
+	if err := tempFile.Chmod(0o600); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("chmod temp session %q: %w", session.ID, err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("close temp session %q: %w", session.ID, err)
+	}
+	if err := os.Rename(tempPath, s.filePath(session.ID)); err != nil {
+		return fmt.Errorf("rename session %q: %w", session.ID, err)
 	}
 	return nil
 }
@@ -68,7 +99,11 @@ func (s *FileStore) List() ([]SessionSummary, error) {
 	if s == nil {
 		return nil, errors.New("nil file store")
 	}
-	entries, err := os.ReadDir(s.dir)
+	dir, err := s.resolveDir()
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -99,11 +134,29 @@ func (s *FileStore) List() ([]SessionSummary, error) {
 }
 
 func (s *FileStore) filePath(id string) string {
-	return filepath.Join(s.dir, id+".json")
+	dir := s.dir
+	if strings.TrimSpace(dir) == "" {
+		dir = defaultSessionDir()
+	}
+	return filepath.Join(dir, id+".json")
+}
+
+func (s *FileStore) resolveDir() (string, error) {
+	dir := s.dir
+	if strings.TrimSpace(dir) == "" {
+		dir = defaultSessionDir()
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create session dir %q: %w", dir, err)
+	}
+	return dir, nil
 }
 
 func previewFor(session Session) string {
 	for _, message := range session.Messages {
+		if message.Role != RoleUser {
+			continue
+		}
 		if text := strings.TrimSpace(message.Content); text != "" {
 			if len(text) <= 80 {
 				return text
@@ -112,4 +165,12 @@ func previewFor(session Session) string {
 		}
 	}
 	return ""
+}
+
+func defaultSessionDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".", "sessions")
+	}
+	return filepath.Join(home, ".config", "milliways", "sessions")
 }

@@ -1,11 +1,38 @@
 package session
 
 import (
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestToolCallJSONDurationMilliseconds(t *testing.T) {
+	t.Parallel()
+
+	encoded, err := json.Marshal(ToolCall{Name: "Read", Duration: 45 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if string(encoded) == "" || !json.Valid(encoded) {
+		t.Fatalf("invalid json: %s", encoded)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if decoded["duration_ms"].(float64) != 45 {
+		t.Fatalf("duration_ms = %v, want 45", decoded["duration_ms"])
+	}
+	var roundTrip ToolCall
+	if err := json.Unmarshal(encoded, &roundTrip); err != nil {
+		t.Fatalf("round trip error = %v", err)
+	}
+	if roundTrip.Duration != 45*time.Millisecond {
+		t.Fatalf("roundTrip.Duration = %s, want 45ms", roundTrip.Duration)
+	}
+}
 
 func TestFileStoreSaveLoadAndList(t *testing.T) {
 	t.Parallel()
@@ -18,14 +45,15 @@ func TestFileStoreSaveLoadAndList(t *testing.T) {
 		CreatedAt: now,
 		UpdatedAt: now,
 		Model:     "minimax",
-		Messages:  []Message{{Role: "user", Content: "hello"}},
+		Messages:  []Message{{Role: RoleUser, Content: "hello"}},
+		Tools:     []ToolCall{{Name: "Read", Duration: 45 * time.Millisecond}},
 	}
 	second := Session{
 		ID:        "session-2",
 		CreatedAt: now.Add(time.Minute),
 		UpdatedAt: now.Add(2 * time.Minute),
 		Model:     "minimax",
-		Messages:  []Message{{Role: "assistant", Content: "world"}},
+		Messages:  []Message{{Role: RoleAssistant, Content: "ignored"}, {Role: RoleUser, Content: "world"}},
 	}
 
 	if err := store.Save(first); err != nil {
@@ -42,8 +70,8 @@ func TestFileStoreSaveLoadAndList(t *testing.T) {
 	if loaded.ID != first.ID {
 		t.Fatalf("loaded.ID = %q, want %q", loaded.ID, first.ID)
 	}
-	if len(loaded.Messages) != 1 || loaded.Messages[0].Content != "hello" {
-		t.Fatalf("loaded.Messages = %#v", loaded.Messages)
+	if len(loaded.Tools) != 1 || loaded.Tools[0].Duration != 45*time.Millisecond {
+		t.Fatalf("loaded.Tools = %#v", loaded.Tools)
 	}
 
 	summaries, err := store.List()
@@ -58,6 +86,9 @@ func TestFileStoreSaveLoadAndList(t *testing.T) {
 	}
 	if summaries[1].ID != "session-1" {
 		t.Fatalf("summaries[1].ID = %q, want session-1", summaries[1].ID)
+	}
+	if summaries[0].Preview != "world" {
+		t.Fatalf("preview = %q, want world", summaries[0].Preview)
 	}
 }
 

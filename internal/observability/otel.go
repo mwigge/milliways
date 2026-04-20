@@ -2,7 +2,7 @@ package observability
 
 import (
 	"context"
-	"io"
+	"os"
 	"sync"
 	"time"
 
@@ -17,6 +17,21 @@ import (
 )
 
 const instrumentationName = "github.com/mwigge/milliways/internal/observability"
+
+const (
+	// SpanProviderSend wraps provider request/response work.
+	SpanProviderSend = "milliways.provider.send"
+	// SpanMemorySearch wraps MemPalace search work.
+	SpanMemorySearch = "milliways.memory.search"
+	// SpanMemoryWrite wraps MemPalace write work.
+	SpanMemoryWrite = "milliways.memory.write"
+	// SpanSessionCompact wraps session compaction work.
+	SpanSessionCompact = "milliways.session.compact"
+	// SpanToolPrefix prefixes tool spans.
+	SpanToolPrefix = "milliways.tool."
+	// SpanHookPrefix prefixes hook spans.
+	SpanHookPrefix = "milliways.hook."
+)
 
 var (
 	otelOnce        sync.Once
@@ -88,11 +103,11 @@ func (s *OTelSink) Emit(evt Event) {
 }
 
 func defaultOTelInit() (otelState, error) {
-	traceExporter, err := stdouttrace.New(stdouttrace.WithWriter(io.Discard))
+	traceExporter, err := stdouttrace.New(stdouttrace.WithWriter(os.Stdout))
 	if err != nil {
 		return otelState{}, err
 	}
-	metricExporter, err := stdoutmetric.New(stdoutmetric.WithWriter(io.Discard))
+	metricExporter, err := stdoutmetric.New(stdoutmetric.WithWriter(os.Stdout))
 	if err != nil {
 		return otelState{}, err
 	}
@@ -244,4 +259,72 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// StartSpan starts a named span on the shared tracer.
+func StartSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_ = MustOtel()
+	return otelGlobalState.tracer.Start(ctx, name, trace.WithAttributes(attrs...))
+}
+
+// StartProviderSendSpan starts a provider send span.
+func StartProviderSendSpan(ctx context.Context, model string, inputTokens, outputTokens int) (context.Context, trace.Span) {
+	return StartSpan(ctx, SpanProviderSend,
+		attribute.String("model", model),
+		attribute.Int("tokens.input", inputTokens),
+		attribute.Int("tokens.output", outputTokens),
+	)
+}
+
+// StartMemorySearchSpan starts a MemPalace search span.
+func StartMemorySearchSpan(ctx context.Context, query string, limit int) (context.Context, trace.Span) {
+	return StartSpan(ctx, SpanMemorySearch,
+		attribute.String("query", query),
+		attribute.Int("limit", limit),
+	)
+}
+
+// StartMemoryWriteSpan starts a MemPalace write span.
+func StartMemoryWriteSpan(ctx context.Context, wing, room string) (context.Context, trace.Span) {
+	return StartSpan(ctx, SpanMemoryWrite,
+		attribute.String("wing", wing),
+		attribute.String("room", room),
+	)
+}
+
+// StartToolSpan starts a tool execution span.
+func StartToolSpan(ctx context.Context, toolName string) (context.Context, trace.Span) {
+	return StartSpan(ctx, SpanToolPrefix+toolName, attribute.String("tool.name", toolName))
+}
+
+// StartHookSpan starts a hook span.
+func StartHookSpan(ctx context.Context, operation string, blocked bool) (context.Context, trace.Span) {
+	return StartSpan(ctx, SpanHookPrefix+operation, attribute.Bool("hook.blocked", blocked))
+}
+
+// StartSessionCompactSpan starts a compaction span.
+func StartSessionCompactSpan(ctx context.Context, sessionID string) (context.Context, trace.Span) {
+	return StartSpan(ctx, SpanSessionCompact, attribute.String("session.id", sessionID))
+}
+
+// Shutdown flushes and stops the shared providers.
+func Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var err error
+	if otelGlobalState.meterProvider != nil {
+		if shutdownErr := otelGlobalState.meterProvider.Shutdown(ctx); shutdownErr != nil {
+			err = shutdownErr
+		}
+	}
+	if otelGlobalState.tracerProvider != nil {
+		if shutdownErr := otelGlobalState.tracerProvider.Shutdown(ctx); shutdownErr != nil && err == nil {
+			err = shutdownErr
+		}
+	}
+	return err
 }
