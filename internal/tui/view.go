@@ -146,6 +146,10 @@ func (m Model) renderCurrentPanel(width, height int) string {
 		return m.renderRoutingPanel(width, height)
 	case SidePanelSystem:
 		return m.renderSystemPanel(width, height)
+	case SidePanelTrace:
+		return m.renderTracePanel(width, height)
+	case SidePanelOpenSpec:
+		return m.renderOpenSpecPanel(width, height)
 	case SidePanelSnippets:
 		return m.renderSnippetsPanel(width, height)
 	case SidePanelDiff:
