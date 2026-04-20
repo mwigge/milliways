@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -100,5 +101,19 @@ func TestFileStoreLoadMissingSession(t *testing.T) {
 	_, err := store.Load("missing")
 	if !errors.Is(err, ErrSessionNotFound) {
 		t.Fatalf("Load() error = %v, want ErrSessionNotFound", err)
+	}
+}
+
+func TestFileStoreSaveBlocksReadOnlyModePath(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	store := NewFileStore(filepath.Join(homeDir, "dev", "src", "pprojects", "sessions"))
+	err := store.Save(Session{ID: "session-1", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
+	if err == nil {
+		t.Fatal("Save() error = nil, want error")
+	}
+	if _, statErr := os.Stat(filepath.Join(homeDir, "dev", "src", "pprojects", "sessions", "session-1.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("session file stat error = %v, want not exist", statErr)
 	}
 }

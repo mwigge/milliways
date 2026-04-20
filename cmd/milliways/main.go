@@ -199,6 +199,9 @@ based on what each tool does best.
 	cmd.AddCommand(ticketsCmd())
 	cmd.AddCommand(rateCmd())
 	cmd.AddCommand(loginCmd())
+	cmd.AddCommand(initCmd())
+	cmd.AddCommand(modeCmd())
+	cmd.AddCommand(traceCmd())
 
 	return cmd
 }

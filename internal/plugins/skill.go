@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/mwigge/milliways/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -28,6 +29,12 @@ type skillFrontmatter struct {
 // LoadSkills loads every skill markdown file in pluginRoot/skills.
 func LoadSkills(pluginRoot string) ([]Skill, error) {
 	dir := filepath.Join(pluginRoot, "skills")
+	if err := config.GuardReadPath(dir); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -51,6 +58,9 @@ func LoadSkills(pluginRoot string) ([]Skill, error) {
 }
 
 func loadSkillFile(path string) (Skill, error) {
+	if err := config.GuardReadPath(path); err != nil {
+		return Skill{}, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Skill{}, fmt.Errorf("read skill %q: %w", path, err)
