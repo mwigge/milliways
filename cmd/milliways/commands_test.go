@@ -20,8 +20,6 @@ import (
 )
 
 func TestBestContinuationKitchen_PrefersResumeCapableProvider(t *testing.T) {
-	t.Parallel()
-
 	reg := kitchen.NewRegistry()
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{
 		Name:     "claude",
@@ -70,8 +68,6 @@ func TestCapabilitiesForKitchen_HTTPKitchen(t *testing.T) {
 }
 
 func TestSelectDecision_ContinuationOverridesWeakerRoute(t *testing.T) {
-	t.Parallel()
-
 	cfg := &maitre.Config{
 		Routing: maitre.RoutingConfig{
 			Keywords: map[string]string{"fix": "gemini"},
@@ -105,8 +101,6 @@ func TestSelectDecision_ContinuationOverridesWeakerRoute(t *testing.T) {
 }
 
 func TestRootCmd_SwitchToRequiresSession(t *testing.T) {
-	t.Parallel()
-
 	cmd := rootCmd()
 	cmd.SetArgs([]string{"--switch-to", "opencode", "continue working"})
 
@@ -120,8 +114,6 @@ func TestRootCmd_SwitchToRequiresSession(t *testing.T) {
 }
 
 func TestRootCmd_RegistersProjectRootFlag(t *testing.T) {
-	t.Parallel()
-
 	cmd := rootCmd()
 	flag := cmd.Flags().Lookup("project-root")
 	if flag == nil {
@@ -196,8 +188,6 @@ routing:
 }
 
 func TestMakeRuntimeSinkIncludesOTelWithoutPantryDB(t *testing.T) {
-	t.Parallel()
-
 	sink := makeRuntimeSink(nil)
 	multi, ok := sink.(observability.MultiSink)
 	if !ok {

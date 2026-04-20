@@ -12,8 +12,6 @@ import (
 )
 
 func TestRootCmd_RegistersContextFlags(t *testing.T) {
-	t.Parallel()
-
 	cmd := rootCmd()
 	for _, flagName := range []string{"context-json", "context-stdin", "context-file"} {
 		if flag := cmd.Flags().Lookup(flagName); flag == nil {
@@ -23,8 +21,6 @@ func TestRootCmd_RegistersContextFlags(t *testing.T) {
 }
 
 func TestLoadDispatchContextBundle_PrefersStdin(t *testing.T) {
-	t.Parallel()
-
 	stdinBundle := sampleEditorBundleJSON("stdin_test.go", "go")
 	jsonBundle := sampleEditorBundleJSON("ignored.py", "python")
 
@@ -41,8 +37,6 @@ func TestLoadDispatchContextBundle_PrefersStdin(t *testing.T) {
 }
 
 func TestAssembleSignals_MergesEditorBundleWithoutPantry(t *testing.T) {
-	t.Parallel()
-
 	bundle, err := editorcontext.ParseBundle([]byte(sampleEditorBundleJSON("handler_test.go", "go")))
 	if err != nil {
 		t.Fatalf("ParseBundle() error = %v", err)

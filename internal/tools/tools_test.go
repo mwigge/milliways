@@ -1,0 +1,124 @@
+package tools
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestNewBuiltInRegistryContainsAllTools(t *testing.T) {
+	t.Parallel()
+
+	registry := NewBuiltInRegistry()
+	defs := registry.List()
+	if len(defs) != 7 {
+		t.Fatalf("tool count = %d, want 7", len(defs))
+	}
+	for _, name := range []string{"Read", "Write", "Edit", "Grep", "Glob", "Bash", "WebFetch"} {
+		if _, ok := registry.Get(name); !ok {
+			t.Fatalf("missing tool %q", name)
+		}
+	}
+}
+
+func TestHandleReadWriteAndEdit(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sample.txt")
+
+	if _, err := handleWrite(context.Background(), map[string]any{"path": path, "content": "hello\nworld\n"}); err != nil {
+		t.Fatalf("handleWrite() error = %v", err)
+	}
+	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("unexpected backup existence err = %v", err)
+	}
+	content, err := handleRead(context.Background(), map[string]any{"path": path})
+	if err != nil {
+		t.Fatalf("handleRead() error = %v", err)
+	}
+	if content != "hello\nworld\n" {
+		t.Fatalf("content = %q", content)
+	}
+	_, err = handleEdit(context.Background(), map[string]any{
+		"path": path,
+		"diff": "@@\n-world\n+gopher\n",
+	})
+	if err != nil {
+		t.Fatalf("handleEdit() error = %v", err)
+	}
+	updated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(updated) != "hello\ngopher\n" {
+		t.Fatalf("updated = %q", string(updated))
+	}
+	if _, err := os.Stat(path + ".bak"); err != nil {
+		t.Fatalf("expected backup: %v", err)
+	}
+}
+
+func TestHandleGrepAndGlob(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	alpha := filepath.Join(dir, "alpha.txt")
+	beta := filepath.Join(dir, "beta.md")
+	if err := os.WriteFile(alpha, []byte("hello\nneedle\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(beta, []byte("needle in markdown\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	grepResult, err := handleGrep(context.Background(), map[string]any{"path": dir, "pattern": "needle", "include": "*.txt"})
+	if err != nil {
+		t.Fatalf("handleGrep() error = %v", err)
+	}
+	if !strings.Contains(grepResult, "alpha.txt:2:needle") || strings.Contains(grepResult, "beta.md") {
+		t.Fatalf("grep result = %q", grepResult)
+	}
+
+	globResult, err := handleGlob(context.Background(), map[string]any{"path": dir, "pattern": "*.txt"})
+	if err != nil {
+		t.Fatalf("handleGlob() error = %v", err)
+	}
+	if !strings.Contains(globResult, "alpha.txt") || strings.Contains(globResult, "beta.md") {
+		t.Fatalf("glob result = %q", globResult)
+	}
+}
+
+func TestHandleBash(t *testing.T) {
+	t.Parallel()
+
+	result, err := handleBash(context.Background(), map[string]any{"command": "printf 'hello'", "timeout": 1.0})
+	if err != nil {
+		t.Fatalf("handleBash() error = %v", err)
+	}
+	if result != "hello" {
+		t.Fatalf("result = %q", result)
+	}
+}
+
+func TestHandleWebFetch(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("payload"))
+	}))
+	defer server.Close()
+
+	result, err := handleWebFetch(context.Background(), map[string]any{"url": server.URL, "timeout": float64((1 * time.Second).Seconds())})
+	if err != nil {
+		t.Fatalf("handleWebFetch() error = %v", err)
+	}
+	if result != "payload" {
+		t.Fatalf("result = %q", result)
+	}
+}
