@@ -58,7 +58,7 @@ func newCodesProvider(apiKey, baseURL, model string) *CodesProvider {
 // SupportsModel reports whether the Codes provider can handle the given model.
 func (p *CodesProvider) SupportsModel(m Model) bool {
 	value := strings.TrimSpace(string(m))
-	return value == string(ModelCodes) || strings.HasPrefix(value, "codes/")
+	return value == string(ModelCodes) || value == p.model || strings.HasPrefix(value, "codes/")
 }
 
 // Send executes a streaming chat completion request.

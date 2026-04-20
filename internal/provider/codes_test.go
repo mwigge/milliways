@@ -69,6 +69,9 @@ func TestCodesProviderSupportsModel(t *testing.T) {
 	if !provider.SupportsModel(ModelCodes) {
 		t.Fatal("expected codes model to be supported")
 	}
+	if !provider.SupportsModel(Model("gpt-5.4")) {
+		t.Fatal("expected direct codes model to be supported")
+	}
 	if !provider.SupportsModel(Model("codes/gpt5.4")) {
 		t.Fatal("expected codes prefixed model to be supported")
 	}
