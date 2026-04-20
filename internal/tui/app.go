@@ -134,6 +134,8 @@ type Model struct {
 	openSpecExpanded       bool
 	openSpecSelected       int
 	openSpecCourseSelected int
+	tracePanelView         tracePanelView
+	traceSessionSelected   int
 
 	// DB access for ledger sink.
 	pdb *pantry.DB
@@ -930,6 +932,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 		}
 
 	case "tab":
+		if !m.overlayActive && m.sidePanelIdx == int(SidePanelTrace) {
+			m.advanceTracePanelView()
+			return nil
+		}
 		if !m.overlayActive && m.sidePanelIdx == int(SidePanelSnippets) {
 			m.refreshSnippetIndex()
 			if m.snippetSelected < len(m.snippetIndex)-1 {
@@ -992,6 +998,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 			m.moveRunTargetSelection(-1)
 			return nil
 		}
+		if !m.overlayActive && m.sidePanelIdx == int(SidePanelTrace) {
+			m.moveTraceSessionSelection(-1)
+			return nil
+		}
 		if !m.overlayActive && m.sidePanelIdx == int(SidePanelCompare) {
 			if m.compareSelected > 0 {
 				m.compareSelected--
@@ -1039,6 +1049,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) []tea.Cmd {
 	case "down":
 		if m.overlayActive && m.overlayMode == OverlayRunIn {
 			m.moveRunTargetSelection(1)
+			return nil
+		}
+		if !m.overlayActive && m.sidePanelIdx == int(SidePanelTrace) {
+			m.moveTraceSessionSelection(1)
 			return nil
 		}
 		if !m.overlayActive && m.sidePanelIdx == int(SidePanelCompare) {

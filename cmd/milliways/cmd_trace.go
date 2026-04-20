@@ -3,10 +3,23 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/mwigge/milliways/internal/observability"
 	"github.com/spf13/cobra"
 )
+
+type traceEventView struct {
+	ID          string         `json:"id,omitempty"`
+	Session     string         `json:"session,omitempty"`
+	SessionID   string         `json:"session_id,omitempty"`
+	Timestamp   string         `json:"timestamp,omitempty"`
+	Type        string         `json:"type"`
+	Description string         `json:"description,omitempty"`
+	Actor       string         `json:"actor,omitempty"`
+	Parent      string         `json:"parent,omitempty"`
+	Data        map[string]any `json:"data,omitempty"`
+}
 
 func traceCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -52,7 +65,7 @@ func traceShowCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			data, err := json.MarshalIndent(events, "", "  ")
+			data, err := json.MarshalIndent(traceEventViews(events), "", "  ")
 			if err != nil {
 				return fmt.Errorf("marshal trace events: %w", err)
 			}
@@ -93,4 +106,25 @@ func traceDiagramCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&decision, "decision", false, "Output a Mermaid decision tree")
 	cmd.MarkFlagsMutuallyExclusive("graph", "decision")
 	return cmd
+}
+
+func traceEventViews(events []observability.AgentTraceEvent) []traceEventView {
+	views := make([]traceEventView, 0, len(events))
+	for _, event := range events {
+		view := traceEventView{
+			ID:          event.ID,
+			Session:     event.SessionID,
+			SessionID:   event.SessionID,
+			Type:        event.Type,
+			Description: event.Description,
+			Actor:       event.Actor,
+			Parent:      event.Parent,
+			Data:        event.Data,
+		}
+		if !event.Timestamp.IsZero() {
+			view.Timestamp = event.Timestamp.UTC().Format(time.RFC3339Nano)
+		}
+		views = append(views, view)
+	}
+	return views
 }
