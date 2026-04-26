@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -47,6 +48,7 @@ var commandHandlers = map[string]commandHandler{
 	"codex-reasoning":  handleCodexReasoning,
 	"codex-search":     handleCodexSearch,
 	"codex-image":      handleCodexImage,
+	"review-all":       handleReviewAll,
 	"metrics":          handleMetrics,
 	"logs":             handleLogs,
 	"events":           handleEvents,
@@ -850,6 +852,89 @@ func valueOrDefault(value, fallback string) string {
 	return value
 }
 
+func handleReviewAll(ctx context.Context, r *REPL, args string) error {
+	target, err := resolveReviewTarget(args)
+	if err != nil {
+		return err
+	}
+
+	// Collect authenticated runners in stable order.
+	var names []string
+	for name := range r.runners {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var activeRunners []Runner
+	var activeNames []string
+	for _, name := range names {
+		runner := r.runners[name]
+		ok, authErr := runner.AuthStatus()
+		if authErr != nil || !ok {
+			r.println(MutedText(fmt.Sprintf("  skip %s (not authenticated)", name)))
+			continue
+		}
+		activeRunners = append(activeRunners, runner)
+		activeNames = append(activeNames, name)
+	}
+	if len(activeRunners) == 0 {
+		return fmt.Errorf("no authenticated runners available")
+	}
+
+	r.println(AccentColorText(r.scheme, fmt.Sprintf("review-all: %s", target.Label)))
+	r.println(MutedText(fmt.Sprintf("  runners: %s", strings.Join(activeNames, ", "))))
+	r.println("")
+
+	sections := make(map[string]string, len(activeRunners))
+
+	for i, runner := range activeRunners {
+		name := activeNames[i]
+		rscheme := SchemeForRunner(name)
+
+		var prompt string
+		if len(target.Repos) == 1 && filepath.IsAbs(target.Repos[0]) {
+			prompt = buildReviewPrompt(target, "")
+		} else {
+			prompt = buildRemoteReviewPrompt(target.Repos, r.rules)
+		}
+
+		req := DispatchRequest{
+			Prompt:   prompt,
+			History:  nil, // review is stateless
+			Rules:    r.rules,
+			ClientID: "repl/review-all/" + name,
+		}
+
+		r.println(fmt.Sprintf("  %s reviewing...", RunnerAccentText(name, name)))
+		start := time.Now()
+		output, execErr := collectReview(ctx, runner, req)
+		dur := time.Since(start)
+
+		if execErr != nil {
+			r.println(fmt.Sprintf("  %s %s  %.1fs  %v",
+				ColorText(rscheme, "✗"), RunnerAccentText(name, name), dur.Seconds(), execErr))
+			sections[name] = fmt.Sprintf("_Error: %v_", execErr)
+			continue
+		}
+		r.println(fmt.Sprintf("  %s %s  %.1fs  %d chars",
+			ColorText(rscheme, "✓"), RunnerAccentText(name, name), dur.Seconds(), len(output)))
+		sections[name] = output
+	}
+
+	// Write output file.
+	reviewCwd, _ := os.Getwd()
+	root := findGitRootFrom(reviewCwd)
+	if root == "" {
+		root = reviewCwd
+	}
+	path, writeErr := writeReviewFile(root, target.Label, sections, activeNames)
+	if writeErr != nil {
+		return fmt.Errorf("writing review: %w", writeErr)
+	}
+	r.println("")
+	r.println(AccentColorText(r.scheme, "review saved: "+path))
+	return nil
+}
+
 func handleMetrics(ctx context.Context, r *REPL, args string) error {
 	scheme := r.scheme
 	r.println(AccentColorText(scheme, "Session metrics"))
@@ -983,6 +1068,11 @@ func handleHelp(ctx context.Context, r *REPL, args string) error {
 	r.println("  Context:")
 	r.println("    /openspec        Show current OpenSpec change")
 	r.println("    /repo            Show current git repository")
+	r.println("")
+	r.println("  Review:")
+	r.println("    /review-all [branch]               Review current/named branch (all authenticated runners)")
+	r.println("    /review-all openspec <name>        Review OpenSpec change")
+	r.println("    /review-all <org>/<pattern>        Review matching repos (requires gh CLI)")
 	r.println("")
 	r.println("  Claude:")
 	r.println("    /claude-reasoning [mode]  Set progress detail: off, summary, verbose (default: verbose)")
