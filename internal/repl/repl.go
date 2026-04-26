@@ -18,7 +18,6 @@ import (
 
 	"github.com/mwigge/milliways/internal/conversation"
 	"github.com/mwigge/milliways/internal/substrate"
-	"github.com/peterh/liner"
 )
 
 // renderQuotaBar renders a compact quota bar: "5h:████░░ 50%" or "5h:12" (no limit).
@@ -192,7 +191,7 @@ func (s *RunnerState) Cancel() {
 }
 
 type REPL struct {
-	liner         *liner.State
+	input         InputLine
 	runner        Runner
 	runners       map[string]Runner
 	prev          Runner
@@ -252,11 +251,8 @@ type replSession struct {
 }
 
 func NewREPL(stdout io.Writer) *REPL {
-	liner := liner.NewLiner()
-	liner.SetCtrlCAborts(true)
-
 	return &REPL{
-		liner:   liner,
+		input:   newDefaultInput(),
 		runners: make(map[string]Runner),
 		stdout:  stdout,
 		scheme:  DefaultScheme(),
@@ -303,7 +299,7 @@ func (r *REPL) CurrentRunner() Runner {
 }
 
 func (r *REPL) Run(ctx context.Context) error {
-	defer r.liner.Close()
+	defer r.input.Close()
 
 	if r.substrate != nil {
 		if err := r.substrate.Ping(ctx); err == nil {
@@ -333,7 +329,7 @@ func (r *REPL) Run(ctx context.Context) error {
 		}
 	}()
 
-	r.liner.SetCompleter(func(line string) []string {
+	r.input.SetCompleter(func(line string) []string {
 		var completions []string
 		if strings.HasPrefix(line, "/") {
 			prefix := strings.TrimPrefix(line, "/")
@@ -377,9 +373,9 @@ func (r *REPL) Run(ctx context.Context) error {
 	r.println("")
 
 	for {
-		line, err := r.liner.Prompt("▶ ")
+		line, err := r.input.Prompt("▶ ")
 		if err != nil {
-			if err == liner.ErrPromptAborted {
+			if err == ErrInputAborted {
 				if r.runnerState.IsRunning() {
 					r.runnerState.Cancel()
 					r.println(MutedText("^C"))
@@ -390,7 +386,7 @@ func (r *REPL) Run(ctx context.Context) error {
 				r.println("")
 				return nil
 			}
-			if err == liner.ErrNotTerminalOutput || err == io.EOF {
+			if err == io.EOF {
 				return nil
 			}
 			return err
@@ -401,7 +397,7 @@ func (r *REPL) Run(ctx context.Context) error {
 			continue
 		}
 
-		r.liner.AppendHistory(line)
+		r.input.AppendHistory(line)
 		r.history = append(r.history, line)
 
 		input := ParseInput(line)
