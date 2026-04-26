@@ -1,7 +1,6 @@
 package repl
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"os"
@@ -54,34 +53,42 @@ func runPTYWithContext(cmd *exec.Cmd, ctx context.Context) (string, error) {
 
 	go func() {
 		defer wg.Done()
-		scanner := bufio.NewScanner(ptmx)
-		for scanner.Scan() {
-			line := scanner.Text()
-			os.Stdout.Write([]byte(line + "\n"))
+		buf := make([]byte, 4096)
+		for {
+			n, err := ptmx.Read(buf)
+			if n > 0 {
+				chunk := buf[:n]
+				os.Stdout.Write(chunk)
 
-			stripped := htmlTagStripper.ReplaceAllString(line, "")
-			stripped = strings.TrimSpace(stripped)
-			if stripped == "" {
-				continue
-			}
+				chunkStr := string(chunk)
+				stripped := htmlTagStripper.ReplaceAllString(chunkStr, "")
+				stripped = strings.TrimSpace(stripped)
 
-			if zscalerBlock.MatchString(line) {
-				inZscalerBlock = true
-			}
-			if inZscalerBlock {
-				if strings.Contains(strings.ToLower(line), "</html>") {
-					inZscalerBlock = false
+				if stripped == "" {
+					continue
 				}
-				continue
-			}
-			if noisePattern.MatchString(line) {
-				continue
-			}
+				if zscalerBlock.MatchString(chunkStr) {
+					inZscalerBlock = true
+					continue
+				}
+				if inZscalerBlock {
+					if strings.Contains(strings.ToLower(chunkStr), "</html>") {
+						inZscalerBlock = false
+					}
+					continue
+				}
+				if noisePattern.MatchString(chunkStr) {
+					continue
+				}
 
-			mu.Lock()
-			captured.WriteString(stripped + "\n")
-			gotContent = true
-			mu.Unlock()
+				mu.Lock()
+				captured.WriteString(stripped + "\n")
+				gotContent = true
+				mu.Unlock()
+			}
+			if err != nil {
+				break
+			}
 		}
 	}()
 
