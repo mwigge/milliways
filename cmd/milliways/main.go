@@ -1453,6 +1453,7 @@ func runREPL(configPath string, noRestore bool) error {
 
 	r.SetNoRestore(noRestore)
 
-	ctx := context.Background()
-	return r.Run(ctx)
+	shell := repl.NewShell(os.Stdout, os.Stderr)
+	shell.AddPane(repl.NewREPLPane(r, "repl"))
+	return shell.Run(context.Background())
 }
