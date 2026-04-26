@@ -9,11 +9,13 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/mwigge/milliways/internal/conversation"
@@ -211,6 +213,7 @@ type REPL struct {
 	noRestore          bool
 	shellBuf           *ShellOutputBuffer
 	pendingAttachments []Attachment
+	lastCtrlC          time.Time // for double-Ctrl-C exit detection
 }
 
 func (r *REPL) SetVersion(v string) {
@@ -424,13 +427,18 @@ func (r *REPL) Run(ctx context.Context) error {
 			if err == ErrInputAborted {
 				if r.runnerState.IsRunning() {
 					r.runnerState.Cancel()
-					r.println(MutedText("^C"))
-					r.println(MutedText("interrupted — type a new prompt or /switch"))
+					r.println(MutedText("^C  interrupted"))
 					r.runnerState.SetDone()
 					continue
 				}
-				r.println("")
-				return nil
+				// Double Ctrl-C within 1 second exits; first tap shows hint.
+				if !r.lastCtrlC.IsZero() && time.Since(r.lastCtrlC) < time.Second {
+					r.println("")
+					return nil
+				}
+				r.lastCtrlC = time.Now()
+				r.println(MutedText("^C  (ctrl-c again to exit)"))
+				continue
 			}
 			if err == io.EOF {
 				return nil
@@ -673,9 +681,21 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 		done <- nil
 	}()
 
+	// Catch SIGINT (Ctrl-C) during dispatch so it cancels the runner rather
+	// than terminating the process. The channel is buffered so a rapid second
+	// Ctrl-C doesn't block after the first is handled.
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, syscall.SIGINT)
+	defer signal.Stop(sigCh)
+
 	select {
 	case err := <-done:
 		return err
+	case <-sigCh:
+		cancel()
+		r.println(MutedText("^C  interrupted"))
+		<-done
+		return nil
 	case <-ctx.Done():
 		cancel()
 		<-done
