@@ -235,10 +235,11 @@ func runCodexJSON(ctx context.Context, cmd *exec.Cmd, out io.Writer, reasoningMo
 	}
 
 	wg.Add(2)
+	var scanErr error
 	go func() {
 		defer wg.Done()
 		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 1024), 1024*1024)
+		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
 			select {
 			case <-ctx.Done():
@@ -264,12 +265,17 @@ func runCodexJSON(ctx context.Context, cmd *exec.Cmd, out io.Writer, reasoningMo
 				mu.Unlock()
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			mu.Lock()
+			scanErr = err
+			mu.Unlock()
+		}
 	}()
 
 	go func() {
 		defer wg.Done()
 		scanner := bufio.NewScanner(stderr)
-		scanner.Buffer(make([]byte, 1024), 1024*1024)
+		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			if line == "" {
@@ -290,6 +296,9 @@ func runCodexJSON(ctx context.Context, cmd *exec.Cmd, out io.Writer, reasoningMo
 
 	mu.Lock()
 	defer mu.Unlock()
+	if scanErr != nil && waitErr == nil {
+		waitErr = scanErr
+	}
 	if !wroteAssistant && sawProxyBlock {
 		_, _ = out.Write([]byte("[codex blocked by Zscaler/proxy; open ChatGPT in a browser, approve the security prompt, then retry]\n"))
 		return fmt.Errorf("%w: browser approval required", ErrCodexProxyBlocked)
@@ -307,7 +316,7 @@ func codexAssistantText(line string) (string, bool) {
 	}
 
 	switch evt.Type {
-	case "message", "assistant", "text", "response.output_text.done":
+	case "message", "assistant", "text", "response.output_text.done", "agent_message":
 		return firstNonEmpty(evt.Content, evt.Message, evt.Text), firstNonEmpty(evt.Content, evt.Message, evt.Text) != ""
 	case "response.output_text.delta":
 		return evt.Delta, evt.Delta != ""
@@ -344,6 +353,10 @@ func codexProgressText(line string, reasoningMode CodexReasoningMode) (string, b
 
 	eventType := stringField(evt, "type")
 	if eventType == "" {
+		return "", false
+	}
+	// agent_message carries the full assistant text — handled by codexAssistantText.
+	if eventType == "agent_message" {
 		return "", false
 	}
 	item := mapField(evt, "item")
