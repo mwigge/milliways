@@ -91,12 +91,15 @@ type chatMessage struct {
 }
 
 type chatDelta struct {
-	Content string `json:"content"`
+	Content          string `json:"content"`
+	ReasoningContent string `json:"reasoning_content,omitempty"` // MiniMax thinking field
+	Thinking         string `json:"thinking,omitempty"`           // alternate thinking field
 }
 
 type chatChoice struct {
-	Delta        chatDelta `json:"delta"`
-	FinishReason string    `json:"finish_reason,omitempty"`
+	Delta        chatDelta  `json:"delta"`
+	Message      *chatDelta `json:"message,omitempty"` // non-streaming fallback
+	FinishReason string     `json:"finish_reason,omitempty"`
 }
 
 type minimaxUsage struct {
@@ -249,41 +252,65 @@ func runMinimaxSSE(ctx context.Context, client *http.Client, req *http.Request, 
 		}
 
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
+
+		// Accept both SSE ("data: {...}") and bare NDJSON ("{...}") lines.
+		var jsonData string
+		switch {
+		case strings.HasPrefix(line, "data: "):
+			jsonData = strings.TrimPrefix(line, "data: ")
+			if jsonData == "[DONE]" {
+				goto done
+			}
+		case strings.HasPrefix(line, "{"):
+			jsonData = line
+		default:
 			continue
 		}
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			break
-		}
 
-		var cr chatResponse
-		if err := json.Unmarshal([]byte(data), &cr); err != nil {
-			continue
-		}
-
-		if cr.Usage != nil {
-			finalUsage = cr.Usage
-		}
-
-		for _, choice := range cr.Choices {
-			content := choice.Delta.Content
-			if content == "" {
+		{
+			var cr chatResponse
+			if err := json.Unmarshal([]byte(jsonData), &cr); err != nil {
 				continue
 			}
-			// Buffer content line by line so teeWriter gets complete lines.
-			for {
-				nl := strings.IndexByte(content, '\n')
-				if nl < 0 {
-					lineBuf.WriteString(content)
-					break
+
+			if cr.Usage != nil {
+				finalUsage = cr.Usage
+			}
+
+			for _, choice := range cr.Choices {
+				// Streaming uses delta.content; non-streaming fallback uses message.content.
+				delta := choice.Delta
+				if choice.Message != nil && delta.Content == "" {
+					delta = *choice.Message
 				}
-				lineBuf.WriteString(content[:nl])
-				flushLine()
-				content = content[nl+1:]
+
+				// Surface reasoning content in verbose/summary mode.
+				if reasoningMode != MinimaxReasoningOff {
+					thinking := firstNonEmpty(delta.ReasoningContent, delta.Thinking)
+					if thinking != "" {
+						writeProgress("* minimax: thinking - " + oneLine(thinking))
+					}
+				}
+
+				content := delta.Content
+				if content == "" {
+					continue
+				}
+				// Buffer content line by line so teeWriter gets complete lines.
+				for {
+					nl := strings.IndexByte(content, '\n')
+					if nl < 0 {
+						lineBuf.WriteString(content)
+						break
+					}
+					lineBuf.WriteString(content[:nl])
+					flushLine()
+					content = content[nl+1:]
+				}
 			}
 		}
 	}
+done:
 
 	// Flush any remaining buffered content.
 	if lineBuf.Len() > 0 {
