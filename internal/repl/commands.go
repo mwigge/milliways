@@ -56,6 +56,13 @@ var commandHandlers = map[string]commandHandler{
 	"events":           handleEvents,
 	"help":             handleHelp,
 	"exit":             handleExit,
+	// OpenSpec commands
+	"opsx:list":     handleOpsxList,
+	"opsx:status":   handleOpsxStatus,
+	"opsx:show":     handleOpsxShow,
+	"opsx:apply":    handleOpsxApply,
+	"opsx:archive":  handleOpsxArchive,
+	"opsx:validate": handleOpsxValidate,
 	// Runner shorthand aliases — /claude, /codex, etc. are equivalent to /switch <runner>
 	"claude":  handleSwitch,
 	"codex":   handleSwitch,
@@ -1225,6 +1232,14 @@ func handleHelp(ctx context.Context, r *REPL, args string) error {
 	r.println("  Context:")
 	r.println("    /openspec        Show current OpenSpec change")
 	r.println("    /repo            Show current git repository")
+	r.println("")
+	r.println("  OpenSpec:")
+	r.println("    /opsx:list               List active changes")
+	r.println("    /opsx:status [name]      Show task completion (default: current change)")
+	r.println("    /opsx:show <name>        Show change detail")
+	r.println("    /opsx:apply <name>       Fetch instructions and dispatch to current runner")
+	r.println("    /opsx:archive <name>     Archive a completed change")
+	r.println("    /opsx:validate <name>    Validate a change")
 	r.println("")
 	r.println("  Images:")
 	r.println("    /image <path>    Load image and add to pending queue (sent with next prompt)")
