@@ -894,7 +894,7 @@ func handleReviewAll(ctx context.Context, r *REPL, args string) error {
 		if len(target.Repos) == 1 && filepath.IsAbs(target.Repos[0]) {
 			prompt = buildReviewPrompt(target, "")
 		} else {
-			prompt = buildRemoteReviewPrompt(target.Repos, r.rules)
+			prompt = buildRemoteReviewPrompt(target.Repos)
 		}
 
 		req := DispatchRequest{

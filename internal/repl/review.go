@@ -12,6 +12,128 @@ import (
 	"time"
 )
 
+// vcsBackend wraps gh (GitHub) or glab (GitLab) CLI operations.
+type vcsBackend struct {
+	cli string // "gh" or "glab"
+}
+
+// detectVCSBackend picks the right CLI by inspecting the git remote URL,
+// then falling back to whichever binary is in PATH.
+func detectVCSBackend(repoRoot string) *vcsBackend {
+	remote, _ := runCmd(repoRoot, "git", "remote", "get-url", "origin")
+	remote = strings.TrimSpace(strings.ToLower(remote))
+
+	tryGlab := func() *vcsBackend {
+		if _, err := exec.LookPath("glab"); err == nil {
+			return &vcsBackend{cli: "glab"}
+		}
+		return nil
+	}
+	tryGH := func() *vcsBackend {
+		if _, err := exec.LookPath("gh"); err == nil {
+			return &vcsBackend{cli: "gh"}
+		}
+		return nil
+	}
+
+	if strings.Contains(remote, "gitlab") {
+		if b := tryGlab(); b != nil {
+			return b
+		}
+	}
+	if strings.Contains(remote, "github") {
+		if b := tryGH(); b != nil {
+			return b
+		}
+	}
+	// No remote hint — prefer glab then gh.
+	if b := tryGlab(); b != nil {
+		return b
+	}
+	return tryGH()
+}
+
+func (b *vcsBackend) mrLabel() string {
+	if b.cli == "glab" {
+		return "MRs"
+	}
+	return "PRs"
+}
+
+// listRepos returns "org/name" repo identifiers matching glob within org.
+func (b *vcsBackend) listRepos(org, glob string) ([]string, error) {
+	var out string
+	var err error
+	switch b.cli {
+	case "gh":
+		out, err = runCmd("", "gh", "repo", "list", org,
+			"--limit", "100", "--json", "nameWithOwner", "--jq", ".[].nameWithOwner")
+		if err != nil {
+			return nil, fmt.Errorf("gh repo list: %w", err)
+		}
+	case "glab":
+		// Use the groups API — works for both groups and subgroups.
+		out, err = runCmd("", "glab", "api",
+			"groups/"+org+"/projects",
+			"--field", "per_page=100",
+			"--jq", ".[].path_with_namespace")
+		if err != nil {
+			return nil, fmt.Errorf("glab api groups: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("no VCS CLI available (install gh or glab)")
+	}
+	return filterByGlob(out, org, glob), nil
+}
+
+// listOpenMRs returns a human-readable list of open PRs/MRs for a repo.
+func (b *vcsBackend) listOpenMRs(repo string) (string, error) {
+	switch b.cli {
+	case "gh":
+		return runCmd("", "gh", "pr", "list", "--repo", repo, "--state", "open",
+			"--json", "number,title,headRefName",
+			"--jq", `.[] | "#\(.number) \(.title) [\(.headRefName)]"`)
+	case "glab":
+		return runCmd("", "glab", "mr", "list", "--repo", repo, "--state", "opened")
+	}
+	return "", fmt.Errorf("no VCS CLI")
+}
+
+// getMRDiff returns the unified diff for a specific PR/MR number.
+func (b *vcsBackend) getMRDiff(repo, number string) (string, error) {
+	switch b.cli {
+	case "gh":
+		return runCmd("", "gh", "pr", "diff", "--repo", repo, number)
+	case "glab":
+		return runCmd("", "glab", "mr", "diff", number, "--repo", repo)
+	}
+	return "", fmt.Errorf("no VCS CLI")
+}
+
+// filterByGlob filters newline-delimited repo names against a glob pattern.
+func filterByGlob(out, org, glob string) []string {
+	var repos []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Match against short name (after last /) and full "org/name".
+		shortName := line
+		if idx := strings.LastIndex(line, "/"); idx >= 0 {
+			shortName = line[idx+1:]
+		}
+		if m, _ := filepath.Match(glob, shortName); m {
+			repos = append(repos, line)
+			continue
+		}
+		if m, _ := filepath.Match(glob, line); m {
+			repos = append(repos, line)
+		}
+	}
+	return repos
+}
+
 // ReviewTarget describes what is being reviewed.
 type ReviewTarget struct {
 	Label string   // human-readable, used in file header
@@ -93,34 +215,23 @@ func resolveRepoPattern(pattern string) (ReviewTarget, error) {
 		return ReviewTarget{}, fmt.Errorf("pattern must be org/glob (e.g. myorg/service*)")
 	}
 	org, glob := parts[0], parts[1]
-	out, err := runCmd("", "gh", "repo", "list", org, "--limit", "100", "--json", "nameWithOwner", "--jq", ".[].nameWithOwner")
-	if err != nil {
-		return ReviewTarget{}, fmt.Errorf("gh repo list: %w", err)
+
+	cwd, _ := os.Getwd()
+	backend := detectVCSBackend(findGitRootFrom(cwd))
+	if backend == nil {
+		return ReviewTarget{}, fmt.Errorf("no VCS CLI found — install gh (GitHub) or glab (GitLab)")
 	}
-	var repos []string
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		name := line
-		if idx := strings.Index(line, "/"); idx >= 0 {
-			name = line[idx+1:]
-		}
-		matched, _ := filepath.Match(glob, name)
-		if !matched {
-			matched, _ = filepath.Match(glob, line)
-		}
-		if matched {
-			repos = append(repos, line)
-		}
+
+	repos, err := backend.listRepos(org, glob)
+	if err != nil {
+		return ReviewTarget{}, err
 	}
 	if len(repos) == 0 {
-		return ReviewTarget{}, fmt.Errorf("no repos matched %q", pattern)
+		return ReviewTarget{}, fmt.Errorf("no repos matched %q via %s", pattern, backend.cli)
 	}
 	return ReviewTarget{
-		Label: pattern,
-		Repos: repos, // "org/name" strings, not local paths
+		Label: pattern + " [" + backend.cli + "]",
+		Repos: repos,
 	}, nil
 }
 
@@ -158,24 +269,35 @@ func buildReviewPrompt(target ReviewTarget, repoLabel string) string {
 	return b.String()
 }
 
-// buildRemoteReviewPrompt constructs a review prompt for remote repos fetched via gh CLI.
-func buildRemoteReviewPrompt(repos []string, rules string) string {
+// buildRemoteReviewPrompt constructs a review prompt for remote repos using
+// whichever VCS CLI is available (gh for GitHub, glab for GitLab).
+func buildRemoteReviewPrompt(repos []string) string {
+	cwd, _ := os.Getwd()
+	backend := detectVCSBackend(findGitRootFrom(cwd))
+
 	var b strings.Builder
-	b.WriteString("Please review the following open pull requests/branches. For each, check correctness, bugs, and code quality.\n\n")
+	mrLabel := "PRs/MRs"
+	if backend != nil {
+		mrLabel = backend.mrLabel()
+	}
+	b.WriteString("Please review the following open " + mrLabel + ". For each, check correctness, bugs, and code quality.\n\n")
+
 	for _, repo := range repos {
 		b.WriteString("## Repo: " + repo + "\n\n")
-		prs, err := runCmd("", "gh", "pr", "list", "--repo", repo, "--state", "open",
-			"--json", "number,title,headRefName",
-			"--jq", ".[] | \"#\\(.number) \\(.title) [\\(.headRefName)]\"")
-		if err != nil || strings.TrimSpace(prs) == "" {
-			b.WriteString("_No open PRs._\n\n")
+		if backend == nil {
+			b.WriteString("_No VCS CLI available — install gh or glab._\n\n")
 			continue
 		}
-		b.WriteString("Open PRs:\n" + strings.TrimSpace(prs) + "\n\n")
-		// Fetch diff for first open PR only (to stay within context limits).
-		prNum := extractFirstPRNumber(prs)
-		if prNum != "" {
-			diff, diffErr := runCmd("", "gh", "pr", "diff", "--repo", repo, prNum)
+		mrs, err := backend.listOpenMRs(repo)
+		if err != nil || strings.TrimSpace(mrs) == "" {
+			b.WriteString("_No open " + mrLabel + "._\n\n")
+			continue
+		}
+		b.WriteString("Open " + mrLabel + ":\n" + strings.TrimSpace(mrs) + "\n\n")
+		// Fetch diff for the first open MR/PR only (context limit).
+		mrNum := extractFirstMRNumber(mrs)
+		if mrNum != "" {
+			diff, diffErr := backend.getMRDiff(repo, mrNum)
 			if diffErr == nil && len(diff) > 0 {
 				if len(diff) > 20000 {
 					diff = diff[:20000] + "\n[truncated]"
@@ -187,19 +309,19 @@ func buildRemoteReviewPrompt(repos []string, rules string) string {
 	return b.String()
 }
 
-func extractFirstPRNumber(ghOutput string) string {
-	lines := strings.SplitN(strings.TrimSpace(ghOutput), "\n", 2)
-	if len(lines) == 0 {
+// extractFirstMRNumber parses the first MR/PR number from CLI output.
+// Handles both gh format "#123 title" and glab format "!123\ttitle" or "123\ttitle".
+func extractFirstMRNumber(output string) string {
+	line := strings.TrimSpace(strings.SplitN(output, "\n", 2)[0])
+	if line == "" {
 		return ""
 	}
-	first := lines[0]
-	if strings.HasPrefix(first, "#") {
-		parts := strings.Fields(first)
-		if len(parts) > 0 {
-			return strings.TrimPrefix(parts[0], "#")
-		}
-	}
-	return ""
+	// Strip leading # or ! (gh uses #, glab uses !)
+	line = strings.TrimLeft(line, "#!")
+	// First whitespace/tab-delimited token is the number
+	return strings.FieldsFunc(line, func(r rune) bool {
+		return r == ' ' || r == '\t'
+	})[0]
 }
 
 // collectReview runs a single runner and returns its plain-text output.

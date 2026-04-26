@@ -256,27 +256,28 @@ func TestAnsiPattern(t *testing.T) {
 	}
 }
 
-func TestExtractFirstPRNumber(t *testing.T) {
+func TestExtractFirstMRNumber(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		input  string
-		want   string
+		name  string
+		input string
+		want  string
 	}{
-		{"single pr", "#42 Add auth [feature/auth]", "42"},
-		{"multiple prs", "#1 First\n#2 Second", "1"},
+		{"gh pr format", "#42 Add auth [feature/auth]", "42"},
+		{"gh multiple", "#1 First\n#2 Second", "1"},
+		{"glab mr format", "!17\tAdd auth\tsource-branch\t2 days ago", "17"},
+		{"glab plain number", "17\tTitle\tbranch", "17"},
 		{"empty", "", ""},
-		{"no hash", "not a pr", ""},
 	}
 
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := extractFirstPRNumber(tt.input)
+			got := extractFirstMRNumber(tt.input)
 			if got != tt.want {
-				t.Errorf("extractFirstPRNumber(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("extractFirstMRNumber(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
@@ -335,7 +336,7 @@ func TestBuildRemoteReviewPrompt_ListsRepos(t *testing.T) {
 	t.Parallel()
 
 	repos := []string{"myorg/service-a", "myorg/service-b"}
-	prompt := buildRemoteReviewPrompt(repos, "")
+	prompt := buildRemoteReviewPrompt(repos)
 
 	for _, repo := range repos {
 		if !strings.Contains(prompt, repo) {
