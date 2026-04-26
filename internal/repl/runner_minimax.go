@@ -373,6 +373,10 @@ done:
 		flushLine()
 	}
 
+	if scanErr := scanner.Err(); scanErr != nil {
+		return finalUsage, fmt.Errorf("minimax: SSE read error: %w", scanErr)
+	}
+
 	if reasoningMode != MinimaxReasoningOff {
 		elapsed := time.Since(start)
 		parts := []string{fmt.Sprintf("ok minimax: done  %.1fs", elapsed.Seconds())}
