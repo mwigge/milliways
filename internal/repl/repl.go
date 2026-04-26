@@ -1,7 +1,6 @@
 package repl
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -824,65 +823,33 @@ func (sw *streamingWriter) Flush() {
 }
 
 func streamCmdOutput(ctx context.Context, cmd *exec.Cmd, out io.Writer) error {
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
+	// Use io.Pipe so exec.Cmd's internal copy goroutines write to a pipe we
+	// control. cmd.Wait() waits for those goroutines before returning, then we
+	// close the write end, which signals EOF to the reader. This avoids the
+	// "file already closed" race that occurs with StdoutPipe when cmd.Wait()
+	// closes the read end while caller goroutines are still in Read.
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
 
 	if err := cmd.Start(); err != nil {
+		_ = pw.CloseWithError(err)
+		_ = pr.Close()
 		return err
 	}
 
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	errChan := make(chan error, 1)
-
-	writeLine := func(p []byte) {
-		mu.Lock()
-		defer mu.Unlock()
-		out.Write(p)
-		out.Write([]byte{'\n'})
-	}
-
-	wg.Add(2)
+	waitDone := make(chan error, 1)
 	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 1024), 1024*1024)
-		for scanner.Scan() {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				writeLine(scanner.Bytes())
-			}
-		}
+		err := cmd.Wait()
+		// Close the write end so the reader below gets EOF.
+		_ = pw.CloseWithError(err)
+		waitDone <- err
 	}()
 
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stderr)
-		scanner.Buffer(make([]byte, 1024), 1024*1024)
-		for scanner.Scan() {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				writeLine(scanner.Bytes())
-			}
-		}
-	}()
+	_, _ = io.Copy(out, pr)
+	_ = pr.Close()
 
-	go func() {
-		errChan <- cmd.Wait()
-	}()
-
-	wg.Wait()
-	return <-errChan
+	return <-waitDone
 }
 
 var ansiStripper = regexp.MustCompile(`\x1b\[[0-9;]*m`)

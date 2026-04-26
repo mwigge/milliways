@@ -108,7 +108,6 @@ func TestCodexProgressText(t *testing.T) {
 }
 
 func TestRunCodexJSONWritesAssistantOutput(t *testing.T) {
-	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -125,7 +124,6 @@ func TestRunCodexJSONWritesAssistantOutput(t *testing.T) {
 }
 
 func TestRunCodexJSONWritesProgressAndAssistantOutput(t *testing.T) {
-	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -145,7 +143,6 @@ func TestRunCodexJSONWritesProgressAndAssistantOutput(t *testing.T) {
 }
 
 func TestRunCodexJSONSuppressesProxyHTML(t *testing.T) {
-	t.Parallel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

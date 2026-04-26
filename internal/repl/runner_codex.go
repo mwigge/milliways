@@ -186,33 +186,34 @@ type codexJSONItem struct {
 }
 
 func runCodexJSON(ctx context.Context, cmd *exec.Cmd, out io.Writer, reasoningMode CodexReasoningMode) error {
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
+	// stdout: use io.Pipe so exec.Cmd's internal goroutine writes to pw;
+	// cmd.Wait() waits for that goroutine, then we close pw → scanner gets EOF.
+	// This eliminates the "file already closed" race from StdoutPipe.
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+
+	// stderr: collect via a pipe writer for proxy-block detection.
+	stderrPR, stderrPW := io.Pipe()
+	cmd.Stderr = stderrPW
 
 	if err := cmd.Start(); err != nil {
+		_ = pw.CloseWithError(err)
+		_ = pr.Close()
+		_ = stderrPW.CloseWithError(err)
+		_ = stderrPR.Close()
 		return err
 	}
 
-	var mu sync.Mutex
 	var wroteAssistant bool
 	var wroteProgress bool
 	var sawProxyBlock bool
 	var stderrLines []string
-	var wg sync.WaitGroup
 
 	writeText := func(text string) {
 		text = strings.TrimRight(text, "\r\n")
 		if text == "" {
 			return
 		}
-		mu.Lock()
-		defer mu.Unlock()
 		_, _ = out.Write([]byte(text))
 		if !strings.HasSuffix(text, "\n") {
 			_, _ = out.Write([]byte("\n"))
@@ -225,8 +226,6 @@ func runCodexJSON(ctx context.Context, cmd *exec.Cmd, out io.Writer, reasoningMo
 		if text == "" {
 			return
 		}
-		mu.Lock()
-		defer mu.Unlock()
 		_, _ = out.Write([]byte(text))
 		if !strings.HasSuffix(text, "\n") {
 			_, _ = out.Write([]byte("\n"))
@@ -234,71 +233,61 @@ func runCodexJSON(ctx context.Context, cmd *exec.Cmd, out io.Writer, reasoningMo
 		wroteProgress = true
 	}
 
-	wg.Add(2)
-	var scanErr error
+	// stderr goroutine: drain stderrPR until EOF.
+	var stderrWg sync.WaitGroup
+	stderrWg.Add(1)
 	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stdout)
-		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-		for scanner.Scan() {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-
-			line := strings.TrimSpace(scanner.Text())
-			if line == "" {
-				continue
-			}
-			if text, ok := codexAssistantText(line); ok {
-				writeText(text)
-				continue
-			}
-			if progress, ok := codexProgressText(line, reasoningMode); ok {
-				writeProgress(progress)
-				continue
-			}
-			if codexLineLooksProxyBlocked(line) {
-				mu.Lock()
-				sawProxyBlock = true
-				mu.Unlock()
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			mu.Lock()
-			scanErr = err
-			mu.Unlock()
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stderr)
+		defer stderrWg.Done()
+		scanner := bufio.NewScanner(stderrPR)
 		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
 			if line == "" {
 				continue
 			}
-			mu.Lock()
 			if codexLineLooksProxyBlocked(line) {
 				sawProxyBlock = true
 			} else {
 				stderrLines = append(stderrLines, line)
 			}
-			mu.Unlock()
 		}
 	}()
 
-	waitErr := cmd.Wait()
-	wg.Wait()
+	// cmd.Wait() in background: waits for process exit AND exec's internal
+	// stdout copy goroutine, then closes pw → pr scanner gets EOF below.
+	waitDone := make(chan error, 1)
+	go func() {
+		err := cmd.Wait()
+		_ = pw.CloseWithError(err)
+		_ = stderrPW.CloseWithError(err)
+		waitDone <- err
+	}()
 
-	mu.Lock()
-	defer mu.Unlock()
-	if scanErr != nil && waitErr == nil {
-		waitErr = scanErr
+	// Scan stdout JSON lines in this goroutine (blocks until pw is closed).
+	scanner := bufio.NewScanner(pr)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if text, ok := codexAssistantText(line); ok {
+			writeText(text)
+			continue
+		}
+		if progress, ok := codexProgressText(line, reasoningMode); ok {
+			writeProgress(progress)
+			continue
+		}
+		if codexLineLooksProxyBlocked(line) {
+			sawProxyBlock = true
+		}
 	}
+	_ = pr.Close()
+
+	stderrWg.Wait()
+	waitErr := <-waitDone
+
 	if !wroteAssistant && sawProxyBlock {
 		_, _ = out.Write([]byte("[codex blocked by Zscaler/proxy; open ChatGPT in a browser, approve the security prompt, then retry]\n"))
 		return fmt.Errorf("%w: browser approval required", ErrCodexProxyBlocked)
