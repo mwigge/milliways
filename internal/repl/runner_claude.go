@@ -253,6 +253,23 @@ func runClaudeJSON(ctx context.Context, cmd *exec.Cmd, req DispatchRequest, out 
 		b, _ := json.Marshal(msg)
 		fmt.Fprintf(stdin, "%s\n", b)
 	}
+	// Write context fragments as a synthetic user message before the actual prompt.
+	if len(req.Context) > 0 {
+		var sb strings.Builder
+		for _, f := range req.Context {
+			sb.WriteString("## " + f.Label + "\n\n")
+			sb.WriteString(f.Content + "\n\n")
+		}
+		ctxMsg, _ := json.Marshal(map[string]any{
+			"type": "user",
+			"message": map[string]any{
+				"role":    "user",
+				"content": sb.String(),
+			},
+		})
+		fmt.Fprintf(stdin, "%s\n", ctxMsg)
+	}
+
 	// Write current user prompt.
 	promptJSON, _ := json.Marshal(map[string]any{
 		"type": "user",

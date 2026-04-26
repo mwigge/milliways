@@ -117,6 +117,17 @@ func (r *MinimaxRunner) Execute(ctx context.Context, req DispatchRequest, out io
 	for _, t := range req.History {
 		messages = append(messages, chatMessage{Role: t.Role, Content: t.Text})
 	}
+
+	// Prepend context fragments as an additional user message before the prompt.
+	if len(req.Context) > 0 {
+		var sb strings.Builder
+		for _, f := range req.Context {
+			sb.WriteString("## " + f.Label + "\n\n")
+			sb.WriteString(f.Content + "\n\n")
+		}
+		messages = append(messages, chatMessage{Role: "user", Content: sb.String()})
+	}
+
 	messages = append(messages, chatMessage{Role: "user", Content: req.Prompt})
 
 	payload := map[string]any{

@@ -19,6 +19,7 @@ type DispatchRequest struct {
 	History  []ConversationTurn // oldest-first; already capped to MaxHistoryTurns
 	Rules    string             // content of ai_local/CLAUDE.md; "" if not found
 	ClientID string             // e.g. "repl/claude"
+	Context  []ContextFragment  // injected context, prepended by runners
 }
 
 // MaxHistoryTurns is the maximum number of turns kept in the ring buffer.
@@ -28,6 +29,13 @@ const MaxHistoryTurns = 20
 // structured message arrays (codex, copilot).
 func buildTextPrompt(req DispatchRequest) string {
 	var b strings.Builder
+
+	// Prepend injected context fragments as labelled sections.
+	for _, f := range req.Context {
+		b.WriteString("## " + f.Label + "\n\n")
+		b.WriteString(f.Content + "\n\n")
+	}
+
 	if req.Rules != "" {
 		b.WriteString("[RULES]\n")
 		b.WriteString(req.Rules)

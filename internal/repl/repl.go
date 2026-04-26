@@ -209,6 +209,7 @@ type REPL struct {
 	logHandler    *ReplLogHandler
 	sessionStore  *SessionStore
 	noRestore     bool
+	shellBuf      *ShellOutputBuffer
 }
 
 func (r *REPL) SetVersion(v string) {
@@ -254,10 +255,11 @@ type replSession struct {
 
 func NewREPL(stdout io.Writer) *REPL {
 	r := &REPL{
-		input:   newDefaultInput(),
-		runners: make(map[string]Runner),
-		stdout:  stdout,
-		scheme:  DefaultScheme(),
+		input:    newDefaultInput(),
+		runners:  make(map[string]Runner),
+		stdout:   stdout,
+		scheme:   DefaultScheme(),
+		shellBuf: NewShellOutputBuffer(32 * 1024),
 	}
 
 	store, err := NewSessionStore()
@@ -588,8 +590,11 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 		usageBefore = q
 	}
 
+	enriched, _ := ResolveContext(prompt, r.shellBuf)
+
 	req := DispatchRequest{
-		Prompt:   prompt,
+		Prompt:   enriched.Text,
+		Context:  enriched.Fragments,
 		History:  historyWithoutLast(r.turnBuffer),
 		Rules:    r.rules,
 		ClientID: "repl/" + r.runner.Name(),
@@ -721,7 +726,7 @@ func (r *REPL) handleBash(cmd string) error {
 	}
 
 	execCmd := exec.Command(parts[0], parts[1:]...)
-	execCmd.Stdout = r.stdout
+	execCmd.Stdout = io.MultiWriter(r.stdout, r.shellBuf)
 	execCmd.Stderr = os.Stderr
 
 	return execCmd.Run()
