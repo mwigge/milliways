@@ -120,9 +120,9 @@ func (r *MinimaxRunner) Execute(ctx context.Context, req DispatchRequest, out io
 	}
 
 	var messages []chatMessage
-	if req.Rules != "" {
-		messages = append(messages, chatMessage{Role: "system", Content: req.Rules})
-	}
+	// req.Rules contains CLAUDE.md which has Claude Code-specific agent/skill
+	// orchestration instructions that confuse raw API models. HTTP runners receive
+	// the conversation and prompt directly without these meta-instructions.
 	for _, t := range req.History {
 		messages = append(messages, chatMessage{Role: t.Role, Content: t.Text})
 	}
