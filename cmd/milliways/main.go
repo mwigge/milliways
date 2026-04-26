@@ -770,6 +770,26 @@ func splitEnvArgs(raw string) []string {
 	return strings.Fields(raw)
 }
 
+// readMMXAPIKey reads the API key from the mmx CLI config (~/.mmx/config.json).
+// Returns "" if the file is absent or malformed.
+func readMMXAPIKey() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".mmx", "config.json"))
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		APIKey string `json:"api_key"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	return cfg.APIKey
+}
+
 // detectMempalaceMCP tries to find the mempalace MCP server command and args.
 // It checks in order:
 //  1. MILLIWAYS_MEMPALACE_MCP_CMD env var (if set)
@@ -1438,7 +1458,14 @@ func runREPL(configPath string, noRestore bool) error {
 	// Register minimax runner
 	var minimaxKey, minimaxModel, minimaxURL string
 	if cfg.Kitchens["minimax"].HTTPClient != nil {
-		minimaxKey = cfg.Kitchens["minimax"].HTTPClient.AuthKey
+		// AuthKey is either a literal key or an env var name — resolve it.
+		authKeyField := cfg.Kitchens["minimax"].HTTPClient.AuthKey
+		if resolved := os.Getenv(authKeyField); resolved != "" {
+			minimaxKey = resolved
+		} else {
+			// Fallback: read from ~/.mmx/config.json (mmx CLI config).
+			minimaxKey = readMMXAPIKey()
+		}
 		minimaxModel = cfg.Kitchens["minimax"].HTTPClient.Model
 		base := strings.TrimSuffix(cfg.Kitchens["minimax"].HTTPClient.BaseURL, "/text/chatcompletion_v2")
 		base = strings.TrimSuffix(base, "/text")
