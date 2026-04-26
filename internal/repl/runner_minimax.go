@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -110,6 +111,11 @@ type chatResponse struct {
 }
 
 func (r *MinimaxRunner) Execute(ctx context.Context, req DispatchRequest, out io.Writer) error {
+	if len(req.Attachments) > 0 {
+		slog.Warn("minimax: image attachments not supported, proceeding with text only",
+			"count", len(req.Attachments))
+	}
+
 	var messages []chatMessage
 	if req.Rules != "" {
 		messages = append(messages, chatMessage{Role: "system", Content: req.Rules})

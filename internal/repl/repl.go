@@ -192,22 +192,23 @@ func (s *RunnerState) Cancel() {
 }
 
 type REPL struct {
-	liner         *liner.State
-	runner        Runner
-	runners       map[string]Runner
-	prev          Runner
-	history       []string
-	stdout        io.Writer
-	runnerState   RunnerState
-	substrate     *substrate.Client
-	session       *replSession
-	getQuota      func(name string) (*QuotaInfo, error)
-	currentChange string
-	scheme        ColorScheme
-	version       string
-	turnBuffer    []ConversationTurn
-	rules         string
-	logHandler    *ReplLogHandler
+	liner              *liner.State
+	runner             Runner
+	runners            map[string]Runner
+	prev               Runner
+	history            []string
+	stdout             io.Writer
+	runnerState        RunnerState
+	substrate          *substrate.Client
+	session            *replSession
+	getQuota           func(name string) (*QuotaInfo, error)
+	currentChange      string
+	scheme             ColorScheme
+	version            string
+	turnBuffer         []ConversationTurn
+	rules              string
+	logHandler         *ReplLogHandler
+	pendingAttachments []Attachment
 }
 
 func (r *REPL) SetVersion(v string) {
@@ -550,11 +551,13 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 	}
 
 	req := DispatchRequest{
-		Prompt:   prompt,
-		History:  historyWithoutLast(r.turnBuffer),
-		Rules:    r.rules,
-		ClientID: "repl/" + r.runner.Name(),
+		Prompt:      prompt,
+		History:     historyWithoutLast(r.turnBuffer),
+		Rules:       r.rules,
+		ClientID:    "repl/" + r.runner.Name(),
+		Attachments: r.pendingAttachments,
 	}
+	r.pendingAttachments = nil
 
 	runCtx, cancel := context.WithCancel(ctx)
 	r.runnerState.SetRunning(cancel)

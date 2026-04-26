@@ -3,6 +3,7 @@ package repl
 import (
 	"context"
 	"io"
+	"log/slog"
 	"os/exec"
 )
 
@@ -19,6 +20,10 @@ func NewCopilotRunner() *CopilotRunner {
 func (r *CopilotRunner) Name() string { return "copilot" }
 
 func (r *CopilotRunner) Execute(ctx context.Context, req DispatchRequest, out io.Writer) error {
+	if len(req.Attachments) > 0 {
+		slog.Warn("copilot: image attachments not supported, proceeding with text only",
+			"count", len(req.Attachments))
+	}
 	args := []string{"cli", "generate", "--prompt", buildTextPrompt(req)}
 	cmd := exec.CommandContext(ctx, r.binary, args...)
 	return streamCmdOutput(ctx, cmd, out)

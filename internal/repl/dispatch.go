@@ -15,10 +15,11 @@ type ConversationTurn struct {
 
 // DispatchRequest is the unified input to Runner.Execute.
 type DispatchRequest struct {
-	Prompt   string
-	History  []ConversationTurn // oldest-first; already capped to MaxHistoryTurns
-	Rules    string             // content of ai_local/CLAUDE.md; "" if not found
-	ClientID string             // e.g. "repl/claude"
+	Prompt      string
+	History     []ConversationTurn // oldest-first; already capped to MaxHistoryTurns
+	Rules       string             // content of ai_local/CLAUDE.md; "" if not found
+	ClientID    string             // e.g. "repl/claude"
+	Attachments []Attachment       // images queued via /image command
 }
 
 // MaxHistoryTurns is the maximum number of turns kept in the ring buffer.
