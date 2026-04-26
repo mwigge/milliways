@@ -351,6 +351,7 @@ func (r *REPL) Run(ctx context.Context) error {
 			r.turnBuffer = sess.Turns
 			fmt.Fprintf(r.stdout, "restored %d turns from %s\n",
 				len(sess.Turns), sess.SavedAt.Format("2006-01-02 15:04"))
+			r.replayTurnsToSubstrate(ctx)
 		}
 	}
 
@@ -1048,6 +1049,26 @@ func (r *REPL) renderStatusBar(ctx context.Context) {
 		tty.Close()
 	} else {
 		fmt.Fprint(r.stdout, title)
+	}
+}
+
+// replayTurnsToSubstrate pushes turns that were restored from local disk into
+// the active MemPalace conversation so the substrate has context going forward.
+// It is a best-effort operation — errors are silently dropped.
+func (r *REPL) replayTurnsToSubstrate(ctx context.Context) {
+	if r.substrate == nil || r.session == nil || len(r.turnBuffer) == 0 {
+		return
+	}
+	for _, t := range r.turnBuffer {
+		_ = r.substrate.ConversationAppendTurn(ctx, substrate.AppendTurnRequest{
+			ConversationID: r.session.conversationID,
+			Turn: conversation.Turn{
+				Role:     conversation.TurnRole(t.Role),
+				Provider: t.Runner,
+				Text:     t.Text,
+				At:       t.At,
+			},
+		})
 	}
 }
 
