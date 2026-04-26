@@ -1634,6 +1634,9 @@ func runREPL(configPath string) error {
 		}
 	}
 
+	logHandler := repl.NewReplLogHandler()
+	slog.SetDefault(slog.New(logHandler))
+
 	var r *repl.REPL
 	if sc != nil {
 		r = repl.NewREPLWithSubstrate(os.Stdout, sc)
@@ -1642,6 +1645,7 @@ func runREPL(configPath string) error {
 		r = repl.NewREPL(os.Stdout)
 	}
 	r.SetVersion(version)
+	r.SetLogHandler(logHandler)
 
 	pdb, pdbErr := openPantryDB()
 	if pdbErr == nil {

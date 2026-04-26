@@ -1,11 +1,16 @@
 package repl
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // ConversationTurn is one history entry in the REPL ring buffer.
 type ConversationTurn struct {
-	Role string // "user" | "assistant"
-	Text string
+	Role   string    // "user" | "assistant"
+	Text   string
+	Runner string    // which runner was active
+	At     time.Time
 }
 
 // DispatchRequest is the unified input to Runner.Execute.

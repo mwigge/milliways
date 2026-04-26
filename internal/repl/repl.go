@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -206,11 +207,15 @@ type REPL struct {
 	version       string
 	turnBuffer    []ConversationTurn
 	rules         string
+	logHandler    *ReplLogHandler
 }
 
 func (r *REPL) SetVersion(v string) {
 	r.version = v
 }
+
+// SetLogHandler wires up the in-memory log buffer so /logs can read entries.
+func (r *REPL) SetLogHandler(h *ReplLogHandler) { r.logHandler = h }
 
 func (r *REPL) loadRules() {
 	paths := rulesSearchPaths()
@@ -420,7 +425,22 @@ func (r *REPL) Run(ctx context.Context) error {
 			handlerErr = handler(ctx, r, input.Content)
 
 		case InputShell:
-			handlerErr = r.handleBash(input.Content)
+			if recalled, ok := r.recallHistory(input.Content); ok {
+				r.println(MutedText("▶ " + recalled))
+				ri := ParseInput(recalled)
+				switch ri.Kind {
+				case InputCommand:
+					if h, hok := commandHandlers[ri.Command]; hok {
+						handlerErr = h(ctx, r, ri.Content)
+					}
+				case InputShell:
+					handlerErr = r.handleBash(ri.Content)
+				case InputPrompt:
+					handlerErr = r.handlePrompt(ctx, ri.Content)
+				}
+			} else {
+				handlerErr = r.handleBash(input.Content)
+			}
 
 		case InputPrompt:
 			handlerErr = r.handlePrompt(ctx, input.Content)
@@ -517,7 +537,12 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 		r.appendUserTurn(ctx, prompt)
 	}
 
-	r.turnBuffer = appendTurn(r.turnBuffer, ConversationTurn{Role: "user", Text: prompt})
+	r.turnBuffer = appendTurn(r.turnBuffer, ConversationTurn{
+		Role:   "user",
+		Text:   prompt,
+		Runner: r.runner.Name(),
+		At:     time.Now(),
+	})
 
 	var usageBefore *QuotaInfo
 	if q, err := r.runner.Quota(); err == nil {
@@ -571,7 +596,12 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 		slog.Info("dispatch end", "runner", r.runner.Name(), "duration_ms", dur.Milliseconds())
 
 		if outputBuf.Len() > 0 {
-			r.turnBuffer = appendTurn(r.turnBuffer, ConversationTurn{Role: "assistant", Text: outputBuf.String()})
+			r.turnBuffer = appendTurn(r.turnBuffer, ConversationTurn{
+				Role:   "assistant",
+				Text:   outputBuf.String(),
+				Runner: r.runner.Name(),
+				At:     time.Now(),
+			})
 		}
 
 		if q, err := r.runner.Quota(); err == nil && q != nil && q.Session != nil {
@@ -621,6 +651,28 @@ func historyWithoutLast(buf []ConversationTurn) []ConversationTurn {
 	out := make([]ConversationTurn, len(buf)-1)
 	copy(out, buf[:len(buf)-1])
 	return out
+}
+
+// recallHistory handles !N (line N) and !! (last line) from r.history.
+// The current !N/!! entry is already at the end of r.history when this runs.
+func (r *REPL) recallHistory(arg string) (string, bool) {
+	switch arg {
+	case "!", "":
+		// !! — recall the command before this one
+		if len(r.history) >= 2 {
+			return r.history[len(r.history)-2], true
+		}
+		return "", false
+	}
+	n, err := strconv.Atoi(arg)
+	if err != nil {
+		return "", false
+	}
+	// 1-indexed; exclude the current !N at the tail
+	if n >= 1 && n < len(r.history) {
+		return r.history[n-1], true
+	}
+	return "", false
 }
 
 func (r *REPL) handleBash(cmd string) error {

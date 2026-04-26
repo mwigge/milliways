@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -45,6 +47,9 @@ var commandHandlers = map[string]commandHandler{
 	"codex-reasoning":  handleCodexReasoning,
 	"codex-search":     handleCodexSearch,
 	"codex-image":      handleCodexImage,
+	"metrics":          handleMetrics,
+	"logs":             handleLogs,
+	"events":           handleEvents,
 	"help":             handleHelp,
 	"exit":             handleExit,
 	// Runner shorthand aliases — /claude, /codex, etc. are equivalent to /switch <runner>
@@ -155,13 +160,17 @@ func handleSession(ctx context.Context, r *REPL, args string) error {
 
 func handleHistory(ctx context.Context, r *REPL, args string) error {
 	if len(r.history) == 0 {
-		r.println("No history yet.")
+		r.println(MutedText("no history yet"))
 		return nil
 	}
-	r.println("History:")
+	scheme := r.scheme
+	width := len(fmt.Sprintf("%d", len(r.history)))
 	for i, h := range r.history {
-		r.println(fmt.Sprintf("  %d: %s", i+1, h))
+		num := fmt.Sprintf("%*d", width, i+1)
+		r.println(fmt.Sprintf("  %s  %s", MutedText(num), ColorText(scheme, h)))
 	}
+	r.println("")
+	r.println(MutedText(fmt.Sprintf("  !N to re-run line N  !!  last  ctrl-r  search")))
 	return nil
 }
 
@@ -841,6 +850,119 @@ func valueOrDefault(value, fallback string) string {
 	return value
 }
 
+func handleMetrics(ctx context.Context, r *REPL, args string) error {
+	scheme := r.scheme
+	r.println(AccentColorText(scheme, "Session metrics"))
+	r.println("")
+
+	var totalCost float64
+	var totalIn, totalOut, totalDispatches int
+
+	for name, runner := range r.runners {
+		rscheme := SchemeForRunner(name)
+		q, err := runner.Quota()
+		if err != nil || q == nil || q.Session == nil || q.Session.Dispatches == 0 {
+			r.println(fmt.Sprintf("  %s  no dispatches", RunnerAccentText(name, name)))
+			continue
+		}
+		s := q.Session
+		var parts []string
+		if s.CostUSD > 0 {
+			parts = append(parts, fmt.Sprintf("$%.4f", s.CostUSD))
+		}
+		if s.InputTokens > 0 {
+			parts = append(parts, fmt.Sprintf("%s↑", compactTokens(s.InputTokens)))
+		}
+		if s.OutputTokens > 0 {
+			parts = append(parts, fmt.Sprintf("%s↓", compactTokens(s.OutputTokens)))
+		}
+		parts = append(parts, fmt.Sprintf("%d dispatches", s.Dispatches))
+		r.println(fmt.Sprintf("  %s  %s",
+			RunnerAccentText(name, name),
+			AccentColorText(rscheme, strings.Join(parts, "  "))))
+		totalCost += s.CostUSD
+		totalIn += s.InputTokens
+		totalOut += s.OutputTokens
+		totalDispatches += s.Dispatches
+	}
+
+	if totalDispatches > 0 {
+		r.println("")
+		r.println(fmt.Sprintf("  %s  $%.4f  %s↑  %s↓  %d dispatches",
+			MutedText("total"),
+			totalCost,
+			compactTokens(totalIn),
+			compactTokens(totalOut),
+			totalDispatches))
+	}
+	return nil
+}
+
+func handleLogs(ctx context.Context, r *REPL, args string) error {
+	if r.logHandler == nil {
+		r.println(MutedText("log buffer not available"))
+		return nil
+	}
+	n := 50
+	if args != "" {
+		if v, err := strconv.Atoi(strings.TrimSpace(args)); err == nil && v > 0 {
+			n = v
+		}
+	}
+	records := r.logHandler.Buffer().Recent(n)
+	if len(records) == 0 {
+		r.println(MutedText("no log entries"))
+		return nil
+	}
+	scheme := r.scheme
+	for _, rec := range records {
+		ts := rec.At.Format("15:04:05")
+		level := rec.Level.String()
+		line := fmt.Sprintf("%s  %-5s  %s", ts, level, rec.Message)
+		for _, k := range []string{"runner", "err", "prompt_len", "duration_ms", "path", "bytes"} {
+			if v, ok := rec.Attrs[k]; ok {
+				line += fmt.Sprintf("  %s=%v", k, v)
+			}
+		}
+		switch rec.Level {
+		case slog.LevelWarn, slog.LevelError:
+			r.println(AccentColorText(scheme, line))
+		default:
+			r.println(MutedText(line))
+		}
+	}
+	return nil
+}
+
+func handleEvents(ctx context.Context, r *REPL, args string) error {
+	if len(r.turnBuffer) == 0 {
+		r.println(MutedText("no events this session"))
+		return nil
+	}
+	r.println(AccentColorText(r.scheme, fmt.Sprintf("Session events (%d turns)", len(r.turnBuffer))))
+	r.println("")
+	for _, t := range r.turnBuffer {
+		ts := "??:??"
+		if !t.At.IsZero() {
+			ts = t.At.Format("15:04:05")
+		}
+		snippet := t.Text
+		if len(snippet) > 120 {
+			snippet = snippet[:120] + "…"
+		}
+		snippet = strings.ReplaceAll(snippet, "\n", " ")
+		rscheme := SchemeForRunner(t.Runner)
+		roleLabel := MutedText(fmt.Sprintf("%-9s", t.Role))
+		runnerLabel := RunnerAccentText(t.Runner, t.Runner)
+		r.println(fmt.Sprintf("  %s  %s  %s  %s",
+			MutedText(ts),
+			roleLabel,
+			runnerLabel,
+			ColorText(rscheme, snippet)))
+	}
+	return nil
+}
+
 func handleHelp(ctx context.Context, r *REPL, args string) error {
 	r.println("Available commands:")
 	r.println("")
@@ -851,7 +973,7 @@ func handleHelp(ctx context.Context, r *REPL, args string) error {
 	r.println("")
 	r.println("  Session:")
 	r.println("    /session [name]  Show or name the session")
-	r.println("    /history         Show command history")
+	r.println("    /history         Show command history (!N re-run line N, !! last, ctrl-r search)")
 	r.println("    /summary         Show session statistics")
 	r.println("    /cost            Show session cost")
 	r.println("")
@@ -885,6 +1007,11 @@ func handleHelp(ctx context.Context, r *REPL, args string) error {
 	r.println("    /codex-reasoning [mode] Set progress detail: off, summary, verbose")
 	r.println("    /codex-search <on|off>  Toggle web search for /codex prompts")
 	r.println("    /codex-image add|clear|list [path]  Attach images to /codex prompts")
+	r.println("")
+	r.println("  Observability:")
+	r.println("    /metrics         Show per-runner cost and token usage")
+	r.println("    /logs [N]        Show last N log entries (default 50)")
+	r.println("    /events          Show conversation events this session")
 	r.println("")
 	r.println("  Auth:")
 	r.println("    /login           Login to current runner")
