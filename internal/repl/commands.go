@@ -49,6 +49,7 @@ var commandHandlers = map[string]commandHandler{
 	"codex-search":     handleCodexSearch,
 	"codex-image":      handleCodexImage,
 	"apply":            handleApply,
+	"image":            handleImage,
 	"review-all":       handleReviewAll,
 	"metrics":          handleMetrics,
 	"logs":             handleLogs,
@@ -919,6 +920,45 @@ func handleCodexImage(ctx context.Context, r *REPL, args string) error {
 	return nil
 }
 
+// handleImage manages the pending-attachment queue for multi-runner image input.
+//
+// Usage:
+//
+//	/image <path>    — load image and add to queue
+//	/image list      — list pending images
+//	/image clear     — clear pending images
+//	/image           — same as /image list
+func handleImage(ctx context.Context, r *REPL, args string) error {
+	args = strings.TrimSpace(args)
+
+	switch {
+	case args == "" || args == "list":
+		if len(r.pendingAttachments) == 0 {
+			r.println(MutedText("no pending images"))
+			return nil
+		}
+		for i, a := range r.pendingAttachments {
+			r.println(fmt.Sprintf("  [%d] %s (%s)", i, a.FilePath, a.MimeType))
+		}
+		return nil
+
+	case args == "clear":
+		n := len(r.pendingAttachments)
+		r.pendingAttachments = nil
+		r.println(fmt.Sprintf("cleared %d image(s)", n))
+		return nil
+
+	default:
+		a, err := LoadImageAttachment(args)
+		if err != nil {
+			return err
+		}
+		r.pendingAttachments = append(r.pendingAttachments, a)
+		r.println(fmt.Sprintf("queued: %s (%s)", args, a.MimeType))
+		return nil
+	}
+}
+
 func (r *REPL) codexRunner() (*CodexRunner, error) {
 	runner, ok := r.runners["codex"]
 	if !ok {
@@ -1185,6 +1225,11 @@ func handleHelp(ctx context.Context, r *REPL, args string) error {
 	r.println("  Context:")
 	r.println("    /openspec        Show current OpenSpec change")
 	r.println("    /repo            Show current git repository")
+	r.println("")
+	r.println("  Images:")
+	r.println("    /image <path>    Load image and add to pending queue (sent with next prompt)")
+	r.println("    /image list      List pending images")
+	r.println("    /image clear     Clear pending images")
 	r.println("")
 	r.println("  Review:")
 	r.println("    /review-all [branch]               Review current/named branch (all authenticated runners)")

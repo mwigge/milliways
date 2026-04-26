@@ -44,6 +44,19 @@ func (r *CodexRunner) Name() string { return "codex" }
 
 func (r *CodexRunner) Execute(ctx context.Context, req DispatchRequest, out io.Writer) error {
 	args := r.execArgs(buildTextPrompt(req))
+	// Insert --image flags before the final "--" + prompt argument.
+	// execArgs always ends with ["--", prompt]; find the "--" sentinel.
+	if len(req.Attachments) > 0 {
+		insertAt := len(args) - 2 // position of "--" separator
+		if insertAt < 0 {
+			insertAt = 0
+		}
+		extra := make([]string, 0, len(req.Attachments)*2)
+		for _, a := range req.Attachments {
+			extra = append(extra, "--image", a.FilePath)
+		}
+		args = append(args[:insertAt], append(extra, args[insertAt:]...)...)
+	}
 	cmd := exec.CommandContext(ctx, r.binary, args...)
 	return runCodexJSON(ctx, cmd, out, r.reasoningMode)
 }

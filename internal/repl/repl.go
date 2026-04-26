@@ -191,25 +191,26 @@ func (s *RunnerState) Cancel() {
 }
 
 type REPL struct {
-	input         InputLine
-	runner        Runner
-	runners       map[string]Runner
-	prev          Runner
-	history       []string
-	stdout        io.Writer
-	runnerState   RunnerState
-	substrate     *substrate.Client
-	session       *replSession
-	getQuota      func(name string) (*QuotaInfo, error)
-	currentChange string
-	scheme        ColorScheme
-	version       string
-	turnBuffer    []ConversationTurn
-	rules         string
-	logHandler    *ReplLogHandler
-	sessionStore  *SessionStore
-	noRestore     bool
-	shellBuf      *ShellOutputBuffer
+	input              InputLine
+	runner             Runner
+	runners            map[string]Runner
+	prev               Runner
+	history            []string
+	stdout             io.Writer
+	runnerState        RunnerState
+	substrate          *substrate.Client
+	session            *replSession
+	getQuota           func(name string) (*QuotaInfo, error)
+	currentChange      string
+	scheme             ColorScheme
+	version            string
+	turnBuffer         []ConversationTurn
+	rules              string
+	logHandler         *ReplLogHandler
+	sessionStore       *SessionStore
+	noRestore          bool
+	shellBuf           *ShellOutputBuffer
+	pendingAttachments []Attachment
 }
 
 func (r *REPL) SetVersion(v string) {
@@ -593,12 +594,14 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 	enriched, _ := ResolveContext(prompt, r.shellBuf)
 
 	req := DispatchRequest{
-		Prompt:   enriched.Text,
-		Context:  enriched.Fragments,
-		History:  historyWithoutLast(r.turnBuffer),
-		Rules:    r.rules,
-		ClientID: "repl/" + r.runner.Name(),
+		Prompt:      enriched.Text,
+		Context:     enriched.Fragments,
+		History:     historyWithoutLast(r.turnBuffer),
+		Rules:       r.rules,
+		ClientID:    "repl/" + r.runner.Name(),
+		Attachments: r.pendingAttachments,
 	}
+	r.pendingAttachments = nil
 
 	runCtx, cancel := context.WithCancel(ctx)
 	r.runnerState.SetRunning(cancel)

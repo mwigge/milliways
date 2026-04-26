@@ -270,14 +270,40 @@ func runClaudeJSON(ctx context.Context, cmd *exec.Cmd, req DispatchRequest, out 
 		fmt.Fprintf(stdin, "%s\n", ctxMsg)
 	}
 
-	// Write current user prompt.
-	promptJSON, _ := json.Marshal(map[string]any{
-		"type": "user",
-		"message": map[string]any{
-			"role":    "user",
-			"content": req.Prompt,
-		},
-	})
+	// Write current user prompt, injecting image content blocks when attachments are present.
+	var promptJSON []byte
+	if len(req.Attachments) > 0 {
+		content := make([]map[string]any, 0, len(req.Attachments)+1)
+		for _, a := range req.Attachments {
+			content = append(content, map[string]any{
+				"type": "image",
+				"source": map[string]any{
+					"type":       "base64",
+					"media_type": a.MimeType,
+					"data":       a.Base64(),
+				},
+			})
+		}
+		content = append(content, map[string]any{
+			"type": "text",
+			"text": req.Prompt,
+		})
+		promptJSON, _ = json.Marshal(map[string]any{
+			"type": "user",
+			"message": map[string]any{
+				"role":    "user",
+				"content": content,
+			},
+		})
+	} else {
+		promptJSON, _ = json.Marshal(map[string]any{
+			"type": "user",
+			"message": map[string]any{
+				"role":    "user",
+				"content": req.Prompt,
+			},
+		})
+	}
 	_, _ = fmt.Fprintf(stdin, "%s\n", promptJSON)
 
 	var mu sync.Mutex
