@@ -1441,6 +1441,7 @@ func runREPL(configPath string, noRestore bool) error {
 		minimaxKey = cfg.Kitchens["minimax"].HTTPClient.AuthKey
 		minimaxModel = cfg.Kitchens["minimax"].HTTPClient.Model
 		base := strings.TrimSuffix(cfg.Kitchens["minimax"].HTTPClient.BaseURL, "/text/chatcompletion_v2")
+		base = strings.TrimSuffix(base, "/text")
 		base = strings.TrimSuffix(base, "/")
 		if base != "" {
 			minimaxURL = base + "/text/chatcompletion_v2"
