@@ -127,7 +127,7 @@ func (b *ProjectBridge) Search(ctx context.Context, query string) ([]ContextHit,
 		hit.PalaceID = b.palaceID
 		hit.PalacePath = b.palacePath
 		hit.Content = sanitizePromptInjection(truncate(hit.Content, 280))
-		hit.FactSummary = truncate(hit.FactSummary, 100)
+		hit.FactSummary = sanitizePromptInjection(truncate(hit.FactSummary, 100))
 		out = append(out, hit)
 	}
 	return out, nil
@@ -269,10 +269,14 @@ func truncate(value string, limit int) string {
 	if limit <= 0 || len(value) <= limit {
 		return value
 	}
-	if limit <= 1 {
-		return value[:limit]
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
 	}
-	return value[:limit-1] + "…"
+	if limit <= 1 {
+		return string(runes[:limit])
+	}
+	return string(runes[:limit-1]) + "…"
 }
 
 func splitEnvArgs(raw string) []string {

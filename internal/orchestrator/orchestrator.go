@@ -74,6 +74,8 @@ type Orchestrator struct {
 	Bridge *bridge.ProjectBridge
 	// ProjectContext is captured at segment start for repo tracking.
 	ProjectContext *project.ProjectContext
+	// MaxKitchens is the total number of kitchens for exhaustion guard.
+	MaxKitchens int
 }
 
 // Run executes a logical conversation with provider failover on exhaustion.
@@ -376,6 +378,24 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 				return conv, err
 			}
 			kitchenForce = ""
+			if o.MaxKitchens > 0 && len(exclude) >= o.MaxKitchens {
+				conv.EndActiveSegment(conversation.SegmentFailed, "all providers exhausted")
+				sink.Emit(observability.Event{
+					ConversationID: conv.ID,
+					BlockID:       conv.BlockID,
+					SegmentID:     seg.ID,
+					Kind:          "segment_end",
+					Provider:      "milliways",
+					Text:          "all providers exhausted",
+					At:            time.Now(),
+					Fields: map[string]string{
+						"status": string(conversation.SegmentFailed),
+						"reason": "all providers exhausted",
+					},
+				})
+				conv.Status = conversation.StatusFailed
+				return conv, fmt.Errorf("all kitchen providers exhausted")
+			}
 			continue
 		}
 

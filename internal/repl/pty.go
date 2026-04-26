@@ -12,7 +12,6 @@ import (
 	"syscall"
 
 	"github.com/creack/pty"
-	"golang.org/x/term"
 )
 
 var (
@@ -37,11 +36,6 @@ func runPTYWithContext(cmd *exec.Cmd, ctx context.Context) (string, error) {
 			cmd.Wait()
 		}
 	}()
-
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
-	if err == nil {
-		defer term.Restore(int(os.Stdin.Fd()), oldState)
-	}
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex

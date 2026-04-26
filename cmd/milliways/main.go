@@ -456,6 +456,7 @@ func dispatch(opts dispatchOpts) error {
 		Reader:         substrateReader,
 		Bridge:         projectBridge,
 		ProjectContext: projectContext,
+		MaxKitchens:   len(reg.Kitchens()),
 	}
 
 	start := time.Now()

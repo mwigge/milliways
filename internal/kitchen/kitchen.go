@@ -149,6 +149,11 @@ func (r *Registry) Get(name string) (Kitchen, bool) {
 	return k, ok
 }
 
+// Kitchens returns all kitchens in the registry.
+func (r *Registry) Kitchens() map[string]Kitchen {
+	return r.kitchens
+}
+
 // GetByStation returns the first ready kitchen that serves a station.
 func (r *Registry) GetByStation(station string) (Kitchen, bool) {
 	for _, k := range r.kitchens {
