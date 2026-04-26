@@ -955,17 +955,21 @@ func (r *REPL) renderStatusBar(ctx context.Context) {
 		parts = append(parts, MutedText("no session"))
 	}
 
-	// Render inline — absolute cursor positioning breaks in scrolling terminals
-	// without alternate-screen mode. The status bar appears just above each prompt.
-	r.print(BlackBackground)
-	for _, p := range parts {
+	// Render inline — each part already embeds BlackBackground+color+ResetColor,
+	// so the separator must re-apply BlackBackground explicitly (MutedText alone
+	// resets the background via ResetColor, leaving the separator on the
+	// terminal's default background).
+	for i, p := range parts {
+		if i > 0 {
+			fmt.Fprint(r.stdout, BlackBackground+DimFG+" | ")
+		}
 		r.print(p)
-		r.print(MutedText(" | "))
 	}
 	fmt.Fprint(r.stdout, "\x1b[0m\n")
 
-	// Also push key state into the terminal title bar — this genuinely persists
-	// at the top of the window regardless of scroll position.
+	// Push key state into the terminal title bar. Write directly to /dev/tty so
+	// the OSC sequence reaches the terminal regardless of how readline buffers
+	// or repositions stdout.
 	titleParts := make([]string, 0, 4)
 	titleParts = append(titleParts, "milliways")
 	if r.runner != nil {
@@ -981,7 +985,13 @@ func (r *REPL) renderStatusBar(ctx context.Context) {
 		}
 		titleParts = append(titleParts, sid)
 	}
-	fmt.Fprintf(r.stdout, "\x1b]0;%s\x07", strings.Join(titleParts, " | "))
+	title := "\x1b]0;" + strings.Join(titleParts, " | ") + "\x07"
+	if tty, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0); err == nil {
+		fmt.Fprint(tty, title)
+		tty.Close()
+	} else {
+		fmt.Fprint(r.stdout, title)
+	}
 }
 
 // lastAssistantText returns the Text of the most recent assistant ConversationTurn,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
 )
 
@@ -24,8 +25,12 @@ func (r *CopilotRunner) Execute(ctx context.Context, req DispatchRequest, out io
 		slog.Warn("copilot: image attachments not supported, proceeding with text only",
 			"count", len(req.Attachments))
 	}
-	args := []string{"-p", buildTextPrompt(req), "--allow-all-tools"}
+	cwd, _ := os.Getwd()
+	// --add-dir scopes file search to the project directory, avoiding macOS
+	// system paths that produce permission errors when copilot searches broadly.
+	args := []string{"-p", buildTextPrompt(req), "--allow-all-tools", "--add-dir", cwd}
 	cmd := exec.CommandContext(ctx, r.binary, args...)
+	cmd.Dir = cwd
 	return streamCmdOutput(ctx, cmd, out)
 }
 
