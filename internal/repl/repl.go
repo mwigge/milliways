@@ -933,6 +933,17 @@ func (r *REPL) renderStatusBar(ctx context.Context) {
 	fmt.Fprintf(r.stdout, "\x1b]0;%s\x07", strings.Join(titleParts, " | "))
 }
 
+// lastAssistantText returns the Text of the most recent assistant ConversationTurn,
+// or "" if none exists.
+func (r *REPL) lastAssistantText() string {
+	for i := len(r.turnBuffer) - 1; i >= 0; i-- {
+		if r.turnBuffer[i].Role == "assistant" {
+			return r.turnBuffer[i].Text
+		}
+	}
+	return ""
+}
+
 func (r *REPL) colorizeOutput(s string) string {
 	if s == "" {
 		return ""
