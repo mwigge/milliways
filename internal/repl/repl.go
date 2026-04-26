@@ -56,6 +56,11 @@ func ParseInput(input string) Input {
 		}
 
 		command, content := splitHead(body)
+		if content == "" {
+			if command == "claude" || command == "codex" || command == "minimax" || command == "copilot" {
+				content = command
+			}
+		}
 		return Input{
 			Kind:    InputCommand,
 			Raw:     raw,
