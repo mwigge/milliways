@@ -2,9 +2,9 @@
 
 > The Restaurant at the End of the Universe — one CLI to route them all.
 
-Milliways is a terminal-first AI routing layer for coding, research, and review workflows. Start the REPL with `milliways` (default) or the TUI with `milliways --tui`. Route each request to the right installed kitchen while keeping a full ledger of what ran.
+Milliways is a terminal-first AI shell. It sits in front of the AI tools you already use — Claude, Codex, MiniMax, Copilot — and routes each prompt to the right one through a single interface with persistent session history, context injection, and a fixed status bar.
 
-It does not run models itself or manage credentials. It sits in front of the tools you already use and orchestrates them through one interface.
+It does not run models itself or manage credentials. It calls the CLIs and APIs you have already set up.
 
 ## Install
 
@@ -45,7 +45,7 @@ milliways
 # ▶ Type a prompt or /help
 ```
 
-The REPL is a lightweight terminal interface with sequential runner execution:
+The REPL is a vi-mode terminal interface with session persistence and live streaming output:
 
 ```text
 milliways REPL
@@ -58,7 +58,11 @@ Switched to claude
 [claude] Thinking...
 ...
 ✓ claude  3.2s
+
+ claude | mo:3 | 1.2k↑ 0.8k↓ | $0.02              ← persistent status bar (bottom)
 ```
+
+Sessions are auto-saved per working directory and restored on the next `milliways` launch. Context fragments can be injected inline: `@file`, `@git`, `@branch`, `@shell` expand before the prompt is dispatched.
 
 ### REPL Commands
 
@@ -75,13 +79,24 @@ Switched to claude
 
 | Command | Description |
 |---------|-------------|
-| `/session [name]` | Show or resume a session |
-| `/history` | Show command history |
+| `/session [name]` | Show or resume a named session |
+| `/history` | Show prompt history |
 | `/summary` | Show session statistics |
 | `/cost` | Show session cost |
 | `/limit` | Show runner quotas and token counts |
 | `/openspec [name]` | Show current OpenSpec change |
 | `/repo` | Show current git repository |
+
+**Input and context**
+
+| Command | Description |
+|---------|-------------|
+| `/apply [index]` | Write an AI code block from the last response to disk |
+| `/image <path>` | Attach an image to the next prompt (PNG/JPEG/GIF/WebP) |
+| `@file <path>` | Inject file contents inline before dispatch |
+| `@git` | Inject `git diff HEAD` inline |
+| `@branch` | Inject current branch name |
+| `@shell <cmd>` | Inject shell command output inline |
 
 **Claude runner**
 
@@ -129,20 +144,18 @@ Switched to claude
 
 ### Status bar
 
-A status line renders above each prompt showing quota bars, session token usage, and cost. The terminal title bar (`milliways | runner | $cost`) updates on every interaction and persists across scrolling and runner switches.
+A persistent status bar is fixed to the bottom row of the terminal using an ANSI scroll region. It shows the active runner, session turn count, token usage, and cost. It stays visible during scrolling and repaints during long-running dispatches. The terminal title bar (`milliways | runner | $cost`) is also kept current throughout the session.
 
 Reasoning modes control how much live progress each runner shows:
 - `off` — silent, output only
 - `summary` — tool names and completion summary
 - `verbose` — full event stream: session ready, tool calls, token counts, cost (default)
 
-Runners stream output in real-time. Ctrl+C interrupts the running command.
+Runners stream output in real-time. Ctrl-C during a dispatch cancels the runner without exiting milliways. Double Ctrl-C at the prompt exits.
 
 ## TUI Mode (deprecated)
 
-Start the terminal UI with `milliways --tui`.
-
-The TUI is the primary milliways experience: a live workspace for routing prompts, watching streamed output, switching kitchens, and inspecting the ledger without leaving the terminal. Use it when you want an ongoing session instead of isolated one-off commands.
+Start the legacy terminal UI with `milliways --tui`. The TUI is not actively maintained; the REPL is the primary interface going forward.
 
 The left side shows the currently focused dispatch in full. The right side shows recent blocks and a lower panel that can swap between different views.
 
@@ -537,9 +550,9 @@ Each kitchen is a CLI tool you've already logged into. Milliways calls the binar
 | Runner | Protocol | Best At | Cost |
 |--------|----------|---------|------|
 | claude | stream-json stdin/stdout | Thinking, planning, code review | Cloud |
-| codex | `codex exec --json` | Agentic coding tasks | Cloud |
-| minimax | HTTP SSE API | Fast generation, alt model | Cloud |
-| copilot | PTY | GitHub Copilot completions | Subscription |
+| codex | `codex exec --json` | Agentic coding, tool use | Cloud |
+| minimax | HTTP SSE (MiniMax-M2.7) | Reasoning, long-form generation | Cloud |
+| copilot | PTY (`copilot -p`) | GitHub Copilot chat | Subscription |
 
 ## Commands
 
