@@ -22,16 +22,28 @@ type Runner interface {
 	Quota() (*QuotaInfo, error)
 }
 
+type SessionUsage struct {
+	InputTokens  int
+	OutputTokens int
+	CacheRead    int
+	CacheWrite   int
+	CostUSD      float64
+	Dispatches   int
+}
+
 type QuotaInfo struct {
-	Day    *QuotaPeriod
-	Week   *QuotaPeriod
-	Month  *QuotaPeriod
+	FiveHour *QuotaPeriod
+	Day      *QuotaPeriod
+	Week     *QuotaPeriod
+	Month    *QuotaPeriod
+	Session  *SessionUsage
 }
 
 type QuotaPeriod struct {
 	Used   int
-	Limit  int
+	Limit  int    // 0 = unlimited (no bar shown)
 	Resets string
+	Ratio  float64 // 0.0–1.0; 0 if no limit
 }
 
 type NullRunner struct{}

@@ -200,6 +200,45 @@ func (s *QuotaStore) Trend(kitchen string) (string, error) {
 	}
 }
 
+// FiveHourDispatches returns the number of dispatches for a kitchen in the last 5 hours.
+func (s *QuotaStore) FiveHourDispatches(kitchen string) (int, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM mw_ledger WHERE kitchen = ? AND julianday(ts) >= julianday('now','-5 hours')`,
+		kitchen,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("querying five-hour dispatches: %w", err)
+	}
+	return count, nil
+}
+
+// WeeklyDispatches returns the number of dispatches for a kitchen in the last 7 days.
+func (s *QuotaStore) WeeklyDispatches(kitchen string) (int, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM mw_ledger WHERE kitchen = ? AND julianday(ts) >= julianday('now','-7 days')`,
+		kitchen,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("querying weekly dispatches: %w", err)
+	}
+	return count, nil
+}
+
+// MonthlyDispatches returns the number of dispatches for a kitchen since the start of the current month.
+func (s *QuotaStore) MonthlyDispatches(kitchen string) (int, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM mw_ledger WHERE kitchen = ? AND julianday(ts) >= julianday(date('now','start of month'))`,
+		kitchen,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("querying monthly dispatches: %w", err)
+	}
+	return count, nil
+}
+
 // UsageRatio returns the dispatches/dailyLimit ratio (0.0-1.0).
 // Returns 0.0 if dailyLimit is 0 (unlimited).
 func (s *QuotaStore) UsageRatio(kitchen string, dailyLimit int) (float64, error) {

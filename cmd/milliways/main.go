@@ -35,7 +35,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "0.3.0"
+var version = "0.3.1"
 
 // dispatchOpts groups the parameters for the dispatch function.
 type dispatchOpts struct {
@@ -1646,19 +1646,40 @@ func runREPL(configPath string) error {
 		kitchens := cfg.Kitchens
 		r.SetQuotaFunc(func(name string) (*repl.QuotaInfo, error) {
 			qi := &repl.QuotaInfo{}
-			limit := 0
-			if kc, ok := kitchens[name]; ok {
-				limit = kc.DailyLimit
+			kc := kitchens[name]
+
+			// Day
+			dispatches, _ := pdb.Quotas().DailyDispatches(name)
+			day := &repl.QuotaPeriod{Used: dispatches, Limit: kc.DailyLimit, Resets: "midnight UTC"}
+			if kc.DailyLimit > 0 {
+				day.Ratio = min(float64(dispatches)/float64(kc.DailyLimit), 1.0)
 			}
-			dispatches, err := pdb.Quotas().DailyDispatches(name)
-			if err != nil {
-				return nil, err
+			qi.Day = day
+
+			// FiveHour
+			fiveH, _ := pdb.Quotas().FiveHourDispatches(name)
+			fh := &repl.QuotaPeriod{Used: fiveH, Limit: kc.FiveHourLimit}
+			if kc.FiveHourLimit > 0 {
+				fh.Ratio = min(float64(fiveH)/float64(kc.FiveHourLimit), 1.0)
 			}
-			qi.Day = &repl.QuotaPeriod{
-				Used:   dispatches,
-				Limit:  limit,
-				Resets: "midnight UTC",
+			qi.FiveHour = fh
+
+			// Week
+			weekly, _ := pdb.Quotas().WeeklyDispatches(name)
+			wk := &repl.QuotaPeriod{Used: weekly, Limit: kc.WeeklyLimit}
+			if kc.WeeklyLimit > 0 {
+				wk.Ratio = min(float64(weekly)/float64(kc.WeeklyLimit), 1.0)
 			}
+			qi.Week = wk
+
+			// Month
+			monthly, _ := pdb.Quotas().MonthlyDispatches(name)
+			mo := &repl.QuotaPeriod{Used: monthly, Limit: kc.MonthlyLimit}
+			if kc.MonthlyLimit > 0 {
+				mo.Ratio = min(float64(monthly)/float64(kc.MonthlyLimit), 1.0)
+			}
+			qi.Month = mo
+
 			return qi, nil
 		})
 	}
@@ -1674,7 +1695,11 @@ func runREPL(configPath string) error {
 	if cfg.Kitchens["minimax"].HTTPClient != nil {
 		minimaxKey = cfg.Kitchens["minimax"].HTTPClient.AuthKey
 		minimaxModel = cfg.Kitchens["minimax"].HTTPClient.Model
-		minimaxURL = cfg.Kitchens["minimax"].HTTPClient.BaseURL + "/text/chatcompletion_v2"
+		base := strings.TrimSuffix(cfg.Kitchens["minimax"].HTTPClient.BaseURL, "/text/chatcompletion_v2")
+		base = strings.TrimSuffix(base, "/")
+		if base != "" {
+			minimaxURL = base + "/text/chatcompletion_v2"
+		}
 	}
 	r.Register("minimax", repl.NewMinimaxRunner(minimaxKey, minimaxModel, minimaxURL))
 

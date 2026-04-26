@@ -38,9 +38,12 @@ type KitchenConfig struct {
 	CostTier      string            `yaml:"cost_tier"`
 	Enabled       *bool             `yaml:"enabled"`
 	Env           map[string]string `yaml:"env"`
-	DailyLimit    int               `yaml:"daily_limit"`    // max dispatches per day (0 = unlimited)
-	DailyMinutes  float64           `yaml:"daily_minutes"`  // max total minutes per day (0 = unlimited)
-	WarnThreshold float64           `yaml:"warn_threshold"` // warning at this fraction of limit (default 0.8)
+	DailyLimit    int               `yaml:"daily_limit"`     // max dispatches per day (0 = unlimited)
+	FiveHourLimit int               `yaml:"five_hour_limit"` // max dispatches per 5 hours (0 = unlimited)
+	WeeklyLimit   int               `yaml:"weekly_limit"`    // max dispatches per 7 days (0 = unlimited)
+	MonthlyLimit  int               `yaml:"monthly_limit"`   // max dispatches per month (0 = unlimited)
+	DailyMinutes  float64           `yaml:"daily_minutes"`   // max total minutes per day (0 = unlimited)
+	WarnThreshold float64           `yaml:"warn_threshold"`  // warning at this fraction of limit (default 0.8)
 	HTTPClient    *HTTPClientConfig `yaml:"http_client"`
 }
 

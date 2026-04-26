@@ -15,6 +15,7 @@ const (
 	EventRateLimit                  // Rate limit or quota signal
 	EventError                      // Kitchen-side error
 	EventDone                       // Kitchen finished (carries exit code)
+	EventReasoning                  // Semantic reasoning checkpoint (user-visible progress summary)
 )
 
 // String returns the event type name.
@@ -38,6 +39,8 @@ func (t EventType) String() string {
 		return "error"
 	case EventDone:
 		return "done"
+	case EventReasoning:
+		return "reasoning"
 	default:
 		return "unknown"
 	}

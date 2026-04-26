@@ -18,6 +18,56 @@ import (
 	"github.com/peterh/liner"
 )
 
+// renderQuotaBar renders a compact quota bar: "5h:████░░ 50%" or "5h:12" (no limit).
+func renderQuotaBar(label string, period *QuotaPeriod, scheme ColorScheme) string {
+	if period == nil || (period.Used == 0 && period.Limit == 0) {
+		return ""
+	}
+	if period.Limit <= 0 {
+		return AccentColorText(scheme, fmt.Sprintf("%s:%d", label, period.Used))
+	}
+	const width = 8
+	filled := int(period.Ratio * float64(width))
+	if filled > width {
+		filled = width
+	}
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+	pct := int(period.Ratio * 100)
+	return AccentColorText(scheme, fmt.Sprintf("%s:%s %d%%", label, bar, pct))
+}
+
+// renderSessionUsage renders a compact session cost/token summary.
+func renderSessionUsage(session *SessionUsage, scheme ColorScheme) string {
+	if session == nil || session.Dispatches == 0 {
+		return ""
+	}
+	var parts []string
+	if session.CostUSD > 0 {
+		parts = append(parts, fmt.Sprintf("$%.2f", session.CostUSD))
+	}
+	if session.InputTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%s↑", compactTokens(session.InputTokens)))
+	}
+	if session.OutputTokens > 0 {
+		parts = append(parts, fmt.Sprintf("%s↓", compactTokens(session.OutputTokens)))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return AccentColorText(scheme, strings.Join(parts, " "))
+}
+
+// compactTokens formats a token count as a short string (e.g. 1200 -> "1.2k").
+func compactTokens(n int) string {
+	if n >= 1_000_000 {
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	}
+	if n >= 1000 {
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
 type InputKind string
 
 const (
@@ -638,8 +688,6 @@ func (t *teeWriter) Flush() {
 }
 
 func (r *REPL) renderStatusBar(ctx context.Context) {
-	fmt.Fprint(r.stdout, "\x1b[s")
-
 	var parts []string
 
 	if r.runner != nil {
@@ -672,19 +720,74 @@ func (r *REPL) renderStatusBar(ctx context.Context) {
 		parts = append(parts, MutedText("MCP:✓"))
 	}
 
+	// Quota bars and session usage.
+	var sessionForTitle *SessionUsage
+	if r.runner != nil && r.getQuota != nil {
+		quotaCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		quota, _ := r.getQuota(r.runner.Name())
+		cancel()
+		_ = quotaCtx
+
+		// Merge session usage from the runner itself.
+		if runnerQuota, _ := r.runner.Quota(); runnerQuota != nil && runnerQuota.Session != nil {
+			if quota == nil {
+				quota = &QuotaInfo{}
+			}
+			quota.Session = runnerQuota.Session
+		}
+
+		if quota != nil {
+			scheme := SchemeForRunner(r.runner.Name())
+			sessionForTitle = quota.Session
+			if s := renderSessionUsage(quota.Session, scheme); s != "" {
+				parts = append(parts, s)
+			}
+			if s := renderQuotaBar("5h", quota.FiveHour, scheme); s != "" {
+				parts = append(parts, s)
+			}
+			if s := renderQuotaBar("d", quota.Day, scheme); s != "" {
+				parts = append(parts, s)
+			}
+			if s := renderQuotaBar("w", quota.Week, scheme); s != "" {
+				parts = append(parts, s)
+			}
+			if s := renderQuotaBar("mo", quota.Month, scheme); s != "" {
+				parts = append(parts, s)
+			}
+		}
+	}
+
 	if len(parts) == 0 {
 		parts = append(parts, MutedText("no session"))
 	}
 
-	fmt.Fprint(r.stdout, "\x1b[2;1H")
-	fmt.Fprint(r.stdout, "\x1b[2K")
+	// Render inline — absolute cursor positioning breaks in scrolling terminals
+	// without alternate-screen mode. The status bar appears just above each prompt.
 	r.print(BlackBackground)
 	for _, p := range parts {
 		r.print(p)
 		r.print(MutedText(" | "))
 	}
-	fmt.Fprint(r.stdout, "\x1b[0m")
-	fmt.Fprint(r.stdout, "\x1b[u")
+	fmt.Fprint(r.stdout, "\x1b[0m\n")
+
+	// Also push key state into the terminal title bar — this genuinely persists
+	// at the top of the window regardless of scroll position.
+	titleParts := make([]string, 0, 4)
+	titleParts = append(titleParts, "milliways")
+	if r.runner != nil {
+		titleParts = append(titleParts, r.runner.Name())
+	}
+	if sessionForTitle != nil && sessionForTitle.CostUSD > 0 {
+		titleParts = append(titleParts, fmt.Sprintf("$%.2f %s↑", sessionForTitle.CostUSD, compactTokens(sessionForTitle.InputTokens)))
+	}
+	if r.session != nil && r.session.conversationID != "" {
+		sid := r.session.conversationID
+		if len(sid) > 12 {
+			sid = sid[:12]
+		}
+		titleParts = append(titleParts, sid)
+	}
+	fmt.Fprintf(r.stdout, "\x1b]0;%s\x07", strings.Join(titleParts, " | "))
 }
 
 func (r *REPL) colorizeOutput(s string) string {

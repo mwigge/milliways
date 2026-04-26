@@ -14,35 +14,39 @@ import (
 type commandHandler func(ctx context.Context, r *REPL, args string) error
 
 var commandHandlers = map[string]commandHandler{
-	"switch":          handleSwitch,
-	"stick":           handleStick,
-	"back":            handleBack,
-	"session":         handleSession,
-	"history":         handleHistory,
-	"summary":         handleSummary,
-	"cost":            handleCost,
-	"limit":           handleLimit,
-	"openspec":        handleOpenspec,
-	"repo":            handleRepo,
-	"login":           handleLogin,
-	"logout":          handleLogout,
-	"auth":            handleAuth,
-	"codex-review":    handleCodexReview,
-	"codex-resume":    handleCodexResume,
-	"codex-fork":      handleCodexFork,
-	"codex-cloud":     handleCodexCloud,
-	"codex-apply":     handleCodexApply,
-	"codex-mcp":       handleCodexMCP,
-	"codex-features":  handleCodexFeatures,
-	"codex-model":     handleCodexModel,
-	"codex-profile":   handleCodexProfile,
-	"codex-sandbox":   handleCodexSandbox,
-	"codex-approval":  handleCodexApproval,
-	"codex-reasoning": handleCodexReasoning,
-	"codex-search":    handleCodexSearch,
-	"codex-image":     handleCodexImage,
-	"help":            handleHelp,
-	"exit":            handleExit,
+	"switch":           handleSwitch,
+	"stick":            handleStick,
+	"back":             handleBack,
+	"session":          handleSession,
+	"history":          handleHistory,
+	"summary":          handleSummary,
+	"cost":             handleCost,
+	"limit":            handleLimit,
+	"openspec":         handleOpenspec,
+	"repo":             handleRepo,
+	"login":            handleLogin,
+	"logout":           handleLogout,
+	"auth":             handleAuth,
+	"claude-reasoning":   handleClaudeReasoning,
+	"claude-model":       handleClaudeModel,
+	"minimax-reasoning":  handleMinimaxReasoning,
+	"minimax-model":      handleMinimaxModel,
+	"codex-review":     handleCodexReview,
+	"codex-resume":     handleCodexResume,
+	"codex-fork":       handleCodexFork,
+	"codex-cloud":      handleCodexCloud,
+	"codex-apply":      handleCodexApply,
+	"codex-mcp":        handleCodexMCP,
+	"codex-features":   handleCodexFeatures,
+	"codex-model":      handleCodexModel,
+	"codex-profile":    handleCodexProfile,
+	"codex-sandbox":    handleCodexSandbox,
+	"codex-approval":   handleCodexApproval,
+	"codex-reasoning":  handleCodexReasoning,
+	"codex-search":     handleCodexSearch,
+	"codex-image":      handleCodexImage,
+	"help":             handleHelp,
+	"exit":             handleExit,
 	// Runner shorthand aliases — /claude, /codex, etc. are equivalent to /switch <runner>
 	"claude":  handleSwitch,
 	"codex":   handleSwitch,
@@ -67,6 +71,15 @@ func handleSwitch(ctx context.Context, r *REPL, args string) error {
 		return err
 	}
 	r.println(fmt.Sprintf("Switched to %s", RunnerAccentText(r.runner.Name(), r.runner.Name())))
+
+	// Print runner-specific config so the user can verify settings on switch.
+	switch runner := r.runner.(type) {
+	case *MinimaxRunner:
+		r.printMinimaxSettings(runner)
+	case *ClaudeRunner:
+		r.printClaudeSettings(runner)
+	}
+
 	return nil
 }
 
@@ -503,6 +516,108 @@ func handleAuth(ctx context.Context, r *REPL, args string) error {
 	return nil
 }
 
+func handleClaudeReasoning(ctx context.Context, r *REPL, args string) error {
+	value := ClaudeReasoningMode(strings.ToLower(strings.TrimSpace(args)))
+	if value == "" {
+		value = ClaudeReasoningSummary
+	}
+	if value != ClaudeReasoningOff && value != ClaudeReasoningSummary && value != ClaudeReasoningVerbose {
+		return fmt.Errorf("usage: /claude-reasoning [off|summary|verbose]")
+	}
+	cl, err := r.claudeRunner()
+	if err != nil {
+		return err
+	}
+	cl.SetReasoningMode(value)
+	r.printClaudeSettings(cl)
+	return nil
+}
+
+func handleClaudeModel(ctx context.Context, r *REPL, args string) error {
+	cl, err := r.claudeRunner()
+	if err != nil {
+		return err
+	}
+	cl.SetModel(args)
+	r.printClaudeSettings(cl)
+	return nil
+}
+
+func (r *REPL) claudeRunner() (*ClaudeRunner, error) {
+	runner, ok := r.runners["claude"]
+	if !ok {
+		return nil, fmt.Errorf("claude runner not registered")
+	}
+	cl, ok := runner.(*ClaudeRunner)
+	if !ok {
+		return nil, fmt.Errorf("claude runner does not support native settings")
+	}
+	return cl, nil
+}
+
+func (r *REPL) printClaudeSettings(cl *ClaudeRunner) {
+	settings := cl.Settings()
+	r.println(RunnerAccentText("claude", "Claude settings:"))
+	r.println(fmt.Sprintf("  model:     %s", valueOrDefault(settings.Model, "default")))
+	r.println(fmt.Sprintf("  reasoning: %s", string(settings.ReasoningMode)))
+	if len(settings.AllowedTools) == 0 {
+		r.println("  tools:     all")
+		return
+	}
+	r.println("  tools:     " + strings.Join(settings.AllowedTools, ", "))
+}
+
+func handleMinimaxReasoning(ctx context.Context, r *REPL, args string) error {
+	value := MinimaxReasoningMode(strings.ToLower(strings.TrimSpace(args)))
+	if value == "" {
+		value = MinimaxReasoningSummary
+	}
+	if value != MinimaxReasoningOff && value != MinimaxReasoningSummary && value != MinimaxReasoningVerbose {
+		return fmt.Errorf("usage: /minimax-reasoning [off|summary|verbose]")
+	}
+	mm, err := r.minimaxRunner()
+	if err != nil {
+		return err
+	}
+	mm.SetReasoningMode(value)
+	r.printMinimaxSettings(mm)
+	return nil
+}
+
+func handleMinimaxModel(ctx context.Context, r *REPL, args string) error {
+	mm, err := r.minimaxRunner()
+	if err != nil {
+		return err
+	}
+	mm.SetModel(args)
+	r.printMinimaxSettings(mm)
+	return nil
+}
+
+func (r *REPL) minimaxRunner() (*MinimaxRunner, error) {
+	runner, ok := r.runners["minimax"]
+	if !ok {
+		return nil, fmt.Errorf("minimax runner not registered")
+	}
+	mm, ok := runner.(*MinimaxRunner)
+	if !ok {
+		return nil, fmt.Errorf("minimax runner does not support native settings")
+	}
+	return mm, nil
+}
+
+func (r *REPL) printMinimaxSettings(mm *MinimaxRunner) {
+	settings := mm.Settings()
+	r.println(RunnerAccentText("minimax", "MiniMax settings:"))
+	r.println(fmt.Sprintf("  model:     %s", valueOrDefault(settings.Model, "default")))
+	r.println(fmt.Sprintf("  reasoning: %s", string(settings.ReasoningMode)))
+	r.println(fmt.Sprintf("  url:       %s", settings.URL))
+	const doubledPath = "/text/chatcompletion_v2/text/chatcompletion_v2"
+	if strings.Contains(settings.URL, doubledPath) {
+		r.println(WarningText("  ! url looks doubled — set base_url: https://api.minimax.io/v1 in carte.yaml (no path suffix)"))
+	}
+}
+
 func handleCodexReview(ctx context.Context, r *REPL, args string) error {
 	cmdArgs := []string{"review"}
 	if strings.TrimSpace(args) == "" {
@@ -745,6 +860,14 @@ func handleHelp(ctx context.Context, r *REPL, args string) error {
 	r.println("  Context:")
 	r.println("    /openspec        Show current OpenSpec change")
 	r.println("    /repo            Show current git repository")
+	r.println("")
+	r.println("  Claude:")
+	r.println("    /claude-reasoning [mode]  Set progress detail: off, summary, verbose (default: verbose)")
+	r.println("    /claude-model <model>     Set model for /claude prompts")
+	r.println("")
+	r.println("  MiniMax:")
+	r.println("    /minimax-reasoning [mode]  Set progress detail: off, summary, verbose (default: verbose)")
+	r.println("    /minimax-model <model>     Set model for /minimax prompts")
 	r.println("")
 	r.println("  Codex:")
 	r.println("    /codex-review [args]    Run codex review (default: --uncommitted)")

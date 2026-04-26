@@ -25,7 +25,7 @@ Verify it worked with `milliways --version`.
 go install github.com/mwigge/milliways/cmd/milliways@latest
 ```
 
-Requires: Go 1.21+
+Requires: Go 1.22+
 
 ### Optional: MemPalace for session persistence
 
@@ -62,24 +62,79 @@ Switched to claude
 
 ### REPL Commands
 
+**Routing**
+
 | Command | Description |
 |---------|-------------|
-| `/switch <runner>` | Switch to another runner (claude, codex, minimax) |
+| `/switch <runner>` | Switch to another runner (`claude`, `codex`, `minimax`, `copilot`) |
+| `/claude`, `/codex`, `/minimax` | Shorthand for `/switch <runner>` |
 | `/stick` | Keep current runner until released |
 | `/back` | Reverse the most recent switch |
-| `/session [name]` | Show or name the session |
+
+**Session**
+
+| Command | Description |
+|---------|-------------|
+| `/session [name]` | Show or resume a session |
 | `/history` | Show command history |
 | `/summary` | Show session statistics |
 | `/cost` | Show session cost |
-| `/limit` | Show runner quotas |
+| `/limit` | Show runner quotas and token counts |
 | `/openspec [name]` | Show current OpenSpec change |
 | `/repo` | Show current git repository |
+
+**Claude runner**
+
+| Command | Description |
+|---------|-------------|
+| `/claude-reasoning [off\|summary\|verbose]` | Set progress detail (default: verbose) |
+| `/claude-model <model>` | Override model for Claude prompts |
+
+**MiniMax runner**
+
+| Command | Description |
+|---------|-------------|
+| `/minimax-reasoning [off\|summary\|verbose]` | Set progress detail (default: verbose) |
+| `/minimax-model <model>` | Override model for MiniMax prompts |
+
+**Codex runner**
+
+| Command | Description |
+|---------|-------------|
+| `/codex-reasoning [off\|summary\|verbose]` | Set progress detail |
+| `/codex-model <model>` | Override model |
+| `/codex-profile <name>` | Set config profile |
+| `/codex-sandbox <mode>` | Set sandbox policy |
+| `/codex-approval <mode>` | Set approval policy |
+| `/codex-search <on\|off>` | Toggle web search |
+| `/codex-image add\|clear\|list [path]` | Attach images |
+| `/codex-review [args]` | Run codex review (default: `--uncommitted`) |
+| `/codex-resume [args]` | Resume Codex session |
+| `/codex-fork [args]` | Fork Codex session |
+| `/codex-cloud [args]` | Run Codex Cloud command |
+| `/codex-apply <task-id>` | Apply a Codex task diff |
+| `/codex-mcp [args]` | Manage Codex MCP servers |
+| `/codex-features [args]` | Inspect Codex features |
+
+**Auth / system**
+
+| Command | Description |
+|---------|-------------|
 | `/login` | Login to current runner |
 | `/logout` | Logout from current runner |
 | `/auth` | Show auth status for all runners |
-| `/help` | Show this help |
+| `/help` | Show all commands |
 | `/exit` | Exit the REPL |
-| `!<cmd>` | Run a bash command |
+| `!<cmd>` | Run a shell command |
+
+### Status bar
+
+A status line renders above each prompt showing quota bars, session token usage, and cost. The terminal title bar (`milliways | runner | $cost`) updates on every interaction and persists across scrolling and runner switches.
+
+Reasoning modes control how much live progress each runner shows:
+- `off` — silent, output only
+- `summary` — tool names and completion summary
+- `verbose` — full event stream: session ready, tool calls, token counts, cost (default)
 
 Runners stream output in real-time. Ctrl+C interrupts the running command.
 
@@ -466,14 +521,25 @@ Each kitchen is a CLI tool you've already logged into. Milliways calls the binar
 
 ## Kitchens
 
+**CLI-mode kitchens** (routed by the sommelier):
+
 | Kitchen | CLI | Best At | Cost |
 |---------|-----|---------|------|
-| claude | `claude -p` | Thinking, planning, review | Cloud |
+| claude | `claude` (stream-json) | Thinking, planning, review | Cloud |
 | opencode | `opencode run` | Coding, testing, refactoring | Local ($0) |
 | gemini | `gemini` | Research, search, comparison | Free |
 | aider | `aider --message` | Multi-file editing, git commits | Cloud/Local |
 | goose | `goose` | MCP tools, databases, APIs | Local |
 | cline | `cline -y --json` | Parallel fleet execution | Cloud |
+
+**REPL runners** (available with `/switch`):
+
+| Runner | Protocol | Best At | Cost |
+|--------|----------|---------|------|
+| claude | stream-json stdin/stdout | Thinking, planning, code review | Cloud |
+| codex | `codex exec --json` | Agentic coding tasks | Cloud |
+| minimax | HTTP SSE API | Fast generation, alt model | Cloud |
+| copilot | PTY | GitHub Copilot completions | Subscription |
 
 ## Commands
 
@@ -545,14 +611,22 @@ Run them with `milliways --recipe review-pr "https://github.com/org/repo/pull/12
 
 ### Quotas
 
-Set daily limits per kitchen to control spend:
+Set limits per kitchen to control spend. All four windows are tracked and shown in the REPL status bar:
 
 ```yaml
-quotas:
+kitchens:
   claude:
     daily_limit: 50
-  gemini:
-    daily_limit: 200
+    five_hour_limit: 15   # rolling 5-hour window (maps to Claude's hard cap)
+    weekly_limit: 200
+    monthly_limit: 600
+
+  minimax:
+    daily_limit: 100
+    http_client:
+      base_url: https://api.minimax.io/v1   # no trailing path — runner appends /text/chatcompletion_v2
+      auth_key: YOUR_API_KEY
+      model: MiniMax-M2.7
 ```
 
 When a quota is exhausted, Milliways falls back to the `budget_fallback` kitchen.

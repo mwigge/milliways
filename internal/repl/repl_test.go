@@ -78,7 +78,7 @@ func TestColorHelpers(t *testing.T) {
 		want string
 	}{
 		{name: "primary helper", got: PrimaryText("ready"), want: BlackBackground + ClaudeFG + "ready" + ResetColor},
-		{name: "muted helper", got: MutedText("hint"), want: BlackBackground + ClaudeFG + "hint" + ResetColor},
+		{name: "muted helper", got: MutedText("hint"), want: DimFG + "hint" + ResetColor},
 		{name: "error helper", got: ErrorText("failed"), want: BlackBackground + ClaudeFG + "failed" + ResetColor},
 		{name: "warning helper", got: WarningText("careful"), want: BlackBackground + ClaudeFG + "careful" + ResetColor},
 		{name: "claude runner accent", got: RunnerAccentText("claude", "claude"), want: BlackBackground + ClaudeAccent + "claude" + ResetColor},

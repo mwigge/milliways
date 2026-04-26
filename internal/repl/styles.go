@@ -6,21 +6,22 @@ const (
 	ResetColor       = "\x1b[0m"
 	BlackBackground  = "\x1b[48;2;0;0;0m"
 	PromptBackground = "\x1b[48;2;0;0;0m"
+	DimFG            = "\x1b[38;2;100;100;100m"
 
-	// Claude: phosphor green
+	// Claude: black/green — phosphor green body, bright lime accent
 	ClaudeFG     = "\x1b[38;2;79;181;34m"
 	ClaudeBG     = "\x1b[48;2;0;0;0m"
-	ClaudeAccent = "\x1b[38;2;137;182;255m"
+	ClaudeAccent = "\x1b[38;2;140;230;80m"
 
 	// Codex: black terminal base, electric purple body, cyan highlights.
 	CodexFG     = "\x1b[38;2;190;132;255m"
 	CodexBG     = "\x1b[48;2;0;0;0m"
 	CodexAccent = "\x1b[38;2;68;214;255m"
 
-	// MiniMax: black/blue
-	MiniMaxFG     = "\x1b[38;2;85;212;255m"
+	// MiniMax: black/blue — medium blue body, light blue accent
+	MiniMaxFG     = "\x1b[38;2;80;140;255m"
 	MiniMaxBG     = "\x1b[48;2;0;0;0m"
-	MiniMaxAccent = "\x1b[38;2;255;85;212m"
+	MiniMaxAccent = "\x1b[38;2;150;195;255m"
 
 	// Copilot: black/red
 	CopilotFG     = "\x1b[38;2;255;80;80m"
@@ -86,7 +87,7 @@ func PrimaryText(text string) string {
 }
 
 func MutedText(text string) string {
-	return ColorText(DefaultScheme(), text)
+	return DimFG + text + ResetColor
 }
 
 func ErrorText(text string) string {
