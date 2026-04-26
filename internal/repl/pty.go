@@ -50,7 +50,7 @@ func runPTYWithContext(cmd *exec.Cmd, ctx context.Context) (string, error) {
 	var inZscalerBlock bool
 	var gotContent bool
 
-	wg.Add(2)
+	wg.Add(1)
 
 	go func() {
 		defer wg.Done()
@@ -82,21 +82,6 @@ func runPTYWithContext(cmd *exec.Cmd, ctx context.Context) (string, error) {
 			captured.WriteString(stripped + "\n")
 			gotContent = true
 			mu.Unlock()
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-		buf := make([]byte, 4096)
-		for {
-			n, err := os.Stdin.Read(buf)
-			if n > 0 {
-				ptmx.Write(buf[:n])
-			}
-			if err != nil {
-				ptmx.Close()
-				break
-			}
 		}
 	}()
 
