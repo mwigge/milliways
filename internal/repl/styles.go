@@ -12,10 +12,10 @@ const (
 	ClaudeBG     = "\x1b[48;2;0;0;0m"
 	ClaudeAccent = "\x1b[38;2;137;182;255m"
 
-	// Codex: black/purple
-	CodexFG     = "\x1b[38;2;180;130;220m"
+	// Codex: black terminal base, electric purple body, cyan highlights.
+	CodexFG     = "\x1b[38;2;190;132;255m"
 	CodexBG     = "\x1b[48;2;0;0;0m"
-	CodexAccent = "\x1b[38;2;180;130;220m"
+	CodexAccent = "\x1b[38;2;68;214;255m"
 
 	// MiniMax: black/blue
 	MiniMaxFG     = "\x1b[38;2;85;212;255m"

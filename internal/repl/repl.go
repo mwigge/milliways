@@ -21,7 +21,7 @@ import (
 type InputKind string
 
 const (
-	InputPrompt   InputKind = "prompt"
+	InputPrompt  InputKind = "prompt"
 	InputCommand InputKind = "command"
 	InputShell   InputKind = "shell"
 )
@@ -139,19 +139,19 @@ func (s *RunnerState) Cancel() {
 }
 
 type REPL struct {
-	liner        *liner.State
-	runner       Runner
-	runners      map[string]Runner
-	prev        Runner
-	history      []string
-	stdout      io.Writer
-	runnerState RunnerState
-	substrate   *substrate.Client
-	session     *replSession
-	getQuota    func(name string) (*QuotaInfo, error)
+	liner         *liner.State
+	runner        Runner
+	runners       map[string]Runner
+	prev          Runner
+	history       []string
+	stdout        io.Writer
+	runnerState   RunnerState
+	substrate     *substrate.Client
+	session       *replSession
+	getQuota      func(name string) (*QuotaInfo, error)
 	currentChange string
-	scheme      ColorScheme
-	version     string
+	scheme        ColorScheme
+	version       string
 }
 
 func (r *REPL) SetVersion(v string) {
@@ -160,8 +160,8 @@ func (r *REPL) SetVersion(v string) {
 
 type replSession struct {
 	conversationID string
-	runnerName    string
-	outputBuf    *bytes.Buffer
+	runnerName     string
+	outputBuf      *bytes.Buffer
 }
 
 func NewREPL(stdout io.Writer) *REPL {
@@ -376,8 +376,8 @@ func (r *REPL) startConversation(ctx context.Context) error {
 
 	r.session = &replSession{
 		conversationID: convID,
-		runnerName:    "",
-		outputBuf:     new(bytes.Buffer),
+		runnerName:     "",
+		outputBuf:      new(bytes.Buffer),
 	}
 	return nil
 }
@@ -506,8 +506,8 @@ func (r *REPL) print(s string) {
 }
 
 type streamingWriter struct {
-	w      io.Writer
-	mu     sync.Mutex
+	w       io.Writer
+	mu      sync.Mutex
 	lineBuf []byte
 }
 
@@ -596,12 +596,7 @@ func streamCmdOutput(ctx context.Context, cmd *exec.Cmd, out io.Writer) error {
 	}()
 
 	wg.Wait()
-	select {
-	case err = <-errChan:
-		return err
-	default:
-		return nil
-	}
+	return <-errChan
 }
 
 var ansiStripper = regexp.MustCompile(`\x1b\[[0-9;]*m`)

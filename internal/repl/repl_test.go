@@ -101,16 +101,16 @@ func TestColorHelpers(t *testing.T) {
 }
 
 type mockRunner struct {
-	nameVal       string
-	quotaVal     *QuotaInfo
-	authVal      bool
-	authErr      error
-	quotaErr     error
-	execCalled   bool
-	execErr      error
+	nameVal    string
+	quotaVal   *QuotaInfo
+	authVal    bool
+	authErr    error
+	quotaErr   error
+	execCalled bool
+	execErr    error
 }
 
-func (m *mockRunner) Name() string                { return m.nameVal }
+func (m *mockRunner) Name() string               { return m.nameVal }
 func (m *mockRunner) AuthStatus() (bool, error)  { return m.authVal, m.authErr }
 func (m *mockRunner) Quota() (*QuotaInfo, error) { return m.quotaVal, m.quotaErr }
 func (m *mockRunner) Execute(ctx context.Context, prompt string, out io.Writer) error {
@@ -217,12 +217,39 @@ func TestRunnerAccentColor(t *testing.T) {
 	}
 }
 
+func TestCodexSettingsCommands(t *testing.T) {
+	t.Parallel()
+
+	buf := &bytes.Buffer{}
+	r := NewREPL(buf)
+	codex := NewCodexRunner()
+	r.Register("codex", codex)
+
+	if err := handleCodexModel(context.Background(), r, "gpt-5.4"); err != nil {
+		t.Fatalf("handleCodexModel() = %v", err)
+	}
+	if err := handleCodexSearch(context.Background(), r, "on"); err != nil {
+		t.Fatalf("handleCodexSearch() = %v", err)
+	}
+	if err := handleCodexImage(context.Background(), r, "add diagram.png"); err != nil {
+		t.Fatalf("handleCodexImage() = %v", err)
+	}
+	if err := handleCodexReasoning(context.Background(), r, "summary"); err != nil {
+		t.Fatalf("handleCodexReasoning() = %v", err)
+	}
+
+	settings := codex.Settings()
+	if settings.Model != "gpt-5.4" || !settings.Search || settings.Reasoning != CodexReasoningSummary || len(settings.Images) != 1 || settings.Images[0] != "diagram.png" {
+		t.Fatalf("settings = %#v", settings)
+	}
+}
+
 func TestSplitHead(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		input string
-		wantCmd string
+		input    string
+		wantCmd  string
 		wantArgs string
 	}{
 		{"switch claude", "switch", "claude"},

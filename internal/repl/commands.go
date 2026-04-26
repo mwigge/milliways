@@ -1,6 +1,7 @@
 package repl
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -13,26 +14,40 @@ import (
 type commandHandler func(ctx context.Context, r *REPL, args string) error
 
 var commandHandlers = map[string]commandHandler{
-	"switch":   handleSwitch,
-	"stick":    handleStick,
-	"back":     handleBack,
-	"session":  handleSession,
-	"history":  handleHistory,
-	"summary":  handleSummary,
-	"cost":     handleCost,
-	"limit":    handleLimit,
-	"openspec": handleOpenspec,
-	"repo":     handleRepo,
-	"login":    handleLogin,
-	"logout":   handleLogout,
-	"auth":     handleAuth,
-	"help":     handleHelp,
-	"exit":     handleExit,
+	"switch":          handleSwitch,
+	"stick":           handleStick,
+	"back":            handleBack,
+	"session":         handleSession,
+	"history":         handleHistory,
+	"summary":         handleSummary,
+	"cost":            handleCost,
+	"limit":           handleLimit,
+	"openspec":        handleOpenspec,
+	"repo":            handleRepo,
+	"login":           handleLogin,
+	"logout":          handleLogout,
+	"auth":            handleAuth,
+	"codex-review":    handleCodexReview,
+	"codex-resume":    handleCodexResume,
+	"codex-fork":      handleCodexFork,
+	"codex-cloud":     handleCodexCloud,
+	"codex-apply":     handleCodexApply,
+	"codex-mcp":       handleCodexMCP,
+	"codex-features":  handleCodexFeatures,
+	"codex-model":     handleCodexModel,
+	"codex-profile":   handleCodexProfile,
+	"codex-sandbox":   handleCodexSandbox,
+	"codex-approval":  handleCodexApproval,
+	"codex-reasoning": handleCodexReasoning,
+	"codex-search":    handleCodexSearch,
+	"codex-image":     handleCodexImage,
+	"help":            handleHelp,
+	"exit":            handleExit,
 	// Runner shorthand aliases — /claude, /codex, etc. are equivalent to /switch <runner>
-	"claude":   handleSwitch,
-	"codex":    handleSwitch,
-	"minimax":  handleSwitch,
-	"copilot":  handleSwitch,
+	"claude":  handleSwitch,
+	"codex":   handleSwitch,
+	"minimax": handleSwitch,
+	"copilot": handleSwitch,
 }
 
 func handleSwitch(ctx context.Context, r *REPL, args string) error {
@@ -488,6 +503,228 @@ func handleAuth(ctx context.Context, r *REPL, args string) error {
 	return nil
 }
 
+func handleCodexReview(ctx context.Context, r *REPL, args string) error {
+	cmdArgs := []string{"review"}
+	if strings.TrimSpace(args) == "" {
+		cmdArgs = append(cmdArgs, "--uncommitted")
+	} else {
+		cmdArgs = append(cmdArgs, strings.Fields(args)...)
+	}
+	return r.runCodexCommand(ctx, cmdArgs...)
+}
+
+func handleCodexResume(ctx context.Context, r *REPL, args string) error {
+	cmdArgs := []string{"resume"}
+	if strings.TrimSpace(args) == "" {
+		cmdArgs = append(cmdArgs, "--last")
+	} else {
+		cmdArgs = append(cmdArgs, strings.Fields(args)...)
+	}
+	return r.runCodexCommand(ctx, cmdArgs...)
+}
+
+func handleCodexFork(ctx context.Context, r *REPL, args string) error {
+	cmdArgs := []string{"fork"}
+	if strings.TrimSpace(args) == "" {
+		cmdArgs = append(cmdArgs, "--last")
+	} else {
+		cmdArgs = append(cmdArgs, strings.Fields(args)...)
+	}
+	return r.runCodexCommand(ctx, cmdArgs...)
+}
+
+func handleCodexCloud(ctx context.Context, r *REPL, args string) error {
+	cmdArgs := []string{"cloud"}
+	if strings.TrimSpace(args) == "" {
+		cmdArgs = append(cmdArgs, "list")
+	} else {
+		cmdArgs = append(cmdArgs, strings.Fields(args)...)
+	}
+	return r.runCodexCommand(ctx, cmdArgs...)
+}
+
+func handleCodexApply(ctx context.Context, r *REPL, args string) error {
+	if strings.TrimSpace(args) == "" {
+		return fmt.Errorf("usage: /codex-apply <task-id>")
+	}
+	return r.runCodexCommand(ctx, append([]string{"apply"}, strings.Fields(args)...)...)
+}
+
+func handleCodexMCP(ctx context.Context, r *REPL, args string) error {
+	cmdArgs := []string{"mcp"}
+	if strings.TrimSpace(args) == "" {
+		cmdArgs = append(cmdArgs, "list")
+	} else {
+		cmdArgs = append(cmdArgs, strings.Fields(args)...)
+	}
+	return r.runCodexCommand(ctx, cmdArgs...)
+}
+
+func handleCodexFeatures(ctx context.Context, r *REPL, args string) error {
+	cmdArgs := []string{"features"}
+	if strings.TrimSpace(args) == "" {
+		cmdArgs = append(cmdArgs, "list")
+	} else {
+		cmdArgs = append(cmdArgs, strings.Fields(args)...)
+	}
+	return r.runCodexCommand(ctx, cmdArgs...)
+}
+
+func handleCodexModel(ctx context.Context, r *REPL, args string) error {
+	codex, err := r.codexRunner()
+	if err != nil {
+		return err
+	}
+	codex.SetModel(args)
+	r.printCodexSettings(codex)
+	return nil
+}
+
+func handleCodexProfile(ctx context.Context, r *REPL, args string) error {
+	codex, err := r.codexRunner()
+	if err != nil {
+		return err
+	}
+	codex.SetProfile(args)
+	r.printCodexSettings(codex)
+	return nil
+}
+
+func handleCodexSandbox(ctx context.Context, r *REPL, args string) error {
+	value := strings.TrimSpace(args)
+	if value != "" && value != "read-only" && value != "workspace-write" && value != "danger-full-access" {
+		return fmt.Errorf("usage: /codex-sandbox [read-only|workspace-write|danger-full-access]")
+	}
+	codex, err := r.codexRunner()
+	if err != nil {
+		return err
+	}
+	codex.SetSandbox(value)
+	r.printCodexSettings(codex)
+	return nil
+}
+
+func handleCodexApproval(ctx context.Context, r *REPL, args string) error {
+	value := strings.TrimSpace(args)
+	if value != "" && value != "untrusted" && value != "on-request" && value != "never" {
+		return fmt.Errorf("usage: /codex-approval [untrusted|on-request|never]")
+	}
+	codex, err := r.codexRunner()
+	if err != nil {
+		return err
+	}
+	codex.SetApproval(value)
+	r.printCodexSettings(codex)
+	return nil
+}
+
+func handleCodexReasoning(ctx context.Context, r *REPL, args string) error {
+	value := CodexReasoningMode(strings.ToLower(strings.TrimSpace(args)))
+	if value == "" {
+		value = CodexReasoningVerbose
+	}
+	if value != CodexReasoningOff && value != CodexReasoningSummary && value != CodexReasoningVerbose {
+		return fmt.Errorf("usage: /codex-reasoning [off|summary|verbose]")
+	}
+	codex, err := r.codexRunner()
+	if err != nil {
+		return err
+	}
+	codex.SetReasoningMode(value)
+	r.printCodexSettings(codex)
+	return nil
+}
+
+func handleCodexSearch(ctx context.Context, r *REPL, args string) error {
+	value := strings.ToLower(strings.TrimSpace(args))
+	if value != "on" && value != "off" {
+		return fmt.Errorf("usage: /codex-search <on|off>")
+	}
+	codex, err := r.codexRunner()
+	if err != nil {
+		return err
+	}
+	codex.SetSearch(value == "on")
+	r.printCodexSettings(codex)
+	return nil
+}
+
+func handleCodexImage(ctx context.Context, r *REPL, args string) error {
+	codex, err := r.codexRunner()
+	if err != nil {
+		return err
+	}
+
+	fields := strings.Fields(args)
+	if len(fields) == 0 || fields[0] == "list" {
+		r.printCodexSettings(codex)
+		return nil
+	}
+	switch fields[0] {
+	case "add":
+		if len(fields) < 2 {
+			return fmt.Errorf("usage: /codex-image add <path>")
+		}
+		codex.AddImage(strings.Join(fields[1:], " "))
+	case "clear":
+		codex.ClearImages()
+	default:
+		codex.AddImage(strings.Join(fields, " "))
+	}
+	r.printCodexSettings(codex)
+	return nil
+}
+
+func (r *REPL) codexRunner() (*CodexRunner, error) {
+	runner, ok := r.runners["codex"]
+	if !ok {
+		return nil, fmt.Errorf("codex runner not registered")
+	}
+	codex, ok := runner.(*CodexRunner)
+	if !ok {
+		return nil, fmt.Errorf("codex runner does not support native settings")
+	}
+	return codex, nil
+}
+
+func (r *REPL) runCodexCommand(ctx context.Context, args ...string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	r.println(fmt.Sprintf("[%s] %s", RunnerAccentText("codex", "codex"), strings.Join(args, " ")))
+	cmd := exec.CommandContext(ctx, "codex", args...)
+	writer := &teeWriter{w: r.stdout, buf: new(bytes.Buffer), scheme: CodexScheme()}
+	err := streamCmdOutput(ctx, cmd, writer)
+	writer.Flush()
+	return err
+}
+
+func (r *REPL) printCodexSettings(codex *CodexRunner) {
+	settings := codex.Settings()
+	r.println(RunnerAccentText("codex", "Codex settings:"))
+	r.println(fmt.Sprintf("  model:    %s", valueOrDefault(settings.Model, "default")))
+	r.println(fmt.Sprintf("  profile:  %s", valueOrDefault(settings.Profile, "default")))
+	r.println(fmt.Sprintf("  sandbox:  %s", valueOrDefault(settings.Sandbox, "default")))
+	r.println(fmt.Sprintf("  approval: %s", valueOrDefault(settings.Approval, "default")))
+	r.println(fmt.Sprintf("  reasoning:%s", " "+string(settings.Reasoning)))
+	r.println(fmt.Sprintf("  search:   %t", settings.Search))
+	if len(settings.Images) == 0 {
+		r.println("  images:   none")
+		return
+	}
+	r.println("  images:")
+	for _, image := range settings.Images {
+		r.println(fmt.Sprintf("    %s", image))
+	}
+}
+
+func valueOrDefault(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
 func handleHelp(ctx context.Context, r *REPL, args string) error {
 	r.println("Available commands:")
 	r.println("")
@@ -508,6 +745,22 @@ func handleHelp(ctx context.Context, r *REPL, args string) error {
 	r.println("  Context:")
 	r.println("    /openspec        Show current OpenSpec change")
 	r.println("    /repo            Show current git repository")
+	r.println("")
+	r.println("  Codex:")
+	r.println("    /codex-review [args]    Run codex review (default: --uncommitted)")
+	r.println("    /codex-resume [args]    Resume Codex (default: --last)")
+	r.println("    /codex-fork [args]      Fork Codex session (default: --last)")
+	r.println("    /codex-cloud [args]     Run Codex Cloud command (default: list)")
+	r.println("    /codex-apply <task-id>  Apply Codex task diff")
+	r.println("    /codex-mcp [args]       Manage Codex MCP (default: list)")
+	r.println("    /codex-features [args]  Inspect Codex features (default: list)")
+	r.println("    /codex-model <model>    Set model for /codex prompts")
+	r.println("    /codex-profile <name>   Set config profile for /codex prompts")
+	r.println("    /codex-sandbox <mode>   Set sandbox for /codex prompts")
+	r.println("    /codex-approval <mode>  Set approval policy for /codex prompts")
+	r.println("    /codex-reasoning [mode] Set progress detail: off, summary, verbose")
+	r.println("    /codex-search <on|off>  Toggle web search for /codex prompts")
+	r.println("    /codex-image add|clear|list [path]  Attach images to /codex prompts")
 	r.println("")
 	r.println("  Auth:")
 	r.println("    /login           Login to current runner")
