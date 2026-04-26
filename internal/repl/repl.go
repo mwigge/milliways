@@ -151,6 +151,11 @@ type REPL struct {
 	getQuota    func(name string) (*QuotaInfo, error)
 	currentChange string
 	scheme      ColorScheme
+	version     string
+}
+
+func (r *REPL) SetVersion(v string) {
+	r.version = v
 }
 
 type replSession struct {
@@ -259,7 +264,11 @@ func (r *REPL) Run(ctx context.Context) error {
 	})
 
 	fmt.Fprint(r.stdout, "\x1b[2J\x1b[H]")
-	r.println(PhosphorHeader(" milliways "))
+	header := " milliways "
+	if r.version != "" {
+		header = fmt.Sprintf(" milliways %s ", r.version)
+	}
+	r.println(PhosphorHeader(header))
 	r.println(PhosphorText("  REPL  |  type /help for commands"))
 	if r.session != nil {
 		r.println(MutedText(fmt.Sprintf("  session: %s", r.session.conversationID)))
@@ -672,7 +681,7 @@ func (r *REPL) renderStatusBar(ctx context.Context) {
 		parts = append(parts, MutedText("no session"))
 	}
 
-	fmt.Fprint(r.stdout, "\x1b[1;1H")
+	fmt.Fprint(r.stdout, "\x1b[2;1H")
 	fmt.Fprint(r.stdout, "\x1b[2K")
 	r.print(BlackBackground)
 	for _, p := range parts {

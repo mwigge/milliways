@@ -1,16 +1,24 @@
 package repl
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"os"
 	"os/exec"
 	"os/signal"
+	"regexp"
+	"strings"
 	"sync"
 	"syscall"
 
 	"github.com/creack/pty"
 	"golang.org/x/term"
+)
+
+var (
+	noisePattern = regexp.MustCompile(`^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+Z ERROR|--.*|ERROR: Reconnecting)`)
+	zscalerBlock = regexp.MustCompile(`(?i)<!DOCTYPE HTML|<html|<head|<meta name="description" content="Zscaler`)
 )
 
 func runPTY(cmd *exec.Cmd) (string, error) {
@@ -38,23 +46,35 @@ func runPTYWithContext(cmd *exec.Cmd, ctx context.Context) (string, error) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var captured bytes.Buffer
+	var inZscalerBlock bool
+	var gotContent bool
 
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, 4096)
-		for {
-			n, err := ptmx.Read(buf)
-			if n > 0 {
-				os.Stdout.Write(buf[:n])
-				mu.Lock()
-				captured.Write(buf[:n])
-				mu.Unlock()
+		scanner := bufio.NewScanner(ptmx)
+		for scanner.Scan() {
+			line := scanner.Text()
+			os.Stdout.Write([]byte(line + "\n"))
+
+			if zscalerBlock.MatchString(line) {
+				inZscalerBlock = true
 			}
-			if err != nil {
-				break
+			if inZscalerBlock {
+				if strings.HasSuffix(line, "</html>") || strings.HasSuffix(line, "</HTML>") {
+					inZscalerBlock = false
+				}
+				continue
 			}
+			if noisePattern.MatchString(line) {
+				continue
+			}
+
+			mu.Lock()
+			captured.WriteString(line + "\n")
+			gotContent = true
+			mu.Unlock()
 		}
 	}()
 
@@ -78,6 +98,9 @@ func runPTYWithContext(cmd *exec.Cmd, ctx context.Context) (string, error) {
 		wg.Wait()
 		mu.Lock()
 		out := captured.String()
+		if !gotContent {
+			out = "[connection blocked by proxy]\n"
+		}
 		mu.Unlock()
 		return out, nil
 	}
@@ -98,12 +121,18 @@ func runPTYWithContext(cmd *exec.Cmd, ctx context.Context) (string, error) {
 		wg.Wait()
 		mu.Lock()
 		out := captured.String()
+		if !gotContent {
+			out = "[connection blocked by proxy]\n"
+		}
 		mu.Unlock()
 		return out, ctx.Err()
 	case err := <-errChan:
 		wg.Wait()
 		mu.Lock()
 		out := captured.String()
+		if !gotContent {
+			out = "[connection blocked by proxy]\n"
+		}
 		mu.Unlock()
 		return out, err
 	case sig := <-sigChan:
@@ -113,6 +142,9 @@ func runPTYWithContext(cmd *exec.Cmd, ctx context.Context) (string, error) {
 		wg.Wait()
 		mu.Lock()
 		out := captured.String()
+		if !gotContent {
+			out = "[connection blocked by proxy]\n"
+		}
 		mu.Unlock()
 		return out, ctx.Err()
 	}

@@ -1637,6 +1637,7 @@ func runREPL(configPath string) error {
 	} else {
 		r = repl.NewREPL(os.Stdout)
 	}
+	r.SetVersion(version)
 
 	pdb, pdbErr := openPantryDB()
 	if pdbErr == nil {
