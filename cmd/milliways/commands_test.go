@@ -2,21 +2,17 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/mwigge/milliways/internal/conversation"
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/maitre"
 	"github.com/mwigge/milliways/internal/observability"
 	"github.com/mwigge/milliways/internal/sommelier"
-	"github.com/mwigge/milliways/internal/tui"
 )
 
 func TestBestContinuationKitchen_PrefersResumeCapableProvider(t *testing.T) {
@@ -97,19 +93,6 @@ func TestSelectDecision_ContinuationOverridesWeakerRoute(t *testing.T) {
 	}
 	if decision.Tier != "continuation" {
 		t.Fatalf("selectDecision tier = %q, want continuation", decision.Tier)
-	}
-}
-
-func TestRootCmd_SwitchToRequiresSession(t *testing.T) {
-	cmd := rootCmd()
-	cmd.SetArgs([]string{"--switch-to", "opencode", "continue working"})
-
-	_, _, err := captureOutput(t, cmd.Execute)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "--switch-to requires --session") {
-		t.Fatalf("error = %v, want --session requirement", err)
 	}
 }
 
@@ -269,121 +252,6 @@ func TestMakeRuntimeSinkIncludesOTelWithoutPantryDB(t *testing.T) {
 	}
 	if _, ok := multi[0].(*observability.OTelSink); !ok {
 		t.Fatalf("sink[0] type = %T, want *observability.OTelSink", multi[0])
-	}
-}
-
-func TestRootCmd_HeadlessSwitchContinuesPausedSession(t *testing.T) {
-	configHome := t.TempDir()
-	binDir := t.TempDir()
-	t.Setenv("HOME", configHome)
-	t.Setenv("TMPDIR", binDir)
-
-	oldSessionsBaseDir := tui.SessionsBaseDir
-	tui.SessionsBaseDir = filepath.Join(configHome, ".config", "milliways")
-	t.Cleanup(func() {
-		tui.SessionsBaseDir = oldSessionsBaseDir
-	})
-
-	opencodePath := writeExecutable(t, binDir, "opencode", `#!/bin/sh
-printf '%s\n' "$@" > "${TMPDIR}/opencode.args"
-printf '%s\n' '{"type":"assistant","role":"assistant","content":"headless switch reply","session_id":"opencode-session-2"}'
-printf '%s\n' '{"type":"done"}'
-`)
-
-	configPath := filepath.Join(configHome, "carte.yaml")
-	if err := os.WriteFile(configPath, []byte(fmt.Sprintf(`kitchens:
-  opencode:
-    cmd: %q
-    enabled: true
-routing:
-  default: opencode
-`, opencodePath)), 0o600); err != nil {
-		t.Fatalf("WriteFile(config): %v", err)
-	}
-
-	conv := conversation.New("conv-1", "b1", "original prompt")
-	conv.Memory.WorkingSummary = "Keep existing context"
-	conv.AppendTurn(conversation.RoleAssistant, "claude", "paused answer")
-	conv.StartSegment("claude", nil)
-	conv.SetNativeSessionID("claude", "claude-session-1")
-
-	if err := tui.SaveSession("paused", []tui.Block{{
-		ID:             "b1",
-		ConversationID: conv.ID,
-		Prompt:         conv.Prompt,
-		Kitchen:        "claude",
-		ProviderChain:  []string{"claude"},
-		State:          tui.StateAwaiting,
-		StartedAt:      time.Now().Add(-time.Minute),
-		Conversation:   conv,
-	}}); err != nil {
-		t.Fatalf("SaveSession: %v", err)
-	}
-
-	cmd := rootCmd()
-	cmd.SetArgs([]string{"--config", configPath, "--session", "paused", "--switch-to", "opencode", "--verbose", "continue with the fix"})
-
-	stdout, stderr, err := captureOutput(t, cmd.Execute)
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	if !strings.Contains(stdout, "headless switch reply") {
-		t.Fatalf("stdout = %q, want reply", stdout)
-	}
-	if !strings.Contains(stderr, "[switch] session=paused claude -> opencode") {
-		t.Fatalf("stderr = %q, want switch notice", stderr)
-	}
-
-	argsData, err := os.ReadFile(filepath.Join(binDir, "opencode.args"))
-	if err != nil {
-		t.Fatalf("ReadFile(args): %v", err)
-	}
-	argsText := string(argsData)
-	if strings.Contains(argsText, "--continue") {
-		t.Fatalf("args = %q, did not expect --continue", argsText)
-	}
-	if !strings.Contains(argsText, "Continue an in-progress Milliways conversation.") {
-		t.Fatalf("args = %q, want continuation payload", argsText)
-	}
-	if !strings.Contains(argsText, "New user message:") || !strings.Contains(argsText, "continue with the fix") {
-		t.Fatalf("args = %q, want appended user prompt", argsText)
-	}
-
-	blocks, err := tui.LoadSession("paused")
-	if err != nil {
-		t.Fatalf("LoadSession: %v", err)
-	}
-	if len(blocks) != 1 {
-		t.Fatalf("blocks = %d, want 1", len(blocks))
-	}
-	b := blocks[0]
-	if b.Kitchen != "opencode" {
-		t.Fatalf("kitchen = %q, want opencode", b.Kitchen)
-	}
-	if got := strings.Join(b.ProviderChain, " -> "); got != "claude -> opencode" {
-		t.Fatalf("provider chain = %q", got)
-	}
-	if b.State != tui.StateDone {
-		t.Fatalf("state = %v, want done", b.State)
-	}
-	if b.Conversation == nil {
-		t.Fatal("expected persisted conversation")
-	}
-	if len(b.Conversation.Segments) != 2 {
-		t.Fatalf("segments = %d, want 2", len(b.Conversation.Segments))
-	}
-	if b.Conversation.Segments[0].EndReason != "user_switch" {
-		t.Fatalf("first segment end reason = %q", b.Conversation.Segments[0].EndReason)
-	}
-	if got := b.Conversation.Segments[1].Provider; got != "opencode" {
-		t.Fatalf("second segment provider = %q, want opencode", got)
-	}
-	if got := b.Conversation.Segments[1].NativeSessionID; got != "opencode-session-2" {
-		t.Fatalf("second segment session id = %q, want opencode-session-2", got)
-	}
-	transcript := b.Conversation.Transcript[len(b.Conversation.Transcript)-1].Text
-	if !strings.Contains(transcript, "headless switch reply") {
-		t.Fatalf("last transcript = %q, want provider reply", transcript)
 	}
 }
 

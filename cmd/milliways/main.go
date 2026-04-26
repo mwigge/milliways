@@ -31,7 +31,6 @@ import (
 	"github.com/mwigge/milliways/internal/sommelier"
 	"github.com/mwigge/milliways/internal/repl"
 	"github.com/mwigge/milliways/internal/substrate"
-	"github.com/mwigge/milliways/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -39,12 +38,12 @@ var version = "0.3.1"
 
 // dispatchOpts groups the parameters for the dispatch function.
 type dispatchOpts struct {
-	prompt, kitchenForce, configPath, switchTo, sessionName, projectRoot string
-	contextJSON, contextFile                                             string
-	jsonOutput, explain, verbose, contextStdin                           bool
-	useLegacyConversation                                                bool
-	bundle                                                               *editorcontext.Bundle
-	timeout                                                              time.Duration
+	prompt, kitchenForce, configPath, projectRoot string
+	contextJSON, contextFile                      string
+	jsonOutput, explain, verbose, contextStdin    bool
+	useLegacyConversation                         bool
+	bundle                                        *editorcontext.Bundle
+	timeout                                       time.Duration
 }
 
 // exitError wraps an error with a specific exit code.
@@ -79,12 +78,8 @@ func rootCmd() *cobra.Command {
 		asyncFlag             bool
 		detachFlag            bool
 		keepContext           bool
-		tuiFlag               bool
 		replFlag              bool
-		resumeFlag            bool
 		useLegacyConversation bool
-		sessionName           string
-		switchToKitchen       string
 		projectRoot           string
 		contextJSON           string
 		contextFile           string
@@ -108,32 +103,8 @@ based on what each tool does best.
 		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// REPL is the default when no prompt args are given.
-			// TUI is deprecated and only runs with explicit --tui flag.
-			if tuiFlag {
-				opts := tui.RunOpts{SessionName: sessionName, ConfigPath: configPath}
-				if resumeFlag {
-					resume := sessionName
-					if resume == "" {
-						resume = "last"
-					}
-					opts.ResumeSession = resume
-				}
-
-				if pc, err := detectTUIProjectContext(); err == nil && pc != nil && pc.RepoRoot != "" {
-					opts.ProjectState = projectContextToTUIState(pc)
-				}
-
-				// Try to fetch palace stats via MCP.
-				mcpCmd, mcpArgs := detectMempalaceMCP(opts.ProjectState.PalacePath)
-				opts.ProjectState = fetchPalaceStatsForTUI(opts.ProjectState, mcpCmd, mcpArgs)
-
-				return runTUI(configPath, opts)
-			}
 			if len(args) == 0 || replFlag {
 				return runREPL(configPath)
-			}
-			if switchToKitchen != "" && sessionName == "" {
-				return fmt.Errorf("--switch-to requires --session")
 			}
 			projectContext, err := project.ResolveProject(projectRoot)
 			if err != nil {
@@ -160,8 +131,6 @@ based on what each tool does best.
 				prompt:                prompt,
 				kitchenForce:          kitchenFlag,
 				configPath:            configPath,
-				switchTo:              switchToKitchen,
-				sessionName:           sessionName,
 				projectRoot:           projectRoot,
 				contextJSON:           contextJSON,
 				contextFile:           contextFile,
@@ -186,11 +155,7 @@ based on what each tool does best.
 	cmd.Flags().BoolVar(&asyncFlag, "async", false, "Dispatch asynchronously, return ticket ID")
 	cmd.Flags().BoolVar(&detachFlag, "detach", false, "Dispatch detached (survives exit)")
 	cmd.Flags().BoolVar(&keepContext, "keep-context", false, "Keep recipe context files")
-	cmd.Flags().BoolVarP(&tuiFlag, "tui", "t", false, "Interactive TUI mode (deprecated)")
 	cmd.Flags().BoolVar(&replFlag, "repl", false, "Interactive REPL mode (default when no args)")
-	cmd.Flags().BoolVar(&resumeFlag, "resume", false, "Resume last TUI session")
-	cmd.Flags().StringVar(&sessionName, "session", "", "Named TUI session")
-	cmd.Flags().StringVar(&switchToKitchen, "switch-to", "", "Switch an existing session to a kitchen in headless mode")
 	cmd.Flags().StringVar(&projectRoot, "project-root", "", "Override project repository root")
 	cmd.Flags().StringVar(&contextJSON, "context-json", "", "Pass editor context bundle JSON directly on the CLI")
 	cmd.Flags().StringVar(&contextFile, "context-file", "", "Read editor context bundle JSON from a file")
@@ -332,10 +297,6 @@ func dispatch(opts dispatchOpts) error {
 	if pdb != nil {
 		pantryDB := pdb
 		defer func() { _ = pantryDB.Close() }()
-	}
-
-	if opts.switchTo != "" {
-		return dispatchHeadlessSwitch(reg, opts)
 	}
 
 	var recordLegacyConversation = true
@@ -550,206 +511,6 @@ func dispatch(opts dispatchOpts) error {
 	}
 
 	return nil
-}
-
-func dispatchHeadlessSwitch(reg *kitchen.Registry, opts dispatchOpts) error {
-	blocks, blockIndex, err := loadHeadlessSessionBlock(opts.sessionName)
-	if err != nil {
-		return err
-	}
-
-	block := &blocks[blockIndex]
-	prompt, fromKitchen, err := prepareHeadlessSwitch(block, opts.switchTo, opts.prompt)
-	if err != nil {
-		return err
-	}
-
-	k, ok := reg.Get(opts.switchTo)
-	if !ok {
-		return fmt.Errorf("kitchen %q not found in registry", opts.switchTo)
-	}
-	if k.Status() != kitchen.Ready {
-		return fmt.Errorf("kitchen %q is %s — run 'milliways --setup %s' to fix", opts.switchTo, k.Status(), opts.switchTo)
-	}
-
-	if opts.verbose {
-		fmt.Fprintf(os.Stderr, "[switch] session=%s %s -> %s\n", opts.sessionName, fromKitchen, opts.switchTo)
-	}
-
-	adapt, err := adapter.AdapterFor(k, adapter.AdapterOpts{Verbose: opts.verbose})
-	if err != nil {
-		return fmt.Errorf("creating adapter for %s: %w", opts.switchTo, err)
-	}
-
-	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	ctx, cancel := context.WithTimeout(sigCtx, opts.timeout)
-	defer cancel()
-
-	start := time.Now()
-	block.StartedAt = start
-	block.Duration = 0
-	block.ExitCode = 0
-	block.Cost = nil
-	block.State = tui.StateStreaming
-
-	eventCh, err := adapt.Exec(ctx, kitchen.Task{Prompt: prompt})
-	if err != nil {
-		block.Conversation.EndActiveSegment(conversation.SegmentFailed, err.Error())
-		block.Complete(1, nil)
-		return fmt.Errorf("executing switched dispatch: %w", err)
-	}
-
-	var output strings.Builder
-	var costInfo *adapter.CostInfo
-	exitCode := 0
-	for evt := range eventCh {
-		if sessionID := adapt.SessionID(); sessionID != "" {
-			block.Conversation.SetNativeSessionID(opts.switchTo, sessionID)
-		}
-		captureConversationTurn(block.Conversation, evt)
-		block.AppendEvent(evt)
-
-		switch evt.Type {
-		case adapter.EventText:
-			if !opts.jsonOutput {
-				fmt.Println(evt.Text)
-			}
-			output.WriteString(evt.Text)
-			output.WriteString("\n")
-		case adapter.EventCodeBlock:
-			if !opts.jsonOutput {
-				fmt.Printf("```%s\n%s\n```\n", evt.Language, evt.Code)
-			}
-			output.WriteString(evt.Code)
-			output.WriteString("\n")
-		case adapter.EventCost:
-			costInfo = evt.Cost
-			if opts.verbose && evt.Cost != nil {
-				fmt.Fprintf(os.Stderr, "[cost] $%.4f\n", evt.Cost.USD)
-			}
-		case adapter.EventRateLimit:
-			if opts.verbose && evt.RateLimit != nil {
-				fmt.Fprintf(os.Stderr, "[rate_limit] %s: %s (resets %s)\n", evt.Kitchen, evt.RateLimit.Status, evt.RateLimit.ResetsAt.Format("15:04"))
-			}
-		case adapter.EventDone:
-			exitCode = evt.ExitCode
-		case adapter.EventError:
-			if opts.verbose {
-				fmt.Fprintf(os.Stderr, "[error] %s: %s\n", evt.Kitchen, evt.Text)
-			}
-		}
-	}
-
-	if exitCode == 0 {
-		block.Conversation.EndActiveSegment(conversation.SegmentDone, "completed")
-	} else {
-		block.Conversation.EndActiveSegment(conversation.SegmentFailed, "provider failed")
-	}
-	block.Complete(exitCode, costInfo)
-
-	if err := tui.SaveSession(opts.sessionName, blocks); err != nil {
-		return fmt.Errorf("saving session %q: %w", opts.sessionName, err)
-	}
-
-	if opts.jsonOutput {
-		out := map[string]any{
-			"kitchen":    opts.switchTo,
-			"exit_code":  exitCode,
-			"duration_s": time.Since(start).Seconds(),
-			"output":     output.String(),
-		}
-		if costInfo != nil {
-			out["cost_usd"] = costInfo.USD
-		}
-		if err := printJSON(out, true); err != nil {
-			return err
-		}
-	}
-
-	if exitCode != 0 {
-		return &exitError{code: exitCode, err: fmt.Errorf("kitchen %s exited with code %d", opts.switchTo, exitCode)}
-	}
-
-	return nil
-}
-
-func loadHeadlessSessionBlock(sessionName string) ([]tui.Block, int, error) {
-	blocks, err := tui.LoadSession(sessionName)
-	if err != nil {
-		return nil, 0, fmt.Errorf("loading session %q: %w", sessionName, err)
-	}
-	for i := len(blocks) - 1; i >= 0; i-- {
-		if blocks[i].Conversation != nil {
-			return blocks, i, nil
-		}
-	}
-	return nil, 0, fmt.Errorf("session %q has no persisted conversation", sessionName)
-}
-
-func prepareHeadlessSwitch(block *tui.Block, nextKitchen, userPrompt string) (string, string, error) {
-	if block == nil || block.Conversation == nil {
-		return "", "", fmt.Errorf("focused block has no active conversation")
-	}
-	active := block.Conversation.ActiveSegment()
-	if active == nil {
-		return "", "", fmt.Errorf("conversation has no active segment")
-	}
-
-	fromKitchen := active.Provider
-	block.Conversation.EndActiveSegment(conversation.SegmentDone, "user_switch")
-	block.Conversation.StartSegment(nextKitchen, nil)
-	block.ContinuationPrompt = conversation.BuildContinuationPrompt(conversation.ContinueInput{
-		Conversation: block.Conversation,
-		NextProvider: nextKitchen,
-		Reason:       "user requested",
-	})
-	block.Conversation.AppendTurn(conversation.RoleSystem, "milliways", fmt.Sprintf("Prepared continuation payload for user-requested switch from %s to %s.\n%s", fromKitchen, nextKitchen, block.ContinuationPrompt))
-	if strings.TrimSpace(userPrompt) != "" {
-		block.Conversation.AppendTurn(conversation.RoleUser, "user", userPrompt)
-	}
-	block.Kitchen = nextKitchen
-	if !providerChainContains(block.ProviderChain, nextKitchen) {
-		block.ProviderChain = append(block.ProviderChain, nextKitchen)
-	}
-	block.Lines = append(block.Lines, tui.OutputLine{
-		Kitchen: "milliways",
-		Type:    tui.LineSystem,
-		Text:    fmt.Sprintf("switch executed: %s -> %s (%s)", fromKitchen, nextKitchen, "user requested"),
-	})
-
-	return buildHeadlessSwitchPrompt(block.ContinuationPrompt, userPrompt), fromKitchen, nil
-}
-
-func buildHeadlessSwitchPrompt(continuationPrompt, userPrompt string) string {
-	if strings.TrimSpace(userPrompt) == "" {
-		return continuationPrompt
-	}
-	return continuationPrompt + "\n\nNew user message:\n" + userPrompt
-}
-
-func captureConversationTurn(conv *conversation.Conversation, evt adapter.Event) {
-	switch evt.Type {
-	case adapter.EventText:
-		role := conversation.RoleAssistant
-		if evt.Kitchen == "milliways" {
-			role = conversation.RoleSystem
-		}
-		conv.AppendTurn(role, evt.Kitchen, evt.Text)
-	case adapter.EventCodeBlock:
-		conv.AppendTurn(conversation.RoleAssistant, evt.Kitchen, evt.Code)
-	case adapter.EventError:
-		conv.AppendTurn(conversation.RoleSystem, evt.Kitchen, evt.Text)
-	}
-}
-
-func providerChainContains(chain []string, kitchenName string) bool {
-	for _, item := range chain {
-		if item == kitchenName {
-			return true
-		}
-	}
-	return false
 }
 
 // recordDispatch writes to PantryDB + ndjson audit trail + routing feedback.
@@ -998,31 +759,6 @@ func fetchMemPalaceContext(ctx context.Context, task string) string {
 		lines = append(lines, fmt.Sprintf("[%s/%s] %s", drawer.Wing, drawer.Room, drawer.Text))
 	}
 	return strings.Join(lines, "\n")
-}
-
-// fetchPalaceStatsForTUI queries the MemPalace MCP server for palace statistics
-// and returns an updated ProjectState with drawer/wing/room counts.
-func fetchPalaceStatsForTUI(ps tui.ProjectState, mempalaceCmd string, mempalaceArgs []string) tui.ProjectState {
-	if mempalaceCmd == "" || ps.PalacePath == "" {
-		return ps
-	}
-	client, err := substrate.New(mempalaceCmd, mempalaceArgs...)
-	if err != nil {
-		return ps
-	}
-	defer client.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	stats, err := client.GetPalaceStats(ctx)
-	if err != nil || stats == nil {
-		return ps
-	}
-	ps.PalaceDrawers = stats.TotalDrawers
-	ps.PalaceWings = stats.Wings
-	ps.PalaceRooms = stats.Rooms
-	return ps
 }
 
 func splitEnvArgs(raw string) []string {

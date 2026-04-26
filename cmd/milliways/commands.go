@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sort"
 	"time"
 
-	"github.com/mwigge/milliways/internal/conversation"
 	asyncdispatch "github.com/mwigge/milliways/internal/dispatch"
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
@@ -16,163 +14,10 @@ import (
 	"github.com/mwigge/milliways/internal/observability"
 	"github.com/mwigge/milliways/internal/orchestrator"
 	"github.com/mwigge/milliways/internal/pantry"
-	"github.com/mwigge/milliways/internal/project"
 	"github.com/mwigge/milliways/internal/recipe"
 	"github.com/mwigge/milliways/internal/sommelier"
-	"github.com/mwigge/milliways/internal/tui"
 	"github.com/spf13/cobra"
 )
-
-func runTUI(configPath string, tuiOpts tui.RunOpts) error {
-	cfg, err := maitre.LoadConfig(configPath)
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-
-	reg := buildRegistry(cfg)
-	som := sommelier.New(cfg.Routing.Keywords, cfg.Routing.Default, cfg.Routing.BudgetFallback, cfg.Routing.WeightOn, reg)
-
-	// Wire quota checking if pantry is available
-	pdb, pdbErr := openPantryDB()
-	if pdbErr == nil {
-		defer func() { _ = pdb.Close() }()
-		som.SetQuotaChecker(pdb.Quotas(), nil)
-	}
-
-	providerFactory := makeProviderFactory(cfg, reg, som, pdb, false)
-	hydrator := makeConversationHydrator(pdb, "")
-	sink := makeRuntimeSink(pdb)
-	recorder := makeConversationRecorder(cfg, pdb)
-	replayer := makeConversationReplayer(pdb)
-
-	// Open ticket store for the jobs panel (best-effort — nil disables panel).
-	var ticketStore *pantry.TicketStore
-	if pdbErr == nil {
-		ticketStore = pdb.Tickets()
-	}
-	tuiOpts.KitchenStates = buildKitchenStates(cfg, reg, pdb)
-
-	if projectContext, err := detectTUIProjectContext(); err == nil && projectContext != nil {
-		tuiOpts.ProjectState = projectContextToTUIState(projectContext)
-	} else if err != nil {
-		fmt.Fprintf(os.Stderr, "[project] detection failed: %v\n", err)
-	}
-
-	return tui.RunWithOpts(providerFactory, hydrator, sink, recorder, replayer, ticketStore, pdb, tuiOpts)
-}
-
-func detectTUIProjectContext() (*project.ProjectContext, error) {
-	if projectRoot := os.Getenv("MILLIWAYS_PROJECT_ROOT"); projectRoot != "" {
-		fmt.Fprintf(os.Stderr, "[project] detecting from MILLIWAYS_PROJECT_ROOT=%q\n", projectRoot)
-		pc, err := project.ResolveProject(projectRoot)
-		if err != nil {
-			return nil, err
-		}
-		logResolvedProjectContext(pc)
-		return pc, nil
-	}
-
-	workingDir, err := os.Getwd()
-	if err != nil {
-		return nil, err
-	}
-
-	pc, err := project.DetectStartupProject(workingDir)
-	if err != nil {
-		return nil, err
-	}
-	if pc == nil {
-		fmt.Fprintf(os.Stderr, "[project] no repository detected from cwd=%q\n", workingDir)
-		return nil, nil
-	}
-	logResolvedProjectContext(pc)
-	return pc, nil
-}
-
-func projectContextToTUIState(pc *project.ProjectContext) tui.ProjectState {
-	if pc == nil {
-		return tui.ProjectState{}
-	}
-
-	state := tui.ProjectState{
-		RepoRoot:          pc.RepoRoot,
-		RepoName:          pc.RepoName,
-		PalaceExists:      pc.PalaceExists,
-		CodeGraphExists:   pc.CodeGraphExists,
-		CodeGraphIndexing: pc.CodeGraphIndexing,
-		CodeGraphSymbols:  pc.CodeGraphSymbols,
-		AccessReadRule:    pc.AccessRules.Read,
-		AccessWriteRule:   pc.AccessRules.Write,
-	}
-	if pc.PalacePath != nil {
-		state.PalacePath = *pc.PalacePath
-	}
-	if pc.PalaceDrawers != nil {
-		state.PalaceDrawers = *pc.PalaceDrawers
-	}
-	return state
-}
-
-func logResolvedProjectContext(pc *project.ProjectContext) {
-	if pc == nil {
-		return
-	}
-
-	palaceStr := "(nil)"
-	if pc.PalacePath != nil {
-		palaceStr = *pc.PalacePath
-	}
-	drawersStr := "(nil)"
-	if pc.PalaceDrawers != nil {
-		drawersStr = fmt.Sprintf("%d", *pc.PalaceDrawers)
-	}
-	fmt.Fprintf(os.Stderr, "[project] resolved: root=%s repo=%s palace=%s drawers=%s\n",
-		pc.RepoRoot, pc.RepoName, palaceStr, drawersStr)
-}
-
-func buildKitchenStates(cfg *maitre.Config, reg *kitchen.Registry, pdb *pantry.DB) []tui.KitchenState {
-	names := make([]string, 0, len(cfg.Kitchens))
-	for name := range cfg.Kitchens {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	states := make([]tui.KitchenState, 0, len(names))
-	for _, name := range names {
-		state := tui.KitchenState{Name: name, Remaining: -1}
-		kitchenCfg := cfg.Kitchens[name]
-		k, ok := reg.Get(name)
-		if !ok {
-			state.Status = "not-installed"
-			states = append(states, state)
-			continue
-		}
-		state.Status = k.Status().String()
-		if pdb != nil {
-			state.Trend, _ = pdb.Quotas().Trend(name)
-
-			exhausted, err := pdb.Quotas().IsExhausted(name, kitchenCfg.DailyLimit)
-			if err == nil && exhausted {
-				if resetsAt, resetErr := pdb.Quotas().ResetsAt(name, kitchenCfg.DailyLimit); resetErr == nil && !resetsAt.IsZero() && resetsAt.After(time.Now()) {
-					state.Status = "exhausted"
-					state.ResetsAt = resetsAt.In(time.Local).Format("15:04")
-				}
-			}
-
-			if limit := kitchenCfg.DailyLimit; limit > 0 {
-				state.Remaining, _ = pdb.Quotas().Remaining(name, limit)
-				if ratio, err := pdb.Quotas().UsageRatio(name, limit); err == nil {
-					state.UsageRatio = ratio
-					if ratio >= kitchenCfg.EffectiveWarnThreshold() && ratio < 1.0 && state.Status == "ready" {
-						state.Status = "warning"
-					}
-				}
-			}
-		}
-		states = append(states, state)
-	}
-	return states
-}
 
 func makeRuntimeSink(pdb *pantry.DB) observability.Sink {
 	otelSink, _ := observability.NewOTelSink()
@@ -193,31 +38,6 @@ func makeRuntimeSink(pdb *pantry.DB) observability.Sink {
 	})
 	ledgerSink := ledger.NewLedgerSink(pdb)
 	return observability.MultiSink{runtimeSink, ledgerSink, otelSink}
-}
-
-func makeConversationRecorder(cfg *maitre.Config, pdb *pantry.DB) tui.ConversationRecorder {
-	return func(prompt string, duration float64, exitCode int, conv *conversation.Conversation) {
-		if conv == nil {
-			return
-		}
-		lastKitchen := ""
-		if len(conv.Segments) > 0 {
-			lastKitchen = conv.Segments[len(conv.Segments)-1].Provider
-		}
-		recordConversationDispatch(cfg, pdb, prompt, lastKitchen, duration, exitCode, conv)
-	}
-}
-
-func makeConversationReplayer(pdb *pantry.DB) tui.ConversationReplayer {
-	if pdb == nil {
-		return nil
-	}
-	return func(conversationID, blockID, prompt string, exitCode int) (*conversation.Conversation, []observability.Event, error) {
-		if ckpt, err := pdb.Checkpoints().LatestByConversation(conversationID); err == nil && ckpt != nil {
-			return pdb.RuntimeEvents().ReconstructConversationFromCheckpoint(ckpt, exitCode)
-		}
-		return pdb.RuntimeEvents().ReconstructConversation(conversationID, blockID, prompt, exitCode)
-	}
 }
 
 func makeProviderFactory(cfg *maitre.Config, reg *kitchen.Registry, som *sommelier.Sommelier, pdb *pantry.DB, verbose bool) orchestrator.ProviderFactory {
