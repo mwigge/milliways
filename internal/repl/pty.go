@@ -17,8 +17,9 @@ import (
 )
 
 var (
-	noisePattern = regexp.MustCompile(`^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+Z ERROR|--.*|ERROR: Reconnecting)`)
-	zscalerBlock = regexp.MustCompile(`(?i)<!DOCTYPE HTML|<html|<head|<meta name="description" content="Zscaler`)
+	noisePattern     = regexp.MustCompile(`^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+Z ERROR|--.*|ERROR: Reconnecting)`)
+	zscalerBlock    = regexp.MustCompile(`(?i)<!DOCTYPE|<html|<head|<meta name="description" content="Zscaler|<title>Internet Security by Zscaler`)
+	htmlTagStripper = regexp.MustCompile(`<[^>]+>`)
 )
 
 func runPTY(cmd *exec.Cmd) (string, error) {
@@ -58,11 +59,17 @@ func runPTYWithContext(cmd *exec.Cmd, ctx context.Context) (string, error) {
 			line := scanner.Text()
 			os.Stdout.Write([]byte(line + "\n"))
 
+			stripped := htmlTagStripper.ReplaceAllString(line, "")
+			stripped = strings.TrimSpace(stripped)
+			if stripped == "" {
+				continue
+			}
+
 			if zscalerBlock.MatchString(line) {
 				inZscalerBlock = true
 			}
 			if inZscalerBlock {
-				if strings.HasSuffix(line, "</html>") || strings.HasSuffix(line, "</HTML>") {
+				if strings.Contains(strings.ToLower(line), "</html>") {
 					inZscalerBlock = false
 				}
 				continue
@@ -72,7 +79,7 @@ func runPTYWithContext(cmd *exec.Cmd, ctx context.Context) (string, error) {
 			}
 
 			mu.Lock()
-			captured.WriteString(line + "\n")
+			captured.WriteString(stripped + "\n")
 			gotContent = true
 			mu.Unlock()
 		}
