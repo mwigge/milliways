@@ -207,6 +207,8 @@ type REPL struct {
 	turnBuffer    []ConversationTurn
 	rules         string
 	logHandler    *ReplLogHandler
+	sessionStore  *SessionStore
+	noRestore     bool
 }
 
 func (r *REPL) SetVersion(v string) {
@@ -251,12 +253,26 @@ type replSession struct {
 }
 
 func NewREPL(stdout io.Writer) *REPL {
-	return &REPL{
+	r := &REPL{
 		input:   newDefaultInput(),
 		runners: make(map[string]Runner),
 		stdout:  stdout,
 		scheme:  DefaultScheme(),
 	}
+
+	store, err := NewSessionStore()
+	if err != nil {
+		slog.Warn("session store unavailable", "err", err)
+	} else {
+		r.sessionStore = store
+	}
+
+	return r
+}
+
+// SetNoRestore disables auto-restore of the last session on startup when v is true.
+func (r *REPL) SetNoRestore(v bool) {
+	r.noRestore = v
 }
 
 func NewREPLWithSubstrate(stdout io.Writer, sc *substrate.Client) *REPL {
@@ -318,6 +334,15 @@ func (r *REPL) Run(ctx context.Context) error {
 
 	r.loadRules()
 
+	if r.sessionStore != nil && !r.noRestore {
+		cwd, _ := os.Getwd()
+		if sess, ok := r.sessionStore.FindLatestForCwd(cwd); ok {
+			r.turnBuffer = sess.Turns
+			fmt.Fprintf(r.stdout, "restored %d turns from %s\n",
+				len(sess.Turns), sess.SavedAt.Format("2006-01-02 15:04"))
+		}
+	}
+
 	defer func() {
 		r.println(ResetColor + BlackBackground)
 		if r.substrate != nil && r.session != nil {
@@ -326,6 +351,24 @@ func (r *REPL) Run(ctx context.Context) error {
 				Status:         "done",
 				Reason:         "repl_exit",
 			})
+		}
+		if r.sessionStore != nil {
+			cwd, _ := os.Getwd()
+			runnerName := ""
+			if r.runner != nil {
+				runnerName = r.runner.Name()
+			}
+			sess := PersistedSession{
+				Version:    sessionVersion,
+				SavedAt:    time.Now(),
+				RunnerName: runnerName,
+				RulesHash:  rulesHash(r.rules),
+				WorkDir:    cwd,
+				Turns:      r.turnBuffer,
+			}
+			if err := r.sessionStore.Save("", sess); err != nil {
+				slog.Warn("auto-save session failed", "err", err)
+			}
 		}
 	}()
 

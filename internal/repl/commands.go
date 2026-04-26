@@ -107,32 +107,144 @@ func handleBack(ctx context.Context, r *REPL, args string) error {
 }
 
 func handleSession(ctx context.Context, r *REPL, args string) error {
-	if args == "" {
-		if r.session != nil {
-			r.println(fmt.Sprintf("Current session: %s", r.session.conversationID))
-			r.println(fmt.Sprintf("  Runner: %s", r.session.runnerName))
-		} else {
-			r.println("No active session.")
-		}
-		if r.substrate != nil {
-			list, err := r.substrate.ConversationList(ctx)
-			if err == nil && len(list) > 0 {
-				r.println("")
-				r.println("Stored sessions:")
-				for _, s := range list {
-					age := ""
-					if !s.UpdatedAt.IsZero() {
-						age = fmt.Sprintf(" (%s ago)", time.Since(s.UpdatedAt).Round(time.Second))
-					}
-					r.println(fmt.Sprintf("  %s%s [%s]", s.ConversationID, age, s.Status))
-				}
-			}
-		}
-		return nil
+	sub, name := splitHead(args)
+
+	switch sub {
+	case "save":
+		return handleSessionSave(r, name)
+	case "load":
+		return handleSessionLoad(r, name)
+	case "list":
+		return handleSessionList(r)
+	case "clear":
+		return handleSessionClear(r, name)
+	case "":
+		return handleSessionInfo(ctx, r)
+	default:
+		// Treat as a bare session name search (legacy substrate behaviour).
+		return handleSessionSubstrateSearch(ctx, r, args)
+	}
+}
+
+func handleSessionInfo(ctx context.Context, r *REPL) error {
+	if r.session != nil {
+		r.println(fmt.Sprintf("Current session: %s", r.session.conversationID))
+		r.println(fmt.Sprintf("  Runner: %s", r.session.runnerName))
+	} else {
+		r.println("No active substrate session.")
 	}
 
+	if r.sessionStore != nil {
+		runnerName := ""
+		if r.runner != nil {
+			runnerName = r.runner.Name()
+		}
+		r.println(fmt.Sprintf("  Runner: %s", runnerName))
+		r.println(fmt.Sprintf("  Turns:  %d", len(r.turnBuffer)))
+		if r.rules != "" {
+			r.println(fmt.Sprintf("  Rules hash: %s", rulesHash(r.rules)[:12]+"..."))
+		}
+	}
+
+	if r.substrate != nil {
+		list, err := r.substrate.ConversationList(ctx)
+		if err == nil && len(list) > 0 {
+			r.println("")
+			r.println("Stored substrate sessions:")
+			for _, s := range list {
+				age := ""
+				if !s.UpdatedAt.IsZero() {
+					age = fmt.Sprintf(" (%s ago)", time.Since(s.UpdatedAt).Round(time.Second))
+				}
+				r.println(fmt.Sprintf("  %s%s [%s]", s.ConversationID, age, s.Status))
+			}
+		}
+	}
+	return nil
+}
+
+func handleSessionSave(r *REPL, name string) error {
+	if r.sessionStore == nil {
+		r.println("session store unavailable")
+		return nil
+	}
+	if name == "" {
+		return fmt.Errorf("usage: /session save <name>")
+	}
+	runnerName := ""
+	if r.runner != nil {
+		runnerName = r.runner.Name()
+	}
+	cwd, _ := os.Getwd()
+	sess := PersistedSession{
+		Version:    sessionVersion,
+		SavedAt:    time.Now(),
+		RunnerName: runnerName,
+		RulesHash:  rulesHash(r.rules),
+		WorkDir:    cwd,
+		Turns:      r.turnBuffer,
+	}
+	if err := r.sessionStore.Save(name, sess); err != nil {
+		return fmt.Errorf("saving session: %w", err)
+	}
+	r.println(fmt.Sprintf("session %q saved (%d turns)", name, len(r.turnBuffer)))
+	return nil
+}
+
+func handleSessionLoad(r *REPL, name string) error {
+	if r.sessionStore == nil {
+		r.println("session store unavailable")
+		return nil
+	}
+	if name == "" {
+		return fmt.Errorf("usage: /session load <name>")
+	}
+	sess, err := r.sessionStore.Load(name)
+	if err != nil {
+		return fmt.Errorf("loading session: %w", err)
+	}
+	r.turnBuffer = sess.Turns
+	r.println(fmt.Sprintf("session %q loaded (%d turns, saved %s)",
+		name, len(sess.Turns), sess.SavedAt.Format("2006-01-02 15:04")))
+	return nil
+}
+
+func handleSessionList(r *REPL) error {
+	if r.sessionStore == nil {
+		r.println("session store unavailable")
+		return nil
+	}
+	metas, err := r.sessionStore.List()
+	if err != nil {
+		return fmt.Errorf("listing sessions: %w", err)
+	}
+	if len(metas) == 0 {
+		r.println(MutedText("no saved sessions"))
+		return nil
+	}
+	r.println(AccentColorText(r.scheme, "Saved sessions:"))
+	r.println("")
+	for _, m := range metas {
+		age := time.Since(m.SavedAt).Round(time.Minute)
+		r.println(fmt.Sprintf("  %-30s  %s  %2d turns  %s ago",
+			m.Name, RunnerAccentText(m.Runner, m.Runner), m.Turns, age))
+	}
+	return nil
+}
+
+func handleSessionClear(r *REPL, args string) error {
+	if args != "y" && args != "yes" {
+		r.println(fmt.Sprintf("Clear %d turns? Type /session clear y to confirm.", len(r.turnBuffer)))
+		return nil
+	}
+	r.turnBuffer = nil
+	r.println("turn buffer cleared")
+	return nil
+}
+
+func handleSessionSubstrateSearch(ctx context.Context, r *REPL, args string) error {
 	if r.substrate == nil {
-		return fmt.Errorf("mempalace not configured")
+		return fmt.Errorf("session %q not found (mempalace not configured)", args)
 	}
 
 	list, err := r.substrate.ConversationList(ctx)
@@ -147,9 +259,13 @@ func handleSession(ctx context.Context, r *REPL, args string) error {
 			if err != nil {
 				continue
 			}
+			runnerName := ""
+			if r.runner != nil {
+				runnerName = r.runner.Name()
+			}
 			r.session = &replSession{
 				conversationID: rec.ConversationID,
-				runnerName:     r.runner.Name(),
+				runnerName:     runnerName,
 			}
 			r.println(fmt.Sprintf("Resumed session: %s", rec.ConversationID))
 			r.println(fmt.Sprintf("  Status: %s", rec.Status))
@@ -1153,7 +1269,7 @@ func handleApply(ctx context.Context, r *REPL, args string) error {
 			r.println("  " + pl)
 		}
 
-		response, err := r.liner.Prompt("  apply? [y/N/path]: ")
+		response, err := r.input.Prompt("  apply? [y/N/path]: ")
 		if err != nil {
 			// EOF or abort — stop processing.
 			break

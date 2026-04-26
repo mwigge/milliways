@@ -104,7 +104,8 @@ based on what each tool does best.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// REPL is the default when no prompt args are given.
 			if len(args) == 0 || replFlag {
-				return runREPL(configPath)
+				noRestore, _ := cmd.Flags().GetBool("no-restore")
+				return runREPL(configPath, noRestore)
 			}
 			projectContext, err := project.ResolveProject(projectRoot)
 			if err != nil {
@@ -162,6 +163,7 @@ based on what each tool does best.
 	cmd.Flags().BoolVar(&contextStdin, "context-stdin", false, "Read editor context bundle JSON from stdin")
 	cmd.Flags().BoolVar(&useLegacyConversation, "use-legacy-conversation", false, "Use pantry conversation storage instead of substrate")
 	cmd.Flags().DurationVar(&timeoutDur, "timeout", 5*time.Minute, "Dispatch timeout for headless mode")
+	cmd.Flags().Bool("no-restore", false, "Do not auto-restore the last session on startup")
 
 	cmd.AddCommand(statusCmd(&configPath))
 	cmd.AddCommand(reportCmd(&configPath))
@@ -1354,7 +1356,7 @@ func pantryCmd() *cobra.Command {
 	return cmd
 }
 
-func runREPL(configPath string) error {
+func runREPL(configPath string, noRestore bool) error {
 	cfg, err := maitre.LoadConfig(configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -1448,6 +1450,8 @@ func runREPL(configPath string) error {
 
 	// Register copilot runner
 	r.Register("copilot", repl.NewCopilotRunner())
+
+	r.SetNoRestore(noRestore)
 
 	ctx := context.Background()
 	return r.Run(ctx)
