@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/mwigge/milliways/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -42,6 +43,12 @@ func LoadCommands(dir string) ([]Command, error) {
 }
 
 func loadCommandsWithNamespace(dir string, defaultNamespace string) ([]Command, error) {
+	if err := config.GuardReadPath(dir); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -80,6 +87,9 @@ func loadCommandsWithNamespace(dir string, defaultNamespace string) ([]Command, 
 }
 
 func loadCommandFile(path string, defaultNamespace string) (Command, error) {
+	if err := config.GuardReadPath(path); err != nil {
+		return Command{}, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Command{}, fmt.Errorf("read command %q: %w", path, err)

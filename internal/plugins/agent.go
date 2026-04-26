@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/mwigge/milliways/internal/rules"
 )
 
 var templateVariablePattern = regexp.MustCompile(`\$([A-Z][A-Z0-9_]*)`)
+
+var activeRulesLoader *rules.RulesLoader
 
 // Agent defines one reusable plugin agent prompt.
 type Agent struct {
@@ -30,7 +34,15 @@ func RunAgent(agent Agent, values map[string]string, provider Provider) (string,
 		return "", fmt.Errorf("provider is required")
 	}
 
-	rendered, err := renderTemplate(agent.Prompt, values)
+	promptTemplate := agent.Prompt
+	if activeRulesLoader != nil {
+		contextPrefix := strings.TrimSpace(activeRulesLoader.BuildContext("implementor", agent.Name, values["INPUT"]))
+		if contextPrefix != "" {
+			promptTemplate = contextPrefix + "\n\n" + promptTemplate
+		}
+	}
+
+	rendered, err := renderTemplate(promptTemplate, values)
 	if err != nil {
 		return "", err
 	}
@@ -40,6 +52,11 @@ func RunAgent(agent Agent, values map[string]string, provider Provider) (string,
 		return "", fmt.Errorf("send agent prompt %q: %w", agent.Name, err)
 	}
 	return response, nil
+}
+
+// SetRulesLoader overrides the active rules loader used by RunAgent.
+func SetRulesLoader(loader *rules.RulesLoader) {
+	activeRulesLoader = loader
 }
 
 func renderTemplate(template string, values map[string]string) (string, error) {

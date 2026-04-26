@@ -31,6 +31,44 @@ const (
 	SpanToolPrefix = "milliways.tool."
 	// SpanHookPrefix prefixes hook spans.
 	SpanHookPrefix = "milliways.hook."
+	// SpanAgentThink wraps agent reasoning spans.
+	SpanAgentThink = "agent.think"
+	// SpanAgentDelegate wraps agent delegation spans.
+	SpanAgentDelegate = "agent.delegate"
+	// SpanAgentTool wraps agent tool usage spans.
+	SpanAgentTool = "agent.tool"
+	// SpanAgentObserve wraps agent observation spans.
+	SpanAgentObserve = "agent.observe"
+	// SpanAgentDecide wraps agent decision spans.
+	SpanAgentDecide = "agent.decide"
+	// AttrAgentID identifies the agent trace session.
+	AttrAgentID = "ai.agent.id"
+	// AttrAgentModel identifies the active model.
+	AttrAgentModel = "ai.agent.model"
+	// AttrAgentTier identifies the active execution tier.
+	AttrAgentTier = "ai.agent.tier"
+	// AttrAgentReasoning stores a reasoning summary.
+	AttrAgentReasoning = "ai.agent.reasoning"
+	// AttrDelegateAgent identifies the delegated agent.
+	AttrDelegateAgent = "ai.delegate.agent"
+	// AttrDelegateTask identifies the delegated task.
+	AttrDelegateTask = "ai.delegate.task"
+	// AttrDelegateDur stores delegation duration in milliseconds.
+	AttrDelegateDur = "ai.delegate.duration_ms"
+	// AttrDelegateOutcome stores the delegation outcome.
+	AttrDelegateOutcome = "ai.delegate.outcome"
+	// AttrToolName identifies the tool used.
+	AttrToolName = "ai.tool.name"
+	// AttrToolDur stores tool duration in milliseconds.
+	AttrToolDur = "ai.tool.duration_ms"
+	// AttrToolBlocked indicates whether a tool call was blocked.
+	AttrToolBlocked = "ai.tool.blocked"
+	// AttrObserveType identifies the observation type.
+	AttrObserveType = "ai.observe.type"
+	// AttrDecisionChoice identifies the chosen decision.
+	AttrDecisionChoice = "ai.decision.choice"
+	// AttrDecisionOptions stores available decision options.
+	AttrDecisionOptions = "ai.decision.options"
 )
 
 var (
@@ -180,7 +218,7 @@ func (s *OTelSink) handleSegmentStart(state otelState, evt Event) {
 func (s *OTelSink) handleSegmentEnd(state otelState, evt Event) {
 	ctx := context.Background()
 	status := fieldOr(evt.Fields, "status", "unknown")
-	segmentKitchen := firstNonEmpty(evt.Provider, "unknown")
+	segmentKitchen := otelFirstNonEmpty(evt.Provider, "unknown")
 
 	if value, ok := s.segments.LoadAndDelete(evt.SegmentID); ok {
 		seg, ok := value.(segmentState)
@@ -211,13 +249,13 @@ func (s *OTelSink) handleSegmentEnd(state otelState, evt Event) {
 }
 
 func (s *OTelSink) handleFailover(state otelState, evt Event) {
-	fromKitchen := firstNonEmpty(
+	fromKitchen := otelFirstNonEmpty(
 		fieldValue(evt.Fields, "from_kitchen"),
 		fieldValue(evt.Fields, "from"),
 		evt.Provider,
 		"unknown",
 	)
-	toKitchen := firstNonEmpty(
+	toKitchen := otelFirstNonEmpty(
 		fieldValue(evt.Fields, "to_kitchen"),
 		fieldValue(evt.Fields, "to"),
 		"unknown",
@@ -252,7 +290,7 @@ func fieldOr(fields map[string]string, key, fallback string) string {
 	return fallback
 }
 
-func firstNonEmpty(values ...string) string {
+func otelFirstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if value != "" {
 			return value
@@ -268,6 +306,23 @@ func StartSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (c
 	}
 	_ = MustOtel()
 	return otelGlobalState.tracer.Start(ctx, name, trace.WithAttributes(attrs...))
+}
+
+// SpanFromCtx returns the current span from context.
+func SpanFromCtx(ctx context.Context) trace.Span {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return trace.SpanFromContext(ctx)
+}
+
+// AddEvent adds an event to the current span if one is present.
+func AddEvent(ctx context.Context, name string, attrs ...attribute.KeyValue) {
+	span := SpanFromCtx(ctx)
+	if span == nil {
+		return
+	}
+	span.AddEvent(name, trace.WithAttributes(attrs...))
 }
 
 // StartProviderSendSpan starts a provider send span.
@@ -308,6 +363,53 @@ func StartHookSpan(ctx context.Context, operation string, blocked bool) (context
 // StartSessionCompactSpan starts a compaction span.
 func StartSessionCompactSpan(ctx context.Context, sessionID string) (context.Context, trace.Span) {
 	return StartSpan(ctx, SpanSessionCompact, attribute.String("session.id", sessionID))
+}
+
+// StartAgentThinkSpan starts an agent reasoning span.
+func StartAgentThinkSpan(ctx context.Context, sessionID, reasoning string) (context.Context, trace.Span) {
+	return StartSpan(ctx, SpanAgentThink,
+		attribute.String(AttrAgentID, sessionID),
+		attribute.String(AttrAgentReasoning, reasoning),
+	)
+}
+
+// StartAgentDelegateSpan starts an agent delegation span.
+func StartAgentDelegateSpan(ctx context.Context, sessionID, agent, task string, durMS int, outcome string) (context.Context, trace.Span) {
+	return StartSpan(ctx, SpanAgentDelegate,
+		attribute.String(AttrAgentID, sessionID),
+		attribute.String(AttrDelegateAgent, agent),
+		attribute.String(AttrDelegateTask, task),
+		attribute.Int(AttrDelegateDur, durMS),
+		attribute.String(AttrDelegateOutcome, outcome),
+	)
+}
+
+// StartAgentToolSpan starts an agent tool usage span.
+func StartAgentToolSpan(ctx context.Context, sessionID, toolName string, durMS int, blocked bool) (context.Context, trace.Span) {
+	return StartSpan(ctx, SpanAgentTool,
+		attribute.String(AttrAgentID, sessionID),
+		attribute.String(AttrToolName, toolName),
+		attribute.Int(AttrToolDur, durMS),
+		attribute.Bool(AttrToolBlocked, blocked),
+	)
+}
+
+// StartAgentObserveSpan starts an agent observation span.
+func StartAgentObserveSpan(ctx context.Context, sessionID, obsType, content string) (context.Context, trace.Span) {
+	return StartSpan(ctx, SpanAgentObserve,
+		attribute.String(AttrAgentID, sessionID),
+		attribute.String(AttrObserveType, obsType),
+		attribute.String("content", content),
+	)
+}
+
+// StartAgentDecideSpan starts an agent decision span.
+func StartAgentDecideSpan(ctx context.Context, sessionID string, options []string, choice string) (context.Context, trace.Span) {
+	return StartSpan(ctx, SpanAgentDecide,
+		attribute.String(AttrAgentID, sessionID),
+		attribute.StringSlice(AttrDecisionOptions, append([]string(nil), options...)),
+		attribute.String(AttrDecisionChoice, choice),
+	)
 }
 
 // Shutdown flushes and stops the shared providers.

@@ -9,6 +9,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mwigge/milliways/internal/observability"
+	"github.com/mwigge/milliways/internal/provider"
 )
 
 func TestNewBuiltInRegistryContainsAllTools(t *testing.T) {
@@ -121,4 +124,100 @@ func TestHandleWebFetch(t *testing.T) {
 	if result != "payload" {
 		t.Fatalf("result = %q", result)
 	}
+}
+
+func TestRegistryExecToolEmitsTraceEvent(t *testing.T) {
+	t.Parallel()
+
+	emitter, err := observability.NewTraceEmitterForDir("tool-success", t.TempDir())
+	if err != nil {
+		t.Fatalf("NewTraceEmitterForDir() error = %v", err)
+	}
+
+	registry := NewRegistryWithEmitter(emitter)
+	registry.Register("Read", func(context.Context, map[string]any) (string, error) {
+		return "ok", nil
+	}, providerTestToolDef("Read"))
+
+	result, err := registry.ExecTool(context.Background(), "session-1", "Read", map[string]any{"path": "README.md"})
+	if err != nil {
+		t.Fatalf("ExecTool() error = %v", err)
+	}
+	if result != "ok" {
+		t.Fatalf("result = %q, want ok", result)
+	}
+
+	events, err := observability.ReadTraceFile(emitter.TraceFilePath())
+	if err != nil {
+		t.Fatalf("ReadTraceFile() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if events[0].Type != "agent.tool" {
+		t.Fatalf("event type = %q, want agent.tool", events[0].Type)
+	}
+	if got := events[0].Data["dur_ms"]; got == nil {
+		t.Fatal("expected dur_ms in trace event")
+	}
+	if got := events[0].Data["blocked"]; got != false {
+		t.Fatalf("blocked = %v, want false", got)
+	}
+}
+
+func TestRegistryExecToolMarksBlockedError(t *testing.T) {
+	t.Parallel()
+
+	emitter, err := observability.NewTraceEmitterForDir("tool-failure", t.TempDir())
+	if err != nil {
+		t.Fatalf("NewTraceEmitterForDir() error = %v", err)
+	}
+
+	registry := NewRegistryWithEmitter(emitter)
+	registry.Register("Read", func(context.Context, map[string]any) (string, error) {
+		return "", context.DeadlineExceeded
+	}, providerTestToolDef("Read"))
+
+	_, err = registry.ExecTool(context.Background(), "session-1", "Read", map[string]any{"path": "README.md"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	events, err := observability.ReadTraceFile(emitter.TraceFilePath())
+	if err != nil {
+		t.Fatalf("ReadTraceFile() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	if got := events[0].Data["dur_ms"]; got == nil {
+		t.Fatal("expected dur_ms in trace event")
+	}
+	if got := events[0].Data["blocked"]; got != false {
+		t.Fatalf("blocked = %v, want false for non-blocking error", got)
+	}
+
+	registry = NewRegistryWithEmitter(emitter)
+	registry.Register("Bash", func(context.Context, map[string]any) (string, error) {
+		return "", errBlockedTool
+	}, providerTestToolDef("Bash"))
+
+	_, _ = registry.ExecTool(context.Background(), "session-1", "Bash", map[string]any{"command": "ls"})
+	events, err = observability.ReadTraceFile(emitter.TraceFilePath())
+	if err != nil {
+		t.Fatalf("ReadTraceFile() error = %v", err)
+	}
+	if got := events[len(events)-1].Data["blocked"]; got != true {
+		t.Fatalf("blocked = %v, want true", got)
+	}
+}
+
+var errBlockedTool = &toolErr{msg: "blocked by policy"}
+
+type toolErr struct{ msg string }
+
+func (e *toolErr) Error() string { return e.msg }
+
+func providerTestToolDef(name string) provider.ToolDef {
+	return provider.ToolDef{Name: name, Description: name}
 }

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/mwigge/milliways/internal/config"
 )
 
 const pluginRootVariable = "${CLAUDE_PLUGIN_ROOT}"
@@ -43,6 +45,12 @@ type rawHookSpec struct {
 // LoadHooks loads and resolves hooks/hooks.json for a plugin.
 func LoadHooks(pluginRoot string) (HookFile, error) {
 	path := filepath.Join(pluginRoot, "hooks", "hooks.json")
+	if err := config.GuardReadPath(path); err != nil {
+		if os.IsNotExist(err) {
+			return HookFile{Hooks: map[string][]HookSpec{}}, nil
+		}
+		return HookFile{}, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

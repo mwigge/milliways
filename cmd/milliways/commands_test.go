@@ -187,6 +187,77 @@ routing:
 	}
 }
 
+func TestRunInitCreatesModeAndRules(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	rulesSourceDir := filepath.Join(homeDir, "dev", "src", "ai_local", "opencode")
+	if err := os.MkdirAll(rulesSourceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(rules source): %v", err)
+	}
+	wantRules := "# Core Rules\n- keep it tidy\n"
+	if err := os.WriteFile(filepath.Join(rulesSourceDir, "AGENTS.md"), []byte(wantRules), 0o600); err != nil {
+		t.Fatalf("WriteFile(AGENTS.md): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(homeDir, "dev", "src", "ai_local", "AGENTS.md"), []byte(wantRules), 0o600); err != nil {
+		t.Fatalf("WriteFile(root AGENTS.md): %v", err)
+	}
+
+	if err := RunInit(); err != nil {
+		t.Fatalf("RunInit() error = %v", err)
+	}
+
+	modeData, err := os.ReadFile(filepath.Join(homeDir, ".config", "milliways", "mode"))
+	if err != nil {
+		t.Fatalf("ReadFile(mode): %v", err)
+	}
+	if got := string(modeData); got != "neutral\n" {
+		t.Fatalf("mode file = %q, want %q", got, "neutral\\n")
+	}
+
+	rulesData, err := os.ReadFile(filepath.Join(homeDir, ".config", "milliways", "rules", "global.md"))
+	if err != nil {
+		t.Fatalf("ReadFile(global.md): %v", err)
+	}
+	if string(rulesData) != wantRules {
+		t.Fatalf("rules file = %q, want %q", string(rulesData), wantRules)
+	}
+}
+
+func TestRootCmd_ModeCommandShowsAndSetsMode(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	cmd := rootCmd()
+	cmd.SetArgs([]string{"mode"})
+
+	stdout, _, err := captureOutput(t, cmd.Execute)
+	if err != nil {
+		t.Fatalf("Execute(show mode): %v", err)
+	}
+	if !strings.Contains(stdout, "neutral") {
+		t.Fatalf("stdout = %q, want neutral", stdout)
+	}
+
+	cmd = rootCmd()
+	cmd.SetArgs([]string{"mode", "company"})
+	stdout, _, err = captureOutput(t, cmd.Execute)
+	if err != nil {
+		t.Fatalf("Execute(set mode): %v", err)
+	}
+	if !strings.Contains(stdout, "company") {
+		t.Fatalf("stdout = %q, want company", stdout)
+	}
+
+	data, err := os.ReadFile(filepath.Join(homeDir, ".config", "milliways", "mode"))
+	if err != nil {
+		t.Fatalf("ReadFile(mode): %v", err)
+	}
+	if got := string(data); got != "company\n" {
+		t.Fatalf("mode file = %q, want %q", got, "company\\n")
+	}
+}
+
 func TestMakeRuntimeSinkIncludesOTelWithoutPantryDB(t *testing.T) {
 	sink := makeRuntimeSink(nil)
 	multi, ok := sink.(observability.MultiSink)
