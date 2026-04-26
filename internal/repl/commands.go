@@ -48,6 +48,7 @@ var commandHandlers = map[string]commandHandler{
 	"codex-reasoning":  handleCodexReasoning,
 	"codex-search":     handleCodexSearch,
 	"codex-image":      handleCodexImage,
+	"apply":            handleApply,
 	"review-all":       handleReviewAll,
 	"metrics":          handleMetrics,
 	"logs":             handleLogs,
@@ -1098,6 +1099,9 @@ func handleHelp(ctx context.Context, r *REPL, args string) error {
 	r.println("    /codex-search <on|off>  Toggle web search for /codex prompts")
 	r.println("    /codex-image add|clear|list [path]  Attach images to /codex prompts")
 	r.println("")
+	r.println("  Code blocks:")
+	r.println("    /apply           Extract fenced code blocks from last AI response and write to files")
+	r.println("")
 	r.println("  Observability:")
 	r.println("    /metrics         Show per-runner cost and token usage")
 	r.println("    /logs [N]        Show last N log entries (default 50)")
@@ -1114,6 +1118,72 @@ func handleHelp(ctx context.Context, r *REPL, args string) error {
 	r.println("")
 	r.println("  Bash:")
 	r.println("    !<command>       Run a bash command")
+	return nil
+}
+
+func handleApply(ctx context.Context, r *REPL, args string) error {
+	text := r.lastAssistantText()
+	if text == "" {
+		r.println(MutedText("no assistant response in current session"))
+		return nil
+	}
+
+	blocks := ExtractCodeBlocks(text)
+	if len(blocks) == 0 {
+		r.println(MutedText("no code blocks found in last response"))
+		return nil
+	}
+
+	applied := 0
+	for _, block := range blocks {
+		label := block.FilePath
+		if label == "" {
+			label = "(no path)"
+		}
+		r.println(fmt.Sprintf("[%d] %s %s  (%d bytes)",
+			block.Index, block.Lang, label, len(block.Content)))
+
+		// Print first 3 lines of content as preview.
+		previewLines := strings.SplitN(block.Content, "\n", 5)
+		for i, pl := range previewLines {
+			if i >= 3 {
+				r.println("  ...")
+				break
+			}
+			r.println("  " + pl)
+		}
+
+		response, err := r.liner.Prompt("  apply? [y/N/path]: ")
+		if err != nil {
+			// EOF or abort — stop processing.
+			break
+		}
+		response = strings.TrimSpace(response)
+
+		var path string
+		switch {
+		case response == "y" || response == "Y":
+			if block.FilePath == "" {
+				r.println(MutedText("  no path inferred — skipping (use /apply and type a path)"))
+				continue
+			}
+			path = block.FilePath
+		case response == "" || response == "n" || response == "N":
+			continue
+		default:
+			// Treat as a file path.
+			path = response
+		}
+
+		if applyErr := ApplyCodeBlock(block, path); applyErr != nil {
+			r.println(ErrorText(fmt.Sprintf("  error: %v", applyErr)))
+		} else {
+			r.println(PrimaryText(fmt.Sprintf("  written: %s", path)))
+			applied++
+		}
+	}
+
+	r.println(fmt.Sprintf("applied %d / %d blocks", applied, len(blocks)))
 	return nil
 }
 
