@@ -70,6 +70,7 @@ func handleSwitch(ctx context.Context, r *REPL, args string) error {
 	if err := r.SetRunner(args); err != nil {
 		return err
 	}
+	r.loadRules()
 	r.println(fmt.Sprintf("Switched to %s", RunnerAccentText(r.runner.Name(), r.runner.Name())))
 
 	// Print runner-specific config so the user can verify settings on switch.

@@ -42,8 +42,8 @@ func NewCodexRunner() *CodexRunner {
 
 func (r *CodexRunner) Name() string { return "codex" }
 
-func (r *CodexRunner) Execute(ctx context.Context, prompt string, out io.Writer) error {
-	args := r.execArgs(prompt)
+func (r *CodexRunner) Execute(ctx context.Context, req DispatchRequest, out io.Writer) error {
+	args := r.execArgs(buildTextPrompt(req))
 	cmd := exec.CommandContext(ctx, r.binary, args...)
 	return runCodexJSON(ctx, cmd, out, r.reasoningMode)
 }

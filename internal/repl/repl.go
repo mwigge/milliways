@@ -6,8 +6,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -202,10 +204,40 @@ type REPL struct {
 	currentChange string
 	scheme        ColorScheme
 	version       string
+	turnBuffer    []ConversationTurn
+	rules         string
 }
 
 func (r *REPL) SetVersion(v string) {
 	r.version = v
+}
+
+func (r *REPL) loadRules() {
+	paths := rulesSearchPaths()
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err == nil {
+			r.rules = string(data)
+			slog.Info("rules loaded", "path", p, "bytes", len(data))
+			return
+		}
+	}
+	slog.Warn("rules file not found", "tried", paths)
+	r.rules = ""
+}
+
+func rulesSearchPaths() []string {
+	var paths []string
+	if env := os.Getenv("AI_LOCAL"); env != "" {
+		paths = append(paths, filepath.Join(env, "CLAUDE.md"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths, filepath.Join(home, "dev", "src", "ai_local", "CLAUDE.md"))
+	}
+	if home := os.Getenv("HOME"); home != "" {
+		paths = append(paths, filepath.Join(home, "dev", "src", "ai_local", "CLAUDE.md"))
+	}
+	return paths
 }
 
 type replSession struct {
@@ -282,6 +314,8 @@ func (r *REPL) Run(ctx context.Context) error {
 	if r.session != nil && r.runner != nil {
 		r.session.runnerName = r.runner.Name()
 	}
+
+	r.loadRules()
 
 	defer func() {
 		r.println(ResetColor + BlackBackground)
@@ -483,6 +517,20 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 		r.appendUserTurn(ctx, prompt)
 	}
 
+	r.turnBuffer = appendTurn(r.turnBuffer, ConversationTurn{Role: "user", Text: prompt})
+
+	var usageBefore *QuotaInfo
+	if q, err := r.runner.Quota(); err == nil {
+		usageBefore = q
+	}
+
+	req := DispatchRequest{
+		Prompt:   prompt,
+		History:  historyWithoutLast(r.turnBuffer),
+		Rules:    r.rules,
+		ClientID: "repl/" + r.runner.Name(),
+	}
+
 	runCtx, cancel := context.WithCancel(ctx)
 	r.runnerState.SetRunning(cancel)
 	defer r.runnerState.SetDone()
@@ -494,7 +542,8 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 	go func() {
 		r.println(fmt.Sprintf("[%s] %s", ColorText(r.scheme, r.runner.Name()), ColorText(r.scheme, "Thinking...")))
 		start := time.Now()
-		err := r.runner.Execute(runCtx, prompt, tee)
+		slog.Info("dispatch start", "runner", r.runner.Name(), "prompt_len", len(prompt), "history_turns", len(req.History), "rules_loaded", req.Rules != "")
+		err := r.runner.Execute(runCtx, req, tee)
 		tee.Flush()
 		dur := time.Since(start)
 
@@ -503,6 +552,7 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 		}
 
 		if err != nil {
+			slog.Warn("dispatch error", "runner", r.runner.Name(), "err", err, "duration_ms", dur.Milliseconds())
 			if ctx.Err() != nil {
 				r.println(fmt.Sprintf("%s %s  %s",
 					ColorText(r.scheme, "✗"),
@@ -517,6 +567,28 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 			done <- err
 			return
 		}
+
+		slog.Info("dispatch end", "runner", r.runner.Name(), "duration_ms", dur.Milliseconds())
+
+		if outputBuf.Len() > 0 {
+			r.turnBuffer = appendTurn(r.turnBuffer, ConversationTurn{Role: "assistant", Text: outputBuf.String()})
+		}
+
+		if q, err := r.runner.Quota(); err == nil && q != nil && q.Session != nil {
+			var beforeIn, beforeOut int
+			var beforeCost float64
+			if usageBefore != nil && usageBefore.Session != nil {
+				beforeIn = usageBefore.Session.InputTokens
+				beforeOut = usageBefore.Session.OutputTokens
+				beforeCost = usageBefore.Session.CostUSD
+			}
+			RecordDispatch(ctx, r.runner.Name(),
+				q.Session.CostUSD-beforeCost,
+				q.Session.InputTokens-beforeIn,
+				q.Session.OutputTokens-beforeOut,
+			)
+		}
+
 		r.println(fmt.Sprintf("%s %s  %.1fs",
 			ColorText(r.scheme, "✓"),
 			ColorText(r.scheme, r.runner.Name()),
@@ -532,6 +604,23 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 		<-done
 		return ctx.Err()
 	}
+}
+
+func appendTurn(buf []ConversationTurn, t ConversationTurn) []ConversationTurn {
+	buf = append(buf, t)
+	if len(buf) > MaxHistoryTurns {
+		buf = buf[len(buf)-MaxHistoryTurns:]
+	}
+	return buf
+}
+
+func historyWithoutLast(buf []ConversationTurn) []ConversationTurn {
+	if len(buf) == 0 {
+		return nil
+	}
+	out := make([]ConversationTurn, len(buf)-1)
+	copy(out, buf[:len(buf)-1])
+	return out
 }
 
 func (r *REPL) handleBash(cmd string) error {
@@ -607,8 +696,16 @@ func streamCmdOutput(ctx context.Context, cmd *exec.Cmd, out io.Writer) error {
 		return err
 	}
 
+	var mu sync.Mutex
 	var wg sync.WaitGroup
 	errChan := make(chan error, 1)
+
+	writeLine := func(p []byte) {
+		mu.Lock()
+		defer mu.Unlock()
+		out.Write(p)
+		out.Write([]byte{'\n'})
+	}
 
 	wg.Add(2)
 	go func() {
@@ -620,8 +717,7 @@ func streamCmdOutput(ctx context.Context, cmd *exec.Cmd, out io.Writer) error {
 			case <-ctx.Done():
 				return
 			default:
-				out.Write(scanner.Bytes())
-				out.Write([]byte{'\n'})
+				writeLine(scanner.Bytes())
 			}
 		}
 	}()
@@ -635,8 +731,7 @@ func streamCmdOutput(ctx context.Context, cmd *exec.Cmd, out io.Writer) error {
 			case <-ctx.Done():
 				return
 			default:
-				out.Write(scanner.Bytes())
-				out.Write([]byte{'\n'})
+				writeLine(scanner.Bytes())
 			}
 		}
 	}()

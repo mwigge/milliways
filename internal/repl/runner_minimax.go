@@ -109,28 +109,34 @@ type chatResponse struct {
 	Usage   *minimaxUsage `json:"usage,omitempty"`
 }
 
-func (r *MinimaxRunner) Execute(ctx context.Context, prompt string, out io.Writer) error {
+func (r *MinimaxRunner) Execute(ctx context.Context, req DispatchRequest, out io.Writer) error {
+	var messages []chatMessage
+	if req.Rules != "" {
+		messages = append(messages, chatMessage{Role: "system", Content: req.Rules})
+	}
+	for _, t := range req.History {
+		messages = append(messages, chatMessage{Role: t.Role, Content: t.Text})
+	}
+	messages = append(messages, chatMessage{Role: "user", Content: req.Prompt})
+
 	payload := map[string]any{
-		"model": r.model,
-		"messages": []chatMessage{{
-			Role:    "user",
-			Content: prompt,
-		}},
-		"stream": true,
+		"model":    r.model,
+		"messages": messages,
+		"stream":   true,
 	}
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", r.url, bytes.NewReader(bodyBytes))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", r.url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+r.apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+r.apiKey)
 
-	usage, err := runMinimaxSSE(ctx, r.client, req, r.model, out, r.reasoningMode)
+	usage, err := runMinimaxSSE(ctx, r.client, httpReq, r.model, out, r.reasoningMode)
 	if usage != nil {
 		r.mu.Lock()
 		r.sessionIn += usage.PromptTokens

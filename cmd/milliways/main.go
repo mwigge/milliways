@@ -56,6 +56,9 @@ type exitError struct {
 func (e *exitError) Error() string { return e.err.Error() }
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})))
 	if err := rootCmd().Execute(); err != nil {
 		var ee *exitError
 		if errors.As(err, &ee) {
@@ -1626,7 +1629,7 @@ func runREPL(configPath string) error {
 	if mcpCmd != "" {
 		sc, err = substrate.New(mcpCmd, splitEnvArgs(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS"))...)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not connect to mempalace: %v\n", err)
+			slog.Warn("could not connect to mempalace", "err", err)
 			sc = nil
 		}
 	}
