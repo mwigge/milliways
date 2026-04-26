@@ -84,6 +84,39 @@ func handleOpsxApply(ctx context.Context, r *REPL, args string) error {
 	return r.handlePrompt(ctx, instructions)
 }
 
+func handleOpsxExplore(ctx context.Context, r *REPL, args string) error {
+	name := strings.TrimSpace(args)
+	if name == "" {
+		name = r.currentChange
+	}
+	if name == "" {
+		return fmt.Errorf("usage: /opsx:explore <change-name>  (or set active change with /openspec <name>)")
+	}
+	if r.runner == nil {
+		return fmt.Errorf("no runner selected — use /switch <runner> first")
+	}
+	bin := lookupOpenspec()
+	if bin == "" {
+		return fmt.Errorf("openspec not found — install from https://openspec.dev or set OPENSPEC_BIN")
+	}
+	r.println(fmt.Sprintf("[%s] fetching change %s for exploration...", AccentColorText(r.scheme, "opsx"), name))
+	var buf bytes.Buffer
+	cmd := exec.CommandContext(ctx, bin, "show", name)
+	cmd.Stdout = &buf
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("openspec show: %w", err)
+	}
+	detail := strings.TrimSpace(buf.String())
+	if detail == "" {
+		return fmt.Errorf("openspec show returned empty output for change %q", name)
+	}
+	instruction := "Explore and investigate the following OpenSpec change. Think deeply about the design, potential issues, trade-offs, and open questions. Do NOT write any implementation code — this is a thinking/exploration phase only.\n\n" + detail
+	r.println(fmt.Sprintf("[%s] dispatching to %s for exploration...", AccentColorText(r.scheme, "opsx"), r.runner.Name()))
+	r.currentChange = name
+	return r.handlePrompt(ctx, instruction)
+}
+
 func handleOpsxArchive(ctx context.Context, r *REPL, args string) error {
 	name := strings.TrimSpace(args)
 	if name == "" {

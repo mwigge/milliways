@@ -477,7 +477,11 @@ func (r *REPL) Run(ctx context.Context) error {
 				r.println("Goodbye!")
 				return nil
 			}
-			handlerErr = handler(ctx, r, input.Content)
+			cmdCtx, cmdCancel := context.WithCancel(ctx)
+			r.runnerState.SetRunning(cmdCancel)
+			handlerErr = handler(cmdCtx, r, input.Content)
+			cmdCancel()
+			r.runnerState.SetDone()
 
 		case InputShell:
 			if recalled, ok := r.recallHistory(input.Content); ok {
@@ -486,7 +490,11 @@ func (r *REPL) Run(ctx context.Context) error {
 				switch ri.Kind {
 				case InputCommand:
 					if h, hok := commandHandlers[ri.Command]; hok {
-						handlerErr = h(ctx, r, ri.Content)
+						recallCtx, recallCancel := context.WithCancel(ctx)
+						r.runnerState.SetRunning(recallCancel)
+						handlerErr = h(recallCtx, r, ri.Content)
+						recallCancel()
+						r.runnerState.SetDone()
 					}
 				case InputShell:
 					handlerErr = r.handleBash(ri.Content)

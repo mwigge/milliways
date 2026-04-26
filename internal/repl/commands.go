@@ -61,6 +61,7 @@ var commandHandlers = map[string]commandHandler{
 	"opsx:status":   handleOpsxStatus,
 	"opsx:show":     handleOpsxShow,
 	"opsx:apply":    handleOpsxApply,
+	"opsx:explore":  handleOpsxExplore,
 	"opsx:archive":  handleOpsxArchive,
 	"opsx:validate": handleOpsxValidate,
 	// Runner shorthand aliases — /claude, /codex, etc. are equivalent to /switch <runner>
@@ -1238,6 +1239,7 @@ func handleHelp(ctx context.Context, r *REPL, args string) error {
 	r.println("    /opsx:status [name]      Show task completion (default: current change)")
 	r.println("    /opsx:show <name>        Show change detail")
 	r.println("    /opsx:apply <name>       Fetch instructions and dispatch to current runner")
+	r.println("    /opsx:explore [name]     Explore change — think/investigate, no implementation")
 	r.println("    /opsx:archive <name>     Archive a completed change")
 	r.println("    /opsx:validate <name>    Validate a change")
 	r.println("")
