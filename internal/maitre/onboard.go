@@ -220,7 +220,7 @@ func LoginKitchen(kitchenName string) error {
 	case "opencode":
 		return loginInteractiveTUI("opencode", "opencode", "providers")
 	case "minimax":
-		return loginAPIKey("minimax")
+		return LoginAPIKey("minimax")
 	case "groq":
 		return loginEnvVar("groq", "GROQ_API_KEY", "https://console.groq.com/keys")
 	case "ollama":
@@ -263,7 +263,7 @@ func loginInteractiveTUI(name, cli string, args ...string) error {
 	return nil
 }
 
-func loginAPIKey(name string) error {
+func LoginAPIKey(name string) error {
 	if !isTTY() {
 		fmt.Printf("%s login requires an interactive terminal. Re-run this command in a TTY to enter your API key.\n", name)
 		return nil

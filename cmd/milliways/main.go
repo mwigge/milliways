@@ -29,6 +29,7 @@ import (
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/project"
 	"github.com/mwigge/milliways/internal/sommelier"
+	"github.com/mwigge/milliways/internal/repl"
 	"github.com/mwigge/milliways/internal/substrate"
 	"github.com/mwigge/milliways/internal/tui"
 	"github.com/spf13/cobra"
@@ -76,6 +77,7 @@ func rootCmd() *cobra.Command {
 		detachFlag            bool
 		keepContext           bool
 		tuiFlag               bool
+		replFlag              bool
 		resumeFlag            bool
 		useLegacyConversation bool
 		sessionName           string
@@ -102,8 +104,9 @@ based on what each tool does best.
 		Version: version,
 		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// TUI is the default when no prompt args are given, or when -tui is explicitly set.
-			if tuiFlag || len(args) == 0 {
+			// REPL is the default when no prompt args are given.
+			// TUI is deprecated and only runs with explicit --tui flag.
+			if tuiFlag {
 				opts := tui.RunOpts{SessionName: sessionName, ConfigPath: configPath}
 				if resumeFlag {
 					resume := sessionName
@@ -123,8 +126,8 @@ based on what each tool does best.
 
 				return runTUI(configPath, opts)
 			}
-			if len(args) == 0 {
-				return cmd.Help()
+			if len(args) == 0 || replFlag {
+				return runREPL(configPath)
 			}
 			if switchToKitchen != "" && sessionName == "" {
 				return fmt.Errorf("--switch-to requires --session")
@@ -180,7 +183,8 @@ based on what each tool does best.
 	cmd.Flags().BoolVar(&asyncFlag, "async", false, "Dispatch asynchronously, return ticket ID")
 	cmd.Flags().BoolVar(&detachFlag, "detach", false, "Dispatch detached (survives exit)")
 	cmd.Flags().BoolVar(&keepContext, "keep-context", false, "Keep recipe context files")
-	cmd.Flags().BoolVarP(&tuiFlag, "tui", "t", false, "Interactive TUI mode")
+	cmd.Flags().BoolVarP(&tuiFlag, "tui", "t", false, "Interactive TUI mode (deprecated)")
+	cmd.Flags().BoolVar(&replFlag, "repl", false, "Interactive REPL mode (default when no args)")
 	cmd.Flags().BoolVar(&resumeFlag, "resume", false, "Resume last TUI session")
 	cmd.Flags().StringVar(&sessionName, "session", "", "Named TUI session")
 	cmd.Flags().StringVar(&switchToKitchen, "switch-to", "", "Switch an existing session to a kitchen in headless mode")
@@ -1608,4 +1612,73 @@ func pantryCmd() *cobra.Command {
 	cmd.AddCommand(syncCmd)
 	cmd.AddCommand(depSyncCmd)
 	return cmd
+}
+
+func runREPL(configPath string) error {
+	cfg, err := maitre.LoadConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	var sc *substrate.Client
+	mcpCmd := os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD")
+	if mcpCmd != "" {
+		sc, err = substrate.New(mcpCmd, splitEnvArgs(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS"))...)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not connect to mempalace: %v\n", err)
+			sc = nil
+		}
+	}
+
+	var r *repl.REPL
+	if sc != nil {
+		r = repl.NewREPLWithSubstrate(os.Stdout, sc)
+		defer sc.Close()
+	} else {
+		r = repl.NewREPL(os.Stdout)
+	}
+
+	pdb, pdbErr := openPantryDB()
+	if pdbErr == nil {
+		defer pdb.Close()
+		kitchens := cfg.Kitchens
+		r.SetQuotaFunc(func(name string) (*repl.QuotaInfo, error) {
+			qi := &repl.QuotaInfo{}
+			limit := 0
+			if kc, ok := kitchens[name]; ok {
+				limit = kc.DailyLimit
+			}
+			dispatches, err := pdb.Quotas().DailyDispatches(name)
+			if err != nil {
+				return nil, err
+			}
+			qi.Day = &repl.QuotaPeriod{
+				Used:   dispatches,
+				Limit:  limit,
+				Resets: "midnight UTC",
+			}
+			return qi, nil
+		})
+	}
+
+	// Register claude runner
+	r.Register("claude", repl.NewClaudeRunner())
+
+	// Register codex runner
+	r.Register("codex", repl.NewCodexRunner())
+
+	// Register minimax runner
+	var minimaxKey, minimaxModel, minimaxURL string
+	if cfg.Kitchens["minimax"].HTTPClient != nil {
+		minimaxKey = cfg.Kitchens["minimax"].HTTPClient.AuthKey
+		minimaxModel = cfg.Kitchens["minimax"].HTTPClient.Model
+		minimaxURL = cfg.Kitchens["minimax"].HTTPClient.BaseURL + "/text/chatcompletion_v2"
+	}
+	r.Register("minimax", repl.NewMinimaxRunner(minimaxKey, minimaxModel, minimaxURL))
+
+	// Register copilot runner
+	r.Register("copilot", repl.NewCopilotRunner())
+
+	ctx := context.Background()
+	return r.Run(ctx)
 }

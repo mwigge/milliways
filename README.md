@@ -2,7 +2,7 @@
 
 > The Restaurant at the End of the Universe — one CLI to route them all.
 
-Milliways is a terminal-first AI routing layer for coding, research, and review workflows. Start the TUI with `milliways --tui`, type prompts, and let milliways route each request to the right installed kitchen while keeping a full ledger of what ran.
+Milliways is a terminal-first AI routing layer for coding, research, and review workflows. Start the REPL with `milliways` (default) or the TUI with `milliways --tui`. Route each request to the right installed kitchen while keeping a full ledger of what ran.
 
 It does not run models itself or manage credentials. It sits in front of the tools you already use and orchestrates them through one interface.
 
@@ -14,9 +14,10 @@ It does not run models itself or manage credentials. It sits in front of the too
 git clone git@github.com:mwigge/milliways.git
 cd milliways
 go build -o ~/.local/bin/milliways ./cmd/milliways/
+# Ensure ~/.local/bin is in your PATH
 ```
 
-Verify it worked with `milliways --version` or `milliways status`.
+Verify it worked with `milliways --version`.
 
 ### Go install
 
@@ -26,7 +27,63 @@ go install github.com/mwigge/milliways/cmd/milliways@latest
 
 Requires: Go 1.21+
 
-## TUI Mode
+### Optional: MemPalace for session persistence
+
+To enable session persistence across restarts, set the MCP environment variable:
+
+```bash
+export MILLIWAYS_MEMPALACE_MCP_CMD="mempalace"
+export MILLIWAYS_MEMPALACE_MCP_ARGS="serve --stdio"
+```
+
+## REPL Mode
+
+Start the REPL with `milliways` (default when no arguments).
+
+```bash
+milliways
+# ▶ Type a prompt or /help
+```
+
+The REPL is a lightweight terminal interface with sequential runner execution:
+
+```text
+milliways REPL
+Type /help for commands
+
+▶ /switch claude
+Switched to claude
+
+▶ explain the auth flow
+[claude] Thinking...
+...
+✓ claude  3.2s
+```
+
+### REPL Commands
+
+| Command | Description |
+|---------|-------------|
+| `/switch <runner>` | Switch to another runner (claude, codex, minimax) |
+| `/stick` | Keep current runner until released |
+| `/back` | Reverse the most recent switch |
+| `/session [name]` | Show or name the session |
+| `/history` | Show command history |
+| `/summary` | Show session statistics |
+| `/cost` | Show session cost |
+| `/limit` | Show runner quotas |
+| `/openspec [name]` | Show current OpenSpec change |
+| `/repo` | Show current git repository |
+| `/login` | Login to current runner |
+| `/logout` | Logout from current runner |
+| `/auth` | Show auth status for all runners |
+| `/help` | Show this help |
+| `/exit` | Exit the REPL |
+| `!<cmd>` | Run a bash command |
+
+Runners stream output in real-time. Ctrl+C interrupts the running command.
+
+## TUI Mode (deprecated)
 
 Start the terminal UI with `milliways --tui`.
 
