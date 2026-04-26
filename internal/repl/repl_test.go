@@ -113,7 +113,7 @@ type mockRunner struct {
 func (m *mockRunner) Name() string               { return m.nameVal }
 func (m *mockRunner) AuthStatus() (bool, error)  { return m.authVal, m.authErr }
 func (m *mockRunner) Quota() (*QuotaInfo, error) { return m.quotaVal, m.quotaErr }
-func (m *mockRunner) Execute(ctx context.Context, prompt string, out io.Writer) error {
+func (m *mockRunner) Execute(ctx context.Context, req DispatchRequest, out io.Writer) error {
 	m.execCalled = true
 	return m.execErr
 }

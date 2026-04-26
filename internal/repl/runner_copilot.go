@@ -18,8 +18,8 @@ func NewCopilotRunner() *CopilotRunner {
 
 func (r *CopilotRunner) Name() string { return "copilot" }
 
-func (r *CopilotRunner) Execute(ctx context.Context, prompt string, out io.Writer) error {
-	args := []string{"cli", "generate", "--prompt", prompt}
+func (r *CopilotRunner) Execute(ctx context.Context, req DispatchRequest, out io.Writer) error {
+	args := []string{"cli", "generate", "--prompt", buildTextPrompt(req)}
 	cmd := exec.CommandContext(ctx, r.binary, args...)
 	return streamCmdOutput(ctx, cmd, out)
 }

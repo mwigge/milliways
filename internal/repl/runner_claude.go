@@ -60,7 +60,7 @@ func NewClaudeRunner() *ClaudeRunner {
 
 func (r *ClaudeRunner) Name() string { return "claude" }
 
-func (r *ClaudeRunner) Execute(ctx context.Context, prompt string, out io.Writer) error {
+func (r *ClaudeRunner) Execute(ctx context.Context, req DispatchRequest, out io.Writer) error {
 	args := []string{
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
@@ -74,7 +74,7 @@ func (r *ClaudeRunner) Execute(ctx context.Context, prompt string, out io.Writer
 	}
 
 	cmd := exec.CommandContext(ctx, r.binary, args...)
-	usage, err := runClaudeJSON(ctx, cmd, prompt, out, r.reasoningMode)
+	usage, err := runClaudeJSON(ctx, cmd, req, out, r.reasoningMode)
 	if usage != nil {
 		r.mu.Lock()
 		r.sessionIn += usage.inputTokens
@@ -201,7 +201,7 @@ type claudeStreamUsage struct {
 	CacheWrite   int `json:"cache_creation_input_tokens,omitempty"`
 }
 
-func runClaudeJSON(ctx context.Context, cmd *exec.Cmd, prompt string, out io.Writer, reasoningMode ClaudeReasoningMode) (*claudeSessionUsage, error) {
+func runClaudeJSON(ctx context.Context, cmd *exec.Cmd, req DispatchRequest, out io.Writer, reasoningMode ClaudeReasoningMode) (*claudeSessionUsage, error) {
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -219,12 +219,46 @@ func runClaudeJSON(ctx context.Context, cmd *exec.Cmd, prompt string, out io.Wri
 		return nil, err
 	}
 
-	// Deliver the prompt via stream-json stdin protocol.
+	// Write rules as a synthetic first user turn.
+	if req.Rules != "" {
+		rulesMsg, _ := json.Marshal(map[string]any{
+			"type": "user",
+			"message": map[string]any{
+				"role":    "user",
+				"content": "[SYSTEM RULES]\n" + req.Rules,
+			},
+		})
+		fmt.Fprintf(stdin, "%s\n", rulesMsg)
+	}
+	// Write history turns.
+	for _, t := range req.History {
+		var msg map[string]any
+		if t.Role == "assistant" {
+			msg = map[string]any{
+				"type": "assistant",
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": []map[string]any{{"type": "text", "text": t.Text}},
+				},
+			}
+		} else {
+			msg = map[string]any{
+				"type": "user",
+				"message": map[string]any{
+					"role":    "user",
+					"content": t.Text,
+				},
+			}
+		}
+		b, _ := json.Marshal(msg)
+		fmt.Fprintf(stdin, "%s\n", b)
+	}
+	// Write current user prompt.
 	promptJSON, _ := json.Marshal(map[string]any{
 		"type": "user",
 		"message": map[string]any{
 			"role":    "user",
-			"content": prompt,
+			"content": req.Prompt,
 		},
 	})
 	_, _ = fmt.Fprintf(stdin, "%s\n", promptJSON)
