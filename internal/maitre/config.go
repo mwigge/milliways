@@ -193,10 +193,10 @@ func defaultConfig() *Config {
 			},
 			"minimax": {
 				HTTPClient: &HTTPClientConfig{
-					BaseURL:        "https://api.minimaxi.com/v1",
+					BaseURL:        "https://api.minimax.io/v1",
 					AuthKey:        "MINIMAX_API_KEY",
 					AuthType:       "bearer",
-					Model:          "M2-her",
+					Model:          "MiniMax-M2.7",
 					Stations:       []string{"reason", "analyze", "write"},
 					Tier:           "cloud",
 					ResponseFormat: "minimax",

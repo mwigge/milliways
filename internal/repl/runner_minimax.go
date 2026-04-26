@@ -199,6 +199,45 @@ func (r *MinimaxRunner) Quota() (*QuotaInfo, error) {
 	}, nil
 }
 
+// minimaxThinkFilter strips <think>...</think> blocks from streaming content,
+// routing thinking text to writeThink and regular content to writeText.
+type minimaxThinkFilter struct {
+	thinking bool
+	buf      strings.Builder
+}
+
+func (f *minimaxThinkFilter) write(chunk string, writeText func(string), writeThink func(string)) {
+	for len(chunk) > 0 {
+		if f.thinking {
+			idx := strings.Index(chunk, "</think>")
+			if idx >= 0 {
+				f.buf.WriteString(chunk[:idx])
+				if f.buf.Len() > 0 {
+					writeThink(f.buf.String())
+					f.buf.Reset()
+				}
+				f.thinking = false
+				chunk = chunk[idx+len("</think>"):]
+			} else {
+				f.buf.WriteString(chunk)
+				return
+			}
+		} else {
+			idx := strings.Index(chunk, "<think>")
+			if idx >= 0 {
+				if idx > 0 {
+					writeText(chunk[:idx])
+				}
+				f.thinking = true
+				chunk = chunk[idx+len("<think>"):]
+			} else {
+				writeText(chunk)
+				return
+			}
+		}
+	}
+}
+
 func runMinimaxSSE(ctx context.Context, client *http.Client, req *http.Request, model string, out io.Writer, reasoningMode MinimaxReasoningMode) (*minimaxUsage, error) {
 	resp, err := client.Do(req)
 	if err != nil {
@@ -232,6 +271,7 @@ func runMinimaxSSE(ctx context.Context, client *http.Client, req *http.Request, 
 	start := time.Now()
 	var finalUsage *minimaxUsage
 	var lineBuf strings.Builder
+	var thinkFilter minimaxThinkFilter
 
 	flushLine := func() {
 		line := lineBuf.String()
@@ -240,6 +280,34 @@ func runMinimaxSSE(ctx context.Context, client *http.Client, req *http.Request, 
 			return
 		}
 		writeText(line + "\n")
+	}
+
+	appendContent := func(content string) {
+		thinkFilter.write(content,
+			// regular content: buffer line by line
+			func(text string) {
+				for {
+					nl := strings.IndexByte(text, '\n')
+					if nl < 0 {
+						lineBuf.WriteString(text)
+						break
+					}
+					lineBuf.WriteString(text[:nl])
+					flushLine()
+					text = text[nl+1:]
+				}
+			},
+			// thinking content: emit as progress if mode allows
+			func(thinking string) {
+				if reasoningMode == MinimaxReasoningOff {
+					return
+				}
+				summary := oneLine(strings.TrimSpace(thinking))
+				if summary != "" {
+					writeProgress("* minimax: thinking - " + summary)
+				}
+			},
+		)
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
@@ -284,7 +352,7 @@ func runMinimaxSSE(ctx context.Context, client *http.Client, req *http.Request, 
 					delta = *choice.Message
 				}
 
-				// Surface reasoning content in verbose/summary mode.
+				// Surface explicit reasoning fields (other models).
 				if reasoningMode != MinimaxReasoningOff {
 					thinking := firstNonEmpty(delta.ReasoningContent, delta.Thinking)
 					if thinking != "" {
@@ -292,20 +360,8 @@ func runMinimaxSSE(ctx context.Context, client *http.Client, req *http.Request, 
 					}
 				}
 
-				content := delta.Content
-				if content == "" {
-					continue
-				}
-				// Buffer content line by line so teeWriter gets complete lines.
-				for {
-					nl := strings.IndexByte(content, '\n')
-					if nl < 0 {
-						lineBuf.WriteString(content)
-						break
-					}
-					lineBuf.WriteString(content[:nl])
-					flushLine()
-					content = content[nl+1:]
+				if delta.Content != "" {
+					appendContent(delta.Content)
 				}
 			}
 		}
