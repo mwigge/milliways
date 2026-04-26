@@ -214,11 +214,16 @@ type REPL struct {
 	shellBuf           *ShellOutputBuffer
 	pendingAttachments []Attachment
 	lastCtrlC          time.Time // for double-Ctrl-C exit detection
+	statusBar          *StatusBar
 }
 
 func (r *REPL) SetVersion(v string) {
 	r.version = v
 }
+
+// SetStatusBar wires a persistent terminal status bar to the REPL.
+// When set, renderStatusBar delegates to the bar instead of printing inline.
+func (r *REPL) SetStatusBar(sb *StatusBar) { r.statusBar = sb }
 
 // SetLogHandler wires up the in-memory log buffer so /logs can read entries.
 func (r *REPL) SetLogHandler(h *ReplLogHandler) { r.logHandler = h }
@@ -615,6 +620,23 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 	r.runnerState.SetRunning(cancel)
 	defer r.runnerState.SetDone()
 
+	// Repaint the persistent status bar while the runner is active so the
+	// running indicator (●) stays current. Goroutine exits when runCtx is done.
+	if r.statusBar != nil {
+		go func() {
+			ticker := time.NewTicker(500 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					r.renderStatusBar(runCtx)
+				case <-runCtx.Done():
+					return
+				}
+			}
+		}()
+	}
+
 	outputBuf := new(bytes.Buffer)
 	tee := &teeWriter{w: r.stdout, buf: outputBuf, scheme: r.scheme}
 
@@ -901,7 +923,11 @@ func (t *teeWriter) Flush() {
 	}
 }
 
-func (r *REPL) renderStatusBar(ctx context.Context) {
+// buildStatusContent assembles the colored status string from current REPL
+// state. The returned string may contain ANSI escape codes but no trailing
+// newline. sessionForTitle is the session usage used for the title bar update;
+// it is nil when quota information is unavailable.
+func (r *REPL) buildStatusContent(ctx context.Context) (content string, sessionForTitle *SessionUsage) {
 	var parts []string
 
 	if r.runner != nil {
@@ -935,7 +961,6 @@ func (r *REPL) renderStatusBar(ctx context.Context) {
 	}
 
 	// Quota bars and session usage.
-	var sessionForTitle *SessionUsage
 	if r.runner != nil && r.getQuota != nil {
 		quotaCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 		quota, _ := r.getQuota(r.runner.Name())
@@ -975,17 +1000,29 @@ func (r *REPL) renderStatusBar(ctx context.Context) {
 		parts = append(parts, MutedText("no session"))
 	}
 
-	// Render inline — each part already embeds BlackBackground+color+ResetColor,
-	// so the separator must re-apply BlackBackground explicitly (MutedText alone
-	// resets the background via ResetColor, leaving the separator on the
-	// terminal's default background).
+	// Join parts with a separator that re-applies BlackBackground so the pipe
+	// character does not appear on the terminal's default background colour.
+	var sb strings.Builder
 	for i, p := range parts {
 		if i > 0 {
-			fmt.Fprint(r.stdout, BlackBackground+DimFG+" | ")
+			sb.WriteString(BlackBackground + DimFG + " | ")
 		}
-		r.print(p)
+		sb.WriteString(p)
 	}
-	fmt.Fprint(r.stdout, "\x1b[0m\n")
+	sb.WriteString("\x1b[0m")
+	return sb.String(), sessionForTitle
+}
+
+func (r *REPL) renderStatusBar(ctx context.Context) {
+	content, sessionForTitle := r.buildStatusContent(ctx)
+
+	if r.statusBar != nil {
+		r.statusBar.SetContent(content)
+	} else {
+		// Fallback: inline rendering above the prompt (existing behaviour).
+		fmt.Fprint(r.stdout, content)
+		fmt.Fprint(r.stdout, "\n")
+	}
 
 	// Push key state into the terminal title bar. Write directly to /dev/tty so
 	// the OSC sequence reaches the terminal regardless of how readline buffers
