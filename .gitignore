@@ -9,6 +9,12 @@ opencode/
 dist/
 *.exe
 /milliways
+/milliwaysd
+/milliwaysctl
+
+# Rust build artifacts (the wezterm fork's target/ directory)
+crates/milliways-term/target/
+target/
 
 # Dependencies
 vendor/
