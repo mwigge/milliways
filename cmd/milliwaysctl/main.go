@@ -99,6 +99,8 @@ func main() {
 			params["agent_id"] = *metricAgent
 		}
 		callJSON(*socket, "metrics.rollup.get", params)
+	case "observe-render":
+		observeRender(*socket)
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -314,6 +316,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "          [--range -24h] [--agent-id <id>]  — query metrics.rollup.get")
 	fmt.Fprintln(os.Stderr, "  context --agent <id> | --all   — fetch /context snapshot (context.get / .get_all)")
 	fmt.Fprintln(os.Stderr, "  context-render --agent <id|_all>  — pane: subscribe context.subscribe, print frames")
+	fmt.Fprintln(os.Stderr, "  observe-render  — observability cockpit renderer (text frame at 1 Hz)")
 }
 
 func die(f string, a ...any) {
