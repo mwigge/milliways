@@ -176,8 +176,13 @@ impl wc::Domain for AgentDomain {
             command_description,
         ));
 
-        // 6. Spawn the watcher. It owns clones of the child / slave /
-        //    writer arcs and drives the reconnect FSM.
+        // 6. Spawn the watcher. It owns clones of the child / slave
+        //    arcs plus a Weak handle to the pane, and drives the
+        //    reconnect FSM. The watcher uses the Weak<dyn Pane> to
+        //    inject banner bytes into the Terminal display via
+        //    `Pane::perform_actions` — writing to `shared_writer` would
+        //    only feed the bridge subprocess's stdin (one-way) and
+        //    would not be visible to the user.
         let watched = Arc::new(spawn_watcher(
             WatcherConfig {
                 socket: socket.clone(),
@@ -185,7 +190,8 @@ impl wc::Domain for AgentDomain {
             },
             shared_child,
             shared_slave,
-            shared_writer,
+            Arc::downgrade(&pane),
+            pane_id,
         ));
         self.watchers.lock().push((pane_id, watched));
 

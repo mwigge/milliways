@@ -30,6 +30,27 @@ pub mod rpc;
 pub mod status_helpers;
 pub mod wezterm_compat;
 
+/// Apache-2.0 §4(d) attribution payload: this fork's NOTICE describing
+/// the relationship to upstream wezterm and the pinned commit.
+/// Embedded at compile-time and shown by `milliways-term --notice`.
+pub const NOTICE_TEXT: &str = include_str!("../../../../MILLIWAYS_NOTICE.md");
+
+/// Upstream wezterm Apache License 2.0 text. Embedded at compile-time
+/// from `crates/milliways-term/LICENSE.md` (upstream's own license file)
+/// and shown alongside NOTICE_TEXT by `milliways-term --notice`.
+/// Upstream wezterm does not ship a separate NOTICE file, so we only
+/// embed LICENSE + MILLIWAYS_NOTICE.
+pub const UPSTREAM_LICENSE: &str = include_str!("../../LICENSE.md");
+
+/// Print the bundled Apache-2.0 attribution payload to stdout. Called
+/// from `wezterm-gui::main` when `--notice` is the first CLI argument,
+/// before any wezterm initialisation.
+pub fn print_notice() {
+    println!("{}", NOTICE_TEXT);
+    println!("---- Upstream wezterm LICENSE ----");
+    println!("{}", UPSTREAM_LICENSE);
+}
+
 use std::sync::Arc;
 
 /// Initialise milliways inside `wezterm-gui::main`. Registers the agent
