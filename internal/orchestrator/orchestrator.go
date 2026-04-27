@@ -382,12 +382,12 @@ func (o *Orchestrator) Run(ctx context.Context, req RunRequest, onRoute RouteCal
 				conv.EndActiveSegment(conversation.SegmentFailed, "all providers exhausted")
 				sink.Emit(observability.Event{
 					ConversationID: conv.ID,
-					BlockID:       conv.BlockID,
-					SegmentID:     seg.ID,
-					Kind:          "segment_end",
-					Provider:      "milliways",
-					Text:          "all providers exhausted",
-					At:            time.Now(),
+					BlockID:        conv.BlockID,
+					SegmentID:      seg.ID,
+					Kind:           "segment_end",
+					Provider:       "milliways",
+					Text:           "all providers exhausted",
+					At:             time.Now(),
 					Fields: map[string]string{
 						"status": string(conversation.SegmentFailed),
 						"reason": "all providers exhausted",

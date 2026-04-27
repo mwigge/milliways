@@ -12,6 +12,101 @@ import (
 	"github.com/mwigge/milliways/internal/rpc"
 )
 
+// historyCostChunk summarises one chunk_end entry for the history summary view.
+type historyCostChunk struct {
+	costUSD      float64
+	inputTokens  int
+	outputTokens int
+}
+
+// historySummary fetches the last `limit` history entries for agentID via
+// history.get and prints a compact one-line summary suitable for wezterm's
+// right-status area. Output format:
+//
+//   <agent_id> $<cost> <in>+<out>tok ▁▂▃▄▅▆▇ (cost sparkline)
+func historySummary(socket, agentID string, limit int) {
+	c, err := rpc.Dial(socket)
+	if err != nil {
+		die("dial: %v", err)
+	}
+	defer c.Close()
+	var res any
+	if err := c.Call("history.get", map[string]any{"agent_id": agentID, "limit": limit}, &res); err != nil {
+		die("history.get: %v", err)
+	}
+	entries, ok := res.([]any)
+	if !ok {
+		die("history.get returned unexpected type: %T", res)
+	}
+
+	var chunks []historyCostChunk
+	var totalCost float64
+	var totalIn, totalOut int
+
+	for _, e := range entries {
+		entry, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		v, ok := entry["v"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if v["t"] == "chunk_end" {
+			var c historyCostChunk
+			if cu, ok := v["cost_usd"].(float64); ok {
+				c.costUSD = cu
+				totalCost += cu
+			}
+			if it, ok := v["input_tokens"].(float64); ok {
+				c.inputTokens = int(it)
+				totalIn += c.inputTokens
+			}
+			if ot, ok := v["output_tokens"].(float64); ok {
+				c.outputTokens = int(ot)
+				totalOut += c.outputTokens
+			}
+			chunks = append(chunks, c)
+		}
+	}
+
+	// Build cost sparkline using Unicode block characters.
+	spark := costSparkline(chunks)
+
+	// Compact single-line output.
+	fmt.Printf("%s $%.4f %d+%dtok %s\n", agentID, totalCost, totalIn, totalOut, spark)
+}
+
+// costSparkline renders a Unicode block-character sparkline from chunk costs.
+// Each cost is bucketed into 8 levels (U+258F..U+2588).
+func costSparkline(chunks []historyCostChunk) string {
+	if len(chunks) == 0 {
+		return ""
+	}
+	// Find max cost for normalisation.
+	var maxCost float64
+	for _, c := range chunks {
+		if c.costUSD > maxCost {
+			maxCost = c.costUSD
+		}
+	}
+	if maxCost == 0 {
+		// All zero — return flat line of lowest rung.
+		return strings.Repeat("▁", min(len(chunks), 8))
+	}
+	var b strings.Builder
+	for _, c := range chunks {
+		// 8 levels: 0→▁, 7→█
+		level := int((c.costUSD / maxCost) * 7.99)
+		if level > 7 {
+			level = 7
+		}
+		r := rune(0x258F + rune(7-level))
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // tokenHistoryCap is the number of recent tokens-in samples kept per
 // agent for the context-render sparkline. 30 ≈ 30 turns; the ring is
 // in-process and lost when the renderer subprocess restarts.

@@ -96,10 +96,10 @@ func (s *Store) flushPending() error {
 		ts              int64
 	}
 	type bucket struct {
-		kind        Kind
-		count       int64
-		sum         float64
-		min, max    float64
+		kind     Kind
+		count    int64
+		sum      float64
+		min, max float64
 		// For counters, the running sum is the value. For gauges the
 		// running sum is sum-of-values; mean = sum/count. Histograms
 		// keep all observations sorted at the end for percentile calc.

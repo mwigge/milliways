@@ -30,16 +30,16 @@ type Error struct {
 // Standard JSON-RPC error codes plus the milliways extensions enumerated in
 // term-daemon-rpc/spec.md.
 const (
-	ErrMethodNotFound          = -32601
-	ErrInvalidParams           = -32602
-	ErrStreamNotFound          = -32001
+	ErrMethodNotFound           = -32601
+	ErrInvalidParams            = -32602
+	ErrStreamNotFound           = -32001
 	ErrVersionHandshakeRequired = -32002
-	ErrStreamAttachTimeout     = -32003
-	ErrMethodDisabled          = -32004
-	ErrQuotaExceeded           = -32005
-	ErrAgentNotImplemented     = -32006
-	ErrReplayWindowExpired     = -32007
-	ErrReplayTruncated         = -32008
+	ErrStreamAttachTimeout      = -32003
+	ErrMethodDisabled           = -32004
+	ErrQuotaExceeded            = -32005
+	ErrAgentNotImplemented      = -32006
+	ErrReplayWindowExpired      = -32007
+	ErrReplayTruncated          = -32008
 )
 
 func writeError(enc *json.Encoder, id json.RawMessage, code int, msg string) {

@@ -162,10 +162,16 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	if usage != nil {
 		observeTokens(metrics, AgentIDMiniMax, usage.PromptTokens, usage.CompletionTokens, cost)
 	}
-	stream.Push(map[string]any{
+	push := map[string]any{
 		"t":        "chunk_end",
 		"cost_usd": cost,
-	})
+	}
+	if usage != nil {
+		push["input_tokens"] = usage.PromptTokens
+		push["output_tokens"] = usage.CompletionTokens
+		push["total_tokens"] = usage.TotalTokens
+	}
+	stream.Push(push)
 }
 
 // streamMiniMaxSSE reads SSE / NDJSON lines from r, decodes each chunk,

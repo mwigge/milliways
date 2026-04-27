@@ -4,14 +4,19 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/mwigge/milliways/internal/rpc"
 )
@@ -26,6 +31,9 @@ func main() {
 
 	fs := flag.NewFlagSet(sub, flag.ExitOnError)
 	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
+	stateDir := fs.String("state", "", "state directory (default: XDG_RUNTIME_DIR or ~/.local/state/milliways)")
+	watchMs := fs.Int("debounce-ms", 250, "debounce milliseconds for status --watch (min interval between writes)")
+	watchFlag := fs.Bool("watch", false, "watch mode for status: subscribe and write atomic status.cur")
 	agentID := fs.String("agent", "", "agent_id (for `bridge`, `open`, `context`, `context-render`)")
 	handleFlag := fs.Int64("handle", 0, "agent handle (for `bridge` / `apply`)")
 	metricName := fs.String("metric", "", "metric name (for `metrics`)")
@@ -41,12 +49,23 @@ func main() {
 	if *socket == "" {
 		*socket = defaultSocket()
 	}
+	if *stateDir == "" {
+		// derive from socket default location
+		d := defaultSocket()
+		*stateDir = filepath.Dir(d)
+	}
 
 	switch sub {
 	case "ping":
 		callJSON(*socket, "ping", nil)
 	case "status":
-		callJSON(*socket, "status.get", nil)
+		if *watchFlag {
+			watchStatus(*socket, *stateDir, *watchMs)
+		} else {
+			callJSON(*socket, "status.get", nil)
+		}
+	case "observe":
+		runObserve(*socket, *stateDir, *watchMs)
 	case "agents":
 		callJSON(*socket, "agent.list", nil)
 	case "quota":
@@ -103,6 +122,56 @@ func main() {
 		callJSON(*socket, "metrics.rollup.get", params)
 	case "observe-render":
 		observeRender(*socket)
+	case "history-append":
+		// usage: milliwaysctl history-append --agent <id> --data '{"x":1}'
+		if *agentID == "" {
+			die("history-append requires --agent <id>")
+		}
+		var payload any = nil
+		if *chartData != "" {
+			if err := json.Unmarshal([]byte(*chartData), &payload); err != nil {
+				die("invalid --data JSON: %v", err)
+			}
+		}
+		c, err := rpc.Dial(*socket)
+		if err != nil {
+			die("dial %s: %v", *socket, err)
+		}
+		defer c.Close()
+		var appendRes any
+		if err := c.Call("history.append", map[string]any{"agent_id": *agentID, "payload": payload, "max_lines": 1000}, &appendRes); err != nil {
+			die("history.append: %v", err)
+		}
+		out, _ := json.MarshalIndent(appendRes, "", "  ")
+		fmt.Println(string(out))
+	case "history-get":
+		if *agentID == "" {
+			die("history-get requires --agent <id>")
+		}
+		limit := -1
+		if *applyIndex >= 0 {
+			limit = *applyIndex
+		}
+		cGet, err := rpc.Dial(*socket)
+		if err != nil {
+			die("dial %s: %v", *socket, err)
+		}
+		defer cGet.Close()
+		var res any
+		if err := cGet.Call("history.get", map[string]any{"agent_id": *agentID, "limit": limit}, &res); err != nil {
+			die("history.get: %v", err)
+		}
+		out, _ := json.MarshalIndent(res, "", "  ")
+		fmt.Println(string(out))
+	case "history-summary":
+		if *agentID == "" {
+			die("history-summary requires --agent <id>")
+		}
+		limit := 20
+		if *applyIndex >= 0 {
+			limit = *applyIndex
+		}
+		historySummary(*socket, *agentID, limit)
 	case "chart":
 		if *chartKind == "" || *chartData == "" {
 			die("chart requires --kind <sparkline|bars> --data <json>")
@@ -154,14 +223,283 @@ func subscribeStatus(socket string) {
 	}
 }
 
+// watchStatus subscribes to status.subscribe and writes debounced latest
+// NDJSON line into stateDir/status.cur using a tmp+fsync+rename atomic update.
+// Debounce is enforced to avoid writing faster than 4Hz (250ms min).
+func watchStatus(socket, stateDir string, debounceMs int) {
+	if debounceMs < 250 {
+		debounceMs = 250
+	}
+	c, err := rpc.Dial(socket)
+	if err != nil {
+		die("dial %s: %v", socket, err)
+	}
+	defer c.Close()
+	events, cancel, err := c.Subscribe("status.subscribe", nil)
+	if err != nil {
+		die("subscribe: %v", err)
+	}
+	defer cancel()
+
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		die("state dir: %v", err)
+	}
+	tmpPath := filepath.Join(stateDir, "status.cur.tmp")
+	finalPath := filepath.Join(stateDir, "status.cur")
+	interval := time.Duration(debounceMs) * time.Millisecond
+
+	updates := make(chan []byte, 128)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	// parent death watcher: exit if ppid==1
+	go func() {
+		pp := os.Getppid()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(1 * time.Second):
+				if os.Getppid() == 1 && pp != 1 {
+					os.Exit(0)
+				}
+			}
+		}
+	}()
+
+	// writer goroutine with debounce
+	go func() {
+		var timer *time.Timer
+		var mu sync.Mutex
+		var pending []byte
+		var lastWrite time.Time
+		writeNow := func(b []byte) {
+			f, err := os.Create(tmpPath)
+			if err != nil {
+				slog.Warn("watchStatus: create tmp", "err", err)
+				return
+			}
+			if _, err := f.Write(append(b, '\n')); err != nil {
+				f.Close()
+				slog.Warn("watchStatus: write tmp", "err", err)
+				return
+			}
+			if err := f.Sync(); err != nil {
+				// best effort
+			}
+			if err := f.Close(); err != nil {
+				slog.Warn("watchStatus: close tmp", "err", err)
+				return
+			}
+			if err := os.Rename(tmpPath, finalPath); err != nil {
+				slog.Warn("watchStatus: rename", "err", err)
+				return
+			}
+			lastWrite = time.Now()
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-updates:
+				if !ok {
+					return
+				}
+				mu.Lock()
+				pending = ev
+				// if enough time elapsed since last write, write immediately
+				if time.Since(lastWrite) >= interval {
+					writeNow(pending)
+					pending = nil
+					if timer != nil {
+						timer.Stop()
+						timer = nil
+					}
+				} else {
+					// schedule timer if not already scheduled
+					if timer == nil {
+						delay := interval - time.Since(lastWrite)
+						timer = time.AfterFunc(delay, func() {
+							mu.Lock()
+							if pending != nil {
+								writeNow(pending)
+								pending = nil
+							}
+							mu.Unlock()
+						})
+					}
+				}
+				mu.Unlock()
+			}
+		}
+	}()
+
+	// pump events into updates
+	for ev := range events {
+		select {
+		case updates <- ev:
+		default:
+			// drop if overwhelmed; keep system responsive
+		}
+		// short-circuit exit if context done
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+}
+
+// observeConfig holds the static list of available agents shown in the status bar.
+var observeAgents = []string{"claude", "codex", "copilot", "minimax"}
+
+// runObserve writes a compact JSON status to ${stateDir}/observe.cur every debounceMs.
+// Format: {"v":"<version>","p":"<cwd>","c":"<current_agent>","a":["claude","codex","copilot","minimax"]}
+//
+// This file is read by the wezterm Lua sidecar to render the full status bar:
+//   [≈≈ MW v0.x] [path] [●claude] [1:C 2:X 3:G 4:M 5:L]
+func runObserve(socket, stateDir string, debounceMs int) {
+	if debounceMs < 250 {
+		debounceMs = 250
+	}
+	c, err := rpc.Dial(socket)
+	if err != nil {
+		die("dial: %v", err)
+	}
+	defer c.Close()
+
+	events, cancel, err := c.Subscribe("status.subscribe", nil)
+	if err != nil {
+		die("status.subscribe: %v", err)
+	}
+	defer cancel()
+
+	// Also grab the agent list once.
+	var agentList []map[string]any
+	c.Call("agent.list", nil, &agentList)
+
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		die("state dir: %v", err)
+	}
+	tmpPath := filepath.Join(stateDir, "observe.cur.tmp")
+	finalPath := filepath.Join(stateDir, "observe.cur")
+
+	// Get current working directory for path display.
+	cwd, _ := os.Getwd()
+
+	interval := time.Duration(debounceMs) * time.Millisecond
+	updates := make(chan []byte, 128)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	// ppid watcher — exit if orphaned.
+	go func() {
+		pp := os.Getppid()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(1 * time.Second):
+				if os.Getppid() == 1 && pp != 1 {
+					os.Exit(0)
+				}
+			}
+		}
+	}()
+
+	// writer goroutine with debounce.
+	go func() {
+		var mu sync.Mutex
+		var pending []byte
+		var lastWrite time.Time
+		writeNow := func(b []byte) {
+			f, err := os.Create(tmpPath)
+			if err != nil {
+				slog.Warn("observe: create tmp", "err", err)
+				return
+			}
+			if _, err := f.Write(append(b, '\n')); err != nil {
+				f.Close()
+				slog.Warn("observe: write tmp", "err", err)
+				return
+			}
+			if err := f.Sync(); err != nil {
+				slog.Warn("observe: fsync", "err", err)
+			}
+			if err := f.Close(); err != nil {
+				slog.Warn("observe: close tmp", "err", err)
+				return
+			}
+			if err := os.Rename(tmpPath, finalPath); err != nil {
+				slog.Warn("observe: rename", "err", err)
+				return
+			}
+			lastWrite = time.Now()
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-updates:
+				if !ok {
+					return
+				}
+				mu.Lock()
+				pending = ev
+				if time.Since(lastWrite) >= interval {
+					writeNow(pending)
+					pending = nil
+				}
+				mu.Unlock()
+			}
+		}
+	}()
+
+	for ev := range events {
+		var frame struct {
+			T        string `json:"t"`
+			Snapshot struct {
+				Proto       any    `json:"proto"`
+				ActiveAgent *string `json:"active_agent"`
+			} `json:"snapshot"`
+		}
+		if err := json.Unmarshal(ev, &frame); err != nil {
+			continue
+		}
+		if frame.T != "data" {
+			continue
+		}
+
+		cur := ""
+		if frame.Snapshot.ActiveAgent != nil {
+			cur = *frame.Snapshot.ActiveAgent
+		}
+
+		status := map[string]any{
+			"v": "0.1.0",
+			"p": cwd,
+			"c": cur,
+			"a": observeAgents,
+		}
+		b, _ := json.Marshal(status)
+		select {
+		case updates <- b:
+		default:
+		}
+	}
+}
+
 // bridge is the AgentDomain pane shim. Spawned as a subprocess by
 // milliways-term's AgentDomain, it bridges between the parent's
 // stdin/stdout (a slave PTY) and the agent.send / agent.stream surface
 // of milliwaysd.
 //
 // Architecture:
-//   stdin  → bytes → agent.send({handle, b64})
-//   sidecar `{"t":"data","b64":...}` events → bytes → stdout
+//
+//	stdin  → bytes → agent.send({handle, b64})
+//	sidecar `{"t":"data","b64":...}` events → bytes → stdout
 //
 // On end-of-stream, exits 0. On stdin EOF, leaves the stream open until
 // the daemon ends it (in case the agent has more to say).
@@ -325,8 +663,12 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "          [--range -24h] [--agent-id <id>]  — query metrics.rollup.get")
 	fmt.Fprintln(os.Stderr, "  context --agent <id> | --all   — fetch /context snapshot (context.get / .get_all)")
 	fmt.Fprintln(os.Stderr, "  context-render --agent <id|_all>  — pane: subscribe context.subscribe, print frames")
+	fmt.Fprintln(os.Stderr, "  observe [--watch]  — write MW status bar JSON to ${state}/observe.cur")
 	fmt.Fprintln(os.Stderr, "  observe-render  — observability cockpit renderer (text frame at 1 Hz)")
 	fmt.Fprintln(os.Stderr, "  chart --kind <sparkline|bars> --data <json>  — render a kitty-graphics chart on stdout")
+	fmt.Fprintln(os.Stderr, "  history-append --agent <id> --data <json>  — append to per-agent history (history.append)")
+	fmt.Fprintln(os.Stderr, "  history-get --agent <id> [--index N]        — fetch per-agent history (history.get)")
+	fmt.Fprintln(os.Stderr, "  history-summary --agent <id> [--index N]    — compact cost+token summary for wezterm status")
 }
 
 func die(f string, a ...any) {

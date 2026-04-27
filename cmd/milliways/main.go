@@ -28,8 +28,8 @@ import (
 	"github.com/mwigge/milliways/internal/orchestrator"
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/project"
-	"github.com/mwigge/milliways/internal/sommelier"
 	"github.com/mwigge/milliways/internal/repl"
+	"github.com/mwigge/milliways/internal/sommelier"
 	"github.com/mwigge/milliways/internal/substrate"
 	"github.com/spf13/cobra"
 )
@@ -472,7 +472,7 @@ func dispatch(opts dispatchOpts) error {
 		Reader:         substrateReader,
 		Bridge:         projectBridge,
 		ProjectContext: projectContext,
-		MaxKitchens:   len(reg.Kitchens()),
+		MaxKitchens:    len(reg.Kitchens()),
 	}
 
 	start := time.Now()

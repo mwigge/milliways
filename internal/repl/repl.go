@@ -243,14 +243,29 @@ func (r *REPL) loadRules() {
 
 func rulesSearchPaths() []string {
 	var paths []string
+	// Allow explicit override: colon/semi-colon separated list
+	if v := os.Getenv("MILLIWAYS_RULES_PATHS"); v != "" {
+		parts := strings.Split(v, string(os.PathListSeparator))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				paths = append(paths, p)
+			}
+		}
+		return paths
+	}
 	if env := os.Getenv("AI_LOCAL"); env != "" {
 		paths = append(paths, filepath.Join(env, "CLAUDE.md"))
 	}
+	// Prefer XDG-style config location
 	if home, err := os.UserHomeDir(); err == nil {
-		paths = append(paths, filepath.Join(home, "dev", "src", "ai_local", "CLAUDE.md"))
+		paths = append(paths, filepath.Join(home, ".config", "milliways", "CLAUDE.md"))
 	}
-	if home := os.Getenv("HOME"); home != "" {
-		paths = append(paths, filepath.Join(home, "dev", "src", "ai_local", "CLAUDE.md"))
+	// Optional developer fallback behind explicit flag
+	if os.Getenv("MILLIWAYS_DEV_FALLBACK") != "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			paths = append(paths, filepath.Join(home, "dev", "src", "ai_local", "CLAUDE.md"))
+		}
 	}
 	return paths
 }
@@ -487,22 +502,26 @@ func (r *REPL) Run(ctx context.Context) error {
 			if recalled, ok := r.recallHistory(input.Content); ok {
 				r.println(MutedText("▶ " + recalled))
 				ri := ParseInput(recalled)
+				recallCtx, recallCancel := context.WithCancel(ctx)
+				r.runnerState.SetRunning(recallCancel)
 				switch ri.Kind {
 				case InputCommand:
 					if h, hok := commandHandlers[ri.Command]; hok {
-						recallCtx, recallCancel := context.WithCancel(ctx)
-						r.runnerState.SetRunning(recallCancel)
 						handlerErr = h(recallCtx, r, ri.Content)
-						recallCancel()
-						r.runnerState.SetDone()
 					}
 				case InputShell:
-					handlerErr = r.handleBash(ri.Content)
+					handlerErr = r.handleBash(recallCtx, ri.Content)
 				case InputPrompt:
-					handlerErr = r.handlePrompt(ctx, ri.Content)
+					handlerErr = r.handlePrompt(recallCtx, ri.Content)
 				}
+				recallCancel()
+				r.runnerState.SetDone()
 			} else {
-				handlerErr = r.handleBash(input.Content)
+				cmdCtx, cmdCancel := context.WithCancel(ctx)
+				r.runnerState.SetRunning(cmdCancel)
+				handlerErr = r.handleBash(cmdCtx, input.Content)
+				cmdCancel()
+				r.runnerState.SetDone()
 			}
 
 		case InputPrompt:
@@ -772,17 +791,14 @@ func (r *REPL) recallHistory(arg string) (string, bool) {
 	return "", false
 }
 
-func (r *REPL) handleBash(cmd string) error {
+func (r *REPL) handleBash(ctx context.Context, cmd string) error {
 	parts := strings.Fields(cmd)
 	if len(parts) == 0 {
 		return nil
 	}
 
-	execCmd := exec.Command(parts[0], parts[1:]...)
-	execCmd.Stdout = io.MultiWriter(r.stdout, r.shellBuf)
-	execCmd.Stderr = os.Stderr
-
-	return execCmd.Run()
+	execCmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
+	return streamCmdOutput(ctx, execCmd, io.MultiWriter(r.stdout, r.shellBuf))
 }
 
 func (r *REPL) println(s string) {
@@ -809,8 +825,15 @@ func (sw *streamingWriter) Write(p []byte) (n int, err error) {
 
 	for _, b := range p {
 		if b == '\n' {
-			sw.w.Write(sw.lineBuf)
-			sw.w.Write([]byte{'\n'})
+			if len(sw.lineBuf) > 0 {
+				if _, werr := sw.w.Write(sw.lineBuf); werr != nil {
+					sw.lineBuf = sw.lineBuf[:0]
+					return 0, werr
+				}
+			}
+			if _, werr := sw.w.Write([]byte{'\n'}); werr != nil {
+				return 0, werr
+			}
 			sw.lineBuf = sw.lineBuf[:0]
 		} else {
 			sw.lineBuf = append(sw.lineBuf, b)
@@ -826,7 +849,9 @@ func (sw *streamingWriter) Flush() {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 	if len(sw.lineBuf) > 0 {
-		sw.w.Write(sw.lineBuf)
+		if _, err := sw.w.Write(sw.lineBuf); err != nil {
+			slog.Warn("streamingWriter.Flush write error", "err", err)
+		}
 		sw.lineBuf = sw.lineBuf[:0]
 	}
 }
@@ -878,8 +903,12 @@ func (t *teeWriter) Write(p []byte) (n int, err error) {
 	for _, b := range p {
 		if b == '\n' {
 			colored := ColorText(t.scheme, string(t.line))
-			t.buf.WriteString(string(t.line))
-			t.w.Write([]byte(colored + "\n"))
+			if _, werr := t.buf.WriteString(string(t.line)); werr != nil {
+				return 0, werr
+			}
+			if _, werr := t.w.Write([]byte(colored + "\n")); werr != nil {
+				return 0, werr
+			}
 			t.line = nil
 		} else {
 			t.line = append(t.line, b)
@@ -893,8 +922,12 @@ func (t *teeWriter) Flush() {
 	defer t.mu.Unlock()
 	if len(t.line) > 0 {
 		colored := ColorText(t.scheme, string(t.line))
-		t.buf.WriteString(string(t.line))
-		t.w.Write([]byte(colored))
+		if _, werr := t.buf.WriteString(string(t.line)); werr != nil {
+			slog.Warn("teeWriter.Flush buffer write error", "err", werr)
+		}
+		if _, werr := t.w.Write([]byte(colored)); werr != nil {
+			slog.Warn("teeWriter.Flush writer write error", "err", werr)
+		}
 		t.line = nil
 	}
 }

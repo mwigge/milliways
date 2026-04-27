@@ -41,16 +41,16 @@ type QuotaInfo struct {
 
 type QuotaPeriod struct {
 	Used   int
-	Limit  int    // 0 = unlimited (no bar shown)
+	Limit  int // 0 = unlimited (no bar shown)
 	Resets string
 	Ratio  float64 // 0.0–1.0; 0 if no limit
 }
 
 type NullRunner struct{}
 
-func (NullRunner) Name() string { return "" }
+func (NullRunner) Name() string                                                          { return "" }
 func (NullRunner) Execute(ctx context.Context, req DispatchRequest, out io.Writer) error { return nil }
-func (NullRunner) AuthStatus() (bool, error) { return false, nil }
-func (NullRunner) Login() error { return nil }
-func (NullRunner) Logout() error { return nil }
-func (NullRunner) Quota() (*QuotaInfo, error) { return nil, nil }
+func (NullRunner) AuthStatus() (bool, error)                                             { return false, nil }
+func (NullRunner) Login() error                                                          { return nil }
+func (NullRunner) Logout() error                                                         { return nil }
+func (NullRunner) Quota() (*QuotaInfo, error)                                            { return nil, nil }

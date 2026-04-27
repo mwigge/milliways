@@ -155,7 +155,12 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		stream.Push(map[string]any{"t": "err", "msg": "claude exited: " + err.Error()})
 	}
 	observeTokens(metrics, AgentIDClaude, lastResult.inputTokens, lastResult.outputTokens, lastResult.costUSD)
-	stream.Push(map[string]any{"t": "chunk_end", "cost_usd": lastResult.costUSD})
+	stream.Push(map[string]any{
+		"t":           "chunk_end",
+		"cost_usd":    lastResult.costUSD,
+		"input_tokens": lastResult.inputTokens,
+		"output_tokens": lastResult.outputTokens,
+	})
 }
 
 // extractAssistantText returns the concatenated text of all `text` content

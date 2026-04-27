@@ -42,13 +42,13 @@ type ClaudeRunner struct {
 	reasoningMode ClaudeReasoningMode
 	allowedTools  []string
 
-	mu                  sync.Mutex
-	sessionIn           int
-	sessionOut          int
-	sessionCacheRead    int
-	sessionCacheWrite   int
-	sessionCostUSD      float64
-	sessionDispatches   int
+	mu                sync.Mutex
+	sessionIn         int
+	sessionOut        int
+	sessionCacheRead  int
+	sessionCacheWrite int
+	sessionCostUSD    float64
+	sessionDispatches int
 }
 
 func NewClaudeRunner() *ClaudeRunner {

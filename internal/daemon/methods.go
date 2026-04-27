@@ -4,10 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/mwigge/milliways/internal/daemon/metrics"
 	"github.com/mwigge/milliways/internal/daemon/observability"
+	"github.com/mwigge/milliways/internal/history"
 )
 
 // startTime is set when the package is first loaded so ping can report
@@ -64,12 +68,89 @@ type RoutingDecision struct {
 	Reason     string   `json:"reason,omitempty"`
 }
 
-// buildStatus returns the current cockpit Status. Stub implementation
-// until TASK-1.4 wires real session/quota/error state.
+// historyAgents is the allowlist for history.append agent_ids.
+// Only these agents may have their history recorded.
+var historyAgents = map[string]bool{
+	"_echo":   true,
+	"claude":  true,
+	"codex":   true,
+	"copilot": true,
+	"minimax": true,
+}
+
+const (
+	historyRateWindow    = 1 * time.Minute
+	historyMaxCallsPerWindow = 60
+	historyMaxFileBytes  = 10 << 20 // 10 MiB per agent history file
+)
+
+// HistoryQuota enforces per-agent rate and file-size limits on history.append.
+type HistoryQuota struct {
+	mu       sync.Mutex
+	counters map[string]*rateBucket
+	fileSize map[string]int64
+}
+
+type rateBucket struct {
+	count     int
+	windowEnd time.Time
+}
+
+// NewHistoryQuota returns a fresh per-agent quota tracker.
+func NewHistoryQuota() *HistoryQuota {
+	return &HistoryQuota{
+		counters: make(map[string]*rateBucket),
+		fileSize: make(map[string]int64),
+	}
+}
+
+// Check verifies the append is within rate and size limits.
+// Returns ErrQuotaExceeded (code -32005) with a descriptive message on violation.
+func (q *HistoryQuota) Check(agentID, stateDir string, payloadBytes int) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	now := time.Now()
+
+	// Rate check.
+	bucket, ok := q.counters[agentID]
+	if !ok || now.After(bucket.windowEnd) {
+		q.counters[agentID] = &rateBucket{
+			count:     1,
+			windowEnd: now.Add(historyRateWindow),
+		}
+	} else {
+		if bucket.count >= historyMaxCallsPerWindow {
+			return fmt.Errorf("rate limit: %d calls/min exceeded for agent %q", historyMaxCallsPerWindow, agentID)
+		}
+		bucket.count++
+	}
+
+	// Size check: probe file size.
+	fpath := filepath.Join(stateDir, "history", agentID+".ndjson")
+	var currentSize int64
+	if fi, err := os.Stat(fpath); err == nil {
+		currentSize = fi.Size()
+	}
+	if currentSize+int64(payloadBytes) > historyMaxFileBytes {
+		return fmt.Errorf("size limit: history file for agent %q exceeds %d bytes", agentID, historyMaxFileBytes)
+	}
+	q.fileSize[agentID] = currentSize + int64(payloadBytes)
+	return nil
+}
+
+// buildStatus returns the current cockpit Status.
 func (s *Server) buildStatus() Status {
+	s.statusMu.Lock()
+	curAgent := s.currentAgent
+	s.statusMu.Unlock()
+	var activeAgent *string
+	if curAgent != "" {
+		activeAgent = &curAgent
+	}
 	return Status{
 		Proto:       ProtoVersion{Major: ProtoMajor, Minor: ProtoMinor},
-		ActiveAgent: nil,
+		ActiveAgent: activeAgent,
 		Turn:        0,
 		TokensIn:    0,
 		TokensOut:   0,
@@ -113,6 +194,8 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		writeResult(enc, req.ID, s.agentsCache)
 	case "agent.open":
 		s.agentOpen(enc, req)
+	case "agent.set_active":
+		s.agentSetActive(enc, req)
 	case "agent.send":
 		s.agentSend(enc, req)
 	case "agent.stream":
@@ -141,6 +224,62 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		s.observabilityMetrics(enc, req)
 	case "metrics.rollup.get":
 		s.metricsRollupGet(enc, req)
+	case "history.append":
+		// params: {agent_id: string, payload: any, max_lines: int}
+		var p struct {
+			AgentID  string          `json:"agent_id"`
+			Payload  json.RawMessage `json:"payload"`
+			MaxLines int             `json:"max_lines,omitempty"`
+		}
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+		if p.AgentID == "" {
+			writeError(enc, req.ID, ErrInvalidParams, "agent_id is required")
+			return
+		}
+		if !historyAgents[p.AgentID] {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("unknown agent_id: %q", p.AgentID))
+			return
+		}
+		if len(p.Payload) > 1<<20 {
+			writeError(enc, req.ID, ErrInvalidParams, "payload too large")
+			return
+		}
+		stateDir := filepath.Dir(s.socket)
+		if s.historyQuota != nil {
+			if err := s.historyQuota.Check(p.AgentID, stateDir, len(p.Payload)); err != nil {
+				writeError(enc, req.ID, ErrQuotaExceeded, err.Error())
+				return
+			}
+		}
+		var anyPayload any
+		if len(p.Payload) > 0 {
+			_ = json.Unmarshal(p.Payload, &anyPayload)
+		}
+		if err := history.AppendAgentHistory(stateDir, p.AgentID, anyPayload, p.MaxLines); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, err.Error())
+			return
+		}
+		writeResult(enc, req.ID, map[string]any{"ok": true})
+	case "history.get":
+		// params: {agent_id: string, limit: int}
+		var p2 struct {
+			AgentID string `json:"agent_id"`
+			Limit   int    `json:"limit,omitempty"`
+		}
+		if err := json.Unmarshal(req.Params, &p2); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+		stateDir := filepath.Dir(s.socket)
+		res, err := history.ReadAgentHistory(stateDir, p2.AgentID, p2.Limit)
+		if err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, err.Error())
+			return
+		}
+		writeResult(enc, req.ID, res)
 	default:
 		writeError(enc, req.ID, ErrMethodNotFound, "unknown method: "+req.Method)
 	}

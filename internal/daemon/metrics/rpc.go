@@ -24,7 +24,7 @@ type Range struct {
 
 // Bucket is one row of `metrics.rollup.get` output.
 type Bucket struct {
-	TS    string  `json:"ts"`              // RFC3339 (start of bucket)
+	TS    string  `json:"ts"` // RFC3339 (start of bucket)
 	Value float64 `json:"value"`
 	Count int64   `json:"count"`
 	Sum   float64 `json:"sum"`
@@ -146,8 +146,8 @@ func (s *Store) defaultRangeFor(tier Tier, now time.Time) time.Time {
 // only when the literal `min`/`mins` suffix is used. We standardise on
 // the cockpit-friendly `s/m/h/d/w/mo` set:
 //
-//   s seconds, h hours, d days, w weeks, mo months, y years.
-//   m → minutes (legacy short form retained for backward compat).
+//	s seconds, h hours, d days, w weeks, mo months, y years.
+//	m → minutes (legacy short form retained for backward compat).
 func parseTimeOrOffset(s string, now, fallback time.Time) (time.Time, error) {
 	if s == "" {
 		return fallback, nil

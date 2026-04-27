@@ -15,7 +15,7 @@ import (
 )
 
 var (
-	noisePattern     = regexp.MustCompile(`^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+Z ERROR|--.*|ERROR: Reconnecting)`)
+	noisePattern    = regexp.MustCompile(`^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]+Z ERROR|--.*|ERROR: Reconnecting)`)
 	zscalerBlock    = regexp.MustCompile(`(?i)<!DOCTYPE|<html|<head|<meta name="description" content="Zscaler|<title>Internet Security by Zscaler`)
 	htmlTagStripper = regexp.MustCompile(`<[^>]+>`)
 )

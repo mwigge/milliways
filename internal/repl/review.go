@@ -136,12 +136,12 @@ func filterByGlob(out, org, glob string) []string {
 
 // ReviewTarget describes what is being reviewed.
 type ReviewTarget struct {
-	Label string   // human-readable, used in file header
-	Repos []string // absolute paths to local repos, or "org/name" for remote repos
-	Branch string  // branch to diff (empty = current HEAD)
-	Base   string  // base branch (main/master)
-	Diff   string  // pre-loaded diff text
-	Extra  string  // OpenSpec artifacts or other context injected after diff
+	Label  string   // human-readable, used in file header
+	Repos  []string // absolute paths to local repos, or "org/name" for remote repos
+	Branch string   // branch to diff (empty = current HEAD)
+	Base   string   // base branch (main/master)
+	Diff   string   // pre-loaded diff text
+	Extra  string   // OpenSpec artifacts or other context injected after diff
 }
 
 // resolveReviewTarget parses /review-all args into a ReviewTarget.
@@ -441,4 +441,3 @@ func slugify(s string) string {
 	}
 	return strings.Trim(b.String(), "-")
 }
-

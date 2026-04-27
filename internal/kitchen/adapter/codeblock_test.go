@@ -8,13 +8,13 @@ func TestParseTextToEvents(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		kitchen    string
-		text       string
-		wantCount  int
-		wantTypes  []EventType
-		wantLang   string // expected language on first CodeBlock (if any)
-		wantCode   string // expected code on first CodeBlock (if any)
+		name      string
+		kitchen   string
+		text      string
+		wantCount int
+		wantTypes []EventType
+		wantLang  string // expected language on first CodeBlock (if any)
+		wantCode  string // expected code on first CodeBlock (if any)
 	}{
 		{
 			name:      "empty text",
@@ -48,9 +48,9 @@ func TestParseTextToEvents(t *testing.T) {
 			wantCode:  "some code",
 		},
 		{
-			name:    "multiple code blocks",
-			kitchen: "claude",
-			text:    "intro\n```python\nprint(1)\n```\nmiddle\n```rust\nfn main() {}\n```\nend",
+			name:      "multiple code blocks",
+			kitchen:   "claude",
+			text:      "intro\n```python\nprint(1)\n```\nmiddle\n```rust\nfn main() {}\n```\nend",
 			wantCount: 5,
 			wantTypes: []EventType{EventText, EventCodeBlock, EventText, EventCodeBlock, EventText},
 			wantLang:  "python",

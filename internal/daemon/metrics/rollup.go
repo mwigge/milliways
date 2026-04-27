@@ -65,19 +65,19 @@ func (s *Store) demoteTier(tx *sql.Tx, from Tier, now time.Time) error {
 	}
 
 	type srcRow struct {
-		metric, agentID                 string
-		ts                              int64
-		value                           float64
-		count                           int64
-		sum, mn, mx, p50, p95, p99      float64
+		metric, agentID            string
+		ts                         int64
+		value                      float64
+		count                      int64
+		sum, mn, mx, p50, p95, p99 float64
 	}
 	type aggKey struct {
 		metric, agentID string
 		bucketTS        int64
 	}
 	type agg struct {
-		count                       int64
-		sum, mn, mx                 float64
+		count       int64
+		sum, mn, mx float64
 		// Histogram percentile inputs (count-weighted average).
 		p50WeightedNum, p95WeightedNum, p99WeightedNum float64
 		// First-row sentinel so min/max init correctly.
@@ -157,10 +157,10 @@ func (s *Store) demoteTier(tx *sql.Tx, from Tier, now time.Time) error {
 	for k, a := range pending {
 		// Read any existing bucket so we can merge.
 		var existing struct {
-			count                       int64
-			sum, mn, mx                 float64
-			p50, p95, p99               float64
-			present                     bool
+			count         int64
+			sum, mn, mx   float64
+			p50, p95, p99 float64
+			present       bool
 		}
 		row := selStmt.QueryRow(k.metric, k.agentID, k.bucketTS)
 		if err := row.Scan(

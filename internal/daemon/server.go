@@ -39,6 +39,9 @@ type Server struct {
 
 	streams *StreamRegistry
 
+	// Per-agent history append quotas (rate + size).
+	historyQuota *HistoryQuota
+
 	// Background broadcaster lifecycle.
 	bgCtx    context.Context
 	bgCancel context.CancelFunc
@@ -49,6 +52,9 @@ type Server struct {
 
 	// Cached runner probes — populated at startup, served by agent.list.
 	agentsCache []AgentInfo
+
+	// currentAgent is the last agent opened via agent.open.
+	currentAgent string
 
 	// In-memory span ring — populated by every dispatch, served by
 	// observability.spans.
@@ -114,6 +120,8 @@ func NewServer(socket string) (*Server, error) {
 		})
 	}
 	slog.Info("runners probed", "n", len(s.agentsCache))
+
+	s.historyQuota = NewHistoryQuota()
 
 	go s.statusBroadcaster()
 	return s, nil

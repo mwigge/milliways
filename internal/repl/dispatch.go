@@ -7,9 +7,9 @@ import (
 
 // ConversationTurn is one history entry in the REPL ring buffer.
 type ConversationTurn struct {
-	Role   string    // "user" | "assistant"
+	Role   string // "user" | "assistant"
 	Text   string
-	Runner string    // which runner was active
+	Runner string // which runner was active
 	At     time.Time
 }
 

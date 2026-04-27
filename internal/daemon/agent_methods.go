@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/mwigge/milliways/internal/daemon/textproc"
@@ -53,6 +54,10 @@ func (s *Server) agentOpen(enc *json.Encoder, req *Request) {
 		writeError(enc, req.ID, ErrInvalidParams, err.Error())
 		return
 	}
+	// Track current agent for the status bar.
+	s.statusMu.Lock()
+	s.currentAgent = p.AgentID
+	s.statusMu.Unlock()
 	writeResult(enc, req.ID, agentOpenResult{
 		Handle:  int64(sess.Handle),
 		PtySize: ptySize{Cols: 80, Rows: 24},
@@ -138,4 +143,28 @@ func (s *Server) agentClose(enc *json.Encoder, req *Request) {
 	}
 	s.agents.Close(AgentHandle(p.Handle))
 	writeResult(enc, req.ID, map[string]any{"closed": true})
+}
+
+type agentSetActiveParams struct {
+	AgentID string `json:"agent_id"`
+}
+
+func (s *Server) agentSetActive(enc *json.Encoder, req *Request) {
+	var p agentSetActiveParams
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, err.Error())
+		return
+	}
+	if p.AgentID == "" {
+		writeError(enc, req.ID, ErrInvalidParams, "agent.set_active requires agent_id")
+		return
+	}
+	if !historyAgents[p.AgentID] {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("unknown agent_id: %q", p.AgentID))
+		return
+	}
+	s.statusMu.Lock()
+	s.currentAgent = p.AgentID
+	s.statusMu.Unlock()
+	writeResult(enc, req.ID, map[string]any{"ok": true, "active_agent": p.AgentID})
 }

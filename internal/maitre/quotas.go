@@ -2,6 +2,7 @@ package maitre
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
@@ -116,9 +117,45 @@ func systemMemoryPercent() int {
 	switch runtime.GOOS {
 	case "darwin":
 		return darwinMemoryPercent()
+	case "linux":
+		return linuxMemoryPercent()
 	default:
 		return 0
 	}
+}
+
+func linuxMemoryPercent() int {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	var memTotal uint64
+	var memAvailable uint64
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		key := strings.TrimSuffix(fields[0], ":")
+		switch key {
+		case "MemTotal":
+			if v, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
+				memTotal = v * 1024 // kB -> bytes
+			}
+		case "MemAvailable":
+			if v, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
+				memAvailable = v * 1024
+			}
+		}
+	}
+	if memTotal == 0 {
+		return 0
+	}
+	used := memTotal
+	if memAvailable > 0 {
+		used = memTotal - memAvailable
+	}
+	return int(used * 100 / memTotal)
 }
 
 func darwinMemoryPercent() int {

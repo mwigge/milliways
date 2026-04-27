@@ -5,10 +5,12 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 
 	"github.com/mwigge/milliways/internal/daemon/runners"
+	"github.com/mwigge/milliways/internal/history"
 )
 
 // Agent session lifecycle (per agent-domain/spec.md):
@@ -33,6 +35,7 @@ type AgentSession struct {
 	Handle  AgentHandle
 	AgentID string
 	stream  *Stream // nil until agent.stream is called
+	server  *Server
 
 	mu     sync.Mutex
 	input  chan []byte
@@ -71,18 +74,54 @@ func (p *recordingPusher) Push(event any) {
 	if !ok {
 		return
 	}
-	if t, _ := m["t"].(string); t != "data" {
-		return
+	t, _ := m["t"].(string)
+	switch t {
+	case "data":
+		b64, _ := m["b64"].(string)
+		if b64 == "" {
+			return
+		}
+		bs, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return
+		}
+		p.sess.recordResponse(bs)
+		// Append to per-agent history asynchronously if we have a server/state dir.
+		if p.sess.server != nil {
+			stateDir := filepath.Dir(p.sess.server.socket)
+			payload := map[string]any{"t": "data", "text": string(bs)}
+			go func(agent string, dir string, pl any) {
+				if err := history.AppendAgentHistory(dir, agent, pl, history.DefaultMaxLines); err != nil {
+					slog.Debug("append history", "err", err, "agent", agent)
+				}
+			}(p.sess.AgentID, stateDir, payload)
+		}
+	case "chunk_end", "end", "err":
+		payload := make(map[string]any)
+		payload["t"] = t
+		if v, ok := m["cost_usd"]; ok {
+			payload["cost_usd"] = v
+		}
+		if v, ok := m["input_tokens"]; ok {
+			payload["input_tokens"] = v
+		}
+		if v, ok := m["output_tokens"]; ok {
+			payload["output_tokens"] = v
+		}
+		if v, ok := m["msg"]; ok {
+			payload["msg"] = v
+		}
+		if p.sess.server != nil {
+			stateDir := filepath.Dir(p.sess.server.socket)
+			go func(agent string, dir string, pl any) {
+				if err := history.AppendAgentHistory(dir, agent, pl, history.DefaultMaxLines); err != nil {
+					slog.Debug("append history", "err", err, "agent", agent)
+				}
+			}(p.sess.AgentID, stateDir, payload)
+		}
+	default:
+		// ignore others
 	}
-	b64, _ := m["b64"].(string)
-	if b64 == "" {
-		return
-	}
-	bs, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil {
-		return
-	}
-	p.sess.recordResponse(bs)
 }
 
 // AgentRegistry holds all open sessions for the lifetime of the daemon.
@@ -272,6 +311,7 @@ func (s *AgentSession) AttachStream(srv *Server) *Stream {
 	defer s.mu.Unlock()
 	if s.stream == nil {
 		s.stream = srv.streams.Allocate()
+		s.server = srv
 	}
 	return s.stream
 }

@@ -23,18 +23,18 @@ type Span struct {
 	ParentSpanID string         `json:"parent_span_id,omitempty"`
 	Name         string         `json:"name"`
 	StartTS      time.Time      `json:"start_ts"`
-	DurationMS  float64         `json:"duration_ms"`
+	DurationMS   float64        `json:"duration_ms"`
 	Status       string         `json:"status"` // "ok" | "error" | "unset"
 	Attributes   map[string]any `json:"attributes,omitempty"`
 }
 
 // Ring is a fixed-size, thread-safe FIFO of Span values.
 type Ring struct {
-	mu       sync.RWMutex
-	cap      int
-	buf      []Span
-	idx      int  // next write position
-	full     bool // true once we've wrapped at least once
+	mu   sync.RWMutex
+	cap  int
+	buf  []Span
+	idx  int  // next write position
+	full bool // true once we've wrapped at least once
 }
 
 // NewRing returns a Ring with the given capacity (>= 1).

@@ -93,7 +93,7 @@ type chatMessage struct {
 type chatDelta struct {
 	Content          string `json:"content"`
 	ReasoningContent string `json:"reasoning_content,omitempty"` // MiniMax thinking field
-	Thinking         string `json:"thinking,omitempty"`           // alternate thinking field
+	Thinking         string `json:"thinking,omitempty"`          // alternate thinking field
 }
 
 type chatChoice struct {
