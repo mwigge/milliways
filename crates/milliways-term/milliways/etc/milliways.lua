@@ -1,22 +1,36 @@
--- milliways.lua — sample wezterm configuration helpers for the cockpit
--- status bar.
+-- milliways.lua — wezterm configuration helpers for the milliways cockpit:
+-- status bar (right-status) and cockpit keybindings.
 --
--- Usage from ~/.config/wezterm/wezterm.lua:
+-- One-line user setup from ~/.config/wezterm/wezterm.lua:
 --
 --   local wezterm   = require 'wezterm'
 --   local milliways = require 'milliways'
 --   local config    = wezterm.config_builder()
---   milliways.apply_status_bar(config)
+--   milliways.apply(config)   -- status bar + keybindings
 --   return config
 --
--- The status bar is driven once per second by wezterm's
--- `update-right-status` event, which calls
--- `milliwaysctl status --json` and renders the result as:
+-- Granular API (call one or both as needed):
 --
---   {agent} | turn:{n} | {in}↑/{out}↓ tok | ${cost} | quota: {pct}% | err:{n}
+--   milliways.apply_status_bar(config)   -- right-status only
+--   milliways.apply_keybindings(config)  -- cockpit hotkeys only
 --
--- Field overflow priority (least to most important): error count is
--- elided first, then quota. Agent and tokens are never elided.
+-- Status bar:
+--   Driven once per second by wezterm's `update-right-status` event,
+--   which calls `milliwaysctl status --json` and renders the result as:
+--
+--     {agent} | turn:{n} | {in}↑/{out}↓ tok | ${cost} | quota: {pct}% | err:{n}
+--
+--   Field overflow priority (least to most important): error count is
+--   elided first, then quota. Agent and tokens are never elided.
+--
+-- Cockpit keybindings (Cmd is the Super key on Linux/Windows):
+--
+--   Cmd+Shift+A  — InputSelector listing agents from `milliwaysctl agents`,
+--                  spawns a pane in the AgentDomain ("agents") with
+--                  MILLIWAYS_AGENT_ID set to the chosen agent.
+--   Cmd+Shift+C  — _context pane (active agent's `/context` summary).
+--   Cmd+Shift+G  — _context_all pane (aggregated `/context` across agents).
+--   Cmd+Shift+O  — _observability pane (cockpit observability view).
 --
 -- This file is self-contained and only requires `wezterm`, which is
 -- always available inside the wezterm config context.
@@ -243,10 +257,144 @@ function M.apply_status_bar(config)
 end
 
 ------------------------------------------------------------------------
+-- Cockpit keybindings.
+--
+-- All four bindings spawn a pane in the AgentDomain (`{ DomainName =
+-- "agents" }`). The AgentDomain reads `MILLIWAYS_AGENT_ID` from the
+-- spawn env to decide which agent the pane talks to. We pass `args =
+-- {"true"}` as a no-op program — AgentDomain replaces the spawn with a
+-- `milliwaysctl bridge` invocation under the hood, so the args here are
+-- only there to satisfy SpawnCommand's "must have args or default
+-- prog" rule on platforms where the default prog is unavailable.
+--
+-- The Cmd+Shift+A picker fetches the list dynamically from
+-- `milliwaysctl agents`. If the daemon is unreachable we fall back to
+-- the four built-in runner ids plus the `_echo` demo agent so the user
+-- still gets a usable picker.
+------------------------------------------------------------------------
+
+-- Built-in fallback list when `milliwaysctl agents` cannot be reached.
+-- These mirror the runner ids registered in internal/daemon/agents.go.
+local FALLBACK_AGENTS = { 'claude', 'codex', 'minimax', 'copilot', '_echo' }
+
+-- fetch_agent_choices returns a list of `{ id = <agent_id>, label =
+-- <display> }` tables suitable for InputSelector.choices. Best-effort:
+-- a daemon failure falls back to FALLBACK_AGENTS so the picker still
+-- works during first-run / daemon-down scenarios.
+local function fetch_agent_choices()
+  local choices = {}
+  local ok, success, stdout, _stderr = pcall(function()
+    return wezterm.run_child_process({ 'milliwaysctl', 'agents' })
+  end)
+  if ok and success and stdout and stdout ~= '' then
+    local decoded_ok, decoded = pcall(wezterm.json_parse, stdout)
+    if decoded_ok and type(decoded) == 'table' then
+      for _, entry in ipairs(decoded) do
+        if type(entry) == 'table' and entry.id then
+          local label = tostring(entry.id)
+          if entry.available == false then
+            label = label .. ' (unavailable)'
+          elseif entry.model and entry.model ~= '' then
+            label = label .. ' — ' .. tostring(entry.model)
+          end
+          table.insert(choices, { id = tostring(entry.id), label = label })
+        elseif type(entry) == 'string' then
+          table.insert(choices, { id = entry, label = entry })
+        end
+      end
+    end
+  end
+  if #choices == 0 then
+    for _, id in ipairs(FALLBACK_AGENTS) do
+      table.insert(choices, { id = id, label = id })
+    end
+  end
+  return choices
+end
+
+-- spawn_agent_pane builds the SpawnCommandInNewTab action that opens a
+-- new pane in the AgentDomain for `agent_id`.
+local function spawn_agent_pane(agent_id)
+  return wezterm.action.SpawnCommandInNewTab {
+    domain = { DomainName = 'agents' },
+    args = { 'true' },
+    set_environment_variables = {
+      MILLIWAYS_AGENT_ID = agent_id,
+    },
+  }
+end
+
+------------------------------------------------------------------------
+-- apply_keybindings(config) — wire the four cockpit hotkeys into the
+-- user's wezterm config. Existing `config.keys` entries are preserved;
+-- ours are appended.
+------------------------------------------------------------------------
+function M.apply_keybindings(config)
+  config.keys = config.keys or {}
+
+  -- Cmd+Shift+A — agent picker (InputSelector → SpawnCommandInNewTab).
+  table.insert(config.keys, {
+    key = 'A',
+    mods = 'CMD|SHIFT',
+    action = wezterm.action_callback(function(window, pane)
+      window:perform_action(
+        wezterm.action.InputSelector {
+          title = 'milliways: pick an agent',
+          fuzzy = true,
+          fuzzy_description = 'Filter agents: ',
+          choices = fetch_agent_choices(),
+          action = wezterm.action_callback(function(inner_window, inner_pane, id, _label)
+            if not id then
+              return  -- cancelled
+            end
+            inner_window:perform_action(spawn_agent_pane(id), inner_pane)
+          end),
+        },
+        pane
+      )
+    end),
+  })
+
+  -- Cmd+Shift+C — `/context` pane for the active agent.
+  table.insert(config.keys, {
+    key = 'C',
+    mods = 'CMD|SHIFT',
+    action = spawn_agent_pane('_context'),
+  })
+
+  -- Cmd+Shift+G — aggregated `/context` pane.
+  table.insert(config.keys, {
+    key = 'G',
+    mods = 'CMD|SHIFT',
+    action = spawn_agent_pane('_context_all'),
+  })
+
+  -- Cmd+Shift+O — observability cockpit pane.
+  table.insert(config.keys, {
+    key = 'O',
+    mods = 'CMD|SHIFT',
+    action = spawn_agent_pane('_observability'),
+  })
+end
+
+------------------------------------------------------------------------
+-- apply(config) — single-line setup: wires the status bar and the
+-- cockpit keybindings. Equivalent to calling apply_status_bar followed
+-- by apply_keybindings.
+------------------------------------------------------------------------
+function M.apply(config)
+  M.apply_status_bar(config)
+  M.apply_keybindings(config)
+end
+
+------------------------------------------------------------------------
 -- Test/inspection hooks (kept on M for unit-test friendliness).
 ------------------------------------------------------------------------
 M._cache             = cache
 M._FETCH_DEADLINE_S  = FETCH_DEADLINE_S
 M._refresh_cache     = refresh_cache
+M._FALLBACK_AGENTS   = FALLBACK_AGENTS
+M._fetch_agent_choices = fetch_agent_choices
+M._spawn_agent_pane  = spawn_agent_pane
 
 return M

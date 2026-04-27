@@ -94,6 +94,29 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Wezterm Lua helper — make `require('milliways')` work from the user's
+# wezterm config. Installs `etc/milliways.lua` to
+# `$PREFIX/share/milliways/milliways.lua` (default
+# `~/.local/share/milliways/milliways.lua`). The sample config in
+# `crates/milliways-term/milliways/etc/sample-wezterm.lua` extends
+# wezterm's package.path to include that directory.
+# ---------------------------------------------------------------------------
+LUA_SRC="crates/milliways-term/milliways/etc/milliways.lua"
+LUA_DEST_DIR="$PREFIX/share/milliways"
+if [ -f "$LUA_SRC" ]; then
+    echo "==> Installing wezterm Lua helper to $LUA_DEST_DIR/milliways.lua"
+    mkdir -p "$LUA_DEST_DIR"
+    install -m 0644 "$LUA_SRC" "$LUA_DEST_DIR/milliways.lua"
+    if [ -f "crates/milliways-term/milliways/etc/sample-wezterm.lua" ]; then
+        install -m 0644 \
+            "crates/milliways-term/milliways/etc/sample-wezterm.lua" \
+            "$LUA_DEST_DIR/sample-wezterm.lua"
+    fi
+else
+    echo "==> $LUA_SRC missing — skipping wezterm Lua helper install."
+fi
+
+# ---------------------------------------------------------------------------
 # Verify
 # ---------------------------------------------------------------------------
 echo
@@ -104,6 +127,9 @@ for b in milliways milliwaysd milliwaysctl milliways-term; do
         printf "    %-15s  %5s  %s\n" "$b" "$size" "$BIN_DIR/$b"
     fi
 done
+if [ -f "$LUA_DEST_DIR/milliways.lua" ]; then
+    printf "    %-15s         %s\n" "milliways.lua" "$LUA_DEST_DIR/milliways.lua"
+fi
 
 echo
 echo "Make sure $BIN_DIR is in your PATH:"
@@ -115,3 +141,7 @@ echo "    milliwaysctl ping                              # smoke test"
 echo "    milliwaysctl agents                            # list runners"
 echo "    milliways --repl                               # legacy REPL fallback"
 echo "    milliways-term                                 # cockpit terminal"
+echo
+echo "Wezterm cockpit (status bar + keybindings):"
+echo "    cp $LUA_DEST_DIR/sample-wezterm.lua \\"
+echo "       ~/.config/wezterm/wezterm.lua"
