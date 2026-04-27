@@ -37,6 +37,52 @@ type AgentSession struct {
 	mu     sync.Mutex
 	input  chan []byte
 	closed atomic.Bool
+
+	// responseBuf is a rolling buffer of the runner's most recent
+	// emitted text (decoded from `{"t":"data","b64":...}` events).
+	// Capped at responseBufCap; oldest bytes are dropped on overflow.
+	// Feeds the apply.extract RPC.
+	respMu      sync.Mutex
+	responseBuf []byte
+}
+
+// responseBufCap is the per-session response-buffer capacity. 64 KiB is
+// enough for several screens of typical agent output and keeps memory
+// bounded even with many concurrent sessions.
+const responseBufCap = 64 * 1024
+
+// recordingPusher wraps a Stream so any `{"t":"data","b64":...}` event
+// pushed by a runner is also captured (decoded) into the session's
+// rolling response buffer. This is the hook the apply.extract method
+// reads.
+type recordingPusher struct {
+	stream *Stream
+	sess   *AgentSession
+}
+
+func (p *recordingPusher) Push(event any) {
+	if p.stream != nil {
+		p.stream.Push(event)
+	}
+	if p.sess == nil {
+		return
+	}
+	m, ok := event.(map[string]any)
+	if !ok {
+		return
+	}
+	if t, _ := m["t"].(string); t != "data" {
+		return
+	}
+	b64, _ := m["b64"].(string)
+	if b64 == "" {
+		return
+	}
+	bs, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return
+	}
+	p.sess.recordResponse(bs)
 }
 
 // AgentRegistry holds all open sessions for the lifetime of the daemon.
@@ -99,7 +145,7 @@ func runClaude(sess *AgentSession) {
 	if stream == nil {
 		return
 	}
-	runners.RunClaude(context.Background(), sess.input, stream)
+	runners.RunClaude(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess})
 	stream.Close()
 	slog.Debug("claude session ended", "handle", sess.Handle)
 }
@@ -113,7 +159,7 @@ func runCodex(sess *AgentSession) {
 	if stream == nil {
 		return
 	}
-	runners.RunCodex(context.Background(), sess.input, stream)
+	runners.RunCodex(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess})
 	stream.Close()
 	slog.Debug("codex session ended", "handle", sess.Handle)
 }
@@ -127,7 +173,7 @@ func runCopilot(sess *AgentSession) {
 	if stream == nil {
 		return
 	}
-	runners.RunCopilot(context.Background(), sess.input, stream)
+	runners.RunCopilot(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess})
 	stream.Close()
 	slog.Debug("copilot session ended", "handle", sess.Handle)
 }
@@ -142,7 +188,7 @@ func runMiniMax(sess *AgentSession) {
 	if stream == nil {
 		return
 	}
-	runners.RunMiniMax(context.Background(), sess.input, stream)
+	runners.RunMiniMax(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess})
 	stream.Close()
 	slog.Debug("minimax session ended", "handle", sess.Handle)
 }
@@ -195,6 +241,28 @@ func (s *AgentSession) AttachStream(srv *Server) *Stream {
 	return s.stream
 }
 
+// recordResponse appends the runner's emitted bytes to the session's
+// rolling response buffer. Anything beyond responseBufCap is dropped
+// from the front (oldest first).
+func (s *AgentSession) recordResponse(b []byte) {
+	if len(b) == 0 {
+		return
+	}
+	s.respMu.Lock()
+	defer s.respMu.Unlock()
+	s.responseBuf = append(s.responseBuf, b...)
+	if len(s.responseBuf) > responseBufCap {
+		s.responseBuf = s.responseBuf[len(s.responseBuf)-responseBufCap:]
+	}
+}
+
+// snapshotResponse returns a copy of the rolling response buffer.
+func (s *AgentSession) snapshotResponse() string {
+	s.respMu.Lock()
+	defer s.respMu.Unlock()
+	return string(s.responseBuf)
+}
+
 // Send writes bytes to the session's input channel. Returns an error if
 // the session is closed.
 func (s *AgentSession) Send(bytes []byte) error {
@@ -237,6 +305,7 @@ func runEcho(sess *AgentSession) {
 			"t":   "data",
 			"b64": base64.StdEncoding.EncodeToString(bytes),
 		})
+		sess.recordResponse(bytes)
 	}
 	if sess.stream != nil {
 		sess.stream.Push(map[string]any{"t": "end"})
