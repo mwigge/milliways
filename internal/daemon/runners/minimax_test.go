@@ -14,17 +14,19 @@ import (
 
 // TestRunMiniMax_NoAPIKey asserts that when MINIMAX_API_KEY is empty the
 // runner pushes a structured err event and exits cleanly without crashing.
+// Also verifies an error_count tick lands in the metrics observer.
 func TestRunMiniMax_NoAPIKey(t *testing.T) {
 	t.Setenv("MINIMAX_API_KEY", "")
 
 	pusher := &fakePusher{}
+	obs := &mockObserver{}
 	in := make(chan []byte, 1)
 	in <- []byte("hello")
 	close(in)
 
 	done := make(chan struct{})
 	go func() {
-		RunMiniMax(context.Background(), in, pusher)
+		RunMiniMax(context.Background(), in, pusher, obs)
 		close(done)
 	}()
 
@@ -54,6 +56,9 @@ func TestRunMiniMax_NoAPIKey(t *testing.T) {
 	}
 	if !foundErr {
 		t.Errorf("expected err event with code -32005, got events=%v", events)
+	}
+	if got := obs.counterTotal(MetricErrorCount, AgentIDMiniMax); got < 1 {
+		t.Errorf("error_count total = %v, want >= 1 for missing API key", got)
 	}
 }
 
@@ -99,13 +104,14 @@ func TestRunMiniMax_StreamsDeltas(t *testing.T) {
 	t.Setenv("MINIMAX_API_URL", srv.URL)
 
 	pusher := &fakePusher{}
+	obs := &mockObserver{}
 	in := make(chan []byte, 1)
 	in <- []byte("hi there")
 	close(in)
 
 	done := make(chan struct{})
 	go func() {
-		RunMiniMax(context.Background(), in, pusher)
+		RunMiniMax(context.Background(), in, pusher, obs)
 		close(done)
 	}()
 
@@ -169,6 +175,24 @@ func TestRunMiniMax_StreamsDeltas(t *testing.T) {
 	if !strings.Contains(joined, "Hello") || !strings.Contains(joined, "world") {
 		t.Errorf("data payload = %q, expected to contain 'Hello' and 'world'", joined)
 	}
+
+	// The faked SSE includes usage{prompt_tokens:3, completion_tokens:2}.
+	// Both should land in the observer; cost is computed from the same.
+	if got := obs.counterTotal(MetricTokensIn, AgentIDMiniMax); got != 3 {
+		t.Errorf("tokens_in total = %v, want 3", got)
+	}
+	if got := obs.counterTotal(MetricTokensOut, AgentIDMiniMax); got != 2 {
+		t.Errorf("tokens_out total = %v, want 2", got)
+	}
+	// cost_usd is small but non-zero (3 input + 2 output tokens at the
+	// configured per-million-token rates).
+	if got := obs.counterTotal(MetricCostUSD, AgentIDMiniMax); got <= 0 {
+		t.Errorf("cost_usd total = %v, want > 0", got)
+	}
+	// No error on the happy path.
+	if got := obs.counterTotal(MetricErrorCount, AgentIDMiniMax); got != 0 {
+		t.Errorf("error_count total = %v, want 0 on happy path", got)
+	}
 }
 
 // TestRunMiniMax_APIError verifies that a non-200 response surfaces as an err
@@ -184,13 +208,14 @@ func TestRunMiniMax_APIError(t *testing.T) {
 	t.Setenv("MINIMAX_API_URL", srv.URL)
 
 	pusher := &fakePusher{}
+	obs := &mockObserver{}
 	in := make(chan []byte, 1)
 	in <- []byte("hello")
 	close(in)
 
 	done := make(chan struct{})
 	go func() {
-		RunMiniMax(context.Background(), in, pusher)
+		RunMiniMax(context.Background(), in, pusher, obs)
 		close(done)
 	}()
 
@@ -210,5 +235,8 @@ func TestRunMiniMax_APIError(t *testing.T) {
 	}
 	if !sawErr {
 		t.Errorf("expected err event for non-200 response, got %v", events)
+	}
+	if got := obs.counterTotal(MetricErrorCount, AgentIDMiniMax); got < 1 {
+		t.Errorf("error_count total = %v, want >= 1 for non-2xx response", got)
 	}
 }

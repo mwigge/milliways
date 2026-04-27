@@ -43,23 +43,28 @@ const codexTimeout = 5 * time.Minute
 // {"t":"data","b64":...} events to the stream. After the subprocess
 // exits a final {"t":"chunk_end","cost_usd":0} marks end-of-response.
 //
+// Codex's JSON event stream does not currently expose token usage, so
+// only error_count is observed via `metrics` (non-nil); tokens_in /
+// tokens_out / cost_usd are left for a future codex CLI release that
+// surfaces them.
+//
 // Lifecycle:
 //   - One subprocess per prompt; the session stays alive across prompts.
 //   - When `input` is closed, RunCodex pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
-func RunCodex(ctx context.Context, input <-chan []byte, stream Pusher) {
+func RunCodex(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runCodexOnce(ctx, prompt, stream)
+		runCodexOnce(ctx, prompt, stream, metrics)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
-func runCodexOnce(parent context.Context, prompt []byte, stream Pusher) {
+func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
 	ctx, cancel := context.WithTimeout(parent, codexTimeout)
 	defer cancel()
 
@@ -78,15 +83,18 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher) {
 	)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		observeError(metrics, AgentIDCodex)
 		stream.Push(map[string]any{"t": "err", "msg": "codex stdout pipe: " + err.Error()})
 		return
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		observeError(metrics, AgentIDCodex)
 		stream.Push(map[string]any{"t": "err", "msg": "codex stderr pipe: " + err.Error()})
 		return
 	}
 	if err := cmd.Start(); err != nil {
+		observeError(metrics, AgentIDCodex)
 		stream.Push(map[string]any{"t": "err", "msg": "codex start: " + err.Error()})
 		return
 	}
@@ -114,6 +122,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher) {
 	}
 
 	if err := cmd.Wait(); err != nil {
+		observeError(metrics, AgentIDCodex)
 		stream.Push(map[string]any{"t": "err", "msg": "codex exited: " + err.Error()})
 	}
 	stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})

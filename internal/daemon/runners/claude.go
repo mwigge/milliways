@@ -25,8 +25,9 @@ type claudeStreamEvent struct {
 	Message *claudeStreamMessage `json:"message,omitempty"`
 
 	// result fields
-	TotalCostUSD float64 `json:"total_cost_usd,omitempty"`
-	IsError      bool    `json:"is_error,omitempty"`
+	TotalCostUSD float64            `json:"total_cost_usd,omitempty"`
+	IsError      bool               `json:"is_error,omitempty"`
+	Usage        *claudeStreamUsage `json:"usage,omitempty"`
 }
 
 type claudeStreamMessage struct {
@@ -36,6 +37,26 @@ type claudeStreamMessage struct {
 type claudeStreamContent struct {
 	Type string `json:"type"`
 	Text string `json:"text,omitempty"`
+}
+
+// claudeStreamUsage carries the input/output token accounting block
+// emitted on result events. We surface tokens_in / tokens_out into the
+// metrics rollup; cache fields are tracked only for parity with the
+// REPL runner today but are not pushed as metrics.
+type claudeStreamUsage struct {
+	InputTokens  int `json:"input_tokens,omitempty"`
+	OutputTokens int `json:"output_tokens,omitempty"`
+	CacheRead    int `json:"cache_read_input_tokens,omitempty"`
+	CacheWrite   int `json:"cache_creation_input_tokens,omitempty"`
+}
+
+// claudeResult is a small bundle of per-response numbers extracted from
+// a successful `result` event. Returned by extractResult so RunClaude
+// can wire all four numbers (cost + tokens) into the metrics observer.
+type claudeResult struct {
+	costUSD      float64
+	inputTokens  int
+	outputTokens int
 }
 
 // claudeBinary is the executable name; var (not const) so tests can swap it.
@@ -50,23 +71,26 @@ const claudeTimeout = 5 * time.Minute
 // {"t":"data","b64":...} events to the stream. After the subprocess
 // exits a final {"t":"chunk_end","cost_usd":N} marks end-of-response.
 //
+// Per-response usage (tokens, cost) is observed into `metrics` if non-nil;
+// non-zero subprocess exits and pipe failures push an error_count tick.
+//
 // Lifecycle:
 //   - One subprocess per prompt; the session stays alive across prompts.
 //   - When `input` is closed, RunClaude pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
-func RunClaude(ctx context.Context, input <-chan []byte, stream Pusher) {
+func RunClaude(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runClaudeOnce(ctx, prompt, stream)
+		runClaudeOnce(ctx, prompt, stream, metrics)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
-func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher) {
+func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
 	ctx, cancel := context.WithTimeout(parent, claudeTimeout)
 	defer cancel()
 
@@ -83,15 +107,18 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher) {
 	)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		observeError(metrics, AgentIDClaude)
 		stream.Push(map[string]any{"t": "err", "msg": "claude stdout pipe: " + err.Error()})
 		return
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		observeError(metrics, AgentIDClaude)
 		stream.Push(map[string]any{"t": "err", "msg": "claude stderr pipe: " + err.Error()})
 		return
 	}
 	if err := cmd.Start(); err != nil {
+		observeError(metrics, AgentIDClaude)
 		stream.Push(map[string]any{"t": "err", "msg": "claude start: " + err.Error()})
 		return
 	}
@@ -108,7 +135,7 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher) {
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
 
-	var lastCost float64
+	var lastResult claudeResult
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
@@ -118,15 +145,17 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher) {
 			stream.Push(encodeData(text))
 			continue
 		}
-		if cost, ok := extractResultCost(line); ok {
-			lastCost = cost
+		if r, ok := extractResult(line); ok {
+			lastResult = r
 		}
 	}
 
 	if err := cmd.Wait(); err != nil {
+		observeError(metrics, AgentIDClaude)
 		stream.Push(map[string]any{"t": "err", "msg": "claude exited: " + err.Error()})
 	}
-	stream.Push(map[string]any{"t": "chunk_end", "cost_usd": lastCost})
+	observeTokens(metrics, AgentIDClaude, lastResult.inputTokens, lastResult.outputTokens, lastResult.costUSD)
+	stream.Push(map[string]any{"t": "chunk_end", "cost_usd": lastResult.costUSD})
 }
 
 // extractAssistantText returns the concatenated text of all `text` content
@@ -150,17 +179,35 @@ func extractAssistantText(line string) (string, bool) {
 	return out, out != ""
 }
 
-// extractResultCost returns total_cost_usd from a successful `result` event,
-// or false if the line is not a result event (or is an error result).
-func extractResultCost(line string) (float64, bool) {
+// extractResult returns the per-response cost + token counts from a
+// successful `result` event, or false if the line is not a (non-error)
+// result event.
+func extractResult(line string) (claudeResult, bool) {
 	var evt claudeStreamEvent
 	if err := json.Unmarshal([]byte(line), &evt); err != nil {
-		return 0, false
+		return claudeResult{}, false
 	}
 	if evt.Type != "result" || evt.IsError {
+		return claudeResult{}, false
+	}
+	r := claudeResult{costUSD: evt.TotalCostUSD}
+	if evt.Usage != nil {
+		r.inputTokens = evt.Usage.InputTokens
+		r.outputTokens = evt.Usage.OutputTokens
+	}
+	return r, true
+}
+
+// extractResultCost returns total_cost_usd from a successful `result`
+// event, or false if the line is not a (non-error) result event.
+// Retained for compatibility with existing tests; new code should use
+// extractResult to also surface token counts.
+func extractResultCost(line string) (float64, bool) {
+	r, ok := extractResult(line)
+	if !ok {
 		return 0, false
 	}
-	return evt.TotalCostUSD, true
+	return r.costUSD, true
 }
 
 // encodeData wraps a text fragment in the {"t":"data","b64":...} shape

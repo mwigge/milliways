@@ -91,7 +91,7 @@ func TestRunCodex_InputClose_PushesEnd(t *testing.T) {
 	in := make(chan []byte)
 	done := make(chan struct{})
 	go func() {
-		RunCodex(context.Background(), in, pusher)
+		RunCodex(context.Background(), in, pusher, nil)
 		close(done)
 	}()
 	close(in)
@@ -118,13 +118,45 @@ func TestRunCodex_NilStream(t *testing.T) {
 	close(in)
 	done := make(chan struct{})
 	go func() {
-		RunCodex(context.Background(), in, nil)
+		RunCodex(context.Background(), in, nil, nil)
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("RunCodex(nil stream) did not return")
+	}
+}
+
+// TestRunCodex_NoBinary asserts that a missing codex binary surfaces
+// an error_count tick (and no token observations).
+func TestRunCodex_NoBinary(t *testing.T) {
+	prev := codexBinary
+	codexBinary = "/no/such/binary/that/should/not/exist"
+	defer func() { codexBinary = prev }()
+
+	pusher := &fakePusher{}
+	obs := &mockObserver{}
+	in := make(chan []byte, 1)
+	in <- []byte("hi")
+	close(in)
+
+	done := make(chan struct{})
+	go func() {
+		RunCodex(context.Background(), in, pusher, obs)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("RunCodex did not return")
+	}
+
+	if got := obs.counterTotal(MetricErrorCount, AgentIDCodex); got < 1 {
+		t.Errorf("error_count total = %v, want >= 1", got)
+	}
+	if n := obs.counterCount(MetricTokensIn, AgentIDCodex); n != 0 {
+		t.Errorf("expected no tokens_in observations for codex, got %d", n)
 	}
 }
 

@@ -105,7 +105,7 @@ func TestRunCopilot_InputClose_PushesEnd(t *testing.T) {
 	in := make(chan []byte)
 	done := make(chan struct{})
 	go func() {
-		RunCopilot(context.Background(), in, pusher)
+		RunCopilot(context.Background(), in, pusher, nil)
 		close(done)
 	}()
 	close(in)
@@ -132,13 +132,45 @@ func TestRunCopilot_NilStream(t *testing.T) {
 	close(in)
 	done := make(chan struct{})
 	go func() {
-		RunCopilot(context.Background(), in, nil)
+		RunCopilot(context.Background(), in, nil, nil)
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("RunCopilot(nil stream) did not return")
+	}
+}
+
+// TestRunCopilot_NoBinary asserts that a missing copilot binary surfaces
+// an error_count tick (and no token observations).
+func TestRunCopilot_NoBinary(t *testing.T) {
+	prev := copilotBinary
+	copilotBinary = "/no/such/binary/that/should/not/exist"
+	defer func() { copilotBinary = prev }()
+
+	pusher := &fakePusher{}
+	obs := &mockObserver{}
+	in := make(chan []byte, 1)
+	in <- []byte("hi")
+	close(in)
+
+	done := make(chan struct{})
+	go func() {
+		RunCopilot(context.Background(), in, pusher, obs)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("RunCopilot did not return")
+	}
+
+	if got := obs.counterTotal(MetricErrorCount, AgentIDCopilot); got < 1 {
+		t.Errorf("error_count total = %v, want >= 1", got)
+	}
+	if n := obs.counterCount(MetricTokensIn, AgentIDCopilot); n != 0 {
+		t.Errorf("expected no tokens_in observations for copilot, got %d", n)
 	}
 }
 
