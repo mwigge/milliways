@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/mwigge/milliways/internal/daemon/metrics"
 	"github.com/mwigge/milliways/internal/daemon/observability"
 )
 
@@ -84,6 +86,7 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 	slog.Debug("rpc", "method", req.Method, "id", string(req.ID))
 	start := time.Now()
 	defer s.recordSpan(req.Method, start)
+	defer s.recordDispatchMetrics(req.Method, start)
 	switch req.Method {
 	case "ping":
 		writeResult(enc, req.ID, PingResult{
@@ -127,6 +130,8 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 	case "observability.metrics":
 		// Stub — populated when TASK-5.5 metrics-rollup lands.
 		writeResult(enc, req.ID, map[string]any{"buckets": []any{}})
+	case "metrics.rollup.get":
+		s.metricsRollupGet(enc, req)
 	default:
 		writeError(enc, req.ID, ErrMethodNotFound, "unknown method: "+req.Method)
 	}
@@ -159,4 +164,38 @@ func (s *Server) recordSpan(method string, start time.Time) {
 		DurationMS: float64(time.Since(start).Microseconds()) / 1000.0,
 		Status:     "ok",
 	})
+}
+
+// recordDispatchMetrics observes the per-call dispatch_count counter and
+// dispatch_latency_ms histogram, tagged by method via the agent_id slot
+// (no separate `method` column in samples — the agent_id column doubles
+// as the dimension axis for daemon-wide RPCs).
+func (s *Server) recordDispatchMetrics(method string, start time.Time) {
+	if s.metrics == nil {
+		return
+	}
+	latencyMS := float64(time.Since(start).Microseconds()) / 1000.0
+	s.metrics.ObserveCounter("dispatch_count", method, 1)
+	s.metrics.ObserveHistogram("dispatch_latency_ms", method, latencyMS)
+}
+
+// metricsRollupGet handles the metrics.rollup.get JSON-RPC method.
+func (s *Server) metricsRollupGet(enc *json.Encoder, req *Request) {
+	if s.metrics == nil {
+		writeError(enc, req.ID, ErrMethodNotFound, "metrics store not initialised")
+		return
+	}
+	var p metrics.RollupGetParams
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+	}
+	res, err := s.metrics.RollupGet(p)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, err.Error())
+		return
+	}
+	writeResult(enc, req.ID, res)
 }
