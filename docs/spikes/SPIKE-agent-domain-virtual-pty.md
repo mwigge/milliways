@@ -5,6 +5,18 @@
 **Blocks**: Phase 3 (`AgentDomain` MVP) of the `milliways-emulator-fork` change.
 **Time estimate**: 2–3 days for a contributor who has not worked on wezterm internals; ~1 day if you have. If it stretches to a week, that *is* the answer — it tells us the patch budget needs to grow significantly.
 
+## Quick start
+
+Three commands to reproduce the spike on a fresh macOS dev machine (Linux substitutes in step 1: `apt install build-essential pkg-config libssl-dev libfontconfig1-dev libxcb1-dev` and skip Xcode CLT):
+
+```bash
+xcode-select --install 2>/dev/null; brew install rustup-init && rustup-init -y --default-toolchain stable
+git clone --depth=1 https://github.com/wez/wezterm.git ~/dev/wezterm-spike && cd ~/dev/wezterm-spike && git fetch --tags && git checkout "$(git tag --sort=-creatordate | head -1)"
+cargo build --release -p wezterm-gui   # 10–20 min, pulls ~600 crates
+```
+
+After this you have an upstream wezterm build at `~/dev/wezterm-spike/target/release/wezterm-gui`. Add `agent_domain.rs` per "Architecture of the spike" below, then run that binary with the spike config.
+
 ## The question
 
 Does wezterm's `Domain` trait survive a no-op `AgentDomain` implementation that spawns `cat` over a virtual PTY?
@@ -110,6 +122,22 @@ config.default_domain = "agent"
 
 Open a pane in the agent domain. Type something — `cat` echoes it back. Now exercise every pane feature and record results.
 
+### What to look for
+
+For each row in the matrix below, the runner records PASS / PARTIAL / FAIL using these criteria. The criteria are intentionally specific so two different runners reach the same verdict.
+
+- **Test 1 (echo)** — PASS: typed bytes appear immediately on Enter. FAIL: nothing echoes, the pane closes, or wezterm panics.
+- **Test 2 (resize)** — PASS: `cat` keeps echoing after a resize and `stty size` from a sibling pane reflects the new dimensions. PARTIAL: works but log shows missed SIGWINCH.
+- **Test 3 / 4 (splits)** — PASS: the new split inherits AgentDomain (visible via `wezterm cli list`). FAIL: split falls back to `LocalDomain` or panics.
+- **Test 5 (new tab)** — PASS: new tab is in AgentDomain. PARTIAL: new tab is LocalDomain (default) but can be moved to AgentDomain manually.
+- **Test 6 (copy mode)** — PASS: `Cmd+Shift+X` enters copy mode and yanked text reaches the clipboard. FAIL: copy mode refuses to attach to the pane.
+- **Test 7 (search)** — PASS: search finds prior `cat` echoes, scrollback highlights match.
+- **Test 8 (scrollback)** — PASS: PageUp scrolls through the entire echo history without truncation.
+- **Test 9 (mouse selection)** — PASS: drag selects, Cmd+C copies. FAIL: selection visually highlights but clipboard is empty.
+- **Test 10 (focus events)** — PASS: focus in/out events surface to the pane (visible via `RUST_LOG=debug` log). PARTIAL: events fire only for LocalPane.
+- **Test 11 (close)** — PASS: `Cmd+W` closes the pane and `cat` exits cleanly (no zombie). FAIL: `cat` lingers, or wezterm hangs.
+- **Test 12 (re-attach)** — PASS: detaching and re-attaching the domain restores all panes. FAIL: panes vanish or re-attach throws.
+
 | # | Feature | How to trigger | Outcome (PASS / PARTIAL / FAIL) | Notes |
 |---|---------|----------------|--------------------------------|-------|
 | 1 | Type and see echo | type "hello", press Enter | _TBD_ | |
@@ -158,6 +186,36 @@ Fill in this section after running the spike. Replace `_TBD_` markers.
 - Multiple panes simultaneously under heavy throughput — single pane only.
 - Daemon integration — bytes come from `cat`, not milliwaysd. Daemon-shaped issues (UDS reconnect, replay) are tested in Phase 3.
 - Kitty graphics rendering — that's TASK-0.3.
+
+## EXAMPLE — replace before sign-off
+
+The block below is a sample filled-in outcome to give the runner a template. Copy it over the "Outcome" section above when you record real results — and **delete this EXAMPLE block before sign-off**.
+
+### Outcome (EXAMPLE — replace before sign-off)
+
+- Date run: 2026-04-18
+- wezterm tag tested: 20240203-110809-5046fc22
+- macOS / Linux: macOS 14.4 (Apple Silicon)
+- Time taken: 2.5 days
+
+| # | Feature | How to trigger | Outcome (PASS / PARTIAL / FAIL) | Notes |
+|---|---------|----------------|--------------------------------|-------|
+| 1 | Type and see echo | type "hello", press Enter | PASS    | echoed within 1 frame. |
+| 2 | Resize | drag terminal window edge | PASS    | `cat` saw SIGWINCH (verified via `strace`). |
+| 3 | Vertical split | `Cmd+Shift+D` (or default split) | PASS    | new pane in AgentDomain. |
+| 4 | Horizontal split | `Cmd+Shift+H` (or default) | PASS    | same. |
+| 5 | New tab | `Cmd+T` | PARTIAL | new tab defaults to LocalDomain; documented. |
+| 6 | Copy mode | `Cmd+Shift+X` | PASS    | yank reaches clipboard. |
+| 7 | Search | `Cmd+F`, type a substring | PASS    | scrollback highlights match. |
+| 8 | Scrollback walk | `Cmd+Shift+PageUp` after lots of `cat` echoes | PASS    | full history scrolls. |
+| 9 | Mouse selection | drag to highlight | PASS    | Cmd+C copies. |
+| 10 | Focus events | switch wezterm in/out of focus | PARTIAL | events fire on LocalPane but AgentDomain pane only sees a subset; not blocking. |
+| 11 | Pane close | `Cmd+W` | PASS    | `cat` exits cleanly, no zombie. |
+| 12 | Domain re-attach | `wezterm.action.DetachDomain "agent"` then re-attach | PASS    | panes restored. |
+
+### Verdict (EXAMPLE)
+
+PARTIAL. Tests 5 and 10 need shims in `crates/milliways-term/milliways/src/wezterm_compat/`. Patch budget revised to ~900 LoC. Decision 11 (compat shim) refined per the PARTIAL branch above.
 
 ## References
 

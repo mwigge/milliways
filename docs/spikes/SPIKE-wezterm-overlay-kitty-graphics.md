@@ -4,6 +4,20 @@
 **Owner**: _unassigned_
 **Blocks**: Phase 5 (`/context` cockpit) of the `milliways-emulator-fork` change.
 
+## Quick start
+
+Three commands to reproduce the spike on a fresh macOS dev machine:
+
+```bash
+brew install --cask wezterm
+export WEZTERM_CONFIG_FILE="$(mktemp -d)/wezterm.lua" && \
+  cp docs/spikes/spike_assets/spike-wezterm-overlay.lua "$WEZTERM_CONFIG_FILE" && \
+  docs/spikes/spike_assets/make-test-png.sh > /tmp/spike-test.png
+wezterm
+```
+
+On Linux replace step 1 with `cargo install --locked --git https://github.com/wez/wezterm wezterm-gui` (or your distro's package). Once wezterm is open, jump straight to "Test procedure" below.
+
 ## The question
 
 Does **wezterm's overlay rendering surface** (the surface used by `CommandPalette`, `LaunchMenu`, `CharSelect`, etc.) consume **kitty graphics protocol** escape sequences (`ESC _ G ... ESC \`) the same way regular panes do?
@@ -49,6 +63,12 @@ docs/spikes/spike_assets/emit-kitty-graphics.sh /tmp/spike-test.png
 
 Expected: the test PNG renders inline above the next prompt. This confirms wezterm has working kitty-graphics support in your build. If this fails, fix wezterm before proceeding.
 
+#### What to look for
+
+- **PASS** — the coloured square from `make-test-png.sh` appears above the next shell prompt at roughly its native pixel size. Cursor advances *below* the image.
+- **PARTIAL** — image renders but with garbage rows, wrong colour, or the cursor position is wrong (e.g., overlaps the image).
+- **FAIL** — terminal prints raw `\x1b_G...` escape characters as text, or the prompt comes back with no image.
+
 ### Test 2 — kitty graphics in CommandPalette overlay
 
 Press `Ctrl+Shift+P` to open `CommandPalette`. Wezterm's `CommandPalette` is the canonical overlay surface; if any overlay renders kitty graphics, this one will. The spike config replaces a few command entries with names containing the kitty-graphics escape (see `docs/spikes/spike_assets/spike-wezterm-overlay.lua`).
@@ -58,15 +78,32 @@ Expected outcomes:
 - **PARTIAL** — the PNG renders but with redraw flicker / no caching / size weirdness. Note the symptom.
 - **FAIL** — the entry name shows literal escape characters or is mangled. No image.
 
+#### What to look for
+
+- **PASS** confirmation: the coloured square is visible *inside* the palette's dropdown row, not behind it or outside the overlay's clip region. Scroll up/down with arrow keys — the image must clip properly when the row scrolls offscreen.
+- **PARTIAL** indicators: image redraws on every keystroke (flicker), image is rendered at the wrong size, image leaks outside the overlay's bounds, or it disappears when the palette filters change.
+- **FAIL** indicators: the entry's label shows characters like `_Gf=32,a=T,...` (raw escape leaked into the text rendering pipeline), the palette glitches and refuses to open, or the entry text is replaced by a blank line.
+
 ### Test 3 — kitty graphics in a custom overlay pane
 
 The spike config exposes a custom command `milliways-spike-overlay` that opens a tab-floating overlay using `wezterm.action.PromptInputLine` / `InputSelector`. Trigger it via the palette or `Ctrl+Shift+M`. The overlay's prompt label is constructed to contain a kitty-graphics escape.
 
 Same outcomes as Test 2.
 
+#### What to look for
+
+- **PASS** — same image rendering as Test 2, this time inside an `InputSelector` (a different overlay code path). If Test 2 PASSed but this one PARTIALs, suspect the `InputSelector` render path specifically.
+- **FAIL** indicator unique to this test: the prompt label shows literal escape characters but Test 2's palette did not. That tells us `CommandPalette` and `InputSelector` use different render paths and only one supports kitty graphics.
+
 ### Test 4 — recovery on overlay close
 
 If Tests 2 or 3 PASS, close the overlay (Esc) and re-open it. Does the cached image still render, or does each open re-upload? Note answer for the design's "data_hash invalidation" budget.
+
+#### What to look for
+
+- **PASS** — re-opening the overlay shows the image instantly with no perceptible re-upload latency. Wezterm is caching by `data_hash`.
+- **PARTIAL** — there is a brief delay or a visible flash on each open (image re-uploaded). Acceptable but means the cockpit must batch its re-emits, not rely on free caching.
+- **FAIL** — image is missing on the second open until something forces a redraw. Cockpit code MUST emit a fresh kitty-graphics frame on every overlay open.
 
 ## Recording the outcome
 
@@ -104,6 +141,27 @@ Companion files to be created alongside this runbook:
 - `spike_assets/spike-wezterm-overlay.lua` — minimal wezterm config with palette entries and a custom overlay action.
 - `spike_assets/make-test-png.sh` — generates a 200x100 PNG with a recognisable shape (e.g., a coloured square).
 - `spike_assets/emit-kitty-graphics.sh` — base64-encodes a PNG file and emits the kitty graphics protocol escape sequence to stdout.
+
+## EXAMPLE — replace before sign-off
+
+The block below is a sample filled-in outcome to give the runner a template. Copy it over the "Outcome" section above when you record real results — and **delete this EXAMPLE block before sign-off**.
+
+### Outcome (EXAMPLE — replace before sign-off)
+
+- Date run: 2026-04-15
+- wezterm version: 20240203-110809-5046fc22 (`wezterm --version`)
+- macOS / Linux: macOS 14.4 (Apple Silicon)
+
+| Test | Outcome (PASS / PARTIAL / FAIL) | Notes |
+|------|--------------------------------|-------|
+| 1 — pane control                | PASS    | image renders inline, cursor advances correctly. |
+| 2 — CommandPalette              | FAIL    | entry label shows raw `_Gf=32,...` escape characters. |
+| 3 — custom overlay              | FAIL    | `InputSelector` prompt also leaks escape; same render path. |
+| 4 — re-open caching             | n/a     | Tests 2 & 3 FAILed, caching not exercised. |
+
+### Verdict (EXAMPLE)
+
+FAIL. `/context` cockpit must use a real pane (tab) under reserved id `_context`, not an overlay. Following follow-on edits filed in `openspec/changes/milliways-emulator-fork/` per the FAIL branch above.
 
 ## References
 
