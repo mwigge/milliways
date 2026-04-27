@@ -6,8 +6,37 @@ license = "Apache-2.0"
 publish = false
 description = "milliways-emulator-fork additions to wezterm: agent panes, /context cockpit, observability cockpit, status helpers."
 
-# Skeleton crate. Modules are placeholders. Real deps (plotters, serde, tokio,
-# typify build-time codegen, the wezterm crates we depend on) are added per
-# task as the relevant Phase lands. Keeping deps empty here means an unused
-# skeleton compiles in <1s with no transitive cost on the workspace.
+# Real deps grow as each Phase task lands. The wezterm crates we depend on
+# (mux, config, etc.) are added in TASK-3.2 when AgentDomain starts touching
+# wezterm types via the wezterm_compat shim.
 [dependencies]
+anyhow = { workspace = true }
+# typify generates `chrono::DateTime` for `format: "date-time"` schema fields.
+chrono = { workspace = true }
+# typify-generated code uses serde's internal ContentRefDeserializer for
+# untagged enums; that's behind the `std` feature. The wezterm workspace
+# pins serde with default-features=false, so re-enable std for milliways.
+serde = { workspace = true, features = ["std", "derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync", "time"] }
+
+# typify reads proto/milliways.json at build time and emits Rust types
+# matching the JSON Schema. See build.rs and src/rpc/generated.rs.
+# If any of these fail to fetch on a proxied network, build.rs falls back
+# to keeping the hand-mirrored types in src/rpc/types.rs (no compile error).
+[build-dependencies]
+anyhow = { workspace = true }
+typify = "0.4"
+schemars = "0.8"
+serde_json = { workspace = true }
+syn = "2"
+prettyplease = "0.2"
+
+[[example]]
+name = "ping"
+path = "examples/ping.rs"
+
+[[example]]
+name = "subscribe_status"
+path = "examples/subscribe_status.rs"
