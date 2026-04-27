@@ -35,6 +35,8 @@ func main() {
 	applyIndex := fs.Int("index", -1, "code-block index (for `apply`); default = print all")
 	applyOut := fs.String("out", "", "write block to this path (for `apply`); blank = stdout")
 	allFlag := fs.Bool("all", false, "aggregate across all agents (for `context`)")
+	chartKind := fs.String("kind", "", "chart kind: sparkline|bars (for `chart`)")
+	chartData := fs.String("data", "", "chart input as JSON (for `chart`)")
 	fs.Parse(rest)
 	if *socket == "" {
 		*socket = defaultSocket()
@@ -101,6 +103,13 @@ func main() {
 		callJSON(*socket, "metrics.rollup.get", params)
 	case "observe-render":
 		observeRender(*socket)
+	case "chart":
+		if *chartKind == "" || *chartData == "" {
+			die("chart requires --kind <sparkline|bars> --data <json>")
+		}
+		if err := renderChart(os.Stdout, *chartKind, *chartData); err != nil {
+			die("chart: %v", err)
+		}
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -317,6 +326,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  context --agent <id> | --all   — fetch /context snapshot (context.get / .get_all)")
 	fmt.Fprintln(os.Stderr, "  context-render --agent <id|_all>  — pane: subscribe context.subscribe, print frames")
 	fmt.Fprintln(os.Stderr, "  observe-render  — observability cockpit renderer (text frame at 1 Hz)")
+	fmt.Fprintln(os.Stderr, "  chart --kind <sparkline|bars> --data <json>  — render a kitty-graphics chart on stdout")
 }
 
 func die(f string, a ...any) {

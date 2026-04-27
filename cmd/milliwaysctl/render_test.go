@@ -147,6 +147,62 @@ func TestRenderAggregate_HeaderAndPerAgentRows(t *testing.T) {
 	}
 }
 
+// TestRenderSnapshotWithTrend_EmbedsKittyEscape verifies that a non-
+// empty trend slice causes a kitty-graphics escape to be embedded
+// after the tokens block. Empty trend → no escape (text-only fallback).
+func TestRenderSnapshotWithTrend_EmbedsKittyEscape(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 4, 27, 12, 0, 0, 0, time.UTC)
+	snap := snapshotView{AgentID: "claude", Model: "sonnet"}
+
+	// With no history, no escape is emitted (the "trend:" label is
+	// also dropped to keep the layout tight).
+	got := renderSnapshotWithTrend(snap, now, nil)
+	if strings.Contains(got, "\x1b_G") {
+		t.Errorf("empty trend should not embed a kitty escape:\n%s", got)
+	}
+
+	// With history, the escape appears after the cached line and
+	// before the tools line.
+	got = renderSnapshotWithTrend(snap, now, []float64{1, 2, 3, 4, 5})
+	if !strings.Contains(got, "\x1b_G") {
+		t.Errorf("history should embed a kitty escape:\n%s", got)
+	}
+	if !strings.Contains(got, "trend:") {
+		t.Errorf("history should label the trend row:\n%s", got)
+	}
+}
+
+// TestTokenHistory_RingBehaviour documents the per-agent rolling ring
+// used by context-render: bounded at 30 samples, FIFO eviction.
+func TestTokenHistory_RingBehaviour(t *testing.T) {
+	t.Parallel()
+	h := newTokenHistory(3)
+	h.push("claude", 1)
+	h.push("claude", 2)
+	h.push("claude", 3)
+	h.push("claude", 4) // should evict the 1
+	got := h.snapshot("claude")
+	want := []float64{2, 3, 4}
+	if len(got) != len(want) {
+		t.Fatalf("len(snapshot) = %d, want %d (got=%v)", len(got), len(want), got)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("snapshot[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+	// Distinct agents do not bleed into each other.
+	h.push("codex", 99)
+	if got := h.snapshot("codex"); len(got) != 1 || got[0] != 99 {
+		t.Errorf("codex history = %v, want [99]", got)
+	}
+	// Unknown agent → empty slice.
+	if got := h.snapshot("nobody"); len(got) != 0 {
+		t.Errorf("unknown agent should snapshot empty, got %v", got)
+	}
+}
+
 // TestDash_EmptyVsPopulated documents the dash() helper used throughout
 // the formatter. The em-dash is the convention (not "-" or "n/a") to
 // match Claude Code's `/context` visual idiom.

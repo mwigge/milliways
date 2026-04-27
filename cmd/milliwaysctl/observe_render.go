@@ -8,8 +8,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mwigge/milliways/internal/daemon/charts"
 	"github.com/mwigge/milliways/internal/rpc"
 )
+
+// latencyTopN is the maximum number of methods rendered in the bars
+// chart. Three percentile bars (p50/p95/p99) per method × 5 methods =
+// 15 bars in the 256-pixel-wide canvas which fits with labels.
+const latencyTopN = 5
 
 // observe-render is the text-only observability cockpit renderer. It
 // subscribes to observability.subscribe, formats each {t:"data", spans}
@@ -139,9 +145,68 @@ func percentile(sorted []float64, p float64) float64 {
 	return sorted[idx]
 }
 
+// latencyHint maps a latency in milliseconds to a Bar.Hint per the
+// thresholds in the change spec: ok < 1ms, warn < 10ms, err ≥ 10ms.
+func latencyHint(ms float64) string {
+	switch {
+	case ms < 1.0:
+		return "ok"
+	case ms < 10.0:
+		return "warn"
+	default:
+		return "err"
+	}
+}
+
+// computeLatencyBars groups spans by name, computes p50/p95/p99 per
+// group, and returns up to 3*topN bars (3 percentile bars per method,
+// alphabetical by method name). Hint is the latency band; label is
+// just the percentile so a 12px bar can render "p50".
+//
+// Pure function: input is not mutated. Empty input returns nil.
+func computeLatencyBars(spans []observeRenderSpan, topN int) []charts.Bar {
+	if len(spans) == 0 || topN <= 0 {
+		return nil
+	}
+	groups := make(map[string][]float64, 8)
+	for _, sp := range spans {
+		groups[sp.Name] = append(groups[sp.Name], sp.DurationMS)
+	}
+	names := make([]string, 0, len(groups))
+	for n := range groups {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	if len(names) > topN {
+		names = names[:topN]
+	}
+	out := make([]charts.Bar, 0, len(names)*3)
+	for _, n := range names {
+		durs := groups[n]
+		sort.Float64s(durs)
+		for _, p := range []struct {
+			rank float64
+			lbl  string
+		}{
+			{0.50, "p50"},
+			{0.95, "p95"},
+			{0.99, "p99"},
+		} {
+			v := percentile(durs, p.rank)
+			out = append(out, charts.Bar{
+				Value: v,
+				Hint:  latencyHint(v),
+				Label: p.lbl,
+			})
+		}
+	}
+	return out
+}
+
 // formatObservabilityFrame renders the full text block: header,
-// span tail (top 20 most recent), summary stats, footer. The wallclock
-// is passed in so tests can assert against a fixed value.
+// span tail (top 20 most recent), summary stats, latency bars chart,
+// footer. The wallclock is passed in so tests can assert against a
+// fixed value.
 func formatObservabilityFrame(now time.Time, spans []observeRenderSpan) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "╭── milliways observability ── %s ──\n",
@@ -169,6 +234,12 @@ func formatObservabilityFrame(now time.Time, spans []observeRenderSpan) string {
 	fmt.Fprintf(&b, "│   error rate:    %.0f/min\n", sum.ErrorRatePerM)
 	fmt.Fprintf(&b, "│   p50 latency:   %.2fms\n", sum.P50LatencyMS)
 	fmt.Fprintf(&b, "│   p99 latency:   %.2fms\n", sum.P99LatencyMS)
+	if bars := computeLatencyBars(spans, latencyTopN); len(bars) > 0 {
+		fmt.Fprintln(&b, "│")
+		fmt.Fprintf(&b, "│ latency (top %d methods, p50/p95/p99):\n", latencyTopN)
+		png := charts.Bars(bars, charts.DefaultTheme())
+		fmt.Fprintf(&b, "│   %s\n", charts.KittyEscape(png, 0))
+	}
 	fmt.Fprintln(&b, "╰──")
 	return b.String()
 }

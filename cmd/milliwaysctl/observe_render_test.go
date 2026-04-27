@@ -83,6 +83,93 @@ func TestFormatObservabilityFrame(t *testing.T) {
 	}
 }
 
+// TestFormatObservabilityFrame_EmbedsBarsChart asserts that when the
+// snapshot has at least one span, the frame embeds a kitty-graphics
+// bars chart (latency p50/p95/p99) after the summary block. Empty
+// snapshots fall back to text-only.
+func TestFormatObservabilityFrame_EmbedsBarsChart(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 4, 27, 12, 34, 56, 0, time.UTC)
+
+	// Empty: no escape.
+	got := formatObservabilityFrame(fixedNow, nil)
+	if strings.Contains(got, "\x1b_G") {
+		t.Errorf("empty snapshot should not embed a kitty escape")
+	}
+
+	// Populated: escape and label appear.
+	spans := []observeRenderSpan{
+		{Name: "rpc.ping", DurationMS: 0.5, Status: "ok"},
+		{Name: "rpc.ping", DurationMS: 1.5, Status: "ok"},
+		{Name: "rpc.ping", DurationMS: 12.0, Status: "ok"},
+	}
+	got = formatObservabilityFrame(fixedNow, spans)
+	if !strings.Contains(got, "\x1b_G") {
+		t.Errorf("populated snapshot should embed a kitty escape:\n%s", got)
+	}
+	if !strings.Contains(got, "latency (top") {
+		t.Errorf("expected 'latency (top …)' label in frame:\n%s", got)
+	}
+}
+
+// TestComputeLatencyBars groups spans by name, computes percentile
+// triples, applies the hint mapping (ok < 1ms, warn < 10ms, err ≥ 10ms),
+// and returns up to 5 methods worth of bars.
+func TestComputeLatencyBars(t *testing.T) {
+	t.Parallel()
+	spans := []observeRenderSpan{
+		// rpc.fast — all under 1ms, so all hints "ok"
+		{Name: "rpc.fast", DurationMS: 0.1, Status: "ok"},
+		{Name: "rpc.fast", DurationMS: 0.5, Status: "ok"},
+		{Name: "rpc.fast", DurationMS: 0.9, Status: "ok"},
+		// rpc.slow — well into err territory at p99
+		{Name: "rpc.slow", DurationMS: 0.5, Status: "ok"},
+		{Name: "rpc.slow", DurationMS: 5.0, Status: "ok"},
+		{Name: "rpc.slow", DurationMS: 50.0, Status: "ok"},
+	}
+	bars := computeLatencyBars(spans, 5)
+	if len(bars) != 6 {
+		t.Fatalf("len(bars) = %d, want 6 (2 methods * 3 percentiles)", len(bars))
+	}
+	// rpc.fast comes first (alphabetical), so bars[0..2] are p50/p95/p99
+	// of rpc.fast; all hints should be "ok".
+	for i := 0; i < 3; i++ {
+		if bars[i].Hint != "ok" {
+			t.Errorf("rpc.fast[%d] hint = %q, want ok", i, bars[i].Hint)
+		}
+	}
+	// rpc.slow's p99 is 50ms → hint = err.
+	if bars[5].Hint != "err" {
+		t.Errorf("rpc.slow p99 hint = %q, want err", bars[5].Hint)
+	}
+}
+
+// TestLatencyHint covers the 1ms / 10ms cutoffs.
+func TestLatencyHint(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		ms   float64
+		want string
+	}{
+		{0.0, "ok"},
+		{0.99, "ok"},
+		{1.0, "warn"},
+		{9.99, "warn"},
+		{10.0, "err"},
+		{500.0, "err"},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run("", func(t *testing.T) {
+			t.Parallel()
+			got := latencyHint(c.ms)
+			if got != c.want {
+				t.Errorf("latencyHint(%v) = %q, want %q", c.ms, got, c.want)
+			}
+		})
+	}
+}
+
 // TestPercentileNearestRank is the standalone test for the latency
 // percentile helper. Nearest-rank is conservative (always returns an
 // observed value) which is what we want for a small-N cockpit.
