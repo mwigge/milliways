@@ -92,6 +92,18 @@ impl wc::Domain for AgentDomain {
         let socket = crate::rpc::default_socket_path()
             .ok_or_else(|| anyhow!("no socket path; set XDG_RUNTIME_DIR or HOME"))?;
 
+        // Reserved-agent panes (underscore-prefixed) are read-only
+        // renderers — they do NOT call agent.open, they spawn a
+        // renderer subprocess that subscribes to a daemon stream
+        // directly. The match arms below use `else if` so additions
+        // from parallel reserved-agent streams (e.g. the `/context`
+        // cockpit's `_context*` ids) commute with this one.
+        if agent_id == crate::observability_pane::RESERVED_AGENT_ID {
+            return self
+                .spawn_reserved_pane(size, &socket, &agent_id, build_observe_render_command)
+                .await;
+        }
+
         // 1. agent.open over RPC.
         let handle = open_agent(&socket, &agent_id)
             .await
@@ -206,6 +218,68 @@ fn build_bridge_command(socket: &Path, handle: i64) -> anyhow::Result<wc::Comman
             .ok_or_else(|| anyhow!("non-utf8 socket path"))?,
     );
     Ok(cmd)
+}
+
+/// Build the CommandBuilder for `milliwaysctl observe-render`. Used by
+/// the `_observability` reserved-agent special case in `spawn_pane` —
+/// no agent.open call, no handle, just a stream subscription.
+fn build_observe_render_command(socket: &Path) -> anyhow::Result<wc::CommandBuilder> {
+    let mut cmd = wc::CommandBuilder::new("milliwaysctl");
+    cmd.arg("observe-render");
+    cmd.arg("--socket");
+    cmd.arg(
+        socket
+            .to_str()
+            .ok_or_else(|| anyhow!("non-utf8 socket path"))?,
+    );
+    Ok(cmd)
+}
+
+impl AgentDomain {
+    /// Spawn a reserved-agent pane: no `agent.open` call, no reconnect
+    /// watcher, just a renderer subprocess that subscribes to a daemon
+    /// stream and writes to its slave PTY. Used by `_observability`
+    /// (and reserved for future read-only cockpits).
+    async fn spawn_reserved_pane(
+        &self,
+        size: wc::TerminalSize,
+        socket: &Path,
+        agent_id: &str,
+        build_cmd: fn(&Path) -> anyhow::Result<wc::CommandBuilder>,
+    ) -> anyhow::Result<Arc<dyn wc::Pane>> {
+        let cmd = build_cmd(socket)?;
+        let command_description = format!("milliways agent={agent_id} (reserved)");
+
+        let pty_system = wc::native_pty_system();
+        let pty_size = wc::terminal_size_to_pty_size(size);
+        let pair = pty_system.openpty(pty_size)?;
+        let child: Box<dyn portable_pty::Child + Send> = pair.slave.spawn_command(cmd)?;
+        let shared_child = SharedChild::new(child);
+
+        let raw_writer = pair.master.take_writer()?;
+        let shared_writer: SharedWriter = Arc::new(Mutex::new(raw_writer));
+
+        let terminal = wc::Terminal::new(
+            size,
+            Arc::new(config::TermConfig::new()),
+            "milliways",
+            "0.1",
+            Box::new(std::io::sink()),
+        );
+
+        let pane_id = wc::alloc_pane_id();
+        let pane: Arc<dyn wc::Pane> = Arc::new(wc::LocalPane::new(
+            pane_id,
+            terminal,
+            Box::new(BridgeChild::new(shared_child)),
+            pair.master,
+            Box::new(WriterPipe(Arc::clone(&shared_writer))),
+            self.id,
+            command_description,
+        ));
+
+        Ok(pane)
+    }
 }
 
 async fn open_agent(socket: &Path, agent_id: &str) -> anyhow::Result<i64> {

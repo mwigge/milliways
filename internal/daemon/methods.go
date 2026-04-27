@@ -127,9 +127,10 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		var p observabilitySpansParams
 		_ = json.Unmarshal(req.Params, &p)
 		writeResult(enc, req.ID, s.spans.Snapshot(p.parsedSince(), p.Limit))
+	case "observability.subscribe":
+		s.observabilitySubscribe(enc, req)
 	case "observability.metrics":
-		// Stub — populated when TASK-5.5 metrics-rollup lands.
-		writeResult(enc, req.ID, map[string]any{"buckets": []any{}})
+		s.observabilityMetrics(enc, req)
 	case "metrics.rollup.get":
 		s.metricsRollupGet(enc, req)
 	default:
