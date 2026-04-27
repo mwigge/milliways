@@ -108,9 +108,18 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		}()
 	case "agent.list":
 		// Populated from cached runner probes (internal/daemon/runners).
-		// agent.open / agent.send / agent.stream are still unimplemented —
-		// they land when full runner code lifts in TASK-1.3 follow-up.
 		writeResult(enc, req.ID, s.agentsCache)
+	case "agent.open", "agent.send", "agent.stream", "agent.close":
+		// Stubbed pending TASK-1.4: the full lift of internal/repl/
+		// runner_*.go (claude, codex, minimax, copilot) into
+		// internal/daemon/runners/. Each runner is ~500 lines tightly
+		// coupled to the repl's DispatchRequest/QuotaInfo/conversation
+		// types, so the lift is a multi-session task tracked separately.
+		// The streaming primitives (Stream, sidecar protocol) are already
+		// in place — the lift only needs to wire runner stdout into a
+		// Stream.Push loop.
+		writeError(enc, req.ID, ErrAgentNotImplemented,
+			req.Method+" — runner lift in progress; tracked under TASK-1.4")
 	case "quota.get":
 		writeResult(enc, req.ID, []QuotaSnapshot{})
 	case "routing.peek":
