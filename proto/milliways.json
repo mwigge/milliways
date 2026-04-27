@@ -1,0 +1,852 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mwigge/milliways/proto/milliways.json",
+  "title": "milliways RPC types",
+  "description": "Single source of truth for all JSON-RPC 2.0 message shapes between milliways-term (Rust) and milliwaysd (Go). Types are codegen'd to internal/rpc/types.go and crates/milliways-term/milliways/src/rpc/types.rs by scripts/gen-rpc-types.sh. Per the design doc (Decision 3), all transport is newline-delimited JSON-RPC 2.0 over UDS. The top-level object is a virtual registry \u2014 every $defs type is exposed as a property so codegen tools (quicktype, others) can walk the schema and emit a type for each. Nothing on the wire actually uses this envelope shape; consumers only ever serialize individual $defs types as JSON-RPC params/results.",
+  "$defs": {
+    "AgentId": {
+      "type": "string",
+      "description": "Stable identifier for a runner. User-facing ids are lowercase letters; reserved internal ids are prefixed with underscore.",
+      "examples": [
+        "claude",
+        "codex",
+        "minimax",
+        "copilot",
+        "_observability",
+        "_context"
+      ]
+    },
+    "SessionId": {
+      "type": "string",
+      "description": "Daemon-assigned session identifier (UUID v4)."
+    },
+    "Hint": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "warn",
+        "err",
+        "accent",
+        "dim"
+      ],
+      "description": "Semantic colour hint. Resolved to a concrete colour Rust-side via milliways.theme. The daemon never emits raw hex."
+    },
+    "Status": {
+      "type": "object",
+      "description": "Live cockpit state for the status bar. Returned by status.get and pushed by status.subscribe.",
+      "required": [
+        "proto",
+        "active_agent",
+        "turn",
+        "tokens_in",
+        "tokens_out",
+        "cost_usd",
+        "quota_pct",
+        "errors_5m"
+      ],
+      "properties": {
+        "proto": {
+          "$ref": "#/$defs/ProtoVersion"
+        },
+        "active_agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Currently focused agent, or null if the focused pane is a shell."
+        },
+        "turn": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of dispatched prompts in the active session."
+        },
+        "tokens_in": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tokens_out": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "quota_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "errors_5m": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of error spans in the last 5 minutes."
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProtoVersion": {
+      "type": "object",
+      "required": [
+        "major",
+        "minor"
+      ],
+      "properties": {
+        "major": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "minor": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "AgentInfo": {
+      "type": "object",
+      "description": "One entry from agent.list.",
+      "required": [
+        "id",
+        "available",
+        "auth_status"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/AgentId"
+        },
+        "available": {
+          "type": "boolean"
+        },
+        "auth_status": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "missing_credentials",
+            "expired",
+            "unknown"
+          ]
+        },
+        "model": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ContextSnapshot": {
+      "type": "object",
+      "description": "Full per-agent context for the /context overlay. Returned by context.get and pushed by context.subscribe.",
+      "required": [
+        "agent_id"
+      ],
+      "properties": {
+        "agent_id": {
+          "$ref": "#/$defs/AgentId"
+        },
+        "model": {
+          "type": "string"
+        },
+        "session_id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "system_prompt_summary": {
+          "type": "string"
+        },
+        "turn": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tokens": {
+          "type": "object",
+          "required": [
+            "input",
+            "output",
+            "cached"
+          ],
+          "properties": {
+            "input": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "output": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cached": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "last_used_ts": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "mcp_servers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "connected",
+              "tool_count"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "connected": {
+                "type": "boolean"
+              },
+              "tool_count": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "files_in_context": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "path",
+              "bytes"
+            ],
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "last_span": {
+          "$ref": "#/$defs/Span"
+        },
+        "errors_5m": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "AggregateContext": {
+      "type": "object",
+      "description": "Aggregated /context across all agents. Returned by context.get_all.",
+      "required": [
+        "agents",
+        "totals"
+      ],
+      "properties": {
+        "agents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextSnapshot"
+          }
+        },
+        "totals": {
+          "type": "object",
+          "required": [
+            "tokens_in",
+            "tokens_out",
+            "cached",
+            "cost_usd",
+            "active_agents",
+            "errors_5m"
+          ],
+          "properties": {
+            "tokens_in": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tokens_out": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cached": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cost_usd": {
+              "type": "number",
+              "minimum": 0
+            },
+            "active_agents": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "errors_5m": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "recent_routing": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RoutingDecision"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Span": {
+      "type": "object",
+      "description": "OTel-flavoured span row for the observability cockpit.",
+      "required": [
+        "trace_id",
+        "span_id",
+        "name",
+        "start_ts",
+        "duration_ms",
+        "status"
+      ],
+      "properties": {
+        "trace_id": {
+          "type": "string"
+        },
+        "span_id": {
+          "type": "string"
+        },
+        "parent_span_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "start_ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "duration_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ok",
+            "error",
+            "unset"
+          ]
+        },
+        "attributes": {
+          "type": "object",
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "MetricKind": {
+      "type": "string",
+      "enum": [
+        "counter",
+        "histogram",
+        "gauge"
+      ]
+    },
+    "RollupTier": {
+      "type": "string",
+      "enum": [
+        "raw",
+        "hourly",
+        "daily",
+        "weekly",
+        "monthly"
+      ]
+    },
+    "Bucket": {
+      "type": "object",
+      "description": "A single rollup bucket. The shape is uniform across tiers and metric kinds; fields not relevant to the kind are omitted.",
+      "required": [
+        "ts"
+      ],
+      "properties": {
+        "ts": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Start of the bucket window."
+        },
+        "value": {
+          "type": "number",
+          "description": "Counter total or gauge mean."
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sum": {
+          "type": "number"
+        },
+        "min": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        },
+        "p50": {
+          "type": "number"
+        },
+        "p95": {
+          "type": "number"
+        },
+        "p99": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RollupResponse": {
+      "type": "object",
+      "description": "Response from metrics.rollup.get.",
+      "required": [
+        "metric",
+        "tier",
+        "kind",
+        "buckets",
+        "approximate"
+      ],
+      "properties": {
+        "metric": {
+          "type": "string"
+        },
+        "tier": {
+          "$ref": "#/$defs/RollupTier"
+        },
+        "kind": {
+          "$ref": "#/$defs/MetricKind"
+        },
+        "agent_id": {
+          "$ref": "#/$defs/AgentId"
+        },
+        "buckets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Bucket"
+          }
+        },
+        "approximate": {
+          "type": "boolean",
+          "description": "True when percentile fields above the raw tier are weighted-average approximations. Always false at the raw tier. Always false for counter/gauge kinds."
+        }
+      },
+      "additionalProperties": false
+    },
+    "QuotaSnapshot": {
+      "type": "object",
+      "required": [
+        "agent_id",
+        "used",
+        "cap",
+        "pct"
+      ],
+      "properties": {
+        "agent_id": {
+          "$ref": "#/$defs/AgentId"
+        },
+        "used": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cap": {
+          "type": "number",
+          "minimum": 0
+        },
+        "pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "window": {
+          "type": "string",
+          "description": "Quota window e.g. '24h'."
+        }
+      },
+      "additionalProperties": false
+    },
+    "RoutingDecision": {
+      "type": "object",
+      "description": "One sommelier routing decision for the aggregated /context strip.",
+      "required": [
+        "ts",
+        "selected"
+      ],
+      "properties": {
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "selected": {
+          "$ref": "#/$defs/AgentId"
+        },
+        "considered": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AgentId"
+          }
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ChartKind": {
+      "type": "string",
+      "enum": [
+        "donut",
+        "sparkline",
+        "bars",
+        "line"
+      ]
+    },
+    "ChartData": {
+      "description": "Structured chart data emitted by context.chart_data. Rust-side renders the actual PNG via the plotters crate (Decision 12). The daemon never emits PNG bytes or kitty-graphics escapes.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/DonutChart"
+        },
+        {
+          "$ref": "#/$defs/SparklineChart"
+        },
+        {
+          "$ref": "#/$defs/BarsChart"
+        },
+        {
+          "$ref": "#/$defs/LineChart"
+        }
+      ]
+    },
+    "DonutChart": {
+      "type": "object",
+      "required": [
+        "kind",
+        "segments",
+        "data_hash"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "donut"
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "label",
+              "value"
+            ],
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "value": {
+                "type": "number",
+                "minimum": 0
+              },
+              "hint": {
+                "$ref": "#/$defs/Hint"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "total": {
+          "type": "number"
+        },
+        "data_hash": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "SparklineChart": {
+      "type": "object",
+      "required": [
+        "kind",
+        "points",
+        "data_hash"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "sparkline"
+        },
+        "points": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "range": {
+          "type": "object",
+          "required": [
+            "min",
+            "max"
+          ],
+          "properties": {
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "hint": {
+          "$ref": "#/$defs/Hint"
+        },
+        "data_hash": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "BarsChart": {
+      "type": "object",
+      "required": [
+        "kind",
+        "series",
+        "data_hash"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "bars"
+        },
+        "series": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "label",
+              "values"
+            ],
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "values": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              },
+              "hint": {
+                "$ref": "#/$defs/Hint"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "x_labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "data_hash": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "LineChart": {
+      "type": "object",
+      "required": [
+        "kind",
+        "series",
+        "data_hash"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "line"
+        },
+        "series": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "label",
+              "points"
+            ],
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "points": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "x",
+                    "y"
+                  ],
+                  "properties": {
+                    "x": {
+                      "type": "number"
+                    },
+                    "y": {
+                      "type": "number"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "hint": {
+                "$ref": "#/$defs/Hint"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "data_hash": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "PingResult": {
+      "type": "object",
+      "required": [
+        "pong",
+        "version",
+        "uptime_s",
+        "proto"
+      ],
+      "properties": {
+        "pong": {
+          "type": "boolean",
+          "const": true
+        },
+        "version": {
+          "type": "string"
+        },
+        "uptime_s": {
+          "type": "number",
+          "minimum": 0
+        },
+        "proto": {
+          "$ref": "#/$defs/ProtoVersion"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "properties": {
+    "AgentId": {
+      "$ref": "#/$defs/AgentId"
+    },
+    "SessionId": {
+      "$ref": "#/$defs/SessionId"
+    },
+    "Hint": {
+      "$ref": "#/$defs/Hint"
+    },
+    "Status": {
+      "$ref": "#/$defs/Status"
+    },
+    "ProtoVersion": {
+      "$ref": "#/$defs/ProtoVersion"
+    },
+    "AgentInfo": {
+      "$ref": "#/$defs/AgentInfo"
+    },
+    "ContextSnapshot": {
+      "$ref": "#/$defs/ContextSnapshot"
+    },
+    "AggregateContext": {
+      "$ref": "#/$defs/AggregateContext"
+    },
+    "Span": {
+      "$ref": "#/$defs/Span"
+    },
+    "MetricKind": {
+      "$ref": "#/$defs/MetricKind"
+    },
+    "RollupTier": {
+      "$ref": "#/$defs/RollupTier"
+    },
+    "Bucket": {
+      "$ref": "#/$defs/Bucket"
+    },
+    "RollupResponse": {
+      "$ref": "#/$defs/RollupResponse"
+    },
+    "QuotaSnapshot": {
+      "$ref": "#/$defs/QuotaSnapshot"
+    },
+    "RoutingDecision": {
+      "$ref": "#/$defs/RoutingDecision"
+    },
+    "ChartKind": {
+      "$ref": "#/$defs/ChartKind"
+    },
+    "ChartData": {
+      "$ref": "#/$defs/ChartData"
+    },
+    "DonutChart": {
+      "$ref": "#/$defs/DonutChart"
+    },
+    "SparklineChart": {
+      "$ref": "#/$defs/SparklineChart"
+    },
+    "BarsChart": {
+      "$ref": "#/$defs/BarsChart"
+    },
+    "LineChart": {
+      "$ref": "#/$defs/LineChart"
+    },
+    "PingResult": {
+      "$ref": "#/$defs/PingResult"
+    }
+  },
+  "additionalProperties": false
+}
