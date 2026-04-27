@@ -73,6 +73,8 @@ func (r *AgentRegistry) Open(agentID string) (*AgentSession, error) {
 		go runEcho(sess)
 	case "claude":
 		go runClaude(sess)
+	case "minimax":
+		go runMiniMax(sess)
 	default:
 		// Unknown / not yet lifted.
 		r.mu.Lock()
@@ -96,6 +98,21 @@ func runClaude(sess *AgentSession) {
 	runners.RunClaude(context.Background(), sess.input, stream)
 	stream.Close()
 	slog.Debug("claude session ended", "handle", sess.Handle)
+}
+
+// runMiniMax waits for the sidecar to attach, then hands the session's
+// input channel + stream to runners.RunMiniMax. Each agent.send call
+// triggers one MiniMax chat completion HTTP request (stream:true). The
+// session stays open across sends and ends only when the registry closes
+// the input channel.
+func runMiniMax(sess *AgentSession) {
+	stream := waitForStream(sess)
+	if stream == nil {
+		return
+	}
+	runners.RunMiniMax(context.Background(), sess.input, stream)
+	stream.Close()
+	slog.Debug("minimax session ended", "handle", sess.Handle)
 }
 
 // waitForStream blocks until sess.stream is non-nil or the session is
