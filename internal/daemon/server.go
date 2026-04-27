@@ -51,6 +51,10 @@ type Server struct {
 	// In-memory span ring — populated by every dispatch, served by
 	// observability.spans.
 	spans *observability.Ring
+
+	// Agent session registry — populated by agent.open, drained by
+	// agent.send / agent.stream / agent.close.
+	agents *AgentRegistry
 }
 
 // NewServer binds a UDS at socket with mode 0600. Removes any stale socket
@@ -75,6 +79,7 @@ func NewServer(socket string) (*Server, error) {
 		statusSubscribers: make(map[int64]*Stream),
 		spans:             observability.NewRing(1000),
 	}
+	s.agents = NewAgentRegistry(s)
 	// Probe runners once at startup and cache the result. This populates
 	// agent.list's auth_status without per-call subprocess churn.
 	probeCtx, probeCancel := context.WithTimeout(bgCtx, 10*time.Second)

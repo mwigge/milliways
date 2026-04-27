@@ -1,0 +1,133 @@
+package daemon
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"strings"
+)
+
+// JSON-RPC method handlers for the agent.* surface. Each handler reads
+// params off the Request, calls the AgentRegistry / AgentSession, and
+// writes either a result or a typed error.
+
+type agentOpenParams struct {
+	AgentID   string `json:"agent_id"`
+	SessionID string `json:"session_id,omitempty"`
+}
+
+type agentOpenResult struct {
+	Handle int64 `json:"handle"`
+	// PtySize is reserved for future PTY allocation negotiation.
+	PtySize ptySize `json:"pty_size"`
+}
+
+type ptySize struct {
+	Cols int `json:"cols"`
+	Rows int `json:"rows"`
+}
+
+func (s *Server) agentOpen(enc *json.Encoder, req *Request) {
+	var p agentOpenParams
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, "invalid agent.open params: "+err.Error())
+			return
+		}
+	}
+	if p.AgentID == "" {
+		writeError(enc, req.ID, ErrInvalidParams, "agent.open requires agent_id")
+		return
+	}
+	sess, err := s.agents.Open(p.AgentID)
+	if err != nil {
+		// Reserved/known agent_ids that aren't implemented yet hit here.
+		// Real runner lift (TASK-1.4) plugs claude/codex/minimax/copilot in.
+		if strings.HasPrefix(err.Error(), "agent_not_implemented") {
+			writeError(enc, req.ID, ErrAgentNotImplemented,
+				"agent_id "+p.AgentID+" not yet wired (runner lift pending; TASK-1.4)")
+			return
+		}
+		writeError(enc, req.ID, ErrInvalidParams, err.Error())
+		return
+	}
+	writeResult(enc, req.ID, agentOpenResult{
+		Handle:  int64(sess.Handle),
+		PtySize: ptySize{Cols: 80, Rows: 24},
+	})
+}
+
+type agentSendParams struct {
+	Handle int64  `json:"handle"`
+	B64    string `json:"b64,omitempty"`   // base64 bytes
+	Bytes  string `json:"bytes,omitempty"` // raw string (alt to b64)
+}
+
+func (s *Server) agentSend(enc *json.Encoder, req *Request) {
+	var p agentSendParams
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, "invalid agent.send params: "+err.Error())
+		return
+	}
+	sess, ok := s.agents.Get(AgentHandle(p.Handle))
+	if !ok {
+		writeError(enc, req.ID, ErrInvalidParams, "unknown handle")
+		return
+	}
+	var bytes []byte
+	if p.B64 != "" {
+		var err error
+		bytes, err = base64.StdEncoding.DecodeString(p.B64)
+		if err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, "bad base64: "+err.Error())
+			return
+		}
+	} else {
+		bytes = []byte(p.Bytes)
+	}
+	if err := sess.Send(bytes); err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, err.Error())
+		return
+	}
+	writeResult(enc, req.ID, map[string]any{"sent": len(bytes)})
+}
+
+type agentStreamParams struct {
+	Handle int64 `json:"handle"`
+}
+
+type agentStreamResult struct {
+	StreamID     int64 `json:"stream_id"`
+	OutputOffset int64 `json:"output_offset"`
+}
+
+func (s *Server) agentStream(enc *json.Encoder, req *Request) {
+	var p agentStreamParams
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, "invalid agent.stream params: "+err.Error())
+		return
+	}
+	sess, ok := s.agents.Get(AgentHandle(p.Handle))
+	if !ok {
+		writeError(enc, req.ID, ErrInvalidParams, "unknown handle")
+		return
+	}
+	stream := sess.AttachStream(s)
+	writeResult(enc, req.ID, agentStreamResult{
+		StreamID:     stream.ID,
+		OutputOffset: 0,
+	})
+}
+
+type agentCloseParams struct {
+	Handle int64 `json:"handle"`
+}
+
+func (s *Server) agentClose(enc *json.Encoder, req *Request) {
+	var p agentCloseParams
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, err.Error())
+		return
+	}
+	s.agents.Close(AgentHandle(p.Handle))
+	writeResult(enc, req.ID, map[string]any{"closed": true})
+}
