@@ -27,6 +27,10 @@ func main() {
 	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
 	agentID := fs.String("agent", "", "agent_id (for `bridge` and `open`)")
 	handleFlag := fs.Int64("handle", 0, "agent handle (for `bridge`)")
+	metricName := fs.String("metric", "", "metric name (for `metrics`)")
+	metricTier := fs.String("tier", "raw", "tier: raw|hourly|daily|weekly|monthly (for `metrics`)")
+	metricRange := fs.String("range", "", "relative range (e.g. -24h, -7d, -12mo) for `metrics`")
+	metricAgent := fs.String("agent-id", "", "filter by agent_id (for `metrics`)")
 	fs.Parse(rest)
 	if *socket == "" {
 		*socket = defaultSocket()
@@ -57,6 +61,21 @@ func main() {
 			die("bridge requires --handle <id>; obtain via `milliwaysctl open --agent <id>`")
 		}
 		bridge(*socket, *handleFlag)
+	case "metrics":
+		if *metricName == "" {
+			die("metrics requires --metric <name>")
+		}
+		params := map[string]any{
+			"metric": *metricName,
+			"tier":   *metricTier,
+		}
+		if *metricRange != "" {
+			params["range"] = map[string]any{"from": *metricRange}
+		}
+		if *metricAgent != "" {
+			params["agent_id"] = *metricAgent
+		}
+		callJSON(*socket, "metrics.rollup.get", params)
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -197,6 +216,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  spans    — recent OTel-flavoured spans (observability.spans)")
 	fmt.Fprintln(os.Stderr, "  open --agent <id>     — open an agent session (agent.open)")
 	fmt.Fprintln(os.Stderr, "  bridge --handle <id>  — pane shim: stdin↔agent.send, sidecar↔stdout")
+	fmt.Fprintln(os.Stderr, "  metrics --metric <name> [--tier raw|hourly|daily|weekly|monthly]")
+	fmt.Fprintln(os.Stderr, "          [--range -24h] [--agent-id <id>]  — query metrics.rollup.get")
 }
 
 func die(f string, a ...any) {
