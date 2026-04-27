@@ -119,6 +119,12 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		s.agentStream(enc, req)
 	case "agent.close":
 		s.agentClose(enc, req)
+	case "context.get":
+		s.contextGet(enc, req)
+	case "context.get_all":
+		s.contextGetAll(enc, req)
+	case "context.subscribe":
+		s.contextSubscribe(enc, req)
 	case "quota.get":
 		writeResult(enc, req.ID, []QuotaSnapshot{})
 	case "routing.peek":

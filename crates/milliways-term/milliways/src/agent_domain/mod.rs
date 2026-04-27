@@ -45,6 +45,16 @@ const DEFAULT_AGENT_ID: &str = "_echo";
 /// the spawn to a specific agent_id.
 const AGENT_ID_ENV: &str = "MILLIWAYS_AGENT_ID";
 
+/// Env-var name an upstream caller may set to scope a `_context` pane to
+/// one specific agent. Defaults to `_all` when absent.
+const FOCUSED_AGENT_ENV: &str = "MILLIWAYS_FOCUSED_AGENT";
+
+/// Reserved agent_id that vends a per-agent /context pane.
+const CONTEXT_AGENT_ID: &str = "_context";
+
+/// Reserved agent_id that vends the aggregated /context pane.
+const CONTEXT_AGENT_ID_ALL: &str = "_context_all";
+
 pub struct AgentDomain {
     id: wc::DomainId,
     /// One `WatchedBridge` per spawned pane, keyed by pane id. Held here
@@ -91,6 +101,21 @@ impl wc::Domain for AgentDomain {
         let agent_id = extract_agent_id(command.as_ref());
         let socket = crate::rpc::default_socket_path()
             .ok_or_else(|| anyhow!("no socket path; set XDG_RUNTIME_DIR or HOME"))?;
+
+        // /context panes bypass the agent-session machinery: there's no
+        // runner subprocess, no agent.open, and no reconnect FSM. The pane
+        // is read-only and just runs `milliwaysctl context-render`, which
+        // subscribes to context.subscribe and prints text frames at 2 Hz.
+        if agent_id == CONTEXT_AGENT_ID || agent_id == CONTEXT_AGENT_ID_ALL {
+            let target = if agent_id == CONTEXT_AGENT_ID_ALL {
+                "_all".to_string()
+            } else {
+                extract_focused_agent(command.as_ref())
+            };
+            let bridge_cmd = build_context_render_command(&socket, &target)?;
+            let command_description = format!("milliways context={target}");
+            return spawn_simple_pane(self.id, size, bridge_cmd, command_description);
+        }
 
         // 1. agent.open over RPC.
         let handle = open_agent(&socket, &agent_id)
@@ -206,6 +231,81 @@ fn build_bridge_command(socket: &Path, handle: i64) -> anyhow::Result<wc::Comman
             .ok_or_else(|| anyhow!("non-utf8 socket path"))?,
     );
     Ok(cmd)
+}
+
+/// Build the CommandBuilder for a /context pane: `milliwaysctl
+/// context-render --agent <target> --socket <sock>`. Used by the
+/// `_context` and `_context_all` reserved-id branch in spawn_pane.
+fn build_context_render_command(
+    socket: &Path,
+    target: &str,
+) -> anyhow::Result<wc::CommandBuilder> {
+    let mut cmd = wc::CommandBuilder::new("milliwaysctl");
+    cmd.arg("context-render");
+    cmd.arg("--agent");
+    cmd.arg(target);
+    cmd.arg("--socket");
+    cmd.arg(
+        socket
+            .to_str()
+            .ok_or_else(|| anyhow!("non-utf8 socket path"))?,
+    );
+    Ok(cmd)
+}
+
+/// Read MILLIWAYS_FOCUSED_AGENT off the SpawnCommand env, defaulting to
+/// `_all` when unset. Used to scope a `_context` pane to one specific
+/// agent (e.g. the focused pane's agent_id, set by Lua).
+fn extract_focused_agent(command: Option<&wc::CommandBuilder>) -> String {
+    if let Some(cmd) = command {
+        for (k, v) in cmd.iter_full_env_as_str() {
+            if k == FOCUSED_AGENT_ENV {
+                return v.to_string();
+            }
+        }
+    }
+    "_all".to_string()
+}
+
+/// Spawn a read-only pane backed by `bridge_cmd`. Used by the /context
+/// branch — there's no agent.open, no reconnect watcher, no shared writer
+/// for banner rendering. The pane just renders bytes from the subprocess's
+/// stdout (the slave PTY) and discards user input via the master writer.
+fn spawn_simple_pane(
+    domain_id: wc::DomainId,
+    size: wc::TerminalSize,
+    bridge_cmd: wc::CommandBuilder,
+    command_description: String,
+) -> anyhow::Result<Arc<dyn wc::Pane>> {
+    let pty_system = wc::native_pty_system();
+    let pty_size = wc::terminal_size_to_pty_size(size);
+    let pair = pty_system.openpty(pty_size)?;
+    let initial_child: Box<dyn portable_pty::Child + Send> =
+        pair.slave.spawn_command(bridge_cmd)?;
+    let shared_child = SharedChild::new(initial_child);
+
+    let raw_writer = pair.master.take_writer()?;
+    let shared_writer: SharedWriter = Arc::new(Mutex::new(raw_writer));
+
+    let terminal = wc::Terminal::new(
+        size,
+        Arc::new(config::TermConfig::new()),
+        "milliways",
+        "0.1",
+        Box::new(std::io::sink()),
+    );
+
+    let pane_id = wc::alloc_pane_id();
+    let pane: Arc<dyn wc::Pane> = Arc::new(wc::LocalPane::new(
+        pane_id,
+        terminal,
+        Box::new(BridgeChild::new(shared_child)),
+        pair.master,
+        Box::new(WriterPipe(shared_writer)),
+        domain_id,
+        command_description,
+    ));
+    Ok(pane)
 }
 
 async fn open_agent(socket: &Path, agent_id: &str) -> anyhow::Result<i64> {
