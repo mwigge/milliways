@@ -1,9 +1,12 @@
 package daemon
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
+
+	"github.com/mwigge/milliways/internal/daemon/textproc"
 )
 
 // JSON-RPC method handlers for the agent.* surface. Each handler reads
@@ -57,9 +60,10 @@ func (s *Server) agentOpen(enc *json.Encoder, req *Request) {
 }
 
 type agentSendParams struct {
-	Handle int64  `json:"handle"`
-	B64    string `json:"b64,omitempty"`   // base64 bytes
-	Bytes  string `json:"bytes,omitempty"` // raw string (alt to b64)
+	Handle        int64  `json:"handle"`
+	B64           string `json:"b64,omitempty"`   // base64 bytes
+	Bytes         string `json:"bytes,omitempty"` // raw string (alt to b64)
+	ExpandContext *bool  `json:"expand_context,omitempty"`
 }
 
 func (s *Server) agentSend(enc *json.Encoder, req *Request) {
@@ -83,6 +87,10 @@ func (s *Server) agentSend(enc *json.Encoder, req *Request) {
 		}
 	} else {
 		bytes = []byte(p.Bytes)
+	}
+	// expand_context defaults to true; explicit false opts out.
+	if p.ExpandContext == nil || *p.ExpandContext {
+		bytes = textproc.ExpandContext(context.Background(), bytes)
 	}
 	if err := sess.Send(bytes); err != nil {
 		writeError(enc, req.ID, ErrInvalidParams, err.Error())
