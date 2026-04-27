@@ -3361,7 +3361,12 @@ name = "milliways"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
+ "config",
+ "log",
+ "mux",
+ "portable-pty",
  "prettyplease",
  "schemars",
  "serde",
@@ -3370,6 +3375,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "typify",
+ "wezterm-term",
 ]
 
 [[package]]

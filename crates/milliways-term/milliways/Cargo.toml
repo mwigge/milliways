@@ -12,7 +12,9 @@ description = "milliways-emulator-fork additions to wezterm: agent panes, /conte
 [dependencies]
 anyhow = { workspace = true }
 # typify generates `chrono::DateTime` for `format: "date-time"` schema fields.
-chrono = { workspace = true }
+# `clock` is required because mux::client uses Utc::now(); the wezterm
+# workspace defaults chrono to default-features=false, so re-enable it here.
+chrono = { workspace = true, features = ["clock"] }
 # typify-generated code uses serde's internal ContentRefDeserializer for
 # untagged enums; that's behind the `std` feature. The wezterm workspace
 # pins serde with default-features=false, so re-enable std for milliways.
@@ -20,6 +22,15 @@ serde = { workspace = true, features = ["std", "derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync", "time"] }
+
+# Wezterm-side imports for AgentDomain (Phase 3). All are workspace-internal
+# crates from the subtree-imported wezterm fork.
+async-trait = { workspace = true }
+config = { workspace = true }
+mux = { workspace = true }
+portable-pty = { workspace = true }
+wezterm-term = { workspace = true }
+log = { workspace = true }
 
 # typify reads proto/milliways.json at build time and emits Rust types
 # matching the JSON Schema. See build.rs and src/rpc/generated.rs.
