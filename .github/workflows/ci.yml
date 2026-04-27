@@ -1,38 +1,60 @@
-name: CI
-
-on:
-  push:
-    branches: [master]
-  pull_request:
-    branches: [master]
-
+name: ci
+on: [push, pull_request]
 jobs:
-  test:
+  go-build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.22' }
+      - run: go build ./...
+      - run: go test ./... -count=1 -race
+      - run: go vet ./...
+
+  rust-build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with: { toolchain: stable }
+      - name: install linux deps
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl-dev libxcursor-dev libxinerama-dev libxi-dev libxrandr-dev libssl-dev pkg-config libfontconfig-dev libwayland-dev
+      - run: cargo check --manifest-path crates/milliways-term/Cargo.toml -p milliways
+      - run: cargo test --manifest-path crates/milliways-term/Cargo.toml -p milliways --lib
+
+  codegen-drift:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
+        with: { go-version: '1.22' }
+      - run: go install github.com/atombender/go-jsonschema@latest
+      - run: scripts/gen-rpc-types.sh
+      - run: git diff --exit-code internal/rpc/types.go
 
-      - name: Build
-        run: go build ./...
-
-      - name: Test
-        run: go test ./... -count=1
-
-  smoke:
+  integration-smoke-linux:
     runs-on: ubuntu-latest
-    needs: test
+    needs: go-build
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Run smoke harness
-        run: make smoke
+        with: { go-version: '1.22' }
+      - run: go build -o /tmp/milliwaysd ./cmd/milliwaysd
+      - run: go build -o /tmp/milliwaysctl ./cmd/milliwaysctl
+      - run: |
+          mkdir -p /tmp/state
+          /tmp/milliwaysd --state-dir /tmp/state &
+          for i in 1 2 3 4 5; do [ -S /tmp/state/sock ] && break; sleep 1; done
+          /tmp/milliwaysctl ping --socket /tmp/state/sock
+          /tmp/milliwaysctl agents --socket /tmp/state/sock
+          /tmp/milliwaysctl status --socket /tmp/state/sock
+          kill %1
