@@ -8,8 +8,57 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mwigge/milliways/internal/daemon/charts"
 	"github.com/mwigge/milliways/internal/rpc"
 )
+
+// tokenHistoryCap is the number of recent tokens-in samples kept per
+// agent for the context-render sparkline. 30 ≈ 30 turns; the ring is
+// in-process and lost when the renderer subprocess restarts.
+const tokenHistoryCap = 30
+
+// tokenHistory is a per-agent rolling ring of tokens-in samples used
+// to drive the trend sparkline in context-render. It lives in-process
+// in the renderer subprocess; daemon-side persistence lands in a
+// follow-up.
+//
+// Concurrency: contextRender runs single-goroutine, so no mutex is
+// needed. Tests that exercise concurrent push/snapshot would need to
+// add one — the type is small enough to extend.
+type tokenHistory struct {
+	cap  int
+	data map[string][]float64
+}
+
+// newTokenHistory returns a ring with the given per-agent capacity.
+func newTokenHistory(cap int) *tokenHistory {
+	if cap < 1 {
+		cap = 1
+	}
+	return &tokenHistory{cap: cap, data: make(map[string][]float64)}
+}
+
+// push appends v to agentID's history, evicting the oldest sample
+// when the ring is full.
+func (h *tokenHistory) push(agentID string, v float64) {
+	cur := h.data[agentID]
+	if len(cur) == h.cap {
+		cur = cur[1:]
+	}
+	h.data[agentID] = append(cur, v)
+}
+
+// snapshot returns a copy of agentID's history (so callers can pass
+// it to charts.Sparkline without aliasing the ring).
+func (h *tokenHistory) snapshot(agentID string) []float64 {
+	src := h.data[agentID]
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]float64, len(src))
+	copy(out, src)
+	return out
+}
 
 // contextRender subscribes to context.subscribe for the requested agent
 // (or aggregate for "_all") and writes a text frame to stdout for every
@@ -39,6 +88,8 @@ func contextRender(socket, agentID string) {
 	}
 	defer cancel()
 
+	hist := newTokenHistory(tokenHistoryCap)
+
 	for ev := range events {
 		var msg struct {
 			T        string          `json:"t"`
@@ -55,13 +106,20 @@ func contextRender(socket, agentID string) {
 			if err := json.Unmarshal(msg.Snapshot, &agg); err != nil {
 				continue
 			}
+			// Push each agent's tokens-in into its own ring so the
+			// per-agent micro-cards (when we add charts there) get
+			// a stable history.
+			for _, a := range agg.Agents {
+				hist.push(a.AgentID, float64(a.Tokens.Input))
+			}
 			writeFrame(os.Stdout, renderAggregate(agg, time.Now()))
 		} else {
 			var snap snapshotView
 			if err := json.Unmarshal(msg.Snapshot, &snap); err != nil {
 				continue
 			}
-			writeFrame(os.Stdout, renderSnapshot(snap, time.Now()))
+			hist.push(snap.AgentID, float64(snap.Tokens.Input))
+			writeFrame(os.Stdout, renderSnapshotWithTrend(snap, time.Now(), hist.snapshot(snap.AgentID)))
 		}
 	}
 }
@@ -125,7 +183,20 @@ type totalsView struct {
 
 // renderSnapshot composes the per-agent text frame. Dash placeholders fill
 // in for empty fields so the layout is stable across token states.
+//
+// This is a thin wrapper around renderSnapshotWithTrend with a nil
+// trend slice; callers wanting a sparkline of recent tokens-in
+// samples should call renderSnapshotWithTrend directly.
 func renderSnapshot(s snapshotView, now time.Time) string {
+	return renderSnapshotWithTrend(s, now, nil)
+}
+
+// renderSnapshotWithTrend composes the per-agent text frame and
+// optionally embeds a kitty-graphics sparkline of recent tokens-in
+// samples after the cached line. If trend is empty the frame falls
+// back to the text-only layout (no "trend:" row at all) so the pane
+// stays compact during cold-start.
+func renderSnapshotWithTrend(s snapshotView, now time.Time, trend []float64) string {
 	var b strings.Builder
 	model := dash(s.Model)
 	sess := dash(shortSession(s.SessionID))
@@ -139,6 +210,13 @@ func renderSnapshot(s snapshotView, now time.Time) string {
 	fmt.Fprintf(&b, "│   in:       %d↑\n", s.Tokens.Input)
 	fmt.Fprintf(&b, "│   out:      %d↓\n", s.Tokens.Output)
 	fmt.Fprintf(&b, "│   cached:   %d\n", s.Tokens.Cached)
+	if len(trend) > 0 {
+		// One row label + escape on its own line so the kitty image
+		// renders flush-left (most terminals position it where the
+		// cursor is when they parse the escape).
+		png := charts.Sparkline(trend, charts.DefaultTheme())
+		fmt.Fprintf(&b, "│   trend:    %s\n", charts.KittyEscape(png, 0))
+	}
 	fmt.Fprintf(&b, "│\n")
 	fmt.Fprintf(&b, "│ tools:       %d (—)\n", len(s.Tools))
 	fmt.Fprintf(&b, "│ mcp:         %d (—)\n", len(s.MCPServers))
