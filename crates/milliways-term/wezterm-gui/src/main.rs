@@ -827,6 +827,16 @@ fn terminate_with_error(err: anyhow::Error) -> ! {
 }
 
 fn main() {
+    // Modified by milliways contributors, 2026: handle the Apache-2.0
+    // §4(d) attribution flag before any wezterm initialisation.
+    // `milliways-term --notice` prints the bundled NOTICE + LICENSE and
+    // exits 0. We match early so users can invoke this without an X
+    // server / config file / etc.
+    if std::env::args().nth(1).as_deref() == Some("--notice") {
+        milliways::print_notice();
+        std::process::exit(0);
+    }
+
     #[cfg(feature = "dhat-heap")]
     let _profiler = dhat::Profiler::new_heap();
 
