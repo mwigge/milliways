@@ -7,6 +7,13 @@ build = "build.rs"
 resolver = "2"
 publish = false
 
+# Modified by milliways contributors, 2026: explicit [[bin]] block renames the
+# produced executable from `wezterm-gui` to `milliways-term`. Crate name is
+# unchanged so `-p wezterm-gui` workspace references still work.
+[[bin]]
+name = "milliways-term"
+path = "src/main.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
@@ -34,6 +41,9 @@ cc.workspace = true
 embed-resource.workspace = true
 
 [dependencies]
+# Modified by milliways contributors, 2026: depend on the milliways crate so
+# `milliways::init()` can be called from main.
+milliways = { path = "../milliways" }
 anyhow.workspace = true
 bitflags.workspace = true
 bytemuck.workspace = true

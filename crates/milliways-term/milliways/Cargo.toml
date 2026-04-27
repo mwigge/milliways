@@ -1,0 +1,13 @@
+[package]
+name = "milliways"
+version = "0.0.1"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "milliways-emulator-fork additions to wezterm: agent panes, /context cockpit, observability cockpit, status helpers."
+
+# Skeleton crate. Modules are placeholders. Real deps (plotters, serde, tokio,
+# typify build-time codegen, the wezterm crates we depend on) are added per
+# task as the relevant Phase lands. Keeping deps empty here means an unused
+# skeleton compiles in <1s with no transitive cost on the workspace.
+[dependencies]

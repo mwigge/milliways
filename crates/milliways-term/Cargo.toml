@@ -1,3 +1,7 @@
+# Modified by milliways contributors, 2026: added "milliways" to workspace
+# members so the milliways/ subtree compiles alongside upstream wezterm crates.
+# All milliways code lives under crates/milliways-term/milliways/ per Decision 2
+# of the milliways-emulator-fork design.
 [workspace]
 members = [
   "bidi",
@@ -16,6 +20,7 @@ members = [
   "wezterm-ssh",
   "wezterm-surface",
   "wezterm-uds",
+  "milliways",
 ]
 resolver = "2"
 exclude = [

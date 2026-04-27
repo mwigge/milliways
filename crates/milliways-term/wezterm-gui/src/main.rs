@@ -833,6 +833,9 @@ fn main() {
     config::designate_this_as_the_main_thread();
     config::assign_error_callback(mux::connui::show_configuration_error_message);
     notify_on_panic();
+    // Modified by milliways contributors, 2026: register milliways extensions
+    // (AgentDomain, Lua API, status helpers). No-op at the moment.
+    milliways::init();
     if let Err(e) = run() {
         terminate_with_error(e);
     }
