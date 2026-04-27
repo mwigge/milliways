@@ -26,7 +26,7 @@ func main() {
 
 	fs := flag.NewFlagSet(sub, flag.ExitOnError)
 	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
-	agentID := fs.String("agent", "", "agent_id (for `bridge` and `open`)")
+	agentID := fs.String("agent", "", "agent_id (for `bridge`, `open`, `context`, `context-render`)")
 	handleFlag := fs.Int64("handle", 0, "agent handle (for `bridge` / `apply`)")
 	metricName := fs.String("metric", "", "metric name (for `metrics`)")
 	metricTier := fs.String("tier", "raw", "tier: raw|hourly|daily|weekly|monthly (for `metrics`)")
@@ -34,6 +34,7 @@ func main() {
 	metricAgent := fs.String("agent-id", "", "filter by agent_id (for `metrics`)")
 	applyIndex := fs.Int("index", -1, "code-block index (for `apply`); default = print all")
 	applyOut := fs.String("out", "", "write block to this path (for `apply`); blank = stdout")
+	allFlag := fs.Bool("all", false, "aggregate across all agents (for `context`)")
 	fs.Parse(rest)
 	if *socket == "" {
 		*socket = defaultSocket()
@@ -69,6 +70,20 @@ func main() {
 			die("apply requires --handle <id>; obtain via `milliwaysctl open --agent <id>`")
 		}
 		apply(*socket, *handleFlag, *applyIndex, *applyOut)
+	case "context":
+		if *allFlag {
+			callJSON(*socket, "context.get_all", nil)
+		} else {
+			if *agentID == "" {
+				die("context requires --agent <agent_id> or --all")
+			}
+			callJSON(*socket, "context.get", map[string]any{"agent_id": *agentID})
+		}
+	case "context-render":
+		if *agentID == "" {
+			die("context-render requires --agent <agent_id> (use _all for aggregate)")
+		}
+		contextRender(*socket, *agentID)
 	case "metrics":
 		if *metricName == "" {
 			die("metrics requires --metric <name>")
@@ -297,6 +312,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  apply  --handle <id> [--index N] [--out PATH]  — extract code blocks (apply.extract)")
 	fmt.Fprintln(os.Stderr, "  metrics --metric <name> [--tier raw|hourly|daily|weekly|monthly]")
 	fmt.Fprintln(os.Stderr, "          [--range -24h] [--agent-id <id>]  — query metrics.rollup.get")
+	fmt.Fprintln(os.Stderr, "  context --agent <id> | --all   — fetch /context snapshot (context.get / .get_all)")
+	fmt.Fprintln(os.Stderr, "  context-render --agent <id|_all>  — pane: subscribe context.subscribe, print frames")
 }
 
 func die(f string, a ...any) {
