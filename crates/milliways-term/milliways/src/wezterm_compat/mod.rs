@@ -12,10 +12,21 @@
 pub use async_trait::async_trait;
 
 pub use mux::domain::{alloc_domain_id, Domain, DomainId, DomainState};
-pub use mux::pane::Pane;
+pub use mux::localpane::LocalPane;
+pub use mux::pane::{alloc_pane_id, Pane, PaneId};
 pub use mux::tab::Tab;
 pub use mux::window::WindowId;
 pub use mux::Mux;
 
-pub use portable_pty::CommandBuilder;
-pub use wezterm_term::TerminalSize;
+pub use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+pub use wezterm_term::{Terminal, TerminalSize};
+
+/// terminal_size_to_pty_size is private in mux; inline our own conversion.
+pub fn terminal_size_to_pty_size(size: TerminalSize) -> PtySize {
+    PtySize {
+        rows: size.rows as u16,
+        cols: size.cols as u16,
+        pixel_width: size.pixel_width as u16,
+        pixel_height: size.pixel_height as u16,
+    }
+}

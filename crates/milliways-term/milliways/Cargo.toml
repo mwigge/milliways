@@ -31,6 +31,7 @@ mux = { workspace = true }
 portable-pty = { workspace = true }
 wezterm-term = { workspace = true }
 log = { workspace = true }
+parking_lot = { workspace = true }
 
 # typify reads proto/milliways.json at build time and emits Rust types
 # matching the JSON Schema. See build.rs and src/rpc/generated.rs.

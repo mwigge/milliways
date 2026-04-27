@@ -3366,6 +3366,7 @@ dependencies = [
  "config",
  "log",
  "mux",
+ "parking_lot",
  "portable-pty",
  "prettyplease",
  "schemars",
