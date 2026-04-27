@@ -58,6 +58,34 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})))
+
+	// Top-level launcher dispatch runs *before* cobra so we can implement the
+	// cockpit-by-default behaviour (`milliways` with no flags exec's
+	// milliways-term) and the legacy `--repl` path with its deprecation
+	// notice. Anything that doesn't match falls through to the existing
+	// cobra root command.
+	switch parseLauncherMode(os.Args[1:], os.Getenv("MILLIWAYS_REPL")) {
+	case modeCockpit:
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := runCockpit(ctx, os.Args[1:]); err != nil {
+			fmt.Fprintf(os.Stderr, "milliways: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	case modeREPL:
+		printREPLDeprecationNotice()
+		// Strip the leading --repl so cobra doesn't reparse it (we already
+		// know the user meant the legacy REPL). Other flags (e.g.
+		// --no-restore) pass through unchanged.
+		stripped := stripLeadingREPLFlag(os.Args[1:])
+		args := append([]string{os.Args[0]}, stripped...)
+		// Force cobra into the REPL path even if MILLIWAYS_REPL=1 was the
+		// trigger by appending --repl back if it isn't already there.
+		args = ensureREPLFlag(args)
+		os.Args = args
+	}
+
 	if err := rootCmd().Execute(); err != nil {
 		var ee *exitError
 		if errors.As(err, &ee) {
@@ -65,6 +93,28 @@ func main() {
 		}
 		os.Exit(1)
 	}
+}
+
+// stripLeadingREPLFlag removes a leading "--repl" token from args (if
+// present). Used after the dispatcher has decided to run the legacy REPL
+// and we want cobra to see whatever else the user passed.
+func stripLeadingREPLFlag(args []string) []string {
+	if len(args) > 0 && args[0] == "--repl" {
+		return args[1:]
+	}
+	return args
+}
+
+// ensureREPLFlag re-injects "--repl" into argv so cobra's RunE picks the
+// legacy REPL branch. The dispatcher may have entered REPL mode via env var
+// alone, in which case argv carries no --repl flag.
+func ensureREPLFlag(args []string) []string {
+	for _, a := range args[1:] {
+		if a == "--repl" {
+			return args
+		}
+	}
+	return append([]string{args[0], "--repl"}, args[1:]...)
 }
 
 func rootCmd() *cobra.Command {
