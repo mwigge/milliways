@@ -73,6 +73,10 @@ func (r *AgentRegistry) Open(agentID string) (*AgentSession, error) {
 		go runEcho(sess)
 	case "claude":
 		go runClaude(sess)
+	case "codex":
+		go runCodex(sess)
+	case "copilot":
+		go runCopilot(sess)
 	default:
 		// Unknown / not yet lifted.
 		r.mu.Lock()
@@ -96,6 +100,34 @@ func runClaude(sess *AgentSession) {
 	runners.RunClaude(context.Background(), sess.input, stream)
 	stream.Close()
 	slog.Debug("claude session ended", "handle", sess.Handle)
+}
+
+// runCodex waits for the sidecar to attach, then hands the session's
+// input channel + stream to runners.RunCodex. Each agent.send call
+// triggers one `codex exec --json` subprocess; the session stays open
+// across sends and ends only when the registry closes the input channel.
+func runCodex(sess *AgentSession) {
+	stream := waitForStream(sess)
+	if stream == nil {
+		return
+	}
+	runners.RunCodex(context.Background(), sess.input, stream)
+	stream.Close()
+	slog.Debug("codex session ended", "handle", sess.Handle)
+}
+
+// runCopilot waits for the sidecar to attach, then hands the session's
+// input channel + stream to runners.RunCopilot. Each agent.send call
+// triggers one `copilot -p <prompt>` subprocess; the session stays open
+// across sends and ends only when the registry closes the input channel.
+func runCopilot(sess *AgentSession) {
+	stream := waitForStream(sess)
+	if stream == nil {
+		return
+	}
+	runners.RunCopilot(context.Background(), sess.input, stream)
+	stream.Close()
+	slog.Debug("copilot session ended", "handle", sess.Handle)
 }
 
 // waitForStream blocks until sess.stream is non-nil or the session is
