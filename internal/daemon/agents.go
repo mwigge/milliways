@@ -1,11 +1,14 @@
 package daemon
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
+
+	"github.com/mwigge/milliways/internal/daemon/runners"
 )
 
 // Agent session lifecycle (per agent-domain/spec.md):
@@ -68,6 +71,8 @@ func (r *AgentRegistry) Open(agentID string) (*AgentSession, error) {
 	switch agentID {
 	case "_echo":
 		go runEcho(sess)
+	case "claude":
+		go runClaude(sess)
 	default:
 		// Unknown / not yet lifted.
 		r.mu.Lock()
@@ -76,6 +81,37 @@ func (r *AgentRegistry) Open(agentID string) (*AgentSession, error) {
 		return nil, fmt.Errorf("agent_not_implemented: %s", agentID)
 	}
 	return sess, nil
+}
+
+// runClaude waits for the sidecar to attach, then hands the session's
+// input channel + stream to runners.RunClaude. Each agent.send call
+// triggers one `claude --print --output-format stream-json --verbose`
+// subprocess; the session stays open across sends and ends only when
+// the registry closes the input channel.
+func runClaude(sess *AgentSession) {
+	stream := waitForStream(sess)
+	if stream == nil {
+		return
+	}
+	runners.RunClaude(context.Background(), sess.input, stream)
+	stream.Close()
+	slog.Debug("claude session ended", "handle", sess.Handle)
+}
+
+// waitForStream blocks until sess.stream is non-nil or the session is
+// closed. Returns nil if the session closed before a stream attached.
+func waitForStream(sess *AgentSession) *Stream {
+	for {
+		sess.mu.Lock()
+		s := sess.stream
+		sess.mu.Unlock()
+		if s != nil {
+			return s
+		}
+		if sess.closed.Load() {
+			return nil
+		}
+	}
 }
 
 // Get returns the session for handle.
