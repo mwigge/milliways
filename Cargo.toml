@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+# milliways-term is wezterm's own workspace (subtree-imported) — keep it out of
+# ours so the two cargo workspaces don't clash. wezterm crates are built via
+# `--manifest-path crates/milliways-term/Cargo.toml`. milliways-specific crates
+# (e.g., crates/milliways-term/milliways/) get added to wezterm's nested
+# workspace's members list as a single-file patch (recorded in PATCHES.md).
+members = []
+exclude = ["crates/milliways-term"]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/mwigge/milliways"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+pedantic = "warn"
+unwrap_used = "warn"
