@@ -27,23 +27,27 @@ const copilotChunkSize = 4 * 1024
 // text, no JSON) as {"t":"data","b64":...} events. After the subprocess
 // exits a final {"t":"chunk_end","cost_usd":0} marks end-of-response.
 //
+// Copilot's plain-text output does not surface token usage, so only
+// error_count is observed via `metrics` (non-nil); tokens / cost are
+// left for a future copilot CLI release that surfaces them.
+//
 // Lifecycle:
 //   - One subprocess per prompt; the session stays alive across prompts.
 //   - When `input` is closed, RunCopilot pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
-func RunCopilot(ctx context.Context, input <-chan []byte, stream Pusher) {
+func RunCopilot(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runCopilotOnce(ctx, prompt, stream)
+		runCopilotOnce(ctx, prompt, stream, metrics)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
-func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher) {
+func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
 	ctx, cancel := context.WithTimeout(parent, copilotTimeout)
 	defer cancel()
 
@@ -66,15 +70,18 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher) {
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		observeError(metrics, AgentIDCopilot)
 		stream.Push(map[string]any{"t": "err", "msg": "copilot stdout pipe: " + err.Error()})
 		return
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		observeError(metrics, AgentIDCopilot)
 		stream.Push(map[string]any{"t": "err", "msg": "copilot stderr pipe: " + err.Error()})
 		return
 	}
 	if err := cmd.Start(); err != nil {
+		observeError(metrics, AgentIDCopilot)
 		stream.Push(map[string]any{"t": "err", "msg": "copilot start: " + err.Error()})
 		return
 	}
@@ -91,6 +98,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher) {
 	streamCopilotStdout(stdout, stream)
 
 	if err := cmd.Wait(); err != nil {
+		observeError(metrics, AgentIDCopilot)
 		stream.Push(map[string]any{"t": "err", "msg": "copilot exited: " + err.Error()})
 	}
 	stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})

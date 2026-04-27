@@ -28,12 +28,16 @@ import (
 // the channel closes.
 //
 // URL override: MINIMAX_API_URL is honoured for tests / proxy setups.
-func RunMiniMax(ctx context.Context, input <-chan []byte, stream Pusher) {
+//
+// Per-response usage (prompt/completion tokens + computed cost) is observed
+// into `metrics` if non-nil; auth-missing, marshal/transport failures, and
+// non-2xx responses each push an error_count tick.
+func RunMiniMax(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runMiniMaxOnce(ctx, prompt, stream)
+		runMiniMaxOnce(ctx, prompt, stream, metrics)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
@@ -81,9 +85,10 @@ type minimaxStreamChunk struct {
 }
 
 // runMiniMaxOnce performs a single chat completion request for one prompt.
-func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher) {
+func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
 	apiKey := strings.TrimSpace(os.Getenv("MINIMAX_API_KEY"))
 	if apiKey == "" {
+		observeError(metrics, AgentIDMiniMax)
 		stream.Push(map[string]any{
 			"t":    "err",
 			"code": -32005,
@@ -118,12 +123,14 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher) {
 	}
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
+		observeError(metrics, AgentIDMiniMax)
 		stream.Push(map[string]any{"t": "err", "msg": "minimax marshal: " + err.Error()})
 		return
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
+		observeError(metrics, AgentIDMiniMax)
 		stream.Push(map[string]any{"t": "err", "msg": "minimax request: " + err.Error()})
 		return
 	}
@@ -134,12 +141,14 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher) {
 	client := &http.Client{Timeout: minimaxTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
+		observeError(metrics, AgentIDMiniMax)
 		stream.Push(map[string]any{"t": "err", "msg": "minimax do: " + err.Error()})
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		observeError(metrics, AgentIDMiniMax)
 		body, _ := io.ReadAll(resp.Body)
 		stream.Push(map[string]any{
 			"t":   "err",
@@ -149,9 +158,13 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher) {
 	}
 
 	usage := streamMiniMaxSSE(ctx, resp.Body, stream)
+	cost := minimaxCostUSD(usage)
+	if usage != nil {
+		observeTokens(metrics, AgentIDMiniMax, usage.PromptTokens, usage.CompletionTokens, cost)
+	}
 	stream.Push(map[string]any{
 		"t":        "chunk_end",
-		"cost_usd": minimaxCostUSD(usage),
+		"cost_usd": cost,
 	})
 }
 

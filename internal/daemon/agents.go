@@ -91,14 +91,45 @@ type AgentRegistry struct {
 	next     atomic.Int64
 	sessions map[AgentHandle]*AgentSession
 	server   *Server // back-reference for stream allocation
+
+	// metrics is the observer the runners push tokens_in / tokens_out /
+	// cost_usd / error_count into. Resolved lazily from server.metrics
+	// at session-start time so callers that construct the registry
+	// before the metrics store is opened still see the observer once it
+	// becomes available. May be nil in tests; runners tolerate nil.
+	metrics runners.MetricsObserver
 }
 
-// NewAgentRegistry returns an empty registry.
+// NewAgentRegistry returns an empty registry. The metrics observer is
+// pulled from s (s.metrics implements runners.MetricsObserver) so per-
+// runner observations land in the daemon's five-tier rollup.
 func NewAgentRegistry(s *Server) *AgentRegistry {
-	return &AgentRegistry{
+	r := &AgentRegistry{
 		sessions: make(map[AgentHandle]*AgentSession),
 		server:   s,
 	}
+	if s != nil && s.metrics != nil {
+		r.metrics = s.metrics
+	}
+	return r
+}
+
+// metricsObserver returns the registry's MetricsObserver, falling back
+// to the server's current metrics store. The fallback handles the
+// NewAgentRegistry-runs-before-NewServer-finishes-wiring case in
+// server.go (the registry is created before the metrics store is
+// opened in NewServer).
+func (r *AgentRegistry) metricsObserver() runners.MetricsObserver {
+	if r == nil {
+		return nil
+	}
+	if r.metrics != nil {
+		return r.metrics
+	}
+	if r.server != nil && r.server.metrics != nil {
+		return r.server.metrics
+	}
+	return nil
 }
 
 // Open allocates a new session for agent_id. For reserved/known ids the
@@ -114,17 +145,18 @@ func (r *AgentRegistry) Open(agentID string) (*AgentSession, error) {
 	r.sessions[handle] = sess
 	r.mu.Unlock()
 
+	mo := r.metricsObserver()
 	switch agentID {
 	case "_echo":
 		go runEcho(sess)
 	case "claude":
-		go runClaude(sess)
+		go runClaude(sess, mo)
 	case "codex":
-		go runCodex(sess)
+		go runCodex(sess, mo)
 	case "copilot":
-		go runCopilot(sess)
+		go runCopilot(sess, mo)
 	case "minimax":
-		go runMiniMax(sess)
+		go runMiniMax(sess, mo)
 	default:
 		// Unknown / not yet lifted.
 		r.mu.Lock()
@@ -139,13 +171,14 @@ func (r *AgentRegistry) Open(agentID string) (*AgentSession, error) {
 // input channel + stream to runners.RunClaude. Each agent.send call
 // triggers one `claude --print --output-format stream-json --verbose`
 // subprocess; the session stays open across sends and ends only when
-// the registry closes the input channel.
-func runClaude(sess *AgentSession) {
+// the registry closes the input channel. `metrics` may be nil; runners
+// tolerate that and skip observation.
+func runClaude(sess *AgentSession, metrics runners.MetricsObserver) {
 	stream := waitForStream(sess)
 	if stream == nil {
 		return
 	}
-	runners.RunClaude(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess})
+	runners.RunClaude(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
 	stream.Close()
 	slog.Debug("claude session ended", "handle", sess.Handle)
 }
@@ -154,12 +187,13 @@ func runClaude(sess *AgentSession) {
 // input channel + stream to runners.RunCodex. Each agent.send call
 // triggers one `codex exec --json` subprocess; the session stays open
 // across sends and ends only when the registry closes the input channel.
-func runCodex(sess *AgentSession) {
+// `metrics` may be nil.
+func runCodex(sess *AgentSession, metrics runners.MetricsObserver) {
 	stream := waitForStream(sess)
 	if stream == nil {
 		return
 	}
-	runners.RunCodex(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess})
+	runners.RunCodex(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
 	stream.Close()
 	slog.Debug("codex session ended", "handle", sess.Handle)
 }
@@ -168,12 +202,13 @@ func runCodex(sess *AgentSession) {
 // input channel + stream to runners.RunCopilot. Each agent.send call
 // triggers one `copilot -p <prompt>` subprocess; the session stays open
 // across sends and ends only when the registry closes the input channel.
-func runCopilot(sess *AgentSession) {
+// `metrics` may be nil.
+func runCopilot(sess *AgentSession, metrics runners.MetricsObserver) {
 	stream := waitForStream(sess)
 	if stream == nil {
 		return
 	}
-	runners.RunCopilot(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess})
+	runners.RunCopilot(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
 	stream.Close()
 	slog.Debug("copilot session ended", "handle", sess.Handle)
 }
@@ -182,13 +217,13 @@ func runCopilot(sess *AgentSession) {
 // input channel + stream to runners.RunMiniMax. Each agent.send call
 // triggers one MiniMax chat completion HTTP request (stream:true). The
 // session stays open across sends and ends only when the registry closes
-// the input channel.
-func runMiniMax(sess *AgentSession) {
+// the input channel. `metrics` may be nil.
+func runMiniMax(sess *AgentSession, metrics runners.MetricsObserver) {
 	stream := waitForStream(sess)
 	if stream == nil {
 		return
 	}
-	runners.RunMiniMax(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess})
+	runners.RunMiniMax(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
 	stream.Close()
 	slog.Debug("minimax session ended", "handle", sess.Handle)
 }
