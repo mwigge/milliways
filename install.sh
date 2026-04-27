@@ -1,51 +1,117 @@
-#!/bin/sh
-set -e
+#!/usr/bin/env bash
+# milliways installer — builds and installs all four binaries from source.
+#
+# Builds from a local checkout (run from the repo root). For an end-user
+# remote install, the workflow is:
+#   git clone https://github.com/mwigge/milliways.git
+#   cd milliways
+#   ./install.sh
+#
+# Outputs (default $PREFIX/bin):
+#   milliways         — legacy in-host REPL (`milliways --repl`)
+#   milliways-term    — wezterm fork (the cockpit terminal)
+#   milliwaysd        — long-running JSON-RPC daemon
+#   milliwaysctl      — thin client (status, agents, bridge, ...)
+#
+# Set PREFIX to override (default: $HOME/.local).
+# Set SKIP_TERM=1 to skip the Rust build (long; ~30 min on first run).
+set -euo pipefail
 
-# Milliways installer — downloads the latest release binary.
-# Usage: curl -fsSL https://raw.githubusercontent.com/mwigge/milliways/master/install.sh | sh
+PREFIX="${PREFIX:-$HOME/.local}"
+BIN_DIR="$PREFIX/bin"
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-REPO="mwigge/milliways"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+cd "$REPO_ROOT"
 
-# Detect OS and architecture
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-ARCH=$(uname -m)
+# ---------------------------------------------------------------------------
+# Pre-flight: required toolchains
+# ---------------------------------------------------------------------------
+need() {
+    if ! command -v "$1" >/dev/null 2>&1; then
+        echo "milliways install: $1 not found on PATH." >&2
+        echo "  $2" >&2
+        exit 1
+    fi
+}
 
-case "$ARCH" in
-    x86_64)  ARCH="amd64" ;;
-    aarch64) ARCH="arm64" ;;
-    arm64)   ARCH="arm64" ;;
-    *)       echo "Unsupported architecture: $ARCH"; exit 1 ;;
-esac
-
-case "$OS" in
-    darwin|linux) ;;
-    *)            echo "Unsupported OS: $OS"; exit 1 ;;
-esac
-
-# Check for Go (build from source if no release available)
-if ! command -v go >/dev/null 2>&1; then
-    echo "Go not found. Install Go first: https://go.dev/dl/"
-    echo "Then run: go install github.com/$REPO/cmd/milliways@latest"
-    exit 1
+need go "Install Go 1.22+: https://go.dev/dl/"
+if [ "${SKIP_TERM:-0}" != "1" ]; then
+    need cargo "Install Rust: https://www.rust-lang.org/tools/install"
 fi
 
-echo "Building milliways from source..."
-GOBIN="$INSTALL_DIR" go install "github.com/$REPO/cmd/milliways@latest"
+# Optional: go-jsonschema is only needed when the schema or generated types
+# are out of sync (CI codegen-drift gate). Surface but don't fail.
+if ! command -v go-jsonschema >/dev/null 2>&1; then
+    if ! [ -x "$(go env GOPATH)/bin/go-jsonschema" ]; then
+        echo "milliways install: go-jsonschema not found (only needed for codegen)."
+        echo "  install: go install github.com/atombender/go-jsonschema@latest"
+    fi
+fi
 
-# Verify installation
-if [ -x "$INSTALL_DIR/milliways" ]; then
-    echo ""
-    echo "Milliways installed to $INSTALL_DIR/milliways"
-    echo ""
-    "$INSTALL_DIR/milliways" --version
-    echo ""
-    echo "Make sure $INSTALL_DIR is in your PATH:"
-    echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
-    echo ""
-    echo "Check available kitchens:"
-    echo "  milliways status"
+mkdir -p "$BIN_DIR"
+
+# ---------------------------------------------------------------------------
+# Go binaries (~10s)
+# ---------------------------------------------------------------------------
+echo "==> Building Go binaries..."
+
+VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+GO_LDFLAGS="-X main.version=$VERSION"
+
+build_go() {
+    local out="$1"; shift
+    local pkg="$1"; shift
+    if [ ! -d "$pkg" ]; then
+        echo "  skip $out: $pkg not present"
+        return 0
+    fi
+    echo "  building $out from $pkg"
+    go build -ldflags "$GO_LDFLAGS" -o "$BIN_DIR/$out" "./$pkg"
+}
+
+build_go milliways      cmd/milliways
+build_go milliwaysd     cmd/milliwaysd
+build_go milliwaysctl   cmd/milliwaysctl
+
+# ---------------------------------------------------------------------------
+# Rust: milliways-term (wezterm fork)
+# ---------------------------------------------------------------------------
+if [ "${SKIP_TERM:-0}" = "1" ]; then
+    echo "==> SKIP_TERM=1 — skipping Rust build."
 else
-    echo "Installation failed."
-    exit 1
+    if [ ! -d crates/milliways-term ]; then
+        echo "==> crates/milliways-term not present — skipping milliways-term build."
+        echo "    (run \`git submodule\` or rerun the OpenSpec Phase 2 import if you expected it)"
+    else
+        echo "==> Building milliways-term (Rust, may take 5-30 min on first run)..."
+        cargo build --release \
+            --manifest-path crates/milliways-term/Cargo.toml \
+            -p wezterm-gui
+        install -m 0755 \
+            crates/milliways-term/target/release/milliways-term \
+            "$BIN_DIR/milliways-term"
+    fi
 fi
+
+# ---------------------------------------------------------------------------
+# Verify
+# ---------------------------------------------------------------------------
+echo
+echo "==> Installed:"
+for b in milliways milliwaysd milliwaysctl milliways-term; do
+    if [ -x "$BIN_DIR/$b" ]; then
+        size=$(du -h "$BIN_DIR/$b" | cut -f1)
+        printf "    %-15s  %5s  %s\n" "$b" "$size" "$BIN_DIR/$b"
+    fi
+done
+
+echo
+echo "Make sure $BIN_DIR is in your PATH:"
+echo "    export PATH=\"\$PATH:$BIN_DIR\""
+echo
+echo "Quick start:"
+echo "    milliwaysd &                                   # start the daemon"
+echo "    milliwaysctl ping                              # smoke test"
+echo "    milliwaysctl agents                            # list runners"
+echo "    milliways --repl                               # legacy REPL fallback"
+echo "    milliways-term                                 # cockpit terminal"
