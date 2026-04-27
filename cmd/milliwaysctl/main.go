@@ -4,9 +4,11 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -23,6 +25,8 @@ func main() {
 
 	fs := flag.NewFlagSet(sub, flag.ExitOnError)
 	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
+	agentID := fs.String("agent", "", "agent_id (for `bridge` and `open`)")
+	handleFlag := fs.Int64("handle", 0, "agent handle (for `bridge`)")
 	fs.Parse(rest)
 	if *socket == "" {
 		*socket = defaultSocket()
@@ -43,6 +47,16 @@ func main() {
 		subscribeStatus(*socket)
 	case "spans":
 		callJSON(*socket, "observability.spans", nil)
+	case "open":
+		if *agentID == "" {
+			die("open requires --agent <agent_id>")
+		}
+		callJSON(*socket, "agent.open", map[string]any{"agent_id": *agentID})
+	case "bridge":
+		if *handleFlag == 0 {
+			die("bridge requires --handle <id>; obtain via `milliwaysctl open --agent <id>`")
+		}
+		bridge(*socket, *handleFlag)
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -87,6 +101,83 @@ func subscribeStatus(socket string) {
 	}
 }
 
+// bridge is the AgentDomain pane shim. Spawned as a subprocess by
+// milliways-term's AgentDomain, it bridges between the parent's
+// stdin/stdout (a slave PTY) and the agent.send / agent.stream surface
+// of milliwaysd.
+//
+// Architecture:
+//   stdin  → bytes → agent.send({handle, b64})
+//   sidecar `{"t":"data","b64":...}` events → bytes → stdout
+//
+// On end-of-stream, exits 0. On stdin EOF, leaves the stream open until
+// the daemon ends it (in case the agent has more to say).
+func bridge(socket string, handle int64) {
+	c, err := rpc.Dial(socket)
+	if err != nil {
+		die("dial: %v", err)
+	}
+	defer c.Close()
+
+	events, cancel, err := c.Subscribe("agent.stream", map[string]any{"handle": handle})
+	if err != nil {
+		die("agent.stream: %v", err)
+	}
+	defer cancel()
+
+	// stdin → agent.send (separate Client to avoid the half-duplex
+	// limitation of single-client call/subscribe).
+	go func() {
+		sendClient, err := rpc.Dial(socket)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bridge: send-dial: %v\n", err)
+			return
+		}
+		defer sendClient.Close()
+		buf := make([]byte, 4096)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if n > 0 {
+				b64 := base64.StdEncoding.EncodeToString(buf[:n])
+				var ack map[string]any
+				if err := sendClient.Call("agent.send", map[string]any{
+					"handle": handle, "b64": b64,
+				}, &ack); err != nil {
+					fmt.Fprintf(os.Stderr, "bridge: agent.send: %v\n", err)
+					return
+				}
+			}
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "bridge: stdin: %v\n", err)
+				return
+			}
+		}
+	}()
+
+	// sidecar → stdout
+	for ev := range events {
+		var msg struct {
+			T   string `json:"t"`
+			B64 string `json:"b64"`
+		}
+		if err := json.Unmarshal(ev, &msg); err != nil {
+			continue
+		}
+		switch msg.T {
+		case "data":
+			bytes, err := base64.StdEncoding.DecodeString(msg.B64)
+			if err == nil {
+				os.Stdout.Write(bytes)
+			}
+		case "end":
+			return
+		}
+	}
+}
+
 func defaultSocket() string {
 	if x := os.Getenv("XDG_RUNTIME_DIR"); x != "" {
 		return filepath.Join(x, "milliways", "sock")
@@ -104,6 +195,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  routing  — peek recent sommelier decisions (routing.peek)")
 	fmt.Fprintln(os.Stderr, "  subscribe-status  — stream live cockpit state (status.subscribe)")
 	fmt.Fprintln(os.Stderr, "  spans    — recent OTel-flavoured spans (observability.spans)")
+	fmt.Fprintln(os.Stderr, "  open --agent <id>     — open an agent session (agent.open)")
+	fmt.Fprintln(os.Stderr, "  bridge --handle <id>  — pane shim: stdin↔agent.send, sidecar↔stdout")
 }
 
 func die(f string, a ...any) {
