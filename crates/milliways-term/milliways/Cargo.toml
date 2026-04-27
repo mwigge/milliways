@@ -30,6 +30,12 @@ config = { workspace = true }
 mux = { workspace = true }
 portable-pty = { workspace = true }
 wezterm-term = { workspace = true }
+# termwiz is already a transitive dep via mux. We pull it in directly so the
+# reconnect watcher can parse banner bytes into termwiz::escape::Action and
+# inject them into the pane's Terminal display via Pane::perform_actions
+# (which exposes Action in its public signature). No external crate added —
+# this is the existing workspace-internal termwiz path crate.
+termwiz = { workspace = true }
 log = { workspace = true }
 parking_lot = { workspace = true }
 

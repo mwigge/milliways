@@ -1,11 +1,11 @@
 //! ANSI banner rendering for the reconnect FSM.
 //!
-//! Writes a 3-line red banner showing the reconnect countdown directly
-//! to a writer. The writer is currently the master pty's writer (which
-//! flows toward the bridge subprocess's stdin). When TASK-5.3 lands the
-//! cockpit theme integration, this helper will be replaced with a
-//! Terminal::advance_bytes injection so the banner appears in the pane
-//! regardless of bridge state.
+//! Writes a 3-line red banner showing the reconnect countdown. The byte
+//! stream is consumed by `watcher::watcher_loop`, which parses it via
+//! `termwiz::escape::parser::Parser` and feeds the resulting actions into
+//! the pane's Terminal display through `Pane::perform_actions` (NOT the
+//! master PTY writer — that's one-way bridge stdin and doesn't echo to
+//! the visible pane).
 //!
 //! Format (ANSI; \x1b[31m red, \x1b[0m reset):
 //!
@@ -49,6 +49,31 @@ pub fn render_reconnected_line(writer: &mut dyn Write, attempt: u32) -> io::Resu
         "\x1b[32mReconnected on attempt {attempt}\x1b[0m\r\n"
     )?;
     writer.flush()
+}
+
+/// Convenience: render the reconnect banner into a byte buffer.
+#[must_use]
+pub fn reconnect_banner_bytes(seconds_remaining: u64, attempt: u32) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(256);
+    // Writes to a Vec are infallible.
+    let _ = render_reconnect_banner(&mut buf, seconds_remaining, attempt);
+    buf
+}
+
+/// Convenience: render the gave-up banner into a byte buffer.
+#[must_use]
+pub fn gave_up_banner_bytes(attempts: u32) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(256);
+    let _ = render_gave_up_banner(&mut buf, attempts);
+    buf
+}
+
+/// Convenience: render the reconnected status line into a byte buffer.
+#[must_use]
+pub fn reconnected_line_bytes(attempt: u32) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(64);
+    let _ = render_reconnected_line(&mut buf, attempt);
+    buf
 }
 
 fn write_box(writer: &mut dyn Write, content_line: &str) -> io::Result<()> {

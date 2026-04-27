@@ -16,7 +16,7 @@ pub use mux::localpane::LocalPane;
 pub use mux::pane::{alloc_pane_id, Pane, PaneId};
 pub use mux::tab::Tab;
 pub use mux::window::WindowId;
-pub use mux::Mux;
+pub use mux::{Mux, MuxNotification};
 
 pub use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 pub use wezterm_term::{Terminal, TerminalSize};

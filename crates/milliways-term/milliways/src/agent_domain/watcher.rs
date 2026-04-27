@@ -18,13 +18,24 @@
 //!        with the same `agent_id`, build a fresh bridge
 //!        `CommandBuilder`, and `slave.spawn_command(cmd)`. On success
 //!        we swap the new child into the shared `BridgeChild` slot,
-//!        write a "Reconnected" line through the master writer, and
+//!        inject a "Reconnected" line into the pane's Terminal, and
 //!        call `Reconnect::on_reconnect_success`.
 //!      - `UpdateBanner` — re-render the red countdown banner.
 //!      - `RenderGaveUp` — render the "Press R to retry" banner once
 //!        and stop ticking until `WatchedBridge::user_retry()` is
 //!        invoked from the key handler.
 //!      - `Idle` / `ClearBanner` — sleep until the next tick.
+//!
+//! Banner injection: the watcher does NOT write banner bytes through the
+//! master PTY writer — that stream is one-way (master→bridge stdin) and
+//! never echoes back to the pane's display. Instead we hold a
+//! `Weak<dyn Pane>`, parse banner bytes via `termwiz::escape::parser`
+//! into `Vec<termwiz::escape::Action>`, and call
+//! `Pane::perform_actions(actions)` which feeds the actions directly
+//! into the LocalPane's wezterm_term::Terminal. We then notify the mux
+//! via `MuxNotification::PaneOutput` so the GUI redraws the pane. This
+//! is the same path `mux::localpane::emit_output_for_pane` uses for
+//! out-of-band pane output.
 //!
 //! The watcher uses a *thread-local* tokio current-thread runtime for
 //! the async RPC calls. wezterm's main async executor is `promise::spawn`
@@ -40,7 +51,7 @@ use anyhow::{anyhow, Context as _};
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 /// 250 ms tick — matches the FSM's expected cadence.
@@ -93,13 +104,17 @@ pub struct WatcherConfig {
 /// Spawn the watcher background thread and return its handle.
 ///
 /// `child` is the shared bridge-child slot (also handed to LocalPane).
-/// `slave` is the shared SlavePty for re-spawning. `writer` is the
-/// shared master-writer used to render banners.
+/// `slave` is the shared SlavePty for re-spawning. `pane` is a Weak
+/// reference to the LocalPane the watcher uses to inject banner bytes
+/// directly into the Terminal display via `Pane::perform_actions`. We
+/// hold a Weak rather than Arc so the watcher does not keep the pane
+/// alive past tab/window teardown.
 pub fn spawn_watcher(
     config: WatcherConfig,
     child: SharedChild,
     slave: SharedSlave,
-    writer: SharedWriter,
+    pane: Weak<dyn wc::Pane>,
+    pane_id: wc::PaneId,
 ) -> WatchedBridge {
     let fsm = Arc::new(Mutex::new(Reconnect::default()));
     let stop = Arc::new(AtomicBool::new(false));
@@ -125,11 +140,28 @@ pub fn spawn_watcher(
                     return;
                 }
             };
-            rt.block_on(watcher_loop(config, fsm, child, slave, writer, stop));
+            rt.block_on(watcher_loop(config, fsm, child, slave, pane, pane_id, stop));
         })
         .expect("spawn milliways-watcher thread");
 
     bridge
+}
+
+/// Parse a banner byte stream into termwiz Actions and inject them into
+/// the pane's Terminal via `Pane::perform_actions`. Notifies the mux so
+/// the GUI redraws. Silently no-ops if the pane has been dropped.
+fn inject_pane_bytes(pane: &Weak<dyn wc::Pane>, pane_id: wc::PaneId, bytes: &[u8]) {
+    let Some(pane) = pane.upgrade() else {
+        return;
+    };
+    let mut parser = termwiz::escape::parser::Parser::new();
+    let mut actions = Vec::new();
+    parser.parse(bytes, |action| actions.push(action));
+    if actions.is_empty() {
+        return;
+    }
+    pane.perform_actions(actions);
+    wc::Mux::notify_from_any_thread(wc::MuxNotification::PaneOutput(pane_id));
 }
 
 async fn watcher_loop(
@@ -137,7 +169,8 @@ async fn watcher_loop(
     fsm: Arc<Mutex<Reconnect>>,
     child: SharedChild,
     slave: SharedSlave,
-    writer: SharedWriter,
+    pane: Weak<dyn wc::Pane>,
+    pane_id: wc::PaneId,
     stop: Arc<AtomicBool>,
 ) {
     let mut tick = tokio::time::interval(TICK);
@@ -176,21 +209,15 @@ async fn watcher_loop(
                 seconds_remaining,
                 attempt,
             } => {
-                let mut w = writer.lock();
-                if let Err(err) =
-                    banner::render_reconnect_banner(&mut **w, seconds_remaining, attempt)
-                {
-                    log::warn!("milliways: render reconnect banner failed: {err}");
-                }
+                let bytes = banner::reconnect_banner_bytes(seconds_remaining, attempt);
+                inject_pane_bytes(&pane, pane_id, &bytes);
             }
             Action::AttemptReconnect { attempt } => {
                 match attempt_reconnect(&config, &slave, &child).await {
                     Ok(()) => {
                         fsm.lock().on_reconnect_success();
-                        let mut w = writer.lock();
-                        if let Err(err) = banner::render_reconnected_line(&mut **w, attempt) {
-                            log::warn!("milliways: render reconnected line failed: {err}");
-                        }
+                        let bytes = banner::reconnected_line_bytes(attempt);
+                        inject_pane_bytes(&pane, pane_id, &bytes);
                         gave_up_rendered = false;
                     }
                     Err(err) => {
@@ -202,10 +229,8 @@ async fn watcher_loop(
             }
             Action::RenderGaveUp { attempts } => {
                 if !gave_up_rendered {
-                    let mut w = writer.lock();
-                    if let Err(err) = banner::render_gave_up_banner(&mut **w, attempts) {
-                        log::warn!("milliways: render gave-up banner failed: {err}");
-                    }
+                    let bytes = banner::gave_up_banner_bytes(attempts);
+                    inject_pane_bytes(&pane, pane_id, &bytes);
                     gave_up_rendered = true;
                 }
                 // Don't re-render every tick. user_retry() will reset
