@@ -439,9 +439,9 @@ func (r *REPL) Run(ctx context.Context) error {
 	r.println(PhosphorHeader(header))
 	r.println(PhosphorText("  type /help for commands"))
 	if r.session != nil {
-		r.println(MutedText(fmt.Sprintf("  session: %s", r.session.conversationID)))
+		r.println(PhosphorText(fmt.Sprintf("  session: %s", r.session.conversationID)))
 	} else {
-		r.println(MutedText("  no session"))
+		r.println(PhosphorText("  no session"))
 	}
 
 	var runnerNames []string
@@ -454,7 +454,7 @@ func (r *REPL) Run(ctx context.Context) error {
 		scheme := SchemeForRunner(name)
 		coloredRunners = append(coloredRunners, BlackBackground+scheme.FG+name+ResetColor)
 	}
-	r.println("  " + MutedText("runners: ") + strings.Join(coloredRunners, MutedText(" | ")))
+	r.println("  " + PhosphorText("runners: ") + strings.Join(coloredRunners, PhosphorText(" | ")))
 	r.println("")
 	r.println("")
 

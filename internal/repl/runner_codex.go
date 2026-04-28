@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -366,13 +367,20 @@ func codexProgressText(line string, reasoningMode CodexReasoningMode) (string, b
 		return "", false
 	}
 	item := mapField(evt, "item")
-	status := codexProgressStatus(eventType, stringField(evt, "status"))
 
 	if strings.Contains(eventType, "turn.started") {
-		return "* codex: started", true
+		return "● started", true
 	}
 	if strings.Contains(eventType, "turn.completed") || strings.Contains(eventType, "done") {
-		return "ok codex: done", true
+		return "● done", true
+	}
+
+	home, _ := os.UserHomeDir()
+	abbrevPath := func(p string) string {
+		if home != "" && strings.HasPrefix(p, home) {
+			return "~" + p[len(home):]
+		}
+		return p
 	}
 
 	kind := firstNonEmpty(stringField(item, "item_type"), stringField(item, "type"), eventType)
@@ -384,9 +392,9 @@ func codexProgressText(line string, reasoningMode CodexReasoningMode) (string, b
 	if strings.Contains(strings.ToLower(eventType), "reasoning") || strings.Contains(lowerKind, "reasoning") {
 		detail := firstNonEmpty(stringField(evt, "summary"), stringField(evt, "text"), stringField(item, "summary"), stringField(item, "text"))
 		if detail == "" {
-			return fmt.Sprintf("%s codex: thinking", status), true
+			return "● Thinking", true
 		}
-		return fmt.Sprintf("%s codex: thinking - %s", status, oneLine(detail)), true
+		return fmt.Sprintf("● Thinking  %s", oneLine(detail)), true
 	}
 
 	toolName := firstNonEmpty(
@@ -420,21 +428,25 @@ func codexProgressText(line string, reasoningMode CodexReasoningMode) (string, b
 		if command == "" {
 			command = kind
 		}
-		return fmt.Sprintf("%s codex: shell - %s", status, oneLine(command)), true
+		cmd := oneLine(command)
+		if len(cmd) > 72 {
+			cmd = cmd[:72] + "…"
+		}
+		return fmt.Sprintf("● Shell  %s", cmd), true
 	}
 
 	if path != "" || strings.Contains(lowerKind, "patch") || strings.Contains(lowerKind, "file") {
 		if path == "" {
 			path = kind
 		}
-		return fmt.Sprintf("%s codex: edit - %s", status, oneLine(path)), true
+		return fmt.Sprintf("● Edit  %s", abbrevPath(oneLine(path))), true
 	}
 
 	if toolName != "" || strings.Contains(lowerKind, "tool") || strings.Contains(lowerKind, "function") {
 		if toolName == "" {
 			toolName = kind
 		}
-		return fmt.Sprintf("%s codex: tool - %s", status, oneLine(toolName)), true
+		return fmt.Sprintf("● %s", oneLine(toolName)), true
 	}
 
 	if reasoningMode == CodexReasoningVerbose {
@@ -447,12 +459,12 @@ func codexProgressText(line string, reasoningMode CodexReasoningMode) (string, b
 			stringField(item, "description"),
 		)
 		if detail != "" {
-			return fmt.Sprintf("%s codex: %s - %s", status, oneLine(kind), oneLine(detail)), true
+			return fmt.Sprintf("● %s  %s", oneLine(kind), oneLine(detail)), true
 		}
 	}
 
 	if reasoningMode == CodexReasoningVerbose && strings.Contains(strings.ToLower(eventType), "started") {
-		return fmt.Sprintf("%s codex: %s", status, oneLine(kind)), true
+		return fmt.Sprintf("● %s", oneLine(kind)), true
 	}
 	return "", false
 }
