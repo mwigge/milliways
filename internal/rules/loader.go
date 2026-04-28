@@ -72,9 +72,15 @@ func NewRulesLoader(aiLocalDir, rulesDir string) *RulesLoader {
 	}
 }
 
-// LoadAgents loads agent definitions from the agents directory (opencode/agents subdir).
+// LoadAgents loads agent definitions from the agents directory.
+// Checks two layouts:
+//   - agent-toolkit-bundle style: <dir>/agents/opencode/*.md
+//   - legacy style:               <dir>/opencode/agents/*.md
 func (l *RulesLoader) LoadAgents() error {
-	agentsDir := filepath.Join(l.aiLocalDir, "opencode", "agents")
+	agentsDir := l.resolveAgentsDir()
+	if agentsDir == "" {
+		return nil
+	}
 	if err := config.GuardReadPath(agentsDir); err != nil {
 		return err
 	}
@@ -88,7 +94,7 @@ func (l *RulesLoader) LoadAgents() error {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
 			continue
 		}
-		path := filepath.Join(l.aiLocalDir, "opencode", "agents", entry.Name())
+		path := filepath.Join(agentsDir, entry.Name())
 		if err := config.GuardReadPath(path); err != nil {
 			return err
 		}
@@ -241,11 +247,28 @@ Add project-specific prompt rules here. Copy this file to override.md to activat
 	return nil
 }
 
+// resolveAgentsDir returns the first existing agents directory, checking both
+// the agent-toolkit-bundle layout (agents/opencode/) and the legacy layout
+// (opencode/agents/).
+func (l *RulesLoader) resolveAgentsDir() string {
+	candidates := []string{
+		filepath.Join(l.aiLocalDir, "agents", "opencode"),
+		filepath.Join(l.aiLocalDir, "opencode", "agents"),
+	}
+	for _, dir := range candidates {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir
+		}
+	}
+	return ""
+}
+
 func (l *RulesLoader) coreConventionsPath() string {
 	candidates := []string{
 		filepath.Join(l.aiLocalDir, "opencode", "AGENTS.md"),
 		filepath.Join(l.aiLocalDir, "AGENTS.md"),
 		filepath.Join(l.aiLocalDir, "CLAUDE.md"),
+		filepath.Join(l.aiLocalDir, "GEMINI.md"),
 	}
 	for _, path := range candidates {
 		if _, err := os.Stat(path); err == nil {

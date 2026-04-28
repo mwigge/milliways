@@ -299,25 +299,28 @@ Milliways injects relevant memories and code context before each dispatch when t
 
 ---
 
-## Neovim plugin
+## Agent toolkit
 
-```lua
--- lazy.nvim
-{
-  "mwigge/milliways",
-  config = function()
-    require("milliways").setup({
-      bin = "milliways",
-      keybindings = true,
-      leader = "<leader>m",
-    })
-  end,
-}
+milliways can load agent role definitions and skill modules from a directory
+you control:
+
+```bash
+export MILLIWAYS_AGENTS_DIR=~/path/to/your/agents
 ```
 
-Commands: `:Milliways`, `:MilliwaysExplain`, `:MilliwaysKitchen`, `:MilliwaysStatus`
+[agent-toolkit-bundle](https://github.com/mwigge/agent-toolkit-bundle) is a
+ready-made toolkit with 17 agents and 43 skills for Claude Code, OpenCode, and
+Codex. Clone it and point milliways at it:
 
-Keybindings: `<leader>mm` dispatch, `<leader>me` explain, `<leader>ms` status, `<leader>mk` kitchen picker
+```bash
+git clone https://github.com/mwigge/agent-toolkit-bundle ~/agent-toolkit-bundle
+export MILLIWAYS_AGENTS_DIR=~/agent-toolkit-bundle
+```
+
+milliways reads:
+- `$MILLIWAYS_AGENTS_DIR/agents/opencode/*.md` — agent role definitions
+- `$MILLIWAYS_AGENTS_DIR/skills/<name>/SKILL.md` — skill content
+- `$MILLIWAYS_AGENTS_DIR/AGENTS.md` or `CLAUDE.md` — global conventions
 
 ---
 
