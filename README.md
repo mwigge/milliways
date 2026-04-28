@@ -38,10 +38,10 @@ go install github.com/mwigge/milliways/cmd/milliways@latest
 
 ## MilliWays.app — Native Terminal (macOS)
 
-MilliWays.app is a native macOS terminal built on a patched wezterm. Every new tab opens the milliways REPL instead of a plain shell. The status bar shows your active agent, working directory, and a live wake badge when the laptop resumes from sleep.
+MilliWays.app is a native macOS terminal built on a patched wezterm. Every new tab opens milliways instead of a plain shell. The status bar shows your active agent, working directory, and a live wake badge when the laptop resumes from sleep.
 
 ```
-[⚡ woke 3m ago] [≈≈ MW v0.4.8] [~/project] [●claude] [1:C 2:X 3:G 4:M 5:L]
+[⚡ woke 3m ago] [≈≈ MW v0.4.11] [~/project] [●claude] [1:C 2:X 3:G 4:M 5:L]
 ```
 
 ### Leader keybindings (`Ctrl+Space`)
@@ -51,7 +51,7 @@ MilliWays.app is a native macOS terminal built on a patched wezterm. Every new t
 | `a` | Open milliways pane split below |
 | `1` / `2` / `3` / `4` | Switch to claude / codex / copilot / minimax |
 | `r` | Resume modal — shows wake summary, re-opens last agent |
-| `k` | Cockpit context overlay |
+| `k` | Context overlay |
 | `w` | Observability render overlay |
 | `z` | Plain shell tab (escape hatch) |
 
@@ -61,41 +61,42 @@ When the laptop wakes from sleep, the status bar shows an orange **⚡ woke Xm a
 
 ---
 
-## REPL
+## Terminal
 
-Start the REPL with `milliways` (default when no arguments are given).
+Start the terminal with `milliways` (default when no arguments are given).
 
 ```text
-milliways 0.4.8
-  REPL  |  type /help for commands
+milliways 0.4.11
+  type /help for commands
   runners: minimax | copilot | claude | codex
 
-▶ /switch claude
+▶ /claude
 Switched to claude
 
 ▶ explain the auth flow
 [claude] ...streaming...
 ✓ claude  3.2s
 
- claude | mo:3 | 1.2k↑ 0.8k↓ | $0.02              ← persistent status bar
+ claude | mo:3 | 1.2k↑ 0.8k↓ | $0.02
 ```
 
 Sessions are auto-saved per working directory and restored on the next `milliways` launch. Context fragments expand inline before dispatch: `@file`, `@git`, `@branch`, `@shell`.
 
-### REPL commands
+### Commands
 
 **Routing**
 
 | Command | Description |
 |---------|-------------|
 | `/switch <runner>` | Switch to a runner |
-| `/claude` | Switch to claude (shorthand) |
-| `/codex` | Switch to codex (shorthand) |
-| `/minimax` | Switch to minimax (shorthand) |
-| `/copilot` | Switch to copilot (shorthand) |
+| `/claude` | Switch to claude |
+| `/codex` | Switch to codex |
+| `/minimax` | Switch to minimax |
+| `/copilot` | Switch to copilot |
+| `/local` | Switch to local |
 | `/stick` | Keep current runner until released |
 | `/back` | Undo the most recent switch |
-| `/model` | List models for the current runner |
+| `/model` | Interactive model picker (arrow keys) or list |
 | `/model <id>` | Set model for the current runner |
 
 **Session**
@@ -184,14 +185,14 @@ Sessions are auto-saved per working directory and restored on the next `milliway
 | `/auth` | Show auth status for all runners |
 | `/review-all [branch]` | Review branch across all authenticated runners |
 | `/help` | Show all commands |
-| `/exit` | Exit the REPL |
+| `/exit` | Exit |
 | `!<cmd>` | Run a shell command |
 
 ---
 
 ## CLI mode
 
-For one-off requests without the REPL:
+For one-off requests without the terminal:
 
 ```bash
 milliways "explain the auth flow"            # route to best kitchen
@@ -212,14 +213,14 @@ milliways --recipe <name> "prompt"           # run a named recipe
 
 ## Runners
 
-**REPL runners** (used with `/switch`):
+**Terminal runners** (used with `/switch` or shorthand `/claude`, `/codex` etc.):
 
-| Runner | Best At | Cost |
-|--------|---------|------|
-| claude | Thinking, planning, code review | Cloud |
-| codex | Agentic coding, tool use | Cloud |
-| minimax | Reasoning, image/music/lyrics generation | Cloud |
-| copilot | GitHub Copilot chat | Subscription |
+| Runner | Color | Best At | Cost |
+|--------|-------|---------|------|
+| claude | green | Thinking, planning, code review | Cloud |
+| codex | amber | Agentic coding, tool use | Cloud |
+| minimax | purple | Reasoning, image/music/lyrics generation | Cloud |
+| copilot | red | GitHub Copilot chat | Subscription |
 
 **CLI kitchens** (routed by the sommelier in headless mode):
 
