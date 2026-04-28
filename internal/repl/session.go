@@ -85,12 +85,12 @@ func NewSessionStoreAt(dir string) (*SessionStore, error) {
 		return nil, fmt.Errorf("session store: creating dir %q: %w", dir, err)
 	}
 	s := &SessionStore{dir: dir}
-	CleanOldTranscripts(dir)
+	cleanOldTranscripts(dir)
 	return s, nil
 }
 
-// CleanOldTranscripts deletes .log files in dir that are older than 7 days.
-func CleanOldTranscripts(dir string) {
+// cleanOldTranscripts deletes .log files in dir that are older than 7 days.
+func cleanOldTranscripts(dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return

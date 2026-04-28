@@ -18,13 +18,39 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+type minimaxDaemonRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f minimaxDaemonRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func withMiniMaxDaemonTransport(t *testing.T, fn func(*http.Request) (*http.Response, error)) {
+	t.Helper()
+	original := http.DefaultTransport
+	http.DefaultTransport = minimaxDaemonRoundTripFunc(fn)
+	t.Cleanup(func() {
+		http.DefaultTransport = original
+	})
+}
+
+func minimaxDaemonResponse(status int, body string, headers http.Header) *http.Response {
+	if headers == nil {
+		headers = http.Header{}
+	}
+	return &http.Response{
+		StatusCode: status,
+		Header:     headers,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
 
 // TestRunMiniMax_NoAPIKey asserts that when MINIMAX_API_KEY is empty the
 // runner pushes a structured err event and exits cleanly without crashing.
@@ -76,7 +102,7 @@ func TestRunMiniMax_NoAPIKey(t *testing.T) {
 	}
 }
 
-// TestRunMiniMax_StreamsDeltas stubs the MiniMax API with httptest, asserts
+// TestRunMiniMax_StreamsDeltas stubs the MiniMax API transport, asserts
 // the request shape (auth header + JSON body), sends a fake SSE stream back,
 // and verifies the runner emits {"t":"data","b64":...} for each delta and a
 // terminating {"t":"chunk_end","cost_usd":N} event.
@@ -88,7 +114,7 @@ func TestRunMiniMax_StreamsDeltas(t *testing.T) {
 	}
 	captured := make(chan capturedReq, 1)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	withMiniMaxDaemonTransport(t, func(r *http.Request) (*http.Response, error) {
 		body, _ := io.ReadAll(r.Body)
 		var parsed map[string]any
 		_ = json.Unmarshal(body, &parsed)
@@ -97,8 +123,6 @@ func TestRunMiniMax_StreamsDeltas(t *testing.T) {
 			contentType: r.Header.Get("Content-Type"),
 			body:        parsed,
 		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
 		// Two delta chunks then a usage chunk then [DONE].
 		fakeSSE := strings.Join([]string{
 			`data: {"choices":[{"delta":{"content":"Hello"}}]}`,
@@ -110,12 +134,11 @@ func TestRunMiniMax_StreamsDeltas(t *testing.T) {
 			`data: [DONE]`,
 			``,
 		}, "\n")
-		_, _ = io.WriteString(w, fakeSSE)
-	}))
-	defer srv.Close()
+		return minimaxDaemonResponse(http.StatusOK, fakeSSE, http.Header{"Content-Type": {"text/event-stream"}}), nil
+	})
 
 	t.Setenv("MINIMAX_API_KEY", "test-key-123")
-	t.Setenv("MINIMAX_API_URL", srv.URL)
+	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/text/chatcompletion_v2")
 
 	pusher := &fakePusher{}
 	obs := &mockObserver{}
@@ -212,14 +235,12 @@ func TestRunMiniMax_StreamsDeltas(t *testing.T) {
 // TestRunMiniMax_APIError verifies that a non-200 response surfaces as an err
 // event (still pushing end so the protocol stays well-formed).
 func TestRunMiniMax_APIError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = io.WriteString(w, `{"error":"invalid api key"}`)
-	}))
-	defer srv.Close()
+	withMiniMaxDaemonTransport(t, func(r *http.Request) (*http.Response, error) {
+		return minimaxDaemonResponse(http.StatusUnauthorized, `{"error":"invalid api key"}`, nil), nil
+	})
 
 	t.Setenv("MINIMAX_API_KEY", "bad")
-	t.Setenv("MINIMAX_API_URL", srv.URL)
+	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/text/chatcompletion_v2")
 
 	pusher := &fakePusher{}
 	obs := &mockObserver{}
@@ -252,5 +273,57 @@ func TestRunMiniMax_APIError(t *testing.T) {
 	}
 	if got := obs.counterTotal(MetricErrorCount, AgentIDMiniMax); got < 1 {
 		t.Errorf("error_count total = %v, want >= 1 for non-2xx response", got)
+	}
+}
+
+func TestRunMiniMax_IncompleteStreamEmitsError(t *testing.T) {
+	withMiniMaxDaemonTransport(t, func(r *http.Request) (*http.Response, error) {
+		return minimaxDaemonResponse(http.StatusOK,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+			http.Header{"Content-Type": {"text/event-stream"}},
+		), nil
+	})
+
+	t.Setenv("MINIMAX_API_KEY", "test-key-123")
+	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/text/chatcompletion_v2")
+
+	pusher := &fakePusher{}
+	obs := &mockObserver{}
+	in := make(chan []byte, 1)
+	in <- []byte("hi there")
+	close(in)
+
+	done := make(chan struct{})
+	go func() {
+		RunMiniMax(context.Background(), in, pusher, obs)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("RunMiniMax did not return")
+	}
+
+	events := pusher.snapshot()
+	var sawErr, sawChunkEnd bool
+	for _, e := range events {
+		switch e["t"] {
+		case "err":
+			if strings.Contains(fmt.Sprint(e["msg"]), "incomplete stream") {
+				sawErr = true
+			}
+		case "chunk_end":
+			sawChunkEnd = true
+		}
+	}
+	if !sawErr {
+		t.Fatalf("expected incomplete stream error, got events=%v", events)
+	}
+	if sawChunkEnd {
+		t.Fatalf("unexpected chunk_end for incomplete stream: events=%v", events)
+	}
+	if got := obs.counterTotal(MetricErrorCount, AgentIDMiniMax); got < 1 {
+		t.Errorf("error_count total = %v, want >= 1 for incomplete stream", got)
 	}
 }

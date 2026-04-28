@@ -2,6 +2,8 @@
 
 ### Requirement: OpenAI SSE format (default)
 
+The HTTP kitchen SHALL support OpenAI-compatible SSE chat completion streams as the default response format.
+
 OpenAI-compatible endpoints (OpenAI, Groq, Deepseek, Perplexity, Mistral, OpenRouter) use standard OpenAI SSE:
 
 **Request body:**
@@ -23,7 +25,7 @@ data: [DONE]
 
 **Parser SHALL:**
 1. Skip lines not starting with `data: `
-2. Skip `data: [DONE]`
+2. Treat `data: [DONE]` as terminal completion
 3. Unmarshal JSON: `{"choices":[{"delta":{"content":"..."}}]}`
 4. Extract `choices[0].delta.content`
 5. Signal `done=true` when `choices[0].finish_reason == "stop"` AND chunk is not `chat.completion.chunk`
@@ -37,6 +39,8 @@ data: [DONE]
 ---
 
 ### Requirement: Anthropic SSE format
+
+The HTTP kitchen SHALL support Anthropic message SSE streams when configured with the Anthropic response format.
 
 Claude (api.anthropic.com) uses a different endpoint and event format:
 
@@ -78,6 +82,8 @@ data: {"type":"message_stop"}
 
 ### Requirement: MiniMax SSE format
 
+The HTTP kitchen SHALL support MiniMax SSE streams through the OpenAI-compatible parser variant.
+
 MiniMax (api.minimaxi.com) uses OpenAI-compatible SSE with custom endpoint:
 
 **Request body:**
@@ -97,7 +103,7 @@ data: {"choices":[{"delta":{"content":"Hello"}}...]}
 data: {"choices":[{"delta":{"content":" world"}}...]}
 ```
 
-**Parser:** Same as OpenAI format — `choices[0].delta.content`, `done` on finish_reason=stop.
+**Parser SHALL:** Use the same extraction rules as the OpenAI format — `choices[0].delta.content`, `data: [DONE]`, and `finish_reason` as terminal completion.
 
 #### Scenario: MiniMax SSE chunk extraction
 - **WHEN** line is `data: {"choices":[{"delta":{"content":"你好"}}]}`
@@ -107,6 +113,8 @@ data: {"choices":[{"delta":{"content":" world"}}...]}
 ---
 
 ### Requirement: Ollama SSE format
+
+The HTTP kitchen SHALL support Ollama chat SSE streams when configured with the Ollama response format.
 
 Ollama (localhost:11434) uses a different format:
 
@@ -162,4 +170,14 @@ data: {"message":{"content":" world"},"done":true}
 #### Scenario: Context cancelled mid-stream
 - **WHEN** context is cancelled after 3 chunks received
 - **THEN** result SHALL contain accumulated content from those 3 chunks
+- **AND** exit code SHALL be non-zero
+
+### Requirement: Incomplete stream detection
+
+The parser SHALL treat EOF before a terminal event (`data: [DONE]`, response-format-specific done marker, or `finish_reason`) as an incomplete stream error.
+
+#### Scenario: EOF before terminal event
+- **WHEN** API returns one content chunk and closes the stream without a terminal event
+- **THEN** result error SHALL contain `"incomplete HTTP stream"`
+- **AND** result output SHALL contain the partial content received before EOF
 - **AND** exit code SHALL be non-zero

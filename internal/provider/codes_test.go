@@ -18,7 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/mwigge/milliways/internal/session"
@@ -27,7 +27,7 @@ import (
 func TestCodesProviderSendParsesStreamingResponse(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := &http.Client{Transport: providerRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s, want POST", r.Method)
 		}
@@ -49,14 +49,14 @@ func TestCodesProviderSendParsesStreamingResponse(t *testing.T) {
 			t.Fatalf("stream = %v, want true", payload["stream"])
 		}
 
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n"))
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\" codes\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":4}}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	}))
-	defer server.Close()
+		return providerTestResponse(http.StatusOK,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{\"content\":\" codes\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":4}}\n\n"+
+				"data: [DONE]\n\n"), nil
+	})}
 
-	provider := newCodesProvider("test-key", server.URL, "gpt-5.4")
+	provider := newCodesProvider("test-key", "http://codes.test", "gpt-5.4")
+	provider.httpClient = client
 	resp, err := provider.Send(context.Background(), Request{
 		Model:        ModelCodes,
 		SystemPrompt: "system prompt",
@@ -73,6 +73,20 @@ func TestCodesProviderSendParsesStreamingResponse(t *testing.T) {
 	}
 	if resp.Tokens.Input != 9 || resp.Tokens.Output != 4 {
 		t.Fatalf("tokens = %+v", resp.Tokens)
+	}
+}
+
+func TestCodesProviderSendRejectsIncompleteStream(t *testing.T) {
+	t.Parallel()
+
+	provider := newCodesProvider("test-key", "http://codes.test", "gpt-5.4")
+	provider.httpClient = &http.Client{Transport: providerRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return providerTestResponse(http.StatusOK, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n"), nil
+	})}
+
+	_, err := provider.Send(context.Background(), Request{Model: ModelCodes})
+	if err == nil || !strings.Contains(err.Error(), "incomplete SSE stream") {
+		t.Fatalf("err = %v, want incomplete SSE stream", err)
 	}
 }
 

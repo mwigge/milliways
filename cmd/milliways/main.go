@@ -53,6 +53,7 @@ var version = "0.4.7"
 // dispatchOpts groups the parameters for the dispatch function.
 type dispatchOpts struct {
 	prompt, kitchenForce, configPath, projectRoot string
+	sessionName, switchTo                         string
 	contextJSON, contextFile                      string
 	jsonOutput, explain, verbose, contextStdin    bool
 	useLegacyConversation                         bool
@@ -153,6 +154,8 @@ func rootCmd() *cobra.Command {
 		contextJSON           string
 		contextFile           string
 		contextStdin          bool
+		sessionName           string
+		switchTo              string
 		timeoutDur            time.Duration
 	)
 
@@ -171,7 +174,8 @@ based on what each tool does best.
 		Version: version,
 		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Built-in terminal mode is the default when no prompt args are given.
+			// Built-in terminal mode is only reached via --repl or MILLIWAYS_REPL=1.
+			// Plain `milliways` is handled by the launcher before Cobra.
 			if len(args) == 0 || replFlag {
 				noRestore, _ := cmd.Flags().GetBool("no-restore")
 				return runREPL(configPath, noRestore)
@@ -193,6 +197,13 @@ based on what each tool does best.
 			if detachFlag {
 				return dispatchDetach(prompt, kitchenFlag, verbose, configPath)
 			}
+			if switchTo != "" {
+				if strings.TrimSpace(sessionName) == "" {
+					return fmt.Errorf("--switch-to requires --session")
+				}
+				kitchenFlag = switchTo
+				useLegacyConversation = true
+			}
 			bundle, err := loadDispatchContextBundle(os.Stdin, contextStdin, contextJSON, contextFile)
 			if err != nil {
 				return err
@@ -202,6 +213,8 @@ based on what each tool does best.
 				kitchenForce:          kitchenFlag,
 				configPath:            configPath,
 				projectRoot:           projectRoot,
+				sessionName:           sessionName,
+				switchTo:              switchTo,
 				contextJSON:           contextJSON,
 				contextFile:           contextFile,
 				jsonOutput:            jsonFlag,
@@ -225,12 +238,14 @@ based on what each tool does best.
 	cmd.Flags().BoolVar(&asyncFlag, "async", false, "Dispatch asynchronously, return ticket ID")
 	cmd.Flags().BoolVar(&detachFlag, "detach", false, "Dispatch detached (survives exit)")
 	cmd.Flags().BoolVar(&keepContext, "keep-context", false, "Keep recipe context files")
-	cmd.Flags().BoolVar(&replFlag, "repl", false, "Interactive terminal mode (default when no args)")
+	cmd.Flags().BoolVar(&replFlag, "repl", false, "Deprecated built-in terminal fallback")
 	cmd.Flags().StringVar(&projectRoot, "project-root", "", "Override project repository root")
 	cmd.Flags().StringVar(&contextJSON, "context-json", "", "Pass editor context bundle JSON directly on the CLI")
 	cmd.Flags().StringVar(&contextFile, "context-file", "", "Read editor context bundle JSON from a file")
 	cmd.Flags().BoolVar(&contextStdin, "context-stdin", false, "Read editor context bundle JSON from stdin")
 	cmd.Flags().BoolVar(&useLegacyConversation, "use-legacy-conversation", false, "Use pantry conversation storage instead of substrate")
+	cmd.Flags().StringVar(&sessionName, "session", "", "Named session to resume in headless mode")
+	cmd.Flags().StringVar(&switchTo, "switch-to", "", "Switch a named session to a kitchen before continuing")
 	cmd.Flags().DurationVar(&timeoutDur, "timeout", 5*time.Minute, "Dispatch timeout for headless mode")
 	cmd.Flags().Bool("no-restore", false, "Do not auto-restore the last session on startup")
 
@@ -452,6 +467,14 @@ func dispatch(opts dispatchOpts) error {
 		decision = som.RouteEnriched(opts.prompt, signals, skillHint)
 	}
 
+	if opts.switchTo != "" {
+		from, err := loadHeadlessSwitchSessionKitchen(opts.sessionName)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "[switch] session=%s %s -> %s\n", opts.sessionName, from, opts.switchTo)
+	}
+
 	if opts.verbose {
 		fmt.Fprintf(os.Stderr, "[sommelier] %s (tier: %s, risk: %s)\n", decision.Reason, decision.Tier, decision.Risk)
 	}
@@ -582,6 +605,87 @@ func dispatch(opts dispatchOpts) error {
 	}
 
 	return nil
+}
+
+type headlessSwitchSession struct {
+	RunnerName string `json:"runner_name"`
+	Blocks     []struct {
+		Kitchen       string   `json:"kitchen"`
+		ProviderChain []string `json:"provider_chain"`
+		Conversation  struct {
+			Segments []struct {
+				Provider string `json:"provider"`
+			} `json:"segments"`
+		} `json:"conversation"`
+	} `json:"blocks"`
+}
+
+func loadHeadlessSwitchSessionKitchen(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("session name is required")
+	}
+	if filepath.Base(name) != name {
+		return "", fmt.Errorf("invalid session name %q", name)
+	}
+
+	path, err := findNamedSessionFile(name)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading session %q: %w", name, err)
+	}
+
+	var sess headlessSwitchSession
+	if err := json.Unmarshal(data, &sess); err != nil {
+		return "", fmt.Errorf("parsing session %q: %w", name, err)
+	}
+	if sess.RunnerName != "" {
+		return sess.RunnerName, nil
+	}
+	for i := len(sess.Blocks) - 1; i >= 0; i-- {
+		block := sess.Blocks[i]
+		if block.Kitchen != "" {
+			return block.Kitchen, nil
+		}
+		if len(block.ProviderChain) > 0 {
+			return block.ProviderChain[len(block.ProviderChain)-1], nil
+		}
+		for j := len(block.Conversation.Segments) - 1; j >= 0; j-- {
+			if provider := block.Conversation.Segments[j].Provider; provider != "" {
+				return provider, nil
+			}
+		}
+	}
+	return "unknown", nil
+}
+
+func findNamedSessionFile(name string) (string, error) {
+	filename := name + ".json"
+	var candidates []string
+	if xdgData := os.Getenv("XDG_DATA_HOME"); xdgData != "" {
+		candidates = append(candidates, filepath.Join(xdgData, "milliways", "sessions", filename))
+	}
+	if xdgConfig := os.Getenv("XDG_CONFIG_HOME"); xdgConfig != "" {
+		candidates = append(candidates, filepath.Join(xdgConfig, "milliways", "sessions", filename))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, ".local", "share", "milliways", "sessions", filename),
+			filepath.Join(home, ".config", "milliways", "sessions", filename),
+		)
+	}
+
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("stat session %q: %w", name, err)
+		}
+	}
+	return "", fmt.Errorf("session %q not found", name)
 }
 
 // recordDispatch writes to PantryDB + ndjson audit trail + routing feedback.

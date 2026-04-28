@@ -12,14 +12,18 @@ The system SHALL provide a `/takeover [runner]` command that generates a structu
 - **AND** system SHALL switch the active runner to codex
 - **AND** system SHALL print a confirmation: `[takeover] claude → codex — briefing injected`
 
-#### Scenario: Takeover without target uses ring-next or sommelier
+#### Scenario: Takeover without target uses ring-next
 
 - **WHEN** user runs `/takeover` with no argument
 - **AND** a rotation ring is active
 - **THEN** system SHALL rotate to the next runner in the ring
+
+#### Scenario: Takeover without target and without ring requires explicit target
+
 - **WHEN** user runs `/takeover` with no argument
 - **AND** no rotation ring is active
-- **THEN** system SHALL route to the sommelier's best available runner
+- **THEN** system SHALL print `No target runner — use /takeover <runner> or configure a ring with /takeover-ring`
+- **AND** system SHALL abort without switching
 
 #### Scenario: Takeover to unavailable runner
 
@@ -61,12 +65,12 @@ The system SHALL generate a briefing containing: the triggering task, a summary 
 
 ### Requirement: TTY transcript sidecar
 
-The system SHALL write an ANSI-stripped plain-text transcript of all terminal output to a sidecar `.log` file alongside each session's `.json` file. The transcript SHALL capture every token written to the terminal — runner responses, tool-use progress lines, and user prompts — appended continuously as the session runs.
+The system SHALL write an ANSI-stripped plain-text transcript of all terminal output to a stable per-working-directory `.log` file in the session store. The transcript SHALL capture every token written to the terminal — runner responses, tool-use progress lines, and user prompts — appended continuously as the session runs.
 
-#### Scenario: Transcript file created alongside session
+#### Scenario: Transcript file created in session store
 
 - **WHEN** a new session is initialised
-- **THEN** system SHALL open `<session-id>.log` next to `<session-id>.json`
+- **THEN** system SHALL open `current-<cwd-hash>.log` in the session store
 - **AND** all terminal output SHALL be written to that file with ANSI escape sequences stripped
 
 #### Scenario: ANSI codes removed from transcript
@@ -97,13 +101,13 @@ The system SHALL write an ANSI-stripped plain-text transcript of all terminal ou
 
 ### Requirement: MemPalace snapshot on takeover
 
-When MemPalace MCP is configured, the system SHALL asynchronously write the takeover briefing as a drawer to the active palace before switching runners.
+When MemPalace MCP is configured, the system SHALL asynchronously write the takeover briefing as a drawer to the active palace after generating the briefing. The snapshot is best-effort and SHALL NOT block switching runners.
 
 #### Scenario: MemPalace snapshot succeeds
 
 - **WHEN** `MILLIWAYS_MEMPALACE_MCP_CMD` is set
 - **AND** takeover is triggered
-- **THEN** system SHALL call `mempalace_add_drawer` with key `handoff/<iso8601-timestamp>` and content equal to the briefing markdown
+- **THEN** system SHALL call `mempalace_add_drawer` with wing `milliways`, room `handoff`, source file `handoff/<iso8601-timestamp>`, and content equal to the briefing markdown
 - **AND** the snapshot call SHALL be non-blocking — runner switch SHALL not wait for it
 
 #### Scenario: MemPalace snapshot fails

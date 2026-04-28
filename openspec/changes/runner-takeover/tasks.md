@@ -1,17 +1,17 @@
 ## 1. Session limit signal — runner layer
 
-- [x] 1.1 Add `"session.limit_reached"` to the progress event type constants in `dispatch.go`
-- [x] 1.2 Detect limit in `runner_claude.go`: match stderr `context window` / `session limit` patterns, emit `session.limit_reached` event before returning
-- [x] 1.3 Detect limit in `runner_codex.go`: match JSON event types `max_turns` / `context_length_exceeded`, emit `session.limit_reached`
-- [x] 1.4 Detect limit in `runner_minimax.go`: match HTTP 429 + `quota_exceeded` body, emit `session.limit_reached`
-- [x] 1.5 Detect limit in `runner_copilot.go`: match stderr `rate limit` pattern, emit `session.limit_reached`
+- [x] 1.1 Add typed session-limit signaling via `ErrSessionLimit` in `dispatch.go`
+- [x] 1.2 Detect limit in `runner_claude.go`: match stderr `context window` / `session limit` patterns, return typed session-limit error
+- [x] 1.3 Detect limit in `runner_codex.go`: match JSON event types `max_turns` / `context_length_exceeded`, return typed session-limit error
+- [x] 1.4 Detect limit in `runner_minimax.go`: match HTTP 429 + `quota_exceeded` body, return typed session-limit error
+- [x] 1.5 Detect limit in `runner_copilot.go`: match stderr `rate limit` pattern, return typed session-limit error
 - [x] 1.6 Write unit tests for each runner's limit-detection logic using synthetic stderr/event inputs
 
 ## 2. TTY transcript writer
 
 - [x] 2.1 Create `internal/repl/transcript.go` with `TranscriptWriter` — an `io.Writer` that strips ANSI escape sequences via a state machine and appends plain text to a `.log` sidecar file
 - [x] 2.2 Implement ANSI state machine: consume ESC sequences, CSI sequences (`\x1b[...m`), and OSC sequences; pass all other bytes through
-- [x] 2.3 Open the sidecar file path alongside the session file: `<session-id>.log` next to `<session-id>.json`
+- [x] 2.3 Open a stable sidecar file path in the session store: `current-<cwd-hash>.log`
 - [x] 2.4 Wire `TranscriptWriter` into the terminal output path in `repl.go` at session initialisation
 - [x] 2.5 On session prune (keep-5 rule), delete the corresponding `.log` file alongside the `.json` file
 - [x] 2.6 Delete `.log` files older than 7 days on startup alongside session cleanup
@@ -37,13 +37,13 @@
 - [x] 4.3 Call `GenerateBriefing` (passing transcript log path + turns + cwd) and prepend result as a synthetic `ConversationTurn{Role: "user"}` to session history
 - [x] 4.4 Execute runner switch (reuse `handleSwitch` internals)
 - [x] 4.5 Print confirmation `[takeover] <from> → <to> — briefing injected`
-- [x] 4.6 Fall through to sommelier if no argument and no ring; rotate ring if ring is active
+- [x] 4.6 Rotate ring if ring is active; otherwise require explicit `/takeover <runner>`
 - [x] 4.7 Register `"takeover"` in the command map in `commands.go`
 - [x] 4.8 Write integration test for `/takeover` covering all spec scenarios
 
 ## 5. MemPalace snapshot on takeover
 
-- [x] 5.1 Extract MemPalace MCP call into a helper `snapshotToMemPalace(briefing string)` in `repl.go`
+- [x] 5.1 Extract MemPalace MCP call into `snapshotToMemPalaceAsync(briefing string)`
 - [x] 5.2 Fire snapshot asynchronously (goroutine) with `handoff/<iso8601>` as drawer key
 - [x] 5.3 Log failure at debug level; do not block the runner switch
 - [x] 5.4 Gate on `MILLIWAYS_MEMPALACE_MCP_CMD` being set (no-op if absent)
@@ -69,7 +69,7 @@
 
 ## 8. Auto-rotate on session limit
 
-- [x] 8.1 In REPL dispatch loop, intercept `session.limit_reached` event
+- [x] 8.1 In terminal dispatch loop, intercept typed session-limit error
 - [x] 8.2 If ring is active: call `nextRingRunner`, generate briefing, re-dispatch original prompt to next runner
 - [x] 8.3 Print `[auto-takeover] <from> session limit — continuing on <to>`
 - [x] 8.4 If no ring: print guidance message per spec (suggest `/takeover-ring`)

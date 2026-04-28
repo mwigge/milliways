@@ -175,6 +175,7 @@ func (k *HTTPKitchen) Exec(ctx context.Context, task kitchen.Task) (kitchen.Resu
 
 	reader := bufio.NewReader(resp.Body)
 	var output strings.Builder
+	completed := false
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -185,11 +186,14 @@ func (k *HTTPKitchen) Exec(ctx context.Context, task kitchen.Task) (kitchen.Resu
 		if readErr != nil {
 			switch {
 			case readErr == io.EOF:
-				return kitchen.Result{ExitCode: 0, Output: output.String(), Duration: time.Since(start)}, nil
+				if completed {
+					return kitchen.Result{ExitCode: 0, Output: output.String(), Duration: time.Since(start)}, nil
+				}
+				return kitchen.Result{ExitCode: 1, Output: output.String(), Duration: time.Since(start)}, fmt.Errorf("incomplete HTTP stream: EOF before terminal event")
 			case ctx.Err() != nil:
 				return kitchen.Result{ExitCode: 0, Output: output.String(), Duration: time.Since(start)}, ctx.Err()
 			case output.Len() > 0:
-				return kitchen.Result{ExitCode: 0, Output: output.String(), Duration: time.Since(start)}, nil
+				return kitchen.Result{ExitCode: 1, Output: output.String(), Duration: time.Since(start)}, fmt.Errorf("incomplete HTTP stream after partial output: %w", readErr)
 			default:
 				return kitchen.Result{ExitCode: 1, Output: output.String(), Duration: time.Since(start)}, fmt.Errorf("reading response: %w", readErr)
 			}
@@ -202,6 +206,10 @@ func (k *HTTPKitchen) Exec(ctx context.Context, task kitchen.Task) (kitchen.Resu
 
 		payload := strings.TrimPrefix(line, "data: ")
 		if payload == "" || payload == "[DONE]" {
+			if payload == "[DONE]" {
+				completed = true
+				return kitchen.Result{ExitCode: 0, Output: output.String(), Duration: time.Since(start)}, nil
+			}
 			continue
 		}
 
@@ -213,6 +221,7 @@ func (k *HTTPKitchen) Exec(ctx context.Context, task kitchen.Task) (kitchen.Resu
 			}
 		}
 		if done {
+			completed = true
 			return kitchen.Result{ExitCode: 0, Output: output.String(), Duration: time.Since(start)}, nil
 		}
 	}

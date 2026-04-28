@@ -207,6 +207,15 @@ func TestCodexRunnerExecArgsIncludeSettings(t *testing.T) {
 	}
 }
 
+func TestNewCodexRunnerResolvesInstalledBinary(t *testing.T) {
+	t.Setenv("MILLIWAYS_CODEX_BIN", "/custom/bin/codex")
+
+	r := NewCodexRunner()
+	if r.binary != "/custom/bin/codex" {
+		t.Fatalf("binary = %q, want env override", r.binary)
+	}
+}
+
 func TestCodexReasoningModeControlsProgress(t *testing.T) {
 	t.Parallel()
 

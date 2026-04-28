@@ -23,6 +23,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -67,7 +68,7 @@ const (
 
 func NewCodexRunner() *CodexRunner {
 	return &CodexRunner{
-		binary:        "codex",
+		binary:        resolveCodexBinary(),
 		reasoningMode: CodexReasoningVerbose,
 	}
 }
@@ -91,6 +92,31 @@ func (r *CodexRunner) Execute(ctx context.Context, req DispatchRequest, out io.W
 	}
 	cmd := exec.CommandContext(ctx, r.binary, args...)
 	return runCodexJSON(ctx, cmd, out, r.reasoningMode)
+}
+
+func resolveCodexBinary() string {
+	for _, envName := range []string{"MILLIWAYS_CODEX_BIN", "CODEX_BIN"} {
+		if value := strings.TrimSpace(os.Getenv(envName)); value != "" {
+			return value
+		}
+	}
+	if path, err := exec.LookPath("codex"); err == nil {
+		return path
+	}
+	for _, candidate := range []string{
+		"/opt/homebrew/bin/codex",
+		"/usr/local/bin/codex",
+		filepath.Join(os.Getenv("HOME"), ".local", "bin", "codex"),
+		filepath.Join(os.Getenv("HOME"), ".npm-global", "bin", "codex"),
+	} {
+		if candidate == "" {
+			continue
+		}
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return candidate
+		}
+	}
+	return "codex"
 }
 
 func (r *CodexRunner) execArgs(prompt string) []string {
@@ -320,10 +346,17 @@ func runCodexJSON(ctx context.Context, cmd *exec.Cmd, out io.Writer, reasoningMo
 			sawSessionLimit = true
 		}
 	}
+	scanErr := scanner.Err()
 	_ = pr.Close()
 
 	stderrWg.Wait()
 	waitErr := <-waitDone
+	if scanErr != nil {
+		if waitErr != nil {
+			return fmt.Errorf("codex stdout read error: %v: %w", scanErr, waitErr)
+		}
+		return fmt.Errorf("codex stdout read error: %w", scanErr)
+	}
 
 	if !wroteAssistant && sawProxyBlock {
 		_, _ = out.Write([]byte("[codex blocked by Zscaler/proxy; open ChatGPT in a browser, approve the security prompt, then retry]\n"))
@@ -411,10 +444,10 @@ func codexProgressText(line string, reasoningMode CodexReasoningMode) (string, b
 	item := mapField(evt, "item")
 
 	if strings.Contains(eventType, "turn.started") {
-		return "● started", true
+		return "* codex: started", true
 	}
 	if strings.Contains(eventType, "turn.completed") || strings.Contains(eventType, "done") {
-		return "● done", true
+		return "ok codex: done", true
 	}
 
 	home, _ := os.UserHomeDir()
@@ -434,9 +467,9 @@ func codexProgressText(line string, reasoningMode CodexReasoningMode) (string, b
 	if strings.Contains(strings.ToLower(eventType), "reasoning") || strings.Contains(lowerKind, "reasoning") {
 		detail := firstNonEmpty(stringField(evt, "summary"), stringField(evt, "text"), stringField(item, "summary"), stringField(item, "text"))
 		if detail == "" {
-			return "● Thinking", true
+			return "* codex: thinking", true
 		}
-		return fmt.Sprintf("● Thinking  %s", oneLine(detail)), true
+		return fmt.Sprintf("* codex: thinking - %s", oneLine(detail)), true
 	}
 
 	toolName := firstNonEmpty(
@@ -472,23 +505,23 @@ func codexProgressText(line string, reasoningMode CodexReasoningMode) (string, b
 		}
 		cmd := oneLine(command)
 		if len(cmd) > 72 {
-			cmd = cmd[:72] + "…"
+			cmd = cmd[:72] + "..."
 		}
-		return fmt.Sprintf("● Shell  %s", cmd), true
+		return fmt.Sprintf("%s codex: shell - %s", codexProgressStatus(eventType, stringField(evt, "status")), cmd), true
 	}
 
 	if path != "" || strings.Contains(lowerKind, "patch") || strings.Contains(lowerKind, "file") {
 		if path == "" {
 			path = kind
 		}
-		return fmt.Sprintf("● Edit  %s", abbrevPath(oneLine(path))), true
+		return fmt.Sprintf("%s codex: edit - %s", codexProgressStatus(eventType, stringField(evt, "status")), abbrevPath(oneLine(path))), true
 	}
 
 	if toolName != "" || strings.Contains(lowerKind, "tool") || strings.Contains(lowerKind, "function") {
 		if toolName == "" {
 			toolName = kind
 		}
-		return fmt.Sprintf("● %s", oneLine(toolName)), true
+		return fmt.Sprintf("%s codex: tool - %s", codexProgressStatus(eventType, stringField(evt, "status")), oneLine(toolName)), true
 	}
 
 	if reasoningMode == CodexReasoningVerbose {
@@ -501,12 +534,12 @@ func codexProgressText(line string, reasoningMode CodexReasoningMode) (string, b
 			stringField(item, "description"),
 		)
 		if detail != "" {
-			return fmt.Sprintf("● %s  %s", oneLine(kind), oneLine(detail)), true
+			return fmt.Sprintf("%s codex: %s - %s", codexProgressStatus(eventType, stringField(evt, "status")), oneLine(kind), oneLine(detail)), true
 		}
 	}
 
 	if reasoningMode == CodexReasoningVerbose && strings.Contains(strings.ToLower(eventType), "started") {
-		return fmt.Sprintf("● %s", oneLine(kind)), true
+		return fmt.Sprintf("* codex: %s", oneLine(kind)), true
 	}
 	return "", false
 }

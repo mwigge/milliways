@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -28,7 +27,7 @@ import (
 func TestMiniMaxProviderSendParsesStreamingResponse(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := &http.Client{Transport: providerRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s, want POST", r.Method)
 		}
@@ -53,15 +52,15 @@ func TestMiniMaxProviderSendParsesStreamingResponse(t *testing.T) {
 			t.Fatalf("tools len = %d, want 1", len(tools))
 		}
 
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n"))
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\" world\",\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n"))
-		_, _ = w.Write([]byte("data: {\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":5}}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	}))
-	defer server.Close()
+		return providerTestResponse(http.StatusOK,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{\"content\":\" world\",\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n"+
+				"data: {\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":5}}\n\n"+
+				"data: [DONE]\n\n"), nil
+	})}
 
-	provider := NewMiniMaxProvider("test-key", server.URL, "test-model")
+	provider := NewMiniMaxProvider("test-key", "http://minimax.test", "test-model")
+	provider.httpClient = client
 	resp, err := provider.Send(context.Background(), Request{
 		Model:        ModelMiniMax,
 		SystemPrompt: "system prompt",
@@ -89,6 +88,20 @@ func TestMiniMaxProviderSendParsesStreamingResponse(t *testing.T) {
 	}
 	if resp.Tokens.Input != 12 || resp.Tokens.Output != 5 {
 		t.Fatalf("tokens = %+v", resp.Tokens)
+	}
+}
+
+func TestMiniMaxProviderSendRejectsIncompleteStream(t *testing.T) {
+	t.Parallel()
+
+	provider := NewMiniMaxProvider("test-key", "http://minimax.test", "test-model")
+	provider.httpClient = &http.Client{Transport: providerRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return providerTestResponse(http.StatusOK, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n"), nil
+	})}
+
+	_, err := provider.Send(context.Background(), Request{Model: ModelMiniMax})
+	if err == nil || !strings.Contains(err.Error(), "incomplete SSE stream") {
+		t.Fatalf("err = %v, want incomplete SSE stream", err)
 	}
 }
 

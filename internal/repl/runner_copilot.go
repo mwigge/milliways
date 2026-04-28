@@ -98,7 +98,7 @@ func runCopilotCmd(ctx context.Context, cmd *exec.Cmd, out io.Writer) error {
 		waitDone <- err
 	}()
 
-	_, _ = io.Copy(out, pr)
+	_, copyErr := io.Copy(out, pr)
 	_ = pr.Close()
 
 	stderrWg.Wait()
@@ -109,6 +109,12 @@ func runCopilotCmd(ctx context.Context, cmd *exec.Cmd, out io.Writer) error {
 			return fmt.Errorf("%w: %w", ErrSessionLimit, waitErr)
 		}
 		return ErrSessionLimit
+	}
+	if copyErr != nil {
+		if waitErr != nil {
+			return fmt.Errorf("copilot stdout read error: %v: %w", copyErr, waitErr)
+		}
+		return fmt.Errorf("copilot stdout read error: %w", copyErr)
 	}
 	return waitErr
 }

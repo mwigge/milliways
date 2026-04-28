@@ -16,6 +16,7 @@ package rules
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -120,9 +121,25 @@ func (l *RulesLoader) LoadAgents() error {
 	return nil
 }
 
-// LoadSkills loads skill match rules from the agents directory (.claude/skill-rules.json).
+// LoadSkills loads skill match rules. Checks bundle root (skill-rules.json)
+// then legacy location (.claude/skill-rules.json).
 func (l *RulesLoader) LoadSkills() error {
-	path := filepath.Join(l.aiLocalDir, ".claude", "skill-rules.json")
+	candidates := []string{
+		filepath.Join(l.aiLocalDir, "skill-rules.json"),
+		filepath.Join(l.aiLocalDir, ".claude", "skill-rules.json"),
+	}
+	var path string
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			path = c
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("stat skill rules %q: %w", c, err)
+		}
+	}
+	if path == "" {
+		return nil
+	}
 	if err := config.GuardReadPath(path); err != nil {
 		return err
 	}

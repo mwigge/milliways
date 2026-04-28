@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -28,7 +27,8 @@ import (
 func TestGeminiProviderSendParsesJSONResponse(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	provider := newGeminiProvider("gem-key", "http://gemini.test", "gemini-2.5-pro")
+	provider.httpClient = &http.Client{Transport: providerRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s, want POST", r.Method)
 		}
@@ -53,12 +53,9 @@ func TestGeminiProviderSendParsesJSONResponse(t *testing.T) {
 			t.Fatalf("request text = %q", text)
 		}
 
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"{\"answer\":\"ok\"}"}]}}],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":6}}`))
-	}))
-	defer server.Close()
+		return providerTestResponse(http.StatusOK, `{"candidates":[{"content":{"parts":[{"text":"{\"answer\":\"ok\"}"}]}}],"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":6}}`), nil
+	})}
 
-	provider := newGeminiProvider("gem-key", server.URL, "gemini-2.5-pro")
 	resp, err := provider.Send(context.Background(), Request{
 		Model:        ModelGemini,
 		SystemPrompt: "system prompt",
@@ -81,14 +78,12 @@ func TestGeminiProviderSendParsesJSONResponse(t *testing.T) {
 func TestGeminiProviderSendParsesStreamingResponse(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: [{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}]}}]}]\n\n"))
-		_, _ = w.Write([]byte("data: [{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" Gemini\"}]}}],\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":3}}]\n\n"))
-	}))
-	defer server.Close()
-
-	provider := newGeminiProvider("gem-key", server.URL, "gemini-2.5-pro")
+	provider := newGeminiProvider("gem-key", "http://gemini.test", "gemini-2.5-pro")
+	provider.httpClient = &http.Client{Transport: providerRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return providerTestResponse(http.StatusOK,
+			"data: [{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}]}}]}]\n\n"+
+				"data: [{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" Gemini\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":7,\"candidatesTokenCount\":3}}]\n\n"), nil
+	})}
 	resp, err := provider.Send(context.Background(), Request{Model: Model("models/gemini-2.5-pro")})
 	if err != nil {
 		t.Fatalf("Send() error = %v", err)
@@ -98,6 +93,20 @@ func TestGeminiProviderSendParsesStreamingResponse(t *testing.T) {
 	}
 	if resp.Tokens.Input != 7 || resp.Tokens.Output != 3 {
 		t.Fatalf("tokens = %+v", resp.Tokens)
+	}
+}
+
+func TestGeminiProviderSendRejectsIncompleteStream(t *testing.T) {
+	t.Parallel()
+
+	provider := newGeminiProvider("gem-key", "http://gemini.test", "gemini-2.5-pro")
+	provider.httpClient = &http.Client{Transport: providerRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return providerTestResponse(http.StatusOK, "data: [{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}]\n\n"), nil
+	})}
+
+	_, err := provider.Send(context.Background(), Request{Model: Model("models/gemini-2.5-pro")})
+	if err == nil || !strings.Contains(err.Error(), "incomplete gemini stream") {
+		t.Fatalf("err = %v, want incomplete gemini stream", err)
 	}
 }
 

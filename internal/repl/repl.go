@@ -402,7 +402,7 @@ func (r *REPL) Run(ctx context.Context) error {
 	if r.sessionStore != nil {
 		cwd, _ := os.Getwd()
 		logName := fmt.Sprintf("current-%s.log", cwdHash8(cwd))
-		logPath := filepath.Join(r.sessionStore.dir, logName)
+		logPath := filepath.Join(r.sessionStore.Dir(), logName)
 		r.transcriptPath = logPath
 		tw := NewTranscriptWriter(r.stdout, logPath)
 		r.transcriptW = tw
@@ -907,7 +907,7 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 		}
 		r.loadRules()
 
-		snapshotToMemPalace(briefing)
+		snapshotToMemPalaceAsync(briefing)
 		// Loop continues — re-dispatch to the new runner.
 	}
 }

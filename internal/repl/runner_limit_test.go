@@ -18,9 +18,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"os/exec"
 	"strings"
 	"testing"
@@ -287,16 +286,15 @@ func TestMinimaxBodySignalsLimit(t *testing.T) {
 func TestRunMinimaxSSEEmitsSentinelOn429QuotaExceeded(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		fmt.Fprintln(w, `{"error":{"code":"quota_exceeded","message":"Daily quota exceeded"}}`)
-	}))
-	defer srv.Close()
-
 	ctx := context.Background()
-	client := srv.Client()
-	req, _ := http.NewRequestWithContext(ctx, "POST", srv.URL, nil)
+	client := &http.Client{Transport: minimaxRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"quota_exceeded","message":"Daily quota exceeded"}}` + "\n")),
+		}, nil
+	})}
+	req, _ := http.NewRequestWithContext(ctx, "POST", "http://minimax.test", nil)
 
 	var buf bytes.Buffer
 	_, err := runMinimaxSSE(ctx, client, req, "MiniMax-M2.7", &buf, MinimaxReasoningOff)
@@ -312,16 +310,15 @@ func TestRunMinimaxSSEEmitsSentinelOn429QuotaExceeded(t *testing.T) {
 func TestRunMinimaxSSENoSentinelOn429NonQuota(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusTooManyRequests)
-		fmt.Fprintln(w, `{"error":{"code":"too_many_requests","message":"slow down"}}`)
-	}))
-	defer srv.Close()
-
 	ctx := context.Background()
-	client := srv.Client()
-	req, _ := http.NewRequestWithContext(ctx, "POST", srv.URL, nil)
+	client := &http.Client{Transport: minimaxRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"too_many_requests","message":"slow down"}}` + "\n")),
+		}, nil
+	})}
+	req, _ := http.NewRequestWithContext(ctx, "POST", "http://minimax.test", nil)
 
 	var buf bytes.Buffer
 	_, err := runMinimaxSSE(ctx, client, req, "MiniMax-M2.7", &buf, MinimaxReasoningOff)

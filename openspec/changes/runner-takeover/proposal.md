@@ -6,7 +6,7 @@ AI runners have hard session limits (token budgets, daily quotas, rate limits). 
 
 - Add `/takeover [runner]` command — generates a structured briefing from the current session (task, decisions, file changes, next steps), injects it as a high-priority context block, and switches to the target runner
 - Add `/takeover-ring <r1,r2,...>` command — configures an ordered rotation ring; milliways cycles to the next runner automatically when the active one hits a session limit or quota
-- Add session-limit detection — runners signal `SessionLimitReached` in their event stream; milliways intercepts this before surfacing an error and triggers a takeover if a ring is configured
+- Add session-limit detection — runners return a typed `SessionLimitReached` error; milliways intercepts this before surfacing an error and triggers a takeover if a ring is configured
 - MemPalace snapshot on takeover — key facts from the ending session are written to MemPalace before the switch so the new runner can query them
 - Status bar shows ring position — `[●claude 1/5]` when a rotation ring is active
 
@@ -16,7 +16,7 @@ AI runners have hard session limits (token budgets, daily quotas, rate limits). 
 
 - `takeover-command`: `/takeover [runner]` — on-demand structured handoff between runners with context briefing injection
 - `rotation-ring`: automatic runner rotation when session limits are hit; configurable priority order cycling 1→2→3→N→1
-- `session-limit-detection`: runners surface a `SessionLimitReached` signal; milliways intercepts and triggers auto-takeover when a ring is active
+- `session-limit-detection`: runners surface a typed `SessionLimitReached` signal; milliways intercepts and triggers auto-takeover when a ring is active
 
 ### Modified Capabilities
 

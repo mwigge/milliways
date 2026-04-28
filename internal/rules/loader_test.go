@@ -103,6 +103,68 @@ func TestRulesLoaderMatchSkillsReturnsUniqueMatches(t *testing.T) {
 	}
 }
 
+func TestRulesLoaderLoadSkillsFromBundleRoot(t *testing.T) {
+	t.Parallel()
+
+	aiLocalDir := t.TempDir()
+	rulesDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(aiLocalDir, "skills", "root-skill"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(skill): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(aiLocalDir, "skill-rules.json"), []byte(`[{"pattern":"root","skill":"root-skill"}]`), 0o600); err != nil {
+		t.Fatalf("WriteFile(root skill-rules.json): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(aiLocalDir, "skills", "root-skill", "SKILL.md"), []byte("# Root Skill\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(skill): %v", err)
+	}
+
+	loader := NewRulesLoader(aiLocalDir, rulesDir)
+	if err := loader.LoadSkills(); err != nil {
+		t.Fatalf("LoadSkills() error = %v", err)
+	}
+	matched := loader.MatchSkills("use root rules")
+	if len(matched) != 1 || matched[0] != "root-skill" {
+		t.Fatalf("MatchSkills() = %v, want [root-skill]", matched)
+	}
+}
+
+func TestRulesLoaderLoadSkillsRootTakesPrecedenceOverLegacy(t *testing.T) {
+	t.Parallel()
+
+	aiLocalDir := t.TempDir()
+	rulesDir := t.TempDir()
+	for _, dir := range []string{
+		filepath.Join(aiLocalDir, ".claude"),
+		filepath.Join(aiLocalDir, "skills", "root-skill"),
+		filepath.Join(aiLocalDir, "skills", "legacy-skill"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%q): %v", dir, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(aiLocalDir, "skill-rules.json"), []byte(`[{"pattern":"shared","skill":"root-skill"}]`), 0o600); err != nil {
+		t.Fatalf("WriteFile(root skill-rules.json): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(aiLocalDir, ".claude", "skill-rules.json"), []byte(`[{"pattern":"shared","skill":"legacy-skill"}]`), 0o600); err != nil {
+		t.Fatalf("WriteFile(legacy skill-rules.json): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(aiLocalDir, "skills", "root-skill", "SKILL.md"), []byte("# Root Skill\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(root skill): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(aiLocalDir, "skills", "legacy-skill", "SKILL.md"), []byte("# Legacy Skill\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(legacy skill): %v", err)
+	}
+
+	loader := NewRulesLoader(aiLocalDir, rulesDir)
+	if err := loader.LoadSkills(); err != nil {
+		t.Fatalf("LoadSkills() error = %v", err)
+	}
+	matched := loader.MatchSkills("shared prompt")
+	if len(matched) != 1 || matched[0] != "root-skill" {
+		t.Fatalf("MatchSkills() = %v, want [root-skill]", matched)
+	}
+}
+
 func TestRulesLoaderEnsureDefaultRuleFiles(t *testing.T) {
 	t.Parallel()
 

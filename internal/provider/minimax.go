@@ -220,6 +220,7 @@ func parseStreamResponse(body io.Reader) (Response, error) {
 	toolParts := make(map[string]*toolFragment)
 	order := make([]string, 0)
 	response := Response{}
+	completed := false
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -232,6 +233,7 @@ func parseStreamResponse(body io.Reader) (Response, error) {
 
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "[DONE]" {
+			completed = true
 			break
 		}
 
@@ -243,6 +245,9 @@ func parseStreamResponse(body io.Reader) (Response, error) {
 			response.Tokens = TokenCount{Input: event.Usage.PromptTokens, Output: event.Usage.CompletionTokens}
 		}
 		for _, choice := range event.Choices {
+			if choice.FinishReason != "" {
+				completed = true
+			}
 			content.WriteString(choice.Delta.Content)
 			for _, call := range choice.Delta.ToolCalls {
 				key := call.ID
@@ -267,6 +272,9 @@ func parseStreamResponse(body io.Reader) (Response, error) {
 	}
 	if err := scanner.Err(); err != nil {
 		return Response{}, fmt.Errorf("read SSE stream: %w", err)
+	}
+	if !completed {
+		return Response{}, fmt.Errorf("incomplete SSE stream: EOF before terminal event")
 	}
 
 	response.Content = content.String()

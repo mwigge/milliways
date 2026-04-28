@@ -117,7 +117,7 @@ func TestGenerateBriefing_TokenCap(t *testing.T) {
 
 	// Build a large set of turns to trigger truncation.
 	var turns []ConversationTurn
-	for i := range 30 {
+	for range 30 {
 		turns = append(turns, ConversationTurn{
 			Role:   "user",
 			Text:   strings.Repeat("implement feature X please ", 5),
@@ -130,7 +130,6 @@ func TestGenerateBriefing_TokenCap(t *testing.T) {
 			Runner: "claude",
 			At:     time.Now(),
 		})
-		_ = i
 	}
 
 	result := GenerateBriefing("", turns, "/tmp")

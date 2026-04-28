@@ -687,8 +687,8 @@ func handleAuth(ctx context.Context, r *REPL, args string) error {
 func modelCompletionContext(r *REPL, line string) (ids []string, partial, linePrefix string) {
 	// Commands that accept a model ID argument.
 	type cmdSpec struct {
-		cmd      string  // e.g. "/model "
-		catalog  func() []string
+		cmd     string // e.g. "/model "
+		catalog func() []string
 	}
 
 	claudeIDs := func() []string {
@@ -1221,7 +1221,11 @@ func (r *REPL) runCodexCommand(ctx context.Context, args ...string) error {
 		return nil
 	}
 	r.println(fmt.Sprintf("[%s] %s", RunnerAccentText("codex", "codex"), strings.Join(args, " ")))
-	cmd := exec.CommandContext(ctx, "codex", args...)
+	binary := resolveCodexBinary()
+	if codex, err := r.codexRunner(); err == nil && codex.binary != "" {
+		binary = codex.binary
+	}
+	cmd := exec.CommandContext(ctx, binary, args...)
 	writer := &teeWriter{w: r.stdout, buf: new(bytes.Buffer), scheme: CodexScheme()}
 	err := streamCmdOutput(ctx, cmd, writer)
 	writer.Flush()
@@ -1747,7 +1751,7 @@ func handleTakeover(ctx context.Context, r *REPL, args string) error {
 	r.println(fmt.Sprintf("[takeover] %s → %s — briefing injected", from, to))
 
 	// Snapshot briefing to MemPalace asynchronously (best-effort).
-	snapshotToMemPalace(briefing)
+	snapshotToMemPalaceAsync(briefing)
 
 	return nil
 }

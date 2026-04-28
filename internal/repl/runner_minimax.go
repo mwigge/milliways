@@ -220,6 +220,72 @@ type chatResponse struct {
 	Usage   *minimaxUsage `json:"usage,omitempty"`
 }
 
+type minimaxStreamIntegrity struct {
+	openFence       bool
+	heredocMarker   string
+	suspiciousWrite bool
+}
+
+func (i *minimaxStreamIntegrity) observe(line string) {
+	trimmed := strings.TrimSpace(ansiStripper.ReplaceAllString(line, ""))
+	if trimmed == "" {
+		return
+	}
+	if strings.HasPrefix(trimmed, "```") {
+		i.openFence = !i.openFence
+	}
+	if i.heredocMarker != "" {
+		if trimmed == i.heredocMarker {
+			i.heredocMarker = ""
+		}
+		return
+	}
+	if marker, ok := shellHeredocMarker(trimmed); ok {
+		i.heredocMarker = marker
+		i.suspiciousWrite = true
+	}
+}
+
+func (i minimaxStreamIntegrity) incomplete() bool {
+	return i.openFence || i.heredocMarker != ""
+}
+
+func (i minimaxStreamIntegrity) reason() string {
+	switch {
+	case i.openFence && i.heredocMarker != "":
+		return "unclosed code fence and heredoc"
+	case i.openFence:
+		return "unclosed code fence"
+	case i.heredocMarker != "":
+		return "unclosed heredoc"
+	default:
+		return "incomplete stream"
+	}
+}
+
+func shellHeredocMarker(line string) (string, bool) {
+	idx := strings.Index(line, "<<")
+	if idx < 0 {
+		return "", false
+	}
+	before := line[:idx]
+	if !(strings.Contains(before, ">") || strings.Contains(before, "tee")) {
+		return "", false
+	}
+	rest := strings.TrimSpace(line[idx+len("<<"):])
+	rest = strings.TrimPrefix(rest, "-")
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return "", false
+	}
+	marker := strings.Fields(rest)[0]
+	marker = strings.Trim(marker, `"'`)
+	if marker == "" {
+		return "", false
+	}
+	return marker, true
+}
+
 func (r *MinimaxRunner) executeChat(ctx context.Context, req DispatchRequest, out io.Writer) error {
 	if len(req.Attachments) > 0 {
 		slog.Warn("minimax: image attachments not supported, proceeding with text only",
@@ -627,6 +693,8 @@ func runMinimaxSSE(ctx context.Context, client *http.Client, req *http.Request, 
 	var finalUsage *minimaxUsage
 	var lineBuf strings.Builder
 	var thinkFilter minimaxThinkFilter
+	var integrity minimaxStreamIntegrity
+	completed := false
 
 	flushLine := func() {
 		line := lineBuf.String()
@@ -634,6 +702,7 @@ func runMinimaxSSE(ctx context.Context, client *http.Client, req *http.Request, 
 		if line == "" {
 			return
 		}
+		integrity.observe(line)
 		writeText(line + "\n")
 	}
 
@@ -679,6 +748,7 @@ func runMinimaxSSE(ctx context.Context, client *http.Client, req *http.Request, 
 		case strings.HasPrefix(line, "data: "):
 			jsonData = strings.TrimPrefix(line, "data: ")
 			if jsonData == "[DONE]" {
+				completed = true
 				goto done
 			}
 		case strings.HasPrefix(line, "{"):
@@ -698,6 +768,9 @@ func runMinimaxSSE(ctx context.Context, client *http.Client, req *http.Request, 
 			}
 
 			for _, choice := range cr.Choices {
+				if choice.FinishReason != "" {
+					completed = true
+				}
 				delta := choice.Delta
 				if choice.Message != nil && delta.Content == "" {
 					delta = *choice.Message
@@ -724,6 +797,15 @@ done:
 
 	if scanErr := scanner.Err(); scanErr != nil {
 		return finalUsage, fmt.Errorf("minimax: SSE read error: %w", scanErr)
+	}
+
+	if !completed && integrity.incomplete() {
+		reason := integrity.reason()
+		writeProgress("! minimax: incomplete stream - " + reason + "; no workspace changes were applied")
+		return finalUsage, fmt.Errorf("minimax: incomplete SSE stream: %s", reason)
+	}
+	if integrity.suspiciousWrite {
+		writeProgress("! minimax: generated file-write command was not executed; verify the workspace before assuming changes landed")
 	}
 
 	if reasoningMode != MinimaxReasoningOff {

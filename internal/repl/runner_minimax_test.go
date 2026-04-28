@@ -15,9 +15,19 @@
 package repl
 
 import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 )
+
+type minimaxRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f minimaxRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestMinimaxThinkFilter_NoThinkTags(t *testing.T) {
 	t.Parallel()
@@ -60,5 +70,114 @@ func TestMinimaxThinkFilter_SpansChunks(t *testing.T) {
 	}
 	if !strings.Contains(thinking.String(), "thought part one") {
 		t.Fatalf("thinking missing content: %q", thinking.String())
+	}
+}
+
+func TestMinimaxStreamIntegrityDetectsUnclosedHeredoc(t *testing.T) {
+	t.Parallel()
+
+	var integrity minimaxStreamIntegrity
+	integrity.observe("cat > internal/kitchen/adapter/http_test.go << 'EOF'")
+	integrity.observe("package adapter")
+
+	if !integrity.incomplete() {
+		t.Fatal("expected incomplete heredoc to be detected")
+	}
+	if got := integrity.reason(); got != "unclosed heredoc" {
+		t.Fatalf("reason = %q, want unclosed heredoc", got)
+	}
+}
+
+func TestMinimaxStreamIntegrityClosesHeredoc(t *testing.T) {
+	t.Parallel()
+
+	var integrity minimaxStreamIntegrity
+	integrity.observe("cat > file.go << 'EOF'")
+	integrity.observe("package main")
+	integrity.observe("EOF")
+
+	if integrity.incomplete() {
+		t.Fatal("heredoc marker should close the integrity warning")
+	}
+}
+
+func TestRunMinimaxSSEIncompleteGeneratedEditReturnsError(t *testing.T) {
+	t.Parallel()
+
+	body := strings.Join([]string{
+		"data: {\"choices\":[{\"delta\":{\"content\":\"```bash\\ncat > internal/kitchen/adapter/http_test.go << 'EOF'\\npackage adapter\\n\"}}]}",
+		"",
+	}, "\n")
+	client := &http.Client{Transport: minimaxRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://minimax.test", nil)
+
+	var out bytes.Buffer
+	_, err := runMinimaxSSE(context.Background(), client, req, "MiniMax-M2.7", &out, MinimaxReasoningVerbose)
+	if err == nil || !strings.Contains(err.Error(), "incomplete SSE stream") {
+		t.Fatalf("err = %v, want incomplete SSE stream", err)
+	}
+	if !strings.Contains(out.String(), "! minimax: incomplete stream") {
+		t.Fatalf("output missing incomplete stream warning: %q", out.String())
+	}
+	if strings.Contains(out.String(), "ok minimax: done") {
+		t.Fatalf("output should not report successful completion: %q", out.String())
+	}
+}
+
+func TestRunMinimaxSSECompletedOpenAIStreamAllowsEOF(t *testing.T) {
+	t.Parallel()
+
+	body := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`,
+		"",
+	}, "\n")
+	client := &http.Client{Transport: minimaxRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://minimax.test", nil)
+
+	var out bytes.Buffer
+	_, err := runMinimaxSSE(context.Background(), client, req, "MiniMax-M2.7", &out, MinimaxReasoningVerbose)
+	if err != nil {
+		t.Fatalf("runMinimaxSSE() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "ok minimax: done") {
+		t.Fatalf("output missing done marker: %q", out.String())
+	}
+}
+
+func TestRunMinimaxSSECompletedGeneratedEditWarnsNotExecuted(t *testing.T) {
+	t.Parallel()
+
+	body := strings.Join([]string{
+		"data: {\"choices\":[{\"delta\":{\"content\":\"cat > file.go << 'EOF'\\npackage main\\nEOF\\n\"},\"finish_reason\":\"stop\"}]}",
+		"",
+	}, "\n")
+	client := &http.Client{Transport: minimaxRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, "http://minimax.test", nil)
+
+	var out bytes.Buffer
+	_, err := runMinimaxSSE(context.Background(), client, req, "MiniMax-M2.7", &out, MinimaxReasoningVerbose)
+	if err != nil {
+		t.Fatalf("runMinimaxSSE() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "generated file-write command was not executed") {
+		t.Fatalf("output missing not-executed warning: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "ok minimax: done") {
+		t.Fatalf("output missing done marker: %q", out.String())
 	}
 }

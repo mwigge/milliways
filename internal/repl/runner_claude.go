@@ -411,8 +411,9 @@ scanLoop:
 			mu.Unlock()
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		writeProgress(fmt.Sprintf("! claude: read error: %v", err))
+	scanErr := scanner.Err()
+	if scanErr != nil {
+		writeProgress(fmt.Sprintf("! claude: read error: %v", scanErr))
 	}
 
 	_ = stdin.Close()
@@ -431,6 +432,12 @@ scanLoop:
 			return sessionUsage, fmt.Errorf("%w: %w", ErrSessionLimit, waitErr)
 		}
 		return sessionUsage, ErrSessionLimit
+	}
+	if scanErr != nil {
+		if waitErr != nil {
+			return sessionUsage, fmt.Errorf("claude stdout read error: %v: %w", scanErr, waitErr)
+		}
+		return sessionUsage, fmt.Errorf("claude stdout read error: %w", scanErr)
 	}
 	return sessionUsage, waitErr
 }

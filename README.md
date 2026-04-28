@@ -2,7 +2,7 @@
 
 > The Restaurant at the End of the Universe — one CLI to route them all.
 
-Milliways is a terminal-first AI shell. It routes each prompt to the right AI tool — Claude, Codex, MiniMax, Copilot — through a single interface with persistent sessions, context injection, sleep/wake awareness, and a live status bar.
+Milliways is a terminal-first AI cockpit. The default `milliways` launch starts the daemon-backed native terminal (`milliways-term`) so Claude, Codex, MiniMax, and Copilot run in first-class terminal panes with shared sessions, context injection, sleep/wake awareness, and a live status bar.
 
 It calls the CLIs and APIs you already have set up. It does not manage credentials or run models itself.
 
@@ -61,9 +61,11 @@ When the laptop wakes from sleep, the status bar shows an orange **⚡ woke Xm a
 
 ---
 
-## Terminal
+## AI Terminal
 
-Start the terminal with `milliways` (default when no arguments are given).
+Start the AI terminal with `milliways` (default when no arguments are given). The launcher starts `milliwaysd` if needed, then execs `milliways-term`.
+
+The legacy built-in terminal mode is still available as `milliways --repl` for fallback and migration only. It is deprecated and scheduled for removal after cockpit parity.
 
 ```text
 milliways 0.4.12
@@ -194,7 +196,7 @@ Sessions are auto-saved per working directory and restored on the next `milliway
 
 ## CLI mode
 
-For one-off requests without the terminal:
+For one-off requests without opening the AI terminal:
 
 ```bash
 milliways "explain the auth flow"            # route to best kitchen
@@ -215,7 +217,7 @@ milliways --recipe <name> "prompt"           # run a named recipe
 
 ## Runners
 
-**Terminal runners** (used with `/switch` or shorthand `/claude`, `/codex` etc.):
+**Agent runners** (used in the AI terminal, and in legacy fallback mode with `/switch` or shorthand `/claude`, `/codex` etc.):
 
 | Runner | Color | Best At | Cost |
 |--------|-------|---------|------|
@@ -325,12 +327,14 @@ Wire the middleware into the router in cmd/server/main.go
 
 ```bash
 ▶ /takeover codex        # hand off to a specific runner
-▶ /takeover              # use ring-next or sommelier's best pick
+▶ /takeover              # use ring-next when a ring is active
 ```
+
+Without an active ring, `/takeover` requires an explicit target runner.
 
 ### Context fidelity — TTY transcript
 
-milliways writes a full ANSI-stripped transcript of every token printed to the terminal to a sidecar `.log` file alongside each session. The briefing generator reads this transcript rather than the 20-turn ring buffer, so **the new runner gets complete context back to the first prompt** — not just the last 20 turns.
+milliways writes a full ANSI-stripped transcript of every token printed to the terminal to a stable per-working-directory `.log` file in the session store. The briefing generator reads this transcript rather than the 20-turn ring buffer, so **the new runner gets complete context back to the first prompt** — not just the last 20 turns.
 
 ### Ring commands
 

@@ -15,21 +15,40 @@
 package repl
 
 import (
+	"context"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
+
+	"github.com/mwigge/milliways/internal/pantry"
 )
 
-// snapshotToMemPalace asynchronously stores a handoff briefing in MemPalace.
-// The function itself spawns a goroutine — callers must NOT wrap it in go.
-// When MILLIWAYS_MEMPALACE_MCP_CMD is set, a warning is emitted because the
-// actual MCP integration is not yet implemented. When the variable is absent
-// the goroutine exits immediately at debug level.
-func snapshotToMemPalace(briefing string) {
+// snapshotToMemPalaceAsync stores a handoff briefing in MemPalace in a background goroutine.
+// When MILLIWAYS_MEMPALACE_MCP_CMD is absent the goroutine exits immediately.
+func snapshotToMemPalaceAsync(briefing string) {
 	go func() {
 		key := "handoff/" + time.Now().UTC().Format(time.RFC3339)
 		if cmd := os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD"); cmd != "" {
-			slog.Warn("mempalace snapshot not yet implemented", "key", key, "cmd", cmd)
+			client, err := pantry.NewMemPalaceClient(cmd, strings.Fields(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS"))...)
+			if err != nil {
+				slog.Debug("mempalace snapshot failed: client unavailable", "key", key, "err", err)
+				return
+			}
+			defer func() { _ = client.Close() }()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := client.AddDrawer(ctx, pantry.AddDrawerRequest{
+				Wing:       "milliways",
+				Room:       "handoff",
+				Content:    briefing,
+				AddedBy:    "milliways",
+				SourceFile: key,
+			}); err != nil {
+				slog.Debug("mempalace snapshot failed", "key", key, "err", err)
+				return
+			}
+			slog.Debug("mempalace snapshot stored", "key", key)
 			return
 		}
 		slog.Debug("mempalace snapshot skipped: MILLIWAYS_MEMPALACE_MCP_CMD not set", "key", key)

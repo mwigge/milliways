@@ -81,8 +81,9 @@ type minimaxStreamDelta struct {
 
 // minimaxStreamChoice wraps delta + non-streaming fallback message.
 type minimaxStreamChoice struct {
-	Delta   minimaxStreamDelta  `json:"delta"`
-	Message *minimaxStreamDelta `json:"message,omitempty"`
+	Delta        minimaxStreamDelta  `json:"delta"`
+	Message      *minimaxStreamDelta `json:"message,omitempty"`
+	FinishReason string              `json:"finish_reason,omitempty"`
 }
 
 // minimaxStreamUsage is the standard OpenAI-style token accounting block.
@@ -171,7 +172,12 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		return
 	}
 
-	usage := streamMiniMaxSSE(ctx, resp.Body, stream)
+	usage, completed := streamMiniMaxSSE(ctx, resp.Body, stream)
+	if !completed {
+		observeError(metrics, AgentIDMiniMax)
+		stream.Push(map[string]any{"t": "err", "msg": "minimax incomplete stream: EOF before terminal event"})
+		return
+	}
 	cost := minimaxCostUSD(usage)
 	if usage != nil {
 		observeTokens(metrics, AgentIDMiniMax, usage.PromptTokens, usage.CompletionTokens, cost)
@@ -191,15 +197,16 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 // streamMiniMaxSSE reads SSE / NDJSON lines from r, decodes each chunk,
 // and pushes one {"t":"data","b64":...} event per non-empty content delta.
 // Returns the final usage block (may be nil if the API didn't include one).
-func streamMiniMaxSSE(ctx context.Context, r io.Reader, stream Pusher) *minimaxStreamUsage {
+func streamMiniMaxSSE(ctx context.Context, r io.Reader, stream Pusher) (*minimaxStreamUsage, bool) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
 
 	var usage *minimaxStreamUsage
+	completed := false
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			return usage
+			return usage, false
 		default:
 		}
 
@@ -211,7 +218,7 @@ func streamMiniMaxSSE(ctx context.Context, r io.Reader, stream Pusher) *minimaxS
 		case strings.HasPrefix(line, "data: "):
 			jsonData = strings.TrimPrefix(line, "data: ")
 			if jsonData == "[DONE]" {
-				return usage
+				return usage, true
 			}
 		case strings.HasPrefix(line, "{"):
 			jsonData = line
@@ -227,6 +234,9 @@ func streamMiniMaxSSE(ctx context.Context, r io.Reader, stream Pusher) *minimaxS
 			usage = chunk.Usage
 		}
 		for _, choice := range chunk.Choices {
+			if choice.FinishReason != "" {
+				completed = true
+			}
 			delta := choice.Delta
 			if choice.Message != nil && delta.Content == "" {
 				delta = *choice.Message
@@ -236,7 +246,7 @@ func streamMiniMaxSSE(ctx context.Context, r io.Reader, stream Pusher) *minimaxS
 			}
 		}
 	}
-	return usage
+	return usage, completed
 }
 
 // minimaxCostUSD computes a coarse USD cost from token usage. MiniMax's

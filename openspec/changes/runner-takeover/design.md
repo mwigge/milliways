@@ -9,7 +9,7 @@ MemPalace is optionally wired via MCP (`MILLIWAYS_MEMPALACE_MCP_CMD`). If presen
 ## Goals / Non-Goals
 
 **Goals:**
-- `/takeover [runner]` command: generate a structured handoff briefing from current session state and switch to the named runner (or best available if omitted)
+- `/takeover [runner]` command: generate a structured handoff briefing from current session state and switch to the named runner. If omitted, rotate to the next runner only when a ring is active; otherwise require an explicit target.
 - `/takeover-ring <r1,r2,...>` command: configure a priority rotation ring persisted for the session
 - Auto-rotate: when a runner signals `SessionLimitReached`, silently rotate to the next ring member and continue
 - MemPalace snapshot: on any takeover, write a `handoff` drawer to the active palace with task summary, key decisions, and recent file changes
@@ -49,7 +49,7 @@ MemPalace is optionally wired via MCP (`MILLIWAYS_MEMPALACE_MCP_CMD`). If presen
 
 ### D2: SessionLimitReached signal — sentinel exit code / event type per runner
 
-**Decision:** Each runner's `Execute` method emits a progress event with type `"session.limit_reached"` when it detects exhaustion. Detection logic per runner:
+**Decision:** Each runner's `Execute` method reports `ErrSessionLimit` when it detects exhaustion. The dispatch loop treats that typed error as the session-limit signal for auto-rotation. Detection logic per runner:
 
 | Runner | Detection |
 |--------|-----------|
@@ -58,7 +58,7 @@ MemPalace is optionally wired via MCP (`MILLIWAYS_MEMPALACE_MCP_CMD`). If presen
 | MiniMax | HTTP 429 with `quota_exceeded` body |
 | Copilot | Stderr `rate limit` pattern |
 
-The REPL dispatch loop already receives events on a channel. A new branch checks for `session.limit_reached` before surfacing the error, and if a ring is configured, calls `rotateRing()` and re-dispatches.
+The terminal dispatch loop checks for the typed session-limit error before surfacing the error, and if a ring is configured, calls `nextRingRunner()` and re-dispatches.
 
 **Alternatives considered:**
 - Parse exit codes only: fragile — Claude and Codex use overlapping exit codes for different errors
@@ -95,7 +95,7 @@ type RingConfig struct {
 
 ### D6: TTY transcript as briefing source — sidecar log file, ANSI stripped
 
-**Decision:** milliways writes a running ANSI-stripped transcript of every token written to the terminal to a sidecar file alongside the session JSON: `~/.local/share/milliways/sessions/<session-id>.log`. The transcript captures everything — runner responses, tool-use lines, user prompts — down to the second. On takeover, `GenerateBriefing` reads this file rather than the sparse `ConversationTurn` ring buffer.
+**Decision:** milliways writes a running ANSI-stripped transcript of every token written to the terminal to a stable per-working-directory sidecar file in the session store: `~/.local/share/milliways/sessions/current-<cwd-hash>.log`. The transcript captures everything — runner responses, tool-use lines, user prompts — down to the second. On takeover, `GenerateBriefing` reads this file rather than the sparse `ConversationTurn` ring buffer.
 
 The briefing generator uses the transcript as its raw material:
 - Full fidelity: no 20-turn loss — the entire session is available
@@ -107,7 +107,7 @@ The `ConversationTurn` ring buffer is retained as a fallback (e.g. if the log fi
 ```
 ~/.local/share/milliways/sessions/
   auto-a3f2b1c4-20260428T1432.json   ← existing session file
-  auto-a3f2b1c4-20260428T1432.log    ← new sidecar transcript
+  current-a3f2b1c4.log                ← stable per-working-directory transcript
 ```
 
 **Alternatives considered:**
@@ -139,6 +139,6 @@ Each step is independently deployable and tested. No schema migration needed (ne
 
 ## Open Questions
 
-- Should `/takeover` without a runner argument pick the next ring member, or the sommelier's best choice? (Proposal assumes ring-next if ring active, sommelier otherwise)
+- If `/takeover` has no runner and no active ring, the terminal requires an explicit target. Sommelier handoff can be added later, but it is not part of this delivered behavior.
 - Cap the auto-rotate count per session? (Prevent silent infinite loops if all runners fail for a non-limit reason)
 - Should the status bar always show ring position, or only when ring is active?

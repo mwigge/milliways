@@ -1,5 +1,17 @@
 # Tasks — milliways-emulator-fork
 
+## Delivery checklist
+
+- [x] Stand up `milliwaysd` and `milliwaysctl` as the daemon/control-plane foundation.
+- [x] Import the wezterm fork under `crates/milliways-term/` and add the milliways Rust subtree.
+- [x] Make `milliways` with no arguments launch the daemon-backed `milliways-term` cockpit.
+- [x] Preserve the built-in terminal as deprecated `milliways --repl` fallback with an explicit deprecation notice.
+- [ ] Complete an end-to-end `milliways-term` agent-pane smoke across claude, codex, minimax, and copilot.
+- [ ] Complete `/context` cockpit visual acceptance with screenshots against `specs/context-cockpit/spec.md`.
+- [ ] Complete observability cockpit pane visual/functional acceptance.
+- [ ] Complete daemon crash/reconnect manual smoke for an in-flight agent pane.
+- [ ] Replace or archive stale active REPL/TUI OpenSpec changes once parity is signed off.
+
 ## Sign-off criteria
 
 - `make all` builds both `milliways-term` (Rust) and `milliwaysd` + `milliwaysctl` (Go).

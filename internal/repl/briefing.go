@@ -25,11 +25,10 @@ const (
 	briefingMaxChars     = 2000
 	briefingMaxGitFiles  = 20
 	briefingPromptPrefix = "▶ "
-
-	// decisionKeywords are substrings scanned in assistant text to find decisions.
 )
 
-var decisionKeywords = []string{"decided", "we will", "use X instead", "going with", "Going with", "use instead", "chose", "switched to"}
+// decisionKeywords are substrings scanned in assistant text to find decisions.
+var decisionKeywords = []string{"decided", "we will", "going with", "use instead", "chose", "switched to", "instead of"}
 
 // readTailBytes reads up to maxBytes from the end of the file at path.
 // If the file is smaller than maxBytes, the entire file is returned.

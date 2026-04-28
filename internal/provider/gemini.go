@@ -155,7 +155,8 @@ type geminiResponse struct {
 }
 
 type geminiCandidate struct {
-	Content geminiContent `json:"content"`
+	Content      geminiContent `json:"content"`
+	FinishReason string        `json:"finishReason,omitempty"`
 }
 
 type geminiUsage struct {
@@ -212,6 +213,7 @@ func parseGeminiStream(body io.Reader) (Response, error) {
 
 	var content strings.Builder
 	response := Response{}
+	completed := false
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -220,12 +222,16 @@ func parseGeminiStream(body io.Reader) (Response, error) {
 		}
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "[DONE]" {
+			completed = true
 			break
 		}
 
 		decoded, err := decodeGeminiPayload([]byte(payload))
 		if err != nil {
 			return Response{}, err
+		}
+		if geminiPayloadHasFinishReason([]byte(payload)) {
+			completed = true
 		}
 		content.WriteString(decoded.Content)
 		if decoded.Tokens != (TokenCount{}) {
@@ -235,9 +241,34 @@ func parseGeminiStream(body io.Reader) (Response, error) {
 	if err := scanner.Err(); err != nil {
 		return Response{}, fmt.Errorf("read gemini stream: %w", err)
 	}
+	if !completed {
+		return Response{}, fmt.Errorf("incomplete gemini stream: EOF before terminal event")
+	}
 
 	response.Content = content.String()
 	return response, nil
+}
+
+func geminiPayloadHasFinishReason(data []byte) bool {
+	var single geminiResponse
+	if err := json.Unmarshal(data, &single); err == nil {
+		for _, candidate := range single.Candidates {
+			if candidate.FinishReason != "" {
+				return true
+			}
+		}
+	}
+	var batch []geminiResponse
+	if err := json.Unmarshal(data, &batch); err == nil {
+		for _, response := range batch {
+			for _, candidate := range response.Candidates {
+				if candidate.FinishReason != "" {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func decodeGeminiPayload(data []byte) (Response, error) {

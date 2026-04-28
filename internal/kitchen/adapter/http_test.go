@@ -17,8 +17,8 @@ package adapter
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -26,6 +26,41 @@ import (
 
 	"github.com/mwigge/milliways/internal/kitchen"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func setHTTPKitchenTransport(k *HTTPKitchen, fn roundTripFunc) {
+	k.client = &http.Client{Transport: fn, Timeout: k.timeout}
+}
+
+func testHTTPResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+type contextCancelBody struct {
+	ctx  context.Context
+	data string
+	sent bool
+}
+
+func (b *contextCancelBody) Read(p []byte) (int, error) {
+	if !b.sent {
+		b.sent = true
+		return copy(p, b.data), nil
+	}
+	<-b.ctx.Done()
+	return 0, b.ctx.Err()
+}
+
+func (b *contextCancelBody) Close() error { return nil }
 
 func TestNewHTTPKitchen_RequiresFieldsAndDefaults(t *testing.T) {
 	// Error cases — run in parallel (no t.Setenv)
@@ -136,25 +171,24 @@ func TestHTTPKitchen_Exec_OpenAIStream(t *testing.T) {
 	var gotPath string
 	var gotAuth string
 	var gotContentType string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotAuth = r.Header.Get("Authorization")
-		gotContentType = r.Header.Get("Content-Type")
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hello \"},\"finish_reason\":\"\"}]}\n\n"))
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"world\"},\"finish_reason\":\"\"}]}\n\n"))
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}]}\n\n"))
-	}))
-	defer server.Close()
 
 	k, err := NewHTTPKitchen("api", HTTPKitchenConfig{
-		BaseURL: server.URL,
+		BaseURL: "http://api.test",
 		AuthKey: envKey,
 		Model:   "gpt-4.1",
 	}, []string{"code"}, kitchen.Cloud)
 	if err != nil {
 		t.Fatalf("NewHTTPKitchen() error = %v", err)
 	}
+	setHTTPKitchenTransport(k, func(r *http.Request) (*http.Response, error) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		gotContentType = r.Header.Get("Content-Type")
+		return testHTTPResponse(http.StatusOK,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"hello \"},\"finish_reason\":\"\"}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{\"content\":\"world\"},\"finish_reason\":\"\"}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":\"stop\"}]}\n\n"), nil
+	})
 
 	var lines []string
 	result, err := k.Exec(context.Background(), kitchen.Task{
@@ -194,18 +228,9 @@ func TestHTTPKitchen_Exec_AnthropicStream(t *testing.T) {
 	var gotPath string
 	var gotAuth string
 	var gotVersion string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotAuth = r.Header.Get("X-API-Key")
-		gotVersion = r.Header.Get("anthropic-version")
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"alpha\"}}\n\n"))
-		_, _ = w.Write([]byte("data: {\"type\":\"message_stop\"}\n\n"))
-	}))
-	defer server.Close()
 
 	k, err := NewHTTPKitchen("api", HTTPKitchenConfig{
-		BaseURL:        server.URL,
+		BaseURL:        "http://api.test",
 		AuthKey:        envKey,
 		AuthType:       "apikey",
 		Model:          "claude-3-7-sonnet",
@@ -214,6 +239,14 @@ func TestHTTPKitchen_Exec_AnthropicStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPKitchen() error = %v", err)
 	}
+	setHTTPKitchenTransport(k, func(r *http.Request) (*http.Response, error) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("X-API-Key")
+		gotVersion = r.Header.Get("anthropic-version")
+		return testHTTPResponse(http.StatusOK,
+			"data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"alpha\"}}\n\n"+
+				"data: {\"type\":\"message_stop\"}\n\n"), nil
+	})
 
 	result, err := k.Exec(context.Background(), kitchen.Task{Prompt: "say hi"})
 	if err != nil {
@@ -238,16 +271,9 @@ func TestHTTPKitchen_Exec_OllamaStream(t *testing.T) {
 	t.Setenv(envKey, "secret")
 
 	var gotPath string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"message\":{\"content\":\"part\"},\"done\":false}\n\n"))
-		_, _ = w.Write([]byte("data: {\"message\":{\"content\":\"ial\"},\"done\":true}\n\n"))
-	}))
-	defer server.Close()
 
 	k, err := NewHTTPKitchen("api", HTTPKitchenConfig{
-		BaseURL:        server.URL,
+		BaseURL:        "http://api.test",
 		AuthKey:        envKey,
 		Model:          "llama3",
 		ResponseFormat: "ollama",
@@ -255,6 +281,12 @@ func TestHTTPKitchen_Exec_OllamaStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHTTPKitchen() error = %v", err)
 	}
+	setHTTPKitchenTransport(k, func(r *http.Request) (*http.Response, error) {
+		gotPath = r.URL.Path
+		return testHTTPResponse(http.StatusOK,
+			"data: {\"message\":{\"content\":\"part\"},\"done\":false}\n\n"+
+				"data: {\"message\":{\"content\":\"ial\"},\"done\":true}\n\n"), nil
+	})
 
 	result, err := k.Exec(context.Background(), kitchen.Task{Prompt: "say hi"})
 	if err != nil {
@@ -272,26 +304,24 @@ func TestHTTPKitchen_Exec_ReturnsPartialOutputOnContextCancel(t *testing.T) {
 	const envKey = "TEST_HTTP_KITCHEN_CANCEL"
 	t.Setenv(envKey, "secret")
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			t.Fatal("expected flusher")
-		}
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"\"}]}\n\n"))
-		flusher.Flush()
-		<-r.Context().Done()
-	}))
-	defer server.Close()
-
 	k, err := NewHTTPKitchen("api", HTTPKitchenConfig{
-		BaseURL: server.URL,
+		BaseURL: "http://api.test",
 		AuthKey: envKey,
 		Model:   "gpt-4.1",
 	}, []string{"code"}, kitchen.Cloud)
 	if err != nil {
 		t.Fatalf("NewHTTPKitchen() error = %v", err)
 	}
+	setHTTPKitchenTransport(k, func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: &contextCancelBody{
+				ctx:  r.Context(),
+				data: "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"\"}]}\n\n",
+			},
+		}, nil
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var lines []string
@@ -332,23 +362,49 @@ func TestHTTPKitchen_Exec_HTTPError(t *testing.T) {
 	const envKey = "TEST_HTTP_KITCHEN_ERROR"
 	t.Setenv(envKey, "secret")
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "bad upstream", http.StatusTooManyRequests)
-	}))
-	defer server.Close()
-
 	k, err := NewHTTPKitchen("api", HTTPKitchenConfig{
-		BaseURL: server.URL,
+		BaseURL: "http://api.test",
 		AuthKey: envKey,
 		Model:   "gpt-4.1",
 	}, []string{"code"}, kitchen.Cloud)
 	if err != nil {
 		t.Fatalf("NewHTTPKitchen() error = %v", err)
 	}
+	setHTTPKitchenTransport(k, func(r *http.Request) (*http.Response, error) {
+		return testHTTPResponse(http.StatusTooManyRequests, "bad upstream\n"), nil
+	})
 
 	_, err = k.Exec(context.Background(), kitchen.Task{Prompt: "say hi"})
 	if err == nil || !strings.Contains(err.Error(), "API status 429") {
 		t.Fatalf("err = %v, want API status 429", err)
+	}
+}
+
+func TestHTTPKitchen_Exec_IncompleteStreamReturnsError(t *testing.T) {
+	const envKey = "TEST_HTTP_KITCHEN_INCOMPLETE"
+	t.Setenv(envKey, "secret")
+
+	k, err := NewHTTPKitchen("api", HTTPKitchenConfig{
+		BaseURL: "http://api.test",
+		AuthKey: envKey,
+		Model:   "gpt-4.1",
+	}, []string{"code"}, kitchen.Cloud)
+	if err != nil {
+		t.Fatalf("NewHTTPKitchen() error = %v", err)
+	}
+	setHTTPKitchenTransport(k, func(r *http.Request) (*http.Response, error) {
+		return testHTTPResponse(http.StatusOK, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"\"}]}\n\n"), nil
+	})
+
+	result, err := k.Exec(context.Background(), kitchen.Task{Prompt: "say hi"})
+	if err == nil || !strings.Contains(err.Error(), "incomplete HTTP stream") {
+		t.Fatalf("err = %v, want incomplete HTTP stream", err)
+	}
+	if result.ExitCode != 1 {
+		t.Fatalf("ExitCode = %d, want 1", result.ExitCode)
+	}
+	if result.Output != "partial" {
+		t.Fatalf("Output = %q, want partial", result.Output)
 	}
 }
 

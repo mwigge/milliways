@@ -1,53 +1,53 @@
 ## ADDED Requirements
 
-### Requirement: Runners emit SessionLimitReached signal
+### Requirement: Runners report SessionLimitReached signal
 
-Each runner's `Execute` method SHALL emit a progress event with type `"session.limit_reached"` when it detects that the session has been exhausted (context window, token quota, or rate limit). This event SHALL be emitted before the runner returns an error.
+Each runner's `Execute` method SHALL return the typed `ErrSessionLimit` error when it detects that the session has been exhausted (context window, token quota, or rate limit). The terminal dispatch loop SHALL treat that typed error as the `SessionLimitReached` signal before surfacing any user-visible failure.
 
 #### Scenario: Claude context window exhausted
 
 - **WHEN** claude runner receives stderr containing `context window` or `session limit`
 - **OR** claude runner exits with a signal consistent with context overflow
-- **THEN** runner SHALL emit event `{type: "session.limit_reached", runner: "claude"}`
-- **AND** runner SHALL return without emitting a user-visible error (the REPL handles it)
+- **THEN** runner SHALL return `ErrSessionLimit`
+- **AND** the terminal dispatch loop SHALL handle it before printing a user-visible failure
 
 #### Scenario: Codex max turns reached
 
 - **WHEN** codex runner receives a JSON event with type `max_turns` or `context_length_exceeded`
-- **THEN** runner SHALL emit event `{type: "session.limit_reached", runner: "codex"}`
+- **THEN** runner SHALL return `ErrSessionLimit`
 
 #### Scenario: MiniMax quota exceeded
 
 - **WHEN** MiniMax HTTP runner receives HTTP 429 with body containing `quota_exceeded`
-- **THEN** runner SHALL emit event `{type: "session.limit_reached", runner: "minimax"}`
+- **THEN** runner SHALL return `ErrSessionLimit`
 
 #### Scenario: Copilot rate limited
 
 - **WHEN** copilot runner receives stderr matching `rate limit` pattern
-- **THEN** runner SHALL emit event `{type: "session.limit_reached", runner: "copilot"}`
+- **THEN** runner SHALL return `ErrSessionLimit`
 
 #### Scenario: Non-limit error not misclassified
 
 - **WHEN** claude runner exits non-zero for a reason unrelated to session limits (e.g. auth failure)
-- **THEN** runner SHALL NOT emit `session.limit_reached`
-- **AND** runner SHALL surface the original error to the REPL as normal
+- **THEN** runner SHALL NOT return `ErrSessionLimit`
+- **AND** runner SHALL surface the original error to the terminal as normal
 
-### Requirement: REPL intercepts limit signal and auto-rotates
+### Requirement: Terminal intercepts limit signal and auto-rotates
 
-When a `session.limit_reached` event is received during dispatch and a rotation ring is configured, the REPL SHALL automatically trigger a takeover to the next ring member and re-dispatch the original prompt.
+When `ErrSessionLimit` is received during dispatch and a rotation ring is configured, the terminal SHALL automatically trigger a takeover to the next ring member and re-dispatch the original prompt.
 
 #### Scenario: Auto-rotate on limit with ring active
 
-- **WHEN** claude emits `session.limit_reached`
+- **WHEN** claude returns `ErrSessionLimit`
 - **AND** rotation ring `[claude, codex]` is configured
-- **THEN** REPL SHALL generate a takeover briefing
+- **THEN** terminal SHALL generate a takeover briefing
 - **AND** rotate ring to codex
 - **AND** re-dispatch the original user prompt to codex with the briefing injected
 - **AND** print `[auto-takeover] claude session limit — continuing on codex`
 
 #### Scenario: Limit with no ring configured
 
-- **WHEN** runner emits `session.limit_reached`
+- **WHEN** runner returns `ErrSessionLimit`
 - **AND** no rotation ring is configured
 - **THEN** REPL SHALL print `Session limit reached on <runner>. Use /takeover-ring to enable auto-rotation, or /takeover <runner> to continue manually.`
 - **AND** SHALL NOT switch runners automatically
