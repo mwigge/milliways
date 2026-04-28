@@ -87,8 +87,9 @@ var commandHandlers = map[string]commandHandler{
 	"minimax": func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "minimax") },
 	"copilot": func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "copilot") },
 	"local":   func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "local") },
-	// Rotation ring
+	// Rotation ring and takeover
 	"takeover-ring": handleTakeoverRing,
+	"takeover":      handleTakeover,
 }
 
 func handleSwitch(ctx context.Context, r *REPL, args string) error {
@@ -1672,4 +1673,74 @@ func handleTakeoverRing(ctx context.Context, r *REPL, args string) error {
 		r.println(fmt.Sprintf("Rotation ring set: %s", display))
 		return nil
 	}
+}
+
+// handleTakeover switches the active runner and injects a handoff briefing as
+// the first turn of the new runner's context.
+//
+// Usage:
+//
+//	/takeover <runner>  — switch to the named runner
+//	/takeover           — advance the ring (if configured); error otherwise
+func handleTakeover(ctx context.Context, r *REPL, args string) error {
+	args = strings.TrimSpace(args)
+
+	from := ""
+	if r.runner != nil {
+		from = r.runner.Name()
+	}
+
+	var to string
+
+	switch {
+	case args != "":
+		// Explicit target runner supplied — validate it.
+		if _, ok := r.runners[args]; !ok {
+			return fmt.Errorf("Unknown runner: %s", args)
+		}
+		if args == from {
+			return fmt.Errorf("Already on %s — use a different runner", from)
+		}
+		to = args
+
+	case r.ring != nil:
+		// No explicit target; ring is configured — advance to next runner.
+		next, newPos, err := nextRingRunner(r.ring, r.runnerAvailable)
+		if err != nil {
+			return fmt.Errorf("ring exhausted: %w", err)
+		}
+		r.ring.Pos = newPos
+		to = next
+
+	default:
+		return fmt.Errorf("No target runner — use /takeover <runner> or configure a ring with /takeover-ring")
+	}
+
+	// Generate briefing from transcript + turn buffer.
+	currentCwd, _ := os.Getwd()
+	briefing := GenerateBriefing(r.TranscriptPath(), r.turnBuffer, currentCwd)
+
+	// Prepend briefing as a synthetic user turn so the new runner has context.
+	synthetic := ConversationTurn{
+		Role:   "user",
+		Text:   fmt.Sprintf("[TAKEOVER from %s → %s]\n%s", from, to, briefing),
+		Runner: from,
+		At:     time.Now(),
+	}
+	r.turnBuffer = append([]ConversationTurn{synthetic}, r.turnBuffer...)
+	if len(r.turnBuffer) > MaxHistoryTurns {
+		r.turnBuffer = r.turnBuffer[:MaxHistoryTurns]
+	}
+
+	// Switch runner.
+	if err := handleSwitch(ctx, r, to); err != nil {
+		return err
+	}
+
+	r.println(fmt.Sprintf("[takeover] %s → %s — briefing injected", from, to))
+
+	// Snapshot briefing to MemPalace asynchronously (best-effort).
+	go snapshotToMemPalace(briefing)
+
+	return nil
 }
