@@ -301,26 +301,195 @@ Milliways injects relevant memories and code context before each dispatch when t
 
 ## Agent toolkit
 
-milliways can load agent role definitions and skill modules from a directory
-you control:
+milliways can load agent role definitions and skill modules from a directory you control:
 
 ```bash
 export MILLIWAYS_AGENTS_DIR=~/path/to/your/agents
 ```
 
-[agent-toolkit-bundle](https://github.com/mwigge/agent-toolkit-bundle) is a
-ready-made toolkit with 17 agents and 43 skills for Claude Code, OpenCode, and
-Codex. Clone it and point milliways at it:
+[agent-toolkit-bundle](https://github.com/mwigge/agent-toolkit-bundle) is a ready-made toolkit with 20 agents and 50+ skills for Claude Code, OpenCode, and Codex.
+
+### Install
 
 ```bash
 git clone https://github.com/mwigge/agent-toolkit-bundle ~/agent-toolkit-bundle
+```
+
+Add to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.):
+
+```bash
 export MILLIWAYS_AGENTS_DIR=~/agent-toolkit-bundle
 ```
 
-milliways reads:
-- `$MILLIWAYS_AGENTS_DIR/agents/opencode/*.md` — agent role definitions
-- `$MILLIWAYS_AGENTS_DIR/skills/<name>/SKILL.md` — skill content
-- `$MILLIWAYS_AGENTS_DIR/AGENTS.md` or `CLAUDE.md` — global conventions
+Restart your shell or `source ~/.zshrc`. milliways will pick up agents and skills on the next launch.
+
+### How it works
+
+milliways reads from `$MILLIWAYS_AGENTS_DIR`:
+
+| Path | Purpose |
+|------|---------|
+| `agents/opencode/*.md` | Agent role definitions (frontmatter + system prompt) |
+| `skills/<name>/SKILL.md` | Skill content injected before dispatch |
+| `skill-rules.json` | Regex rules that map prompt keywords to skills |
+| `AGENTS.md` / `CLAUDE.md` | Global conventions prepended to every context |
+
+Skills are auto-matched against your prompt before each dispatch. Matching skill content is injected into the context so the active runner has domain-specific guidance without you needing to invoke it explicitly.
+
+### Agents
+
+Invoke via `@agent-name` (Claude Code / OpenCode). All agents are leaf agents — they do not spawn sub-agents.
+
+| Agent | Role |
+|-------|------|
+| `@architect` | Architecture design, ADRs, interface specs |
+| `@ai-developer` | LLM integration, RAG, MCP servers, evals |
+| `@api` | REST/OpenAPI 3.1 design and review |
+| `@coder-go` | Go feature implementation (strict TDD) |
+| `@coder-python` | Python feature implementation (strict TDD) |
+| `@coder-rust` | Rust feature implementation (strict TDD) |
+| `@coder-sql` | SQL migrations, schema design, query optimisation |
+| `@coder-tdd` | TDD red phase — failing tests before implementation |
+| `@coder-typescript` | TypeScript/React implementation (strict TDD, Vitest) |
+| `@data-analyst` | Data analysis, statistical testing, visualisation |
+| `@data-engineer` | Pipelines, dbt, Airflow, Spark, Snowflake |
+| `@jira-story` | Jira story creation with acceptance criteria |
+| `@observability` | OpenTelemetry instrumentation review |
+| `@opsx` | OpenSpec workflow — propose, apply, archive changes |
+| `@product-owner` | User stories, backlog prioritisation, OKRs |
+| `@refactor` | Refactoring — extract, rename, simplify, pay debt |
+| `@reviewer` | Adversarial 4-lens code review |
+| `@security` | Security review — OWASP, secrets, auth, deps |
+| `@sre` | Deployment safety, SLOs, runbooks, rollback |
+| `@tester` | Test strategy, coverage analysis, TDD red phase |
+
+### Skills
+
+Skills are auto-activated by keyword matching (`skill-rules.json`). You can also invoke them explicitly with `/skill-name` in Claude Code or OpenCode.
+
+**Languages & runtimes**
+
+| Skill | Keywords |
+|-------|----------|
+| `python` | Python, pytest, FastAPI, Django, Flask |
+| `typescript` | TypeScript, React, Next.js, Vitest, Vite |
+| `golang` | Go, goroutine, channel, Go module |
+| `golang-patterns` | Idiomatic Go, Go best practices |
+| `rust` | Rust, Cargo, lifetime, borrow |
+| `nodejs` | Node.js, Express, Fastify, NestJS, npm |
+
+**Databases**
+
+| Skill | Keywords |
+|-------|----------|
+| `database` | SQL, Postgres, MySQL, migration, schema |
+
+**DevOps & infrastructure**
+
+| Skill | Keywords |
+|-------|----------|
+| `ci-cd` | CI/CD, GitHub Actions, GitLab CI, pipeline, deployment |
+| `docker-expert` | Docker, container, Dockerfile, Compose |
+| `kubernetes-patterns` | Kubernetes, k8s, Helm, kubectl |
+| `iac-patterns` | Terraform, Pulumi, IaC, CDK |
+
+**Observability & reliability**
+
+| Skill | Keywords |
+|-------|----------|
+| `observability` | OTel, OpenTelemetry, tracing, span, Jaeger |
+| `sre` | SRE, SLO, SLA, error budget, toil |
+| `incident-response` | Incident, postmortem, oncall, runbook |
+| `chaos-engineer` | Chaos, fault injection, resilience, circuit breaker |
+
+**Architecture & design**
+
+| Skill | Keywords |
+|-------|----------|
+| `microservices-architect` | Microservice, service mesh, gRPC, protobuf |
+| `multi-tenancy` | Multi-tenant, tenant isolation |
+| `performance-engineer` | Performance, latency, throughput, profiling |
+| `api-designer` | REST API, OpenAPI, endpoint, Swagger |
+| `web-design-guidelines` | CSS, UI, design system, Tailwind, accessibility |
+
+**Quality**
+
+| Skill | Keywords |
+|-------|----------|
+| `tdd-workflow` | TDD, test-driven, red-green, failing test |
+| `verification-loop` | Verify, validate, smoke test, integration test |
+| `refactoring-specialist` | Refactor, clean up, extract method, tech debt |
+| `pr-review` | PR review, code review, pull request |
+
+**Security & compliance**
+
+| Skill | Keywords |
+|-------|----------|
+| `security-review` | Security, OWASP, vulnerability, injection, XSS |
+| `oauth` | OAuth, OIDC, JWT, authentication, SSO |
+| `compliance` | Compliance, audit, GDPR, PCI-DSS, SOC2 |
+
+**Data**
+
+| Skill | Keywords |
+|-------|----------|
+| `data-analyst` | Data analysis, exploratory, statistics |
+| `data-engineer` | Data pipeline, dbt, Airflow, Spark |
+| `statistical-analysis` | Statistical, regression, hypothesis, p-value |
+| `time-series` | Time series, forecast, seasonality, ARIMA |
+| `data-visualisation` | Visualisation, chart, plot, matplotlib, Plotly |
+
+**AI & LLM**
+
+| Skill | Keywords |
+|-------|----------|
+| `ai-developer` | LLM, RAG, MCP, evals, prompt engineering, embeddings |
+| `prompt-engineer` | Prompt design, system prompt, few-shot, chain-of-thought |
+
+**Productivity & communication**
+
+| Skill | Keywords |
+|-------|----------|
+| `documentation` | Documentation, README, changelog, wiki |
+| `presentation` | Presentation, slide, deck, pitch |
+| `product-owner` | Product owner, user story, sprint, OKR, roadmap |
+| `confluence` | Confluence, Atlassian |
+
+**Memory & code intelligence**
+
+| Skill | Keywords |
+|-------|----------|
+| `mempalace` | MemPalace, palace, memory store |
+| `codegraph` | CodeGraph, call graph, blast radius, symbol search |
+
+**OpenSpec workflow**
+
+| Skill | Keywords |
+|-------|----------|
+| `openspec-apply-change` | OpenSpec, `/opsx` |
+| `openspec-explore` | OpenSpec explore |
+| `openspec-propose` | OpenSpec propose |
+| `openspec-archive-change` | OpenSpec archive |
+
+**Specialised**
+
+| Skill | Keywords |
+|-------|----------|
+| `caveman` | Caveman — token-compressed output (~75% savings) |
+| `pdm-expert` | PDM, Python dependency management |
+
+### Customising skill routing
+
+`skill-rules.json` at the bundle root maps regex patterns to skill names. You can add your own rules or override existing ones:
+
+```json
+[
+  { "pattern": "\\bdjango\\b|\\bdrf\\b", "skill": "python" },
+  { "pattern": "\\bmy-company-framework\\b", "skill": "my-custom-skill" }
+]
+```
+
+Rules are matched in order; the first match for a skill name wins. milliways also checks `$MILLIWAYS_AGENTS_DIR/.claude/skill-rules.json` as a fallback.
 
 ---
 
