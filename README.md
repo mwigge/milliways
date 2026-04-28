@@ -2,7 +2,7 @@
 
 > The Restaurant at the End of the Universe — one CLI to route them all.
 
-Milliways is a native AI terminal for macOS — the restaurant at the end of the universe where Claude, Codex, Pool, Gemini, Copilot, and MiniMax all show up for dinner.
+Milliways is an AI terminal for macOS and Linux — the restaurant at the end of the universe where Claude, Codex, Pool, Gemini, Copilot, and MiniMax all show up for dinner.
 
 Open a tab and you're talking to an AI agent. Switch runners mid-session without losing context. Hit a quota limit and milliways rotates to the next one automatically, briefing it on exactly where things left off. Don't Panic — the full transcript is always on disk.
 
