@@ -657,6 +657,77 @@ func handleAuth(ctx context.Context, r *REPL, args string) error {
 	return nil
 }
 
+// modelCompletionContext returns the candidate model IDs, the partial text
+// typed after the command, and the full line prefix up to the partial word —
+// for tab-completion of model IDs.
+//
+// Returns (nil, "", "") when the line does not match a model command.
+func modelCompletionContext(r *REPL, line string) (ids []string, partial, linePrefix string) {
+	// Commands that accept a model ID argument.
+	type cmdSpec struct {
+		cmd      string  // e.g. "/model "
+		catalog  func() []string
+	}
+
+	claudeIDs := func() []string {
+		out := make([]string, 0, len(ClaudeModelCatalog))
+		for _, e := range ClaudeModelCatalog {
+			out = append(out, e.ID)
+		}
+		return out
+	}
+	codexIDs := func() []string {
+		out := make([]string, 0, len(CodexModelCatalog))
+		for _, e := range CodexModelCatalog {
+			out = append(out, e.ID)
+		}
+		return out
+	}
+	minimaxIDs := func() []string {
+		out := make([]string, 0, len(MinimaxModelCatalog))
+		for _, e := range MinimaxModelCatalog {
+			out = append(out, e.ID)
+		}
+		return out
+	}
+
+	// /model uses the active runner's catalog.
+	runnerIDsForModel := func() []string {
+		if r.runner == nil {
+			return nil
+		}
+		switch r.runner.(type) {
+		case *ClaudeRunner:
+			return claudeIDs()
+		case *CodexRunner:
+			return codexIDs()
+		case *MinimaxRunner:
+			return minimaxIDs()
+		}
+		return nil
+	}
+
+	specs := []cmdSpec{
+		{"/model ", runnerIDsForModel},
+		{"/claude-model ", claudeIDs},
+		{"/codex-model ", codexIDs},
+		{"/minimax-model ", minimaxIDs},
+	}
+
+	for _, spec := range specs {
+		if !strings.HasPrefix(line, spec.cmd) {
+			continue
+		}
+		partial = line[len(spec.cmd):]
+		catalog := spec.catalog()
+		if catalog == nil {
+			return nil, "", ""
+		}
+		return catalog, partial, spec.cmd
+	}
+	return nil, "", ""
+}
+
 func handleModel(ctx context.Context, r *REPL, args string) error {
 	if r.runner == nil {
 		return fmt.Errorf("no runner selected")
@@ -665,14 +736,26 @@ func handleModel(ctx context.Context, r *REPL, args string) error {
 	switch runner := r.runner.(type) {
 	case *ClaudeRunner:
 		if args == "" {
-			r.printClaudeModelCatalog(runner)
+			picked := r.pickClaudeModel(runner)
+			if picked != "" {
+				runner.SetModel(picked)
+				r.printClaudeSettings(runner)
+			} else {
+				r.printClaudeModelCatalog(runner)
+			}
 			return nil
 		}
 		runner.SetModel(args)
 		r.printClaudeSettings(runner)
 	case *CodexRunner:
 		if args == "" {
-			r.printCodexModelCatalog(runner)
+			picked := r.pickCodexModel(runner)
+			if picked != "" {
+				runner.SetModel(picked)
+				r.printCodexSettings(runner)
+			} else {
+				r.printCodexModelCatalog(runner)
+			}
 			return nil
 		}
 		runner.SetModel(args)
@@ -799,7 +882,13 @@ func handleMinimaxModel(ctx context.Context, r *REPL, args string) error {
 		return err
 	}
 	if strings.TrimSpace(args) == "" {
-		r.printMinimaxCatalog()
+		picked := r.pickMinimaxModel(mm)
+		if picked != "" {
+			mm.SetModel(picked)
+			r.printMinimaxSettings(mm)
+		} else {
+			r.printMinimaxCatalog()
+		}
 		return nil
 	}
 	mm.SetModel(args)
@@ -826,6 +915,35 @@ func (r *REPL) printMinimaxCatalog() {
 		r.println("")
 	}
 	r.println(MutedText("  /minimax-model <id> to switch"))
+}
+
+// pickClaudeModel opens the interactive picker for Claude models.
+// Returns the selected model ID, or "" if the picker was cancelled or stdin is
+// not a terminal (caller should fall back to printing the catalog).
+func (r *REPL) pickClaudeModel(cl *ClaudeRunner) string {
+	ids := make([]string, 0, len(ClaudeModelCatalog))
+	for _, e := range ClaudeModelCatalog {
+		ids = append(ids, e.ID)
+	}
+	return pickFromList(r.stdout, ids, cl.Settings().Model)
+}
+
+// pickCodexModel opens the interactive picker for Codex models.
+func (r *REPL) pickCodexModel(codex *CodexRunner) string {
+	ids := make([]string, 0, len(CodexModelCatalog))
+	for _, e := range CodexModelCatalog {
+		ids = append(ids, e.ID)
+	}
+	return pickFromList(r.stdout, ids, codex.Settings().Model)
+}
+
+// pickMinimaxModel opens the interactive picker for MiniMax models.
+func (r *REPL) pickMinimaxModel(mm *MinimaxRunner) string {
+	ids := make([]string, 0, len(MinimaxModelCatalog))
+	for _, e := range MinimaxModelCatalog {
+		ids = append(ids, e.ID)
+	}
+	return pickFromList(r.stdout, ids, mm.Settings().Model)
 }
 
 func (r *REPL) minimaxRunner() (*MinimaxRunner, error) {
