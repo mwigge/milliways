@@ -164,9 +164,8 @@ func TestRunnerAvailable_DailyQuotaExhausted(t *testing.T) {
 			}, nil
 		},
 	}
-	// The runnerAvailable function uses Ratio >= 1.0 to detect exhaustion
-	// since QuotaPeriod doesn't have Remaining field.
-	// Based on the spec the function checks q.Daily but the struct uses q.Day.
-	// We use q.Day.Ratio >= 1.0 as the exhaustion signal.
-	_ = r.runnerAvailable("claude") // just verify no panic
+	got := r.runnerAvailable("claude")
+	if got {
+		t.Error("runnerAvailable() = true, want false when daily quota exhausted")
+	}
 }

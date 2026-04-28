@@ -333,7 +333,10 @@ func runCodexJSON(ctx context.Context, cmd *exec.Cmd, out io.Writer, reasoningMo
 		_, _ = out.Write([]byte(strings.Join(stderrLines, "\n") + "\n"))
 	}
 	if sawSessionLimit {
-		_, _ = out.Write([]byte(SessionLimitSentinel + "\n"))
+		if waitErr != nil {
+			return fmt.Errorf("%w: %w", ErrSessionLimit, waitErr)
+		}
+		return ErrSessionLimit
 	}
 	return waitErr
 }

@@ -15,6 +15,7 @@
 package repl
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -29,6 +30,26 @@ const (
 )
 
 var decisionKeywords = []string{"decided", "we will", "use X instead", "going with", "Going with", "use instead", "chose", "switched to"}
+
+// readTailBytes reads up to maxBytes from the end of the file at path.
+// If the file is smaller than maxBytes, the entire file is returned.
+func readTailBytes(path string, maxBytes int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxBytes {
+		if _, err := f.Seek(-maxBytes, io.SeekEnd); err != nil {
+			return nil, err
+		}
+	}
+	return io.ReadAll(f)
+}
 
 // GenerateBriefing produces a structured handoff briefing.
 // It prefers reading from logPath (the full TTY transcript) when available.
@@ -46,7 +67,7 @@ func GenerateBriefing(logPath string, turns []ConversationTurn, cwd string) stri
 	// Try to parse from transcript log first.
 	logUsed := false
 	if logPath != "" {
-		if data, err := os.ReadFile(logPath); err == nil {
+		if data, err := readTailBytes(logPath, 64*1024); err == nil {
 			logUsed = true
 			currentTask, progressBullets, decisions, nextStep = parseTranscript(string(data))
 		}
@@ -104,8 +125,9 @@ func GenerateBriefing(logPath string, turns []ConversationTurn, cwd string) stri
 	sb.WriteString(nextStepSection)
 
 	result := sb.String()
-	if len(result) > briefingMaxChars {
-		result = result[:briefingMaxChars]
+	runes := []rune(result)
+	if len(runes) > briefingMaxChars {
+		result = string(runes[:briefingMaxChars])
 	}
 	return result
 }

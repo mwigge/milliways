@@ -27,6 +27,9 @@ var ErrRingExhausted = errors.New("all ring runners exhausted")
 //
 // available is a callback returning true if the named runner has quota > 0.
 func nextRingRunner(ring *RingConfig, available func(name string) bool) (string, int, error) {
+	if ring == nil {
+		return "", -1, ErrRingExhausted
+	}
 	n := len(ring.Runners)
 	if n == 0 {
 		return "", -1, ErrRingExhausted

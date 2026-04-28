@@ -427,7 +427,10 @@ scanLoop:
 		}
 	}
 	if claudeStderrSignalsLimit(stderrLines) {
-		_, _ = out.Write([]byte(SessionLimitSentinel + "\n"))
+		if waitErr != nil {
+			return sessionUsage, fmt.Errorf("%w: %w", ErrSessionLimit, waitErr)
+		}
+		return sessionUsage, ErrSessionLimit
 	}
 	return sessionUsage, waitErr
 }

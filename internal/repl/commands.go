@@ -1659,6 +1659,11 @@ func handleTakeoverRing(ctx context.Context, r *REPL, args string) error {
 			runners = append(runners, name)
 		}
 
+		if len(runners) < 2 {
+			r.println("Rotation ring must have at least 2 runners")
+			return nil
+		}
+
 		// Validate each runner name.
 		for _, name := range runners {
 			if _, ok := r.runners[name]; !ok {
@@ -1732,6 +1737,8 @@ func handleTakeover(ctx context.Context, r *REPL, args string) error {
 		r.turnBuffer = r.turnBuffer[:MaxHistoryTurns]
 	}
 
+	r.println(fmt.Sprintf("[takeover] forwarding session context to %s — includes prior conversation content", to))
+
 	// Switch runner.
 	if err := handleSwitch(ctx, r, to); err != nil {
 		return err
@@ -1740,7 +1747,7 @@ func handleTakeover(ctx context.Context, r *REPL, args string) error {
 	r.println(fmt.Sprintf("[takeover] %s → %s — briefing injected", from, to))
 
 	// Snapshot briefing to MemPalace asynchronously (best-effort).
-	go snapshotToMemPalace(briefing)
+	snapshotToMemPalace(briefing)
 
 	return nil
 }

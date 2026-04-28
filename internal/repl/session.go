@@ -274,9 +274,6 @@ func (s *SessionStore) pruneAutoSessions(cwdH string) {
 	toDelete := matches[:len(matches)-maxAutoSessions]
 	for _, name := range toDelete {
 		_ = os.Remove(filepath.Join(s.dir, name))
-		// Also remove the sidecar transcript log if it exists.
-		logName := strings.TrimSuffix(name, ".json") + ".log"
-		_ = os.Remove(filepath.Join(s.dir, logName))
 	}
 }
 

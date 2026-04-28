@@ -17,6 +17,7 @@ package repl
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -104,7 +105,10 @@ func runCopilotCmd(ctx context.Context, cmd *exec.Cmd, out io.Writer) error {
 	waitErr := <-waitDone
 
 	if copilotStderrSignalsLimit(stderrLines) {
-		_, _ = out.Write([]byte(SessionLimitSentinel + "\n"))
+		if waitErr != nil {
+			return fmt.Errorf("%w: %w", ErrSessionLimit, waitErr)
+		}
+		return ErrSessionLimit
 	}
 	return waitErr
 }
@@ -114,7 +118,10 @@ func runCopilotCmd(ctx context.Context, cmd *exec.Cmd, out io.Writer) error {
 func copilotStderrSignalsLimit(lines []string) bool {
 	for _, l := range lines {
 		lower := strings.ToLower(l)
-		if strings.Contains(lower, "rate limit") || strings.Contains(lower, "context") {
+		if strings.Contains(lower, "rate limit") ||
+			strings.Contains(lower, "context window") ||
+			strings.Contains(lower, "context_length") ||
+			strings.Contains(lower, "token limit") {
 			return true
 		}
 	}

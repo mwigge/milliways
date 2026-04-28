@@ -600,7 +600,7 @@ func runMinimaxSSE(ctx context.Context, client *http.Client, req *http.Request, 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 		if resp.StatusCode == http.StatusTooManyRequests && minimaxBodySignalsLimit(body) {
-			_, _ = out.Write([]byte(SessionLimitSentinel + "\n"))
+			return nil, fmt.Errorf("%w: minimax API error %d: %s", ErrSessionLimit, resp.StatusCode, string(body))
 		}
 		return nil, fmt.Errorf("minimax API error %d: %s", resp.StatusCode, string(body))
 	}

@@ -17,6 +17,7 @@ package repl
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -230,6 +231,7 @@ type REPL struct {
 	lastCtrlC          time.Time // for double-Ctrl-C exit detection
 	statusBar          *StatusBar
 	transcriptW        *TranscriptWriter // TTY transcript writer; nil when unavailable
+	transcriptPath     string            // stable path cached at session start; empty when unavailable
 	ring               *RingConfig       // nil = no ring configured
 	rotateCount        int               // consecutive auto-rotations for the current user turn
 }
@@ -239,12 +241,9 @@ func (r *REPL) SetVersion(v string) {
 }
 
 // TranscriptPath returns the path of the current TTY transcript log, or "" if unavailable.
+// The path is cached at session start to avoid CWD drift from shell commands.
 func (r *REPL) TranscriptPath() string {
-	if r.sessionStore == nil {
-		return ""
-	}
-	cwd, _ := os.Getwd()
-	return filepath.Join(r.sessionStore.dir, fmt.Sprintf("current-%s.log", cwdHash8(cwd)))
+	return r.transcriptPath
 }
 
 // SetStatusBar wires a persistent status bar to the terminal.
@@ -398,11 +397,13 @@ func (r *REPL) Run(ctx context.Context) error {
 	}
 
 	// Open the TTY transcript writer. Use a stable per-cwd path so the briefing
-	// generator can find it without knowing the auto-save filename.
+	// generator can find it without knowing the auto-save filename. Cache the
+	// path in r.transcriptPath so it is immune to CWD changes by shell commands.
 	if r.sessionStore != nil {
 		cwd, _ := os.Getwd()
 		logName := fmt.Sprintf("current-%s.log", cwdHash8(cwd))
 		logPath := filepath.Join(r.sessionStore.dir, logName)
+		r.transcriptPath = logPath
 		tw := NewTranscriptWriter(r.stdout, logPath)
 		r.transcriptW = tw
 		r.stdout = tw
@@ -764,10 +765,7 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 			tee.Flush()
 			dur := time.Since(start)
 
-			// Strip sentinel from output stored in substrate — the raw bytes
-			// already went to stdout via tee and are harmless there.
-			outputText := strings.ReplaceAll(outputBuf.String(), SessionLimitSentinel+"\n", "")
-			outputText = strings.ReplaceAll(outputText, SessionLimitSentinel, "")
+			outputText := outputBuf.String()
 
 			if dispatchSession != nil && len(outputText) > 0 {
 				r.appendAssistantTurn(ctx, dispatchRunner.Name(), outputText)
@@ -841,7 +839,7 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 			return cycleResult{dispatchRunner: dispatchRunner, dispatchErr: ctx.Err()}
 		}
 
-		sessionLimit := strings.Contains(outputBuf.String(), SessionLimitSentinel)
+		sessionLimit := errors.Is(dispatchErr, ErrSessionLimit)
 		return cycleResult{
 			sessionLimit:   sessionLimit,
 			dispatchRunner: dispatchRunner,
@@ -857,28 +855,36 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 			return res.dispatchErr
 		}
 
-		// Session limit detected.
+		// Session limit detected. Strip ErrSessionLimit from the error before
+		// returning — the REPL already printed a user-facing message; propagating
+		// ErrSessionLimit would cause a second error line to appear at the prompt.
+		limitErr := res.dispatchErr
+		if errors.Is(limitErr, ErrSessionLimit) {
+			limitErr = nil
+		}
+
 		if r.ring == nil {
 			r.println(fmt.Sprintf("[session limit] %s hit its limit. Use /takeover-ring to enable auto-rotation, or /takeover <runner> to continue manually.", res.dispatchRunner.Name()))
-			return res.dispatchErr
+			return limitErr
 		}
 
 		// Rotation cap: halt when we've rotated as many times as there are runners.
 		if r.rotateCount >= len(r.ring.Runners) {
 			r.println("[ring] all runners hit session limits — cannot continue")
-			return res.dispatchErr
+			return limitErr
 		}
 
 		next, newPos, err := nextRingRunner(r.ring, r.runnerAvailable)
 		if err != nil {
 			r.println("[ring] all runners hit session limits — cannot continue")
-			return res.dispatchErr
+			return limitErr
 		}
 
 		r.ring.Pos = newPos
 		r.rotateCount++
 
 		r.println(fmt.Sprintf("[auto-takeover] %s session limit — continuing on %s", res.dispatchRunner.Name(), next))
+		r.println(fmt.Sprintf("[takeover] forwarding session context to %s — includes prior conversation content", next))
 
 		currentCwd, _ := os.Getwd()
 		briefing := GenerateBriefing(r.TranscriptPath(), r.turnBuffer, currentCwd)
@@ -897,11 +903,11 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 
 		if switchErr := r.SetRunner(next); switchErr != nil {
 			r.println(fmt.Sprintf("[ring] could not switch to %s: %v", next, switchErr))
-			return switchErr
+			return switchErr // real error, not ErrSessionLimit
 		}
 		r.loadRules()
 
-		go snapshotToMemPalace(briefing)
+		snapshotToMemPalace(briefing)
 		// Loop continues — re-dispatch to the new runner.
 	}
 }

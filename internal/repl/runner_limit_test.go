@@ -17,6 +17,7 @@ package repl
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -94,10 +95,13 @@ func TestRunClaudeJSONEmitsSentinelOnLimitStderr(t *testing.T) {
 		`echo 'context window exceeded' >&2; exit 1`)
 
 	var buf bytes.Buffer
-	_, _ = runClaudeJSON(ctx, cmd, DispatchRequest{Prompt: "test"}, &buf, ClaudeReasoningOff)
+	_, err := runClaudeJSON(ctx, cmd, DispatchRequest{Prompt: "test"}, &buf, ClaudeReasoningOff)
 
-	if !strings.Contains(buf.String(), SessionLimitSentinel) {
-		t.Errorf("output missing SessionLimitSentinel; got: %q", buf.String())
+	if !errors.Is(err, ErrSessionLimit) {
+		t.Errorf("expected error wrapping ErrSessionLimit; got: %v", err)
+	}
+	if strings.Contains(buf.String(), SessionLimitSentinel) {
+		t.Errorf("output must not contain SessionLimitSentinel; got: %q", buf.String())
 	}
 }
 
@@ -108,10 +112,13 @@ func TestRunClaudeJSONNoSentinelOnNormalError(t *testing.T) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", `echo 'network timeout' >&2; exit 1`)
 
 	var buf bytes.Buffer
-	_, _ = runClaudeJSON(ctx, cmd, DispatchRequest{Prompt: "test"}, &buf, ClaudeReasoningOff)
+	_, err := runClaudeJSON(ctx, cmd, DispatchRequest{Prompt: "test"}, &buf, ClaudeReasoningOff)
 
+	if errors.Is(err, ErrSessionLimit) {
+		t.Errorf("error must not wrap ErrSessionLimit for non-limit error; got: %v", err)
+	}
 	if strings.Contains(buf.String(), SessionLimitSentinel) {
-		t.Errorf("output unexpectedly contains SessionLimitSentinel for non-limit error; got: %q", buf.String())
+		t.Errorf("output must not contain SessionLimitSentinel for non-limit error; got: %q", buf.String())
 	}
 }
 
@@ -182,10 +189,13 @@ func TestRunCodexJSONEmitsSentinelOnMaxTurns(t *testing.T) {
 		`printf '%s\n' '{"type":"max_turns"}'`)
 
 	var buf bytes.Buffer
-	_ = runCodexJSON(ctx, cmd, &buf, CodexReasoningOff)
+	err := runCodexJSON(ctx, cmd, &buf, CodexReasoningOff)
 
-	if !strings.Contains(buf.String(), SessionLimitSentinel) {
-		t.Errorf("output missing SessionLimitSentinel; got: %q", buf.String())
+	if !errors.Is(err, ErrSessionLimit) {
+		t.Errorf("expected error wrapping ErrSessionLimit; got: %v", err)
+	}
+	if strings.Contains(buf.String(), SessionLimitSentinel) {
+		t.Errorf("output must not contain SessionLimitSentinel; got: %q", buf.String())
 	}
 }
 
@@ -197,10 +207,13 @@ func TestRunCodexJSONEmitsSentinelOnContextLengthExceeded(t *testing.T) {
 		`printf '%s\n' '{"type":"context_length_exceeded"}'`)
 
 	var buf bytes.Buffer
-	_ = runCodexJSON(ctx, cmd, &buf, CodexReasoningOff)
+	err := runCodexJSON(ctx, cmd, &buf, CodexReasoningOff)
 
-	if !strings.Contains(buf.String(), SessionLimitSentinel) {
-		t.Errorf("output missing SessionLimitSentinel; got: %q", buf.String())
+	if !errors.Is(err, ErrSessionLimit) {
+		t.Errorf("expected error wrapping ErrSessionLimit; got: %v", err)
+	}
+	if strings.Contains(buf.String(), SessionLimitSentinel) {
+		t.Errorf("output must not contain SessionLimitSentinel; got: %q", buf.String())
 	}
 }
 
@@ -212,10 +225,13 @@ func TestRunCodexJSONNoSentinelOnNormalOutput(t *testing.T) {
 		`printf '%s\n' '{"type":"message","content":"all done"}'`)
 
 	var buf bytes.Buffer
-	_ = runCodexJSON(ctx, cmd, &buf, CodexReasoningOff)
+	err := runCodexJSON(ctx, cmd, &buf, CodexReasoningOff)
 
+	if errors.Is(err, ErrSessionLimit) {
+		t.Errorf("error must not wrap ErrSessionLimit for normal output; got: %v", err)
+	}
 	if strings.Contains(buf.String(), SessionLimitSentinel) {
-		t.Errorf("output unexpectedly contains SessionLimitSentinel; got: %q", buf.String())
+		t.Errorf("output must not contain SessionLimitSentinel; got: %q", buf.String())
 	}
 }
 
@@ -285,11 +301,11 @@ func TestRunMinimaxSSEEmitsSentinelOn429QuotaExceeded(t *testing.T) {
 	var buf bytes.Buffer
 	_, err := runMinimaxSSE(ctx, client, req, "MiniMax-M2.7", &buf, MinimaxReasoningOff)
 
-	if err == nil {
-		t.Fatal("expected error from 429, got nil")
+	if !errors.Is(err, ErrSessionLimit) {
+		t.Errorf("expected error wrapping ErrSessionLimit; got: %v", err)
 	}
-	if !strings.Contains(buf.String(), SessionLimitSentinel) {
-		t.Errorf("output missing SessionLimitSentinel; got: %q", buf.String())
+	if strings.Contains(buf.String(), SessionLimitSentinel) {
+		t.Errorf("output must not contain SessionLimitSentinel; got: %q", buf.String())
 	}
 }
 
@@ -308,10 +324,13 @@ func TestRunMinimaxSSENoSentinelOn429NonQuota(t *testing.T) {
 	req, _ := http.NewRequestWithContext(ctx, "POST", srv.URL, nil)
 
 	var buf bytes.Buffer
-	_, _ = runMinimaxSSE(ctx, client, req, "MiniMax-M2.7", &buf, MinimaxReasoningOff)
+	_, err := runMinimaxSSE(ctx, client, req, "MiniMax-M2.7", &buf, MinimaxReasoningOff)
 
+	if errors.Is(err, ErrSessionLimit) {
+		t.Errorf("error must not wrap ErrSessionLimit for non-quota 429; got: %v", err)
+	}
 	if strings.Contains(buf.String(), SessionLimitSentinel) {
-		t.Errorf("output unexpectedly contains SessionLimitSentinel; got: %q", buf.String())
+		t.Errorf("output must not contain SessionLimitSentinel; got: %q", buf.String())
 	}
 }
 
@@ -372,10 +391,13 @@ func TestRunCopilotCmdEmitsSentinelOnRateLimitStderr(t *testing.T) {
 		`echo 'hello from copilot'; echo 'rate limit exceeded' >&2; exit 1`)
 
 	var buf bytes.Buffer
-	_ = runCopilotCmd(ctx, cmd, &buf)
+	err := runCopilotCmd(ctx, cmd, &buf)
 
-	if !strings.Contains(buf.String(), SessionLimitSentinel) {
-		t.Errorf("output missing SessionLimitSentinel; got: %q", buf.String())
+	if !errors.Is(err, ErrSessionLimit) {
+		t.Errorf("expected error wrapping ErrSessionLimit; got: %v", err)
+	}
+	if strings.Contains(buf.String(), SessionLimitSentinel) {
+		t.Errorf("output must not contain SessionLimitSentinel; got: %q", buf.String())
 	}
 	// stdout output should still be present
 	if !strings.Contains(buf.String(), "hello from copilot") {
@@ -391,9 +413,12 @@ func TestRunCopilotCmdNoSentinelOnNormalStderr(t *testing.T) {
 		`echo 'hello from copilot'; echo 'authentication failed' >&2; exit 1`)
 
 	var buf bytes.Buffer
-	_ = runCopilotCmd(ctx, cmd, &buf)
+	err := runCopilotCmd(ctx, cmd, &buf)
 
+	if errors.Is(err, ErrSessionLimit) {
+		t.Errorf("error must not wrap ErrSessionLimit for non-limit error; got: %v", err)
+	}
 	if strings.Contains(buf.String(), SessionLimitSentinel) {
-		t.Errorf("output unexpectedly contains SessionLimitSentinel; got: %q", buf.String())
+		t.Errorf("output must not contain SessionLimitSentinel; got: %q", buf.String())
 	}
 }

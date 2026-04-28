@@ -22,7 +22,7 @@ import (
 	"testing"
 )
 
-// limitRunner emits SessionLimitSentinel on Execute and returns nil.
+// limitRunner returns ErrSessionLimit on Execute after writing partial output.
 type limitRunner struct {
 	name    string
 	calledN int
@@ -32,8 +32,7 @@ func (l *limitRunner) Name() string { return l.name }
 func (l *limitRunner) Execute(_ context.Context, _ DispatchRequest, w io.Writer) error {
 	l.calledN++
 	_, _ = w.Write([]byte("partial output\n"))
-	_, _ = w.Write([]byte(SessionLimitSentinel + "\n"))
-	return nil
+	return ErrSessionLimit
 }
 func (l *limitRunner) Quota() (*QuotaInfo, error)  { return nil, nil }
 func (l *limitRunner) AuthStatus() (bool, error)    { return true, nil }

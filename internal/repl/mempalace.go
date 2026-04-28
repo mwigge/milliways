@@ -21,21 +21,17 @@ import (
 )
 
 // snapshotToMemPalace asynchronously stores a handoff briefing in MemPalace.
-// It is gated on the MILLIWAYS_MEMPALACE_MCP_CMD environment variable being
-// set. When the variable is absent the function returns immediately without
-// blocking the caller. Failures are logged at debug level and never propagated.
+// The function itself spawns a goroutine — callers must NOT wrap it in go.
+// When MILLIWAYS_MEMPALACE_MCP_CMD is set, a warning is emitted because the
+// actual MCP integration is not yet implemented. When the variable is absent
+// the goroutine exits immediately at debug level.
 func snapshotToMemPalace(briefing string) {
-	cmd := os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD")
-	if cmd == "" {
-		return
-	}
-
 	go func() {
 		key := "handoff/" + time.Now().UTC().Format(time.RFC3339)
-		slog.Debug("mempalace snapshot", "key", key, "briefing_len", len(briefing))
-		// Best-effort: the MCP client integration is handled externally via the
-		// MILLIWAYS_MEMPALACE_MCP_CMD subprocess. Future work can exec the command
-		// and send a JSON-RPC mempalace_add_drawer call when the substrate client
-		// pattern is extended to support it from a goroutine context.
+		if cmd := os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD"); cmd != "" {
+			slog.Warn("mempalace snapshot not yet implemented", "key", key, "cmd", cmd)
+			return
+		}
+		slog.Debug("mempalace snapshot skipped: MILLIWAYS_MEMPALACE_MCP_CMD not set", "key", key)
 	}()
 }

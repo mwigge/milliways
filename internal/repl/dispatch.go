@@ -15,6 +15,7 @@
 package repl
 
 import (
+	"errors"
 	"strings"
 	"time"
 )
@@ -40,12 +41,14 @@ type DispatchRequest struct {
 // MaxHistoryTurns is the maximum number of turns kept in the ring buffer.
 const MaxHistoryTurns = 20
 
-// SessionLimitSentinel is written to the output stream by runners when they
-// detect that the underlying session has been exhausted (context window full,
-// quota exceeded, max turns reached, etc.). The NUL delimiters ensure the
-// sentinel cannot appear in normal assistant text and can be detected by the
-// REPL dispatch loop without regex ambiguity.
+// SessionLimitSentinel is retained for compatibility but is no longer written
+// to the output stream. Session limit signalling now uses ErrSessionLimit.
 const SessionLimitSentinel = "\x00SESSION_LIMIT_REACHED\x00"
+
+// ErrSessionLimit is returned by a runner's Execute method when the underlying
+// session has been exhausted (context window full, quota exceeded, max turns
+// reached, etc.). Callers must use errors.Is to test for this condition.
+var ErrSessionLimit = errors.New("session limit reached")
 
 // buildTextPrompt composes a plain-text prompt for runners that cannot handle
 // structured message arrays (codex, copilot).
