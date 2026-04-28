@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.13] - 2026-04-28
+
+### Added
+- `/takeover [runner]` command — generates a structured handoff briefing from the current session and switches runners; the new runner receives current task, progress summary, files changed, key decisions, and next step
+- `/takeover-ring <r1,r2,...>` command — configures a priority rotation ring that persists across session saves; milliways auto-rotates to the next runner when any runner signals a session limit
+- TTY transcript sidecar — every session now writes a full ANSI-stripped plain-text log (`.log` alongside `.json`); briefing generator reads the complete session history, not just the 20-turn ring buffer
+- Session limit detection — all four runners (claude, codex, minimax, copilot) emit a sentinel signal when they hit a context window, quota, or rate-limit; the REPL intercepts and auto-rotates when a ring is configured
+- Status bar ring indicator — shows runner position in ring (`●claude 1/3`) when rotation ring is active
+- MemPalace snapshot on takeover — when MemPalace is configured, the handoff briefing is written asynchronously to `handoff/<timestamp>` in the active palace
+- Rotation cap — auto-rotation halts when all ring members hit their limits on the same turn, surfacing a clear error instead of looping
+
 ## [0.4.12] - 2026-04-28
 
 ### Added

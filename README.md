@@ -98,6 +98,8 @@ Sessions are auto-saved per working directory and restored on the next `milliway
 | `/back` | Undo the most recent switch |
 | `/model` | Interactive model picker (arrow keys) or list |
 | `/model <id>` | Set model for the current runner |
+| `/takeover [runner]` | Hand off to another runner with full context briefing |
+| `/takeover-ring <r1,r2,...>` | Configure auto-rotation ring (cycles on session limit) |
 
 **Session**
 
@@ -283,6 +285,61 @@ $ milliways --explain --verbose "refactor store.py"
 [sommelier] learned: claude succeeded 94% for refactor
 Kitchen: claude  Tier: learned  Risk: high
 ```
+
+---
+
+## Session rotation and runner takeover
+
+When a runner hits its session limit (context window, daily quota, rate limit), milliways can automatically rotate to the next runner in a priority ring and re-dispatch the original prompt — so work continues without interruption.
+
+### Automatic rotation
+
+```bash
+▶ /takeover-ring claude,codex,minimax
+Rotation ring set: claude → codex → minimax → claude
+```
+
+The status bar shows your position in the ring: `●claude 1/3`. When claude hits its limit, milliways auto-rotates to codex and prints:
+
+```
+[auto-takeover] claude session limit — continuing on codex
+```
+
+The new runner receives a structured briefing so it knows what was being worked on:
+
+```
+[TAKEOVER from claude → codex]
+## Current task
+Implement the auth middleware
+## Progress
+- Added JWT validation to the middleware chain
+- Wrote unit tests for token expiry
+## Files changed
+internal/auth/middleware.go
+internal/auth/middleware_test.go
+## Next step
+Wire the middleware into the router in cmd/server/main.go
+```
+
+### Manual takeover
+
+```bash
+▶ /takeover codex        # hand off to a specific runner
+▶ /takeover              # use ring-next or sommelier's best pick
+```
+
+### Context fidelity — TTY transcript
+
+milliways writes a full ANSI-stripped transcript of every token printed to the terminal to a sidecar `.log` file alongside each session. The briefing generator reads this transcript rather than the 20-turn ring buffer, so **the new runner gets complete context back to the first prompt** — not just the last 20 turns.
+
+### Ring commands
+
+| Command | Description |
+|---------|-------------|
+| `/takeover-ring claude,codex,minimax` | Set rotation ring |
+| `/takeover-ring` | Show current ring |
+| `/takeover-ring off` | Clear ring |
+| `/takeover [runner]` | Manual handoff with briefing |
 
 ---
 

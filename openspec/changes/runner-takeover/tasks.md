@@ -85,6 +85,6 @@
 
 ## 10. Documentation & README
 
-- [ ] 10.1 Add `/takeover` and `/takeover-ring` to the Commands table in `README.md`
-- [ ] 10.2 Add "Session rotation" section to README explaining the ring concept, TTY transcript, and auto-rotate
-- [ ] 10.3 Update `CHANGELOG.md` with v0.4.13 entry for runner takeover feature
+- [x] 10.1 Add `/takeover` and `/takeover-ring` to the Commands table in `README.md`
+- [x] 10.2 Add "Session rotation" section to README explaining the ring concept, TTY transcript, and auto-rotate
+- [x] 10.3 Update `CHANGELOG.md` with v0.4.13 entry for runner takeover feature
