@@ -291,12 +291,7 @@ func rulesSearchPaths() []string {
 	if home, err := os.UserHomeDir(); err == nil {
 		paths = append(paths, filepath.Join(home, ".config", "milliways", "CLAUDE.md"))
 	}
-	// Optional developer fallback behind explicit flag
-	if os.Getenv("MILLIWAYS_DEV_FALLBACK") != "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			paths = append(paths, filepath.Join(home, "dev", "src", "ai_local", "CLAUDE.md"))
-		}
-	}
+
 	return paths
 }
 
