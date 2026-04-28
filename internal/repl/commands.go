@@ -67,11 +67,12 @@ var commandHandlers = map[string]commandHandler{
 	"opsx:explore":  handleOpsxExplore,
 	"opsx:archive":  handleOpsxArchive,
 	"opsx:validate": handleOpsxValidate,
-	// Runner shorthand aliases — /claude, /codex, etc. are equivalent to /switch <runner>
-	"claude":  handleSwitch,
-	"codex":   handleSwitch,
-	"minimax": handleSwitch,
-	"copilot": handleSwitch,
+	// Runner shorthand aliases — /claude, /minimax, etc. are equivalent to /switch <runner>
+	"claude":  func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "claude") },
+	"codex":   func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "codex") },
+	"minimax": func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "minimax") },
+	"copilot": func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "copilot") },
+	"local":   func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "local") },
 }
 
 func handleSwitch(ctx context.Context, r *REPL, args string) error {

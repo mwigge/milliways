@@ -21,6 +21,8 @@ import (
 	"github.com/mwigge/milliways/internal/rpc"
 )
 
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -514,7 +516,7 @@ func runObserve(socket, stateDir string, debounceMs int) {
 		}
 
 		status := map[string]any{
-			"v": "0.1.0",
+			"v": version,
 			"p": cwd,
 			"c": cur,
 			"a": observeAgents,
