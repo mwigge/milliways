@@ -83,7 +83,7 @@ func newReadlineInput(historyFile string) (*readlineInput, error) {
 		Prompt:          "▶ ",
 		HistoryFile:     historyFile,
 		AutoComplete:    dc,
-		VimMode:         true,
+		VimMode:         false,
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
 	}
