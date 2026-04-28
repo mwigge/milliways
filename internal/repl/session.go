@@ -29,6 +29,12 @@ import (
 const sessionVersion = 1
 const maxAutoSessions = 5
 
+// RingConfig holds the rotation ring configuration for automatic runner switching.
+type RingConfig struct {
+	Runners []string `json:"runners"`
+	Pos     int      `json:"pos"`
+}
+
 // PersistedSession is the on-disk representation of a terminal session.
 type PersistedSession struct {
 	Version    int                `json:"version"`
@@ -37,6 +43,7 @@ type PersistedSession struct {
 	RulesHash  string             `json:"rules_hash"`
 	WorkDir    string             `json:"work_dir"`
 	Turns      []ConversationTurn `json:"turns"`
+	Ring       *RingConfig        `json:"ring,omitempty"`
 }
 
 // PersistedSessionMeta holds summary information about a persisted session file.

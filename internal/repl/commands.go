@@ -87,6 +87,8 @@ var commandHandlers = map[string]commandHandler{
 	"minimax": func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "minimax") },
 	"copilot": func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "copilot") },
 	"local":   func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "local") },
+	// Rotation ring
+	"takeover-ring": handleTakeoverRing,
 }
 
 func handleSwitch(ctx context.Context, r *REPL, args string) error {
@@ -1616,4 +1618,58 @@ func handleApply(ctx context.Context, r *REPL, args string) error {
 func handleExit(ctx context.Context, r *REPL, args string) error {
 	r.println("Goodbye!")
 	return nil
+}
+
+// handleTakeoverRing manages the rotation ring configuration.
+//
+// /takeover-ring                       — show current ring state
+// /takeover-ring claude,codex,minimax  — set ring from comma-separated runners
+// /takeover-ring off|clear             — remove ring
+func handleTakeoverRing(ctx context.Context, r *REPL, args string) error {
+	args = strings.TrimSpace(args)
+
+	switch args {
+	case "":
+		// Show current ring state.
+		if r.ring == nil {
+			r.println("No rotation ring configured")
+			return nil
+		}
+		// Build display: "claude → codex → minimax (pos: codex)"
+		posName := r.ring.Runners[r.ring.Pos%len(r.ring.Runners)]
+		r.println(fmt.Sprintf("Rotation ring: %s (pos: %s)",
+			strings.Join(r.ring.Runners, " → "), posName))
+		return nil
+
+	case "off", "clear":
+		r.ring = nil
+		r.println("Rotation ring cleared")
+		return nil
+
+	default:
+		// Parse comma-separated runner names.
+		parts := strings.Split(args, ",")
+		runners := make([]string, 0, len(parts))
+		for _, p := range parts {
+			name := strings.TrimSpace(p)
+			if name == "" {
+				continue
+			}
+			runners = append(runners, name)
+		}
+
+		// Validate each runner name.
+		for _, name := range runners {
+			if _, ok := r.runners[name]; !ok {
+				r.println(fmt.Sprintf("Unknown runner: %s", name))
+				return nil
+			}
+		}
+
+		r.ring = &RingConfig{Runners: runners, Pos: 0}
+		// Print the ring with a wrap-around indicator: "claude → codex → minimax → claude"
+		display := strings.Join(runners, " → ") + " → " + runners[0]
+		r.println(fmt.Sprintf("Rotation ring set: %s", display))
+		return nil
+	}
 }

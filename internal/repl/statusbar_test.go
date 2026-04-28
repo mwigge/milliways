@@ -15,7 +15,10 @@
 package repl
 
 import (
+	"bytes"
+	"context"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -134,4 +137,71 @@ func TestStatusBar_SetContent_InactiveNoWrite(t *testing.T) {
 // stripANSI removes ANSI escape sequences from s (test helper for measuring visual width).
 func stripANSI(s string) string {
 	return ansiStripper.ReplaceAllString(s, "")
+}
+
+func TestBuildStatusContent_RunnerSegment_NoRing(t *testing.T) {
+	t.Parallel()
+
+	buf := &bytes.Buffer{}
+	r := NewREPL(buf)
+	r.Register("claude", &mockRunner{nameVal: "claude"})
+	if err := r.SetRunner("claude"); err != nil {
+		t.Fatalf("SetRunner: %v", err)
+	}
+	// ring is nil — no ring configured
+
+	content, _ := r.buildStatusContent(context.Background())
+	plain := stripANSI(content)
+
+	if !strings.Contains(plain, "claude") {
+		t.Errorf("content %q does not contain runner name", plain)
+	}
+	// Must NOT contain N/M pattern when ring is nil
+	if strings.Contains(plain, "/") {
+		t.Errorf("content %q contains '/' but no ring is configured", plain)
+	}
+}
+
+func TestBuildStatusContent_RunnerSegment_WithRing(t *testing.T) {
+	t.Parallel()
+
+	buf := &bytes.Buffer{}
+	r := NewREPL(buf)
+	r.Register("claude", &mockRunner{nameVal: "claude"})
+	r.Register("codex", &mockRunner{nameVal: "codex"})
+	r.Register("minimax", &mockRunner{nameVal: "minimax"})
+	if err := r.SetRunner("claude"); err != nil {
+		t.Fatalf("SetRunner: %v", err)
+	}
+	r.ring = &RingConfig{Runners: []string{"claude", "codex", "minimax"}, Pos: 0}
+
+	content, _ := r.buildStatusContent(context.Background())
+	plain := stripANSI(content)
+
+	// Should contain "1/3" for pos 0 out of 3.
+	if !strings.Contains(plain, "1/3") {
+		t.Errorf("content %q does not contain ring indicator '1/3'", plain)
+	}
+}
+
+func TestBuildStatusContent_RunnerSegment_WithRingAtPos1(t *testing.T) {
+	t.Parallel()
+
+	buf := &bytes.Buffer{}
+	r := NewREPL(buf)
+	r.Register("claude", &mockRunner{nameVal: "claude"})
+	r.Register("codex", &mockRunner{nameVal: "codex"})
+	r.Register("minimax", &mockRunner{nameVal: "minimax"})
+	if err := r.SetRunner("claude"); err != nil {
+		t.Fatalf("SetRunner: %v", err)
+	}
+	r.ring = &RingConfig{Runners: []string{"claude", "codex", "minimax"}, Pos: 1}
+
+	content, _ := r.buildStatusContent(context.Background())
+	plain := stripANSI(content)
+
+	// Should contain "2/3" for pos 1 (1-indexed) out of 3.
+	if !strings.Contains(plain, "2/3") {
+		t.Errorf("content %q does not contain ring indicator '2/3'", plain)
+	}
 }
