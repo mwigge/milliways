@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -443,11 +444,17 @@ func (r *REPL) Run(ctx context.Context) error {
 		r.println(MutedText("  no session"))
 	}
 
-	var runners []string
+	var runnerNames []string
 	for name := range r.runners {
-		runners = append(runners, name)
+		runnerNames = append(runnerNames, name)
 	}
-	r.println(PhosphorText("  runners: " + strings.Join(runners, " | ")))
+	sort.Strings(runnerNames)
+	var coloredRunners []string
+	for _, name := range runnerNames {
+		scheme := SchemeForRunner(name)
+		coloredRunners = append(coloredRunners, BlackBackground+scheme.FG+name+ResetColor)
+	}
+	r.println("  " + MutedText("runners: ") + strings.Join(coloredRunners, MutedText(" | ")))
 	r.println("")
 	r.println("")
 
