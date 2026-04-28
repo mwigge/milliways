@@ -231,6 +231,7 @@ type REPL struct {
 	statusBar          *StatusBar
 	transcriptW        *TranscriptWriter // TTY transcript writer; nil when unavailable
 	ring               *RingConfig       // nil = no ring configured
+	rotateCount        int               // consecutive auto-rotations for the current user turn
 }
 
 func (r *REPL) SetVersion(v string) {
@@ -676,126 +677,9 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 		return nil
 	}
 
-	if r.session != nil {
-		r.appendUserTurn(ctx, prompt)
-	}
-
-	r.turnBuffer = appendTurn(r.turnBuffer, ConversationTurn{
-		Role:   "user",
-		Text:   prompt,
-		Runner: r.runner.Name(),
-		At:     time.Now(),
-	})
-
-	var usageBefore *QuotaInfo
-	if q, err := r.runner.Quota(); err == nil {
-		usageBefore = q
-	}
-
-	enriched, _ := ResolveContext(prompt, r.shellBuf)
-
-	req := DispatchRequest{
-		Prompt:      enriched.Text,
-		Context:     enriched.Fragments,
-		History:     historyWithoutLast(r.turnBuffer),
-		Rules:       r.rules,
-		ClientID:    "repl/" + r.runner.Name(),
-		Attachments: r.pendingAttachments,
-	}
-	r.pendingAttachments = nil
-
-	runCtx, cancel := context.WithCancel(ctx)
-	r.runnerState.SetRunning(cancel)
-	defer r.runnerState.SetDone()
-
-	// Repaint the persistent status bar while the runner is active so the
-	// running indicator (●) stays current. Goroutine exits when runCtx is done.
-	if r.statusBar != nil {
-		go func() {
-			ticker := time.NewTicker(500 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					r.renderStatusBar(runCtx)
-				case <-runCtx.Done():
-					return
-				}
-			}
-		}()
-	}
-
-	outputBuf := new(bytes.Buffer)
-	tee := &teeWriter{w: r.stdout, buf: outputBuf, scheme: r.scheme}
-
-	// Capture runner and session by value before the goroutine to avoid a data
-	// race if the user issues /switch while dispatch is in flight.
-	dispatchRunner := r.runner
-	dispatchSession := r.session
-	dispatchScheme := r.scheme
-
-	done := make(chan error, 1)
-	go func() {
-		r.println(fmt.Sprintf("[%s] %s", ColorText(dispatchScheme, dispatchRunner.Name()), ColorText(dispatchScheme, "Thinking...")))
-		start := time.Now()
-		slog.Info("dispatch start", "runner", dispatchRunner.Name(), "prompt_len", len(prompt), "history_turns", len(req.History), "rules_loaded", req.Rules != "")
-		err := dispatchRunner.Execute(runCtx, req, tee)
-		tee.Flush()
-		dur := time.Since(start)
-
-		if dispatchSession != nil && outputBuf.Len() > 0 {
-			r.appendAssistantTurn(ctx, dispatchRunner.Name(), outputBuf.String())
-		}
-
-		if err != nil {
-			slog.Warn("dispatch error", "runner", dispatchRunner.Name(), "err", err, "duration_ms", dur.Milliseconds())
-			if ctx.Err() != nil {
-				r.println(fmt.Sprintf("%s %s  %s",
-					ColorText(dispatchScheme, "✗"),
-					ColorText(dispatchScheme, dispatchRunner.Name()),
-					MutedText("interrupted")))
-			} else {
-				r.println(fmt.Sprintf("%s %s  %.1fs  %v",
-					ColorText(dispatchScheme, "✗"),
-					ColorText(dispatchScheme, dispatchRunner.Name()),
-					dur.Seconds(), err))
-			}
-			done <- err
-			return
-		}
-
-		slog.Info("dispatch end", "runner", dispatchRunner.Name(), "duration_ms", dur.Milliseconds())
-
-		if outputBuf.Len() > 0 {
-			r.turnBuffer = appendTurn(r.turnBuffer, ConversationTurn{
-				Role:   "assistant",
-				Text:   outputBuf.String(),
-				Runner: dispatchRunner.Name(),
-				At:     time.Now(),
-			})
-		}
-
-		if q, err := dispatchRunner.Quota(); err == nil && q != nil && q.Session != nil {
-			var beforeIn, beforeOut int
-			var beforeCost float64
-			if usageBefore != nil && usageBefore.Session != nil {
-				beforeIn = usageBefore.Session.InputTokens
-				beforeOut = usageBefore.Session.OutputTokens
-				beforeCost = usageBefore.Session.CostUSD
-			}
-			RecordDispatch(ctx, dispatchRunner.Name(),
-				q.Session.CostUSD-beforeCost,
-				q.Session.InputTokens-beforeIn,
-				q.Session.OutputTokens-beforeOut,
-			)
-		}
-
-		r.println(fmt.Sprintf("%s %s  %.1fs",
-			ColorText(dispatchScheme, "✓"),
-			ColorText(dispatchScheme, dispatchRunner.Name()),
-			dur.Seconds()))
-		done <- nil
-	}()
+	// Reset the auto-rotation counter at the start of each new user turn so
+	// the cap applies per-turn, not per-session.
+	r.rotateCount = 0
 
 	// Catch SIGINT (Ctrl-C) during dispatch so it cancels the runner rather
 	// than terminating the process. The channel is buffered so a rapid second
@@ -804,18 +688,221 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 	signal.Notify(sigCh, syscall.SIGINT)
 	defer signal.Stop(sigCh)
 
-	select {
-	case err := <-done:
-		return err
-	case <-sigCh:
-		cancel()
-		r.println(MutedText("^C  interrupted"))
-		<-done
-		return nil
-	case <-ctx.Done():
-		cancel()
-		<-done
-		return ctx.Err()
+	// dispatch is an inner function that runs one prompt/runner cycle and
+	// returns (sessionLimitDetected, outputBuf, dispatchRunner, dispatchErr).
+	// It shares sigCh with the outer function to avoid re-registering SIGINT.
+	type cycleResult struct {
+		sessionLimit   bool
+		dispatchRunner Runner
+		dispatchErr    error
+	}
+
+	runCycle := func(cyclePrompt string) cycleResult {
+		if r.session != nil {
+			r.appendUserTurn(ctx, cyclePrompt)
+		}
+
+		r.turnBuffer = appendTurn(r.turnBuffer, ConversationTurn{
+			Role:   "user",
+			Text:   cyclePrompt,
+			Runner: r.runner.Name(),
+			At:     time.Now(),
+		})
+
+		var usageBefore *QuotaInfo
+		if q, err := r.runner.Quota(); err == nil {
+			usageBefore = q
+		}
+
+		enriched, _ := ResolveContext(cyclePrompt, r.shellBuf)
+
+		req := DispatchRequest{
+			Prompt:      enriched.Text,
+			Context:     enriched.Fragments,
+			History:     historyWithoutLast(r.turnBuffer),
+			Rules:       r.rules,
+			ClientID:    "repl/" + r.runner.Name(),
+			Attachments: r.pendingAttachments,
+		}
+		r.pendingAttachments = nil
+
+		runCtx, cancel := context.WithCancel(ctx)
+		r.runnerState.SetRunning(cancel)
+
+		// Repaint the persistent status bar while the runner is active so the
+		// running indicator (●) stays current. Goroutine exits when runCtx is done.
+		if r.statusBar != nil {
+			go func() {
+				ticker := time.NewTicker(500 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						r.renderStatusBar(runCtx)
+					case <-runCtx.Done():
+						return
+					}
+				}
+			}()
+		}
+
+		outputBuf := new(bytes.Buffer)
+		tee := &teeWriter{w: r.stdout, buf: outputBuf, scheme: r.scheme}
+
+		// Capture runner and session by value before the goroutine to avoid a data
+		// race if the user issues /switch while dispatch is in flight.
+		dispatchRunner := r.runner
+		dispatchSession := r.session
+		dispatchScheme := r.scheme
+
+		done := make(chan error, 1)
+		go func() {
+			r.println(fmt.Sprintf("[%s] %s", ColorText(dispatchScheme, dispatchRunner.Name()), ColorText(dispatchScheme, "Thinking...")))
+			start := time.Now()
+			slog.Info("dispatch start", "runner", dispatchRunner.Name(), "prompt_len", len(cyclePrompt), "history_turns", len(req.History), "rules_loaded", req.Rules != "")
+			err := dispatchRunner.Execute(runCtx, req, tee)
+			tee.Flush()
+			dur := time.Since(start)
+
+			// Strip sentinel from output stored in substrate — the raw bytes
+			// already went to stdout via tee and are harmless there.
+			outputText := strings.ReplaceAll(outputBuf.String(), SessionLimitSentinel+"\n", "")
+			outputText = strings.ReplaceAll(outputText, SessionLimitSentinel, "")
+
+			if dispatchSession != nil && len(outputText) > 0 {
+				r.appendAssistantTurn(ctx, dispatchRunner.Name(), outputText)
+			}
+
+			if err != nil {
+				slog.Warn("dispatch error", "runner", dispatchRunner.Name(), "err", err, "duration_ms", dur.Milliseconds())
+				if ctx.Err() != nil {
+					r.println(fmt.Sprintf("%s %s  %s",
+						ColorText(dispatchScheme, "✗"),
+						ColorText(dispatchScheme, dispatchRunner.Name()),
+						MutedText("interrupted")))
+				} else {
+					r.println(fmt.Sprintf("%s %s  %.1fs  %v",
+						ColorText(dispatchScheme, "✗"),
+						ColorText(dispatchScheme, dispatchRunner.Name()),
+						dur.Seconds(), err))
+				}
+				done <- err
+				return
+			}
+
+			slog.Info("dispatch end", "runner", dispatchRunner.Name(), "duration_ms", dur.Milliseconds())
+
+			if len(outputText) > 0 {
+				r.turnBuffer = appendTurn(r.turnBuffer, ConversationTurn{
+					Role:   "assistant",
+					Text:   outputText,
+					Runner: dispatchRunner.Name(),
+					At:     time.Now(),
+				})
+			}
+
+			if q, err := dispatchRunner.Quota(); err == nil && q != nil && q.Session != nil {
+				var beforeIn, beforeOut int
+				var beforeCost float64
+				if usageBefore != nil && usageBefore.Session != nil {
+					beforeIn = usageBefore.Session.InputTokens
+					beforeOut = usageBefore.Session.OutputTokens
+					beforeCost = usageBefore.Session.CostUSD
+				}
+				RecordDispatch(ctx, dispatchRunner.Name(),
+					q.Session.CostUSD-beforeCost,
+					q.Session.InputTokens-beforeIn,
+					q.Session.OutputTokens-beforeOut,
+				)
+			}
+
+			r.println(fmt.Sprintf("%s %s  %.1fs",
+				ColorText(dispatchScheme, "✓"),
+				ColorText(dispatchScheme, dispatchRunner.Name()),
+				dur.Seconds()))
+			done <- nil
+		}()
+
+		var dispatchErr error
+		select {
+		case dispatchErr = <-done:
+			r.runnerState.SetDone()
+			cancel()
+		case <-sigCh:
+			cancel()
+			r.println(MutedText("^C  interrupted"))
+			<-done
+			r.runnerState.SetDone()
+			return cycleResult{dispatchRunner: dispatchRunner, dispatchErr: nil}
+		case <-ctx.Done():
+			cancel()
+			<-done
+			r.runnerState.SetDone()
+			return cycleResult{dispatchRunner: dispatchRunner, dispatchErr: ctx.Err()}
+		}
+
+		sessionLimit := strings.Contains(outputBuf.String(), SessionLimitSentinel)
+		return cycleResult{
+			sessionLimit:   sessionLimit,
+			dispatchRunner: dispatchRunner,
+			dispatchErr:    dispatchErr,
+		}
+	}
+
+	// Main dispatch loop — continues while auto-rotate is triggered.
+	for {
+		res := runCycle(prompt)
+
+		if !res.sessionLimit {
+			return res.dispatchErr
+		}
+
+		// Session limit detected.
+		if r.ring == nil {
+			r.println(fmt.Sprintf("[session limit] %s hit its limit. Use /takeover-ring to enable auto-rotation, or /takeover <runner> to continue manually.", res.dispatchRunner.Name()))
+			return res.dispatchErr
+		}
+
+		// Rotation cap: halt when we've rotated as many times as there are runners.
+		if r.rotateCount >= len(r.ring.Runners) {
+			r.println("[ring] all runners hit session limits — cannot continue")
+			return res.dispatchErr
+		}
+
+		next, newPos, err := nextRingRunner(r.ring, r.runnerAvailable)
+		if err != nil {
+			r.println("[ring] all runners hit session limits — cannot continue")
+			return res.dispatchErr
+		}
+
+		r.ring.Pos = newPos
+		r.rotateCount++
+
+		r.println(fmt.Sprintf("[auto-takeover] %s session limit — continuing on %s", res.dispatchRunner.Name(), next))
+
+		currentCwd, _ := os.Getwd()
+		briefing := GenerateBriefing(r.TranscriptPath(), r.turnBuffer, currentCwd)
+
+		// Prepend briefing as a synthetic user turn for the new runner.
+		synthetic := ConversationTurn{
+			Role:   "user",
+			Text:   fmt.Sprintf("[TAKEOVER from %s → %s]\n%s", res.dispatchRunner.Name(), next, briefing),
+			Runner: res.dispatchRunner.Name(),
+			At:     time.Now(),
+		}
+		r.turnBuffer = append([]ConversationTurn{synthetic}, r.turnBuffer...)
+		if len(r.turnBuffer) > MaxHistoryTurns {
+			r.turnBuffer = r.turnBuffer[:MaxHistoryTurns]
+		}
+
+		if switchErr := r.SetRunner(next); switchErr != nil {
+			r.println(fmt.Sprintf("[ring] could not switch to %s: %v", next, switchErr))
+			return switchErr
+		}
+		r.loadRules()
+
+		go snapshotToMemPalace(briefing)
+		// Loop continues — re-dispatch to the new runner.
 	}
 }
 
