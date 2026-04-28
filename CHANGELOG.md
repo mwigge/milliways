@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.12] - 2026-04-28
+
+### Added
+- Rich `● ToolName  detail` display for Codex tool events, matching Claude's format (`● Shell  cmd`, `● Edit  ~/path`, `● Thinking  summary`)
+- Home dir paths abbreviated to `~/...` in Codex tool output
+
+### Changed
+- Banner labels ("no session", "runners:") now render in pearl white instead of dim grey
+
 ## [0.4.11] - 2026-04-28
 
 ### Fixed
