@@ -239,6 +239,7 @@ func runCodexJSON(ctx context.Context, cmd *exec.Cmd, out io.Writer, reasoningMo
 	var wroteAssistant bool
 	var wroteProgress bool
 	var sawProxyBlock bool
+	var sawSessionLimit bool
 	var stderrLines []string
 
 	writeText := func(text string) {
@@ -313,6 +314,10 @@ func runCodexJSON(ctx context.Context, cmd *exec.Cmd, out io.Writer, reasoningMo
 		}
 		if codexLineLooksProxyBlocked(line) {
 			sawProxyBlock = true
+			continue
+		}
+		if codexLineSignalsSessionLimit(line) {
+			sawSessionLimit = true
 		}
 	}
 	_ = pr.Close()
@@ -327,7 +332,27 @@ func runCodexJSON(ctx context.Context, cmd *exec.Cmd, out io.Writer, reasoningMo
 	if !wroteAssistant && !wroteProgress && len(stderrLines) > 0 {
 		_, _ = out.Write([]byte(strings.Join(stderrLines, "\n") + "\n"))
 	}
+	if sawSessionLimit {
+		_, _ = out.Write([]byte(SessionLimitSentinel + "\n"))
+	}
 	return waitErr
+}
+
+// codexLineSignalsSessionLimit returns true when the JSON event line indicates
+// that the codex session has hit its turn or context limit.
+func codexLineSignalsSessionLimit(line string) bool {
+	var evt codexJSONEvent
+	if err := json.Unmarshal([]byte(line), &evt); err != nil {
+		return false
+	}
+	switch evt.Type {
+	case "max_turns", "context_length_exceeded":
+		return true
+	case "error":
+		lower := strings.ToLower(firstNonEmpty(evt.Message, evt.Content, evt.Text))
+		return strings.Contains(lower, "context") || strings.Contains(lower, "limit")
+	}
+	return false
 }
 
 func codexAssistantText(line string) (string, bool) {

@@ -599,6 +599,9 @@ func runMinimaxSSE(ctx context.Context, client *http.Client, req *http.Request, 
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+		if resp.StatusCode == http.StatusTooManyRequests && minimaxBodySignalsLimit(body) {
+			_, _ = out.Write([]byte(SessionLimitSentinel + "\n"))
+		}
 		return nil, fmt.Errorf("minimax API error %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -733,4 +736,12 @@ done:
 	}
 
 	return finalUsage, nil
+}
+
+// minimaxBodySignalsLimit returns true when the response body contains a quota
+// or rate-limit error code that indicates session exhaustion rather than a
+// transient throttle.
+func minimaxBodySignalsLimit(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	return strings.Contains(lower, "quota_exceeded") || strings.Contains(lower, "rate_limit")
 }

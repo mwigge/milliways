@@ -426,7 +426,25 @@ scanLoop:
 			_, _ = out.Write([]byte(AccentColorText(scheme, "! claude: "+l) + "\n"))
 		}
 	}
+	if claudeStderrSignalsLimit(stderrLines) {
+		_, _ = out.Write([]byte(SessionLimitSentinel + "\n"))
+	}
 	return sessionUsage, waitErr
+}
+
+// claudeStderrSignalsLimit returns true when any stderr line indicates that
+// Claude has hit its context window or session limit.
+func claudeStderrSignalsLimit(lines []string) bool {
+	for _, l := range lines {
+		lower := strings.ToLower(l)
+		if strings.Contains(lower, "context window") ||
+			strings.Contains(lower, "session limit") ||
+			strings.Contains(lower, "context_length") ||
+			strings.Contains(lower, "too long") {
+			return true
+		}
+	}
+	return false
 }
 
 // claudeResultUsage extracts cost and token usage from a result event line.
