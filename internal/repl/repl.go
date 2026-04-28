@@ -229,10 +229,20 @@ type REPL struct {
 	pendingAttachments []Attachment
 	lastCtrlC          time.Time // for double-Ctrl-C exit detection
 	statusBar          *StatusBar
+	transcriptW        *TranscriptWriter // TTY transcript writer; nil when unavailable
 }
 
 func (r *REPL) SetVersion(v string) {
 	r.version = v
+}
+
+// TranscriptPath returns the path of the current TTY transcript log, or "" if unavailable.
+func (r *REPL) TranscriptPath() string {
+	if r.sessionStore == nil {
+		return ""
+	}
+	cwd, _ := os.Getwd()
+	return filepath.Join(r.sessionStore.dir, fmt.Sprintf("current-%s.log", cwdHash8(cwd)))
 }
 
 // SetStatusBar wires a persistent status bar to the terminal.
@@ -384,7 +394,21 @@ func (r *REPL) Run(ctx context.Context) error {
 		}
 	}
 
+	// Open the TTY transcript writer. Use a stable per-cwd path so the briefing
+	// generator can find it without knowing the auto-save filename.
+	if r.sessionStore != nil {
+		cwd, _ := os.Getwd()
+		logName := fmt.Sprintf("current-%s.log", cwdHash8(cwd))
+		logPath := filepath.Join(r.sessionStore.dir, logName)
+		tw := NewTranscriptWriter(r.stdout, logPath)
+		r.transcriptW = tw
+		r.stdout = tw
+	}
+
 	defer func() {
+		if r.transcriptW != nil {
+			_ = r.transcriptW.Close()
+		}
 		r.println(ResetColor + BlackBackground)
 		if r.substrate != nil && r.session != nil {
 			_ = r.substrate.ConversationEnd(ctx, substrate.EndRequest{
