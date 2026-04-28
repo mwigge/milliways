@@ -87,14 +87,19 @@ func (a *GeminiAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Eve
 	var wg sync.WaitGroup
 	wg.Add(1)
 
-	// Stderr capture — parse quota errors
+	// Stderr capture — parse quota errors.
+	// Uses a non-blocking send so the stderr goroutine never blocks on a full
+	// ch while the stdout goroutine is blocked in cmd.Wait(), which would deadlock.
 	go func() {
 		defer wg.Done()
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if rl := parseGeminiQuotaError(name, line); rl != nil {
-				ch <- *rl
+				select {
+				case ch <- *rl:
+				default:
+				}
 			}
 		}
 	}()

@@ -8,10 +8,10 @@ const (
 	PromptBackground = "\x1b[48;2;0;0;0m"
 	DimFG            = "\x1b[38;2;100;100;100m"
 
-	// Claude: black/green — phosphor green body, bright lime accent
-	ClaudeFG     = "\x1b[38;2;79;181;34m"
+	// Claude: off-white / warm pearl — clearly distinct from the green terminal default
+	ClaudeFG     = "\x1b[38;2;220;215;200m"
 	ClaudeBG     = "\x1b[48;2;0;0;0m"
-	ClaudeAccent = "\x1b[38;2;140;230;80m"
+	ClaudeAccent = "\x1b[38;2;245;240;225m"
 
 	// Codex: amber/orange
 	CodexFG     = "\x1b[38;2;255;180;50m"

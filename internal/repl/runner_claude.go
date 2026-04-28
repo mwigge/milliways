@@ -369,10 +369,11 @@ func runClaudeJSON(ctx context.Context, cmd *exec.Cmd, req DispatchRequest, out 
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
+scanLoop:
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			break
+			break scanLoop
 		default:
 		}
 
@@ -395,6 +396,9 @@ func runClaudeJSON(ctx context.Context, cmd *exec.Cmd, req DispatchRequest, out 
 			sessionUsage = u
 			mu.Unlock()
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		writeProgress(fmt.Sprintf("! claude: read error: %v", err))
 	}
 
 	_ = stdin.Close()

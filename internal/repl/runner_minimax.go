@@ -311,7 +311,7 @@ func (r *MinimaxRunner) executeImage(ctx context.Context, req DispatchRequest, o
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 		return fmt.Errorf("minimax image API error %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -391,7 +391,7 @@ func (r *MinimaxRunner) executeMusic(ctx context.Context, req DispatchRequest, o
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 		return fmt.Errorf("minimax music API error %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -469,7 +469,7 @@ func (r *MinimaxRunner) executeLyrics(ctx context.Context, req DispatchRequest, 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 		return fmt.Errorf("minimax lyrics API error %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -584,7 +584,7 @@ func runMinimaxSSE(ctx context.Context, client *http.Client, req *http.Request, 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
 		return nil, fmt.Errorf("minimax API error %d: %s", resp.StatusCode, string(body))
 	}
 

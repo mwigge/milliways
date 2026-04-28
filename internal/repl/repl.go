@@ -220,7 +220,7 @@ func (r *REPL) SetVersion(v string) {
 	r.version = v
 }
 
-// SetStatusBar wires a persistent terminal status bar to the REPL.
+// SetStatusBar wires a persistent status bar to the terminal.
 // When set, renderStatusBar delegates to the bar instead of printing inline.
 func (r *REPL) SetStatusBar(sb *StatusBar) { r.statusBar = sb }
 
@@ -375,7 +375,7 @@ func (r *REPL) Run(ctx context.Context) error {
 			_ = r.substrate.ConversationEnd(ctx, substrate.EndRequest{
 				ConversationID: r.session.conversationID,
 				Status:         "done",
-				Reason:         "repl_exit",
+				Reason:         "terminal_exit",
 			})
 		}
 		if r.sessionStore != nil {
@@ -680,48 +680,54 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 	outputBuf := new(bytes.Buffer)
 	tee := &teeWriter{w: r.stdout, buf: outputBuf, scheme: r.scheme}
 
+	// Capture runner and session by value before the goroutine to avoid a data
+	// race if the user issues /switch while dispatch is in flight.
+	dispatchRunner := r.runner
+	dispatchSession := r.session
+	dispatchScheme := r.scheme
+
 	done := make(chan error, 1)
 	go func() {
-		r.println(fmt.Sprintf("[%s] %s", ColorText(r.scheme, r.runner.Name()), ColorText(r.scheme, "Thinking...")))
+		r.println(fmt.Sprintf("[%s] %s", ColorText(dispatchScheme, dispatchRunner.Name()), ColorText(dispatchScheme, "Thinking...")))
 		start := time.Now()
-		slog.Info("dispatch start", "runner", r.runner.Name(), "prompt_len", len(prompt), "history_turns", len(req.History), "rules_loaded", req.Rules != "")
-		err := r.runner.Execute(runCtx, req, tee)
+		slog.Info("dispatch start", "runner", dispatchRunner.Name(), "prompt_len", len(prompt), "history_turns", len(req.History), "rules_loaded", req.Rules != "")
+		err := dispatchRunner.Execute(runCtx, req, tee)
 		tee.Flush()
 		dur := time.Since(start)
 
-		if r.session != nil && outputBuf.Len() > 0 {
-			r.appendAssistantTurn(ctx, r.runner.Name(), outputBuf.String())
+		if dispatchSession != nil && outputBuf.Len() > 0 {
+			r.appendAssistantTurn(ctx, dispatchRunner.Name(), outputBuf.String())
 		}
 
 		if err != nil {
-			slog.Warn("dispatch error", "runner", r.runner.Name(), "err", err, "duration_ms", dur.Milliseconds())
+			slog.Warn("dispatch error", "runner", dispatchRunner.Name(), "err", err, "duration_ms", dur.Milliseconds())
 			if ctx.Err() != nil {
 				r.println(fmt.Sprintf("%s %s  %s",
-					ColorText(r.scheme, "✗"),
-					ColorText(r.scheme, r.runner.Name()),
+					ColorText(dispatchScheme, "✗"),
+					ColorText(dispatchScheme, dispatchRunner.Name()),
 					MutedText("interrupted")))
 			} else {
 				r.println(fmt.Sprintf("%s %s  %.1fs  %v",
-					ColorText(r.scheme, "✗"),
-					ColorText(r.scheme, r.runner.Name()),
+					ColorText(dispatchScheme, "✗"),
+					ColorText(dispatchScheme, dispatchRunner.Name()),
 					dur.Seconds(), err))
 			}
 			done <- err
 			return
 		}
 
-		slog.Info("dispatch end", "runner", r.runner.Name(), "duration_ms", dur.Milliseconds())
+		slog.Info("dispatch end", "runner", dispatchRunner.Name(), "duration_ms", dur.Milliseconds())
 
 		if outputBuf.Len() > 0 {
 			r.turnBuffer = appendTurn(r.turnBuffer, ConversationTurn{
 				Role:   "assistant",
 				Text:   outputBuf.String(),
-				Runner: r.runner.Name(),
+				Runner: dispatchRunner.Name(),
 				At:     time.Now(),
 			})
 		}
 
-		if q, err := r.runner.Quota(); err == nil && q != nil && q.Session != nil {
+		if q, err := dispatchRunner.Quota(); err == nil && q != nil && q.Session != nil {
 			var beforeIn, beforeOut int
 			var beforeCost float64
 			if usageBefore != nil && usageBefore.Session != nil {
@@ -729,7 +735,7 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 				beforeOut = usageBefore.Session.OutputTokens
 				beforeCost = usageBefore.Session.CostUSD
 			}
-			RecordDispatch(ctx, r.runner.Name(),
+			RecordDispatch(ctx, dispatchRunner.Name(),
 				q.Session.CostUSD-beforeCost,
 				q.Session.InputTokens-beforeIn,
 				q.Session.OutputTokens-beforeOut,
@@ -737,8 +743,8 @@ func (r *REPL) handlePrompt(ctx context.Context, prompt string) error {
 		}
 
 		r.println(fmt.Sprintf("%s %s  %.1fs",
-			ColorText(r.scheme, "✓"),
-			ColorText(r.scheme, r.runner.Name()),
+			ColorText(dispatchScheme, "✓"),
+			ColorText(dispatchScheme, dispatchRunner.Name()),
 			dur.Seconds()))
 		done <- nil
 	}()
@@ -945,7 +951,7 @@ func (t *teeWriter) Flush() {
 	}
 }
 
-// buildStatusContent assembles the colored status string from current REPL
+// buildStatusContent assembles the colored status string from current terminal
 // state. The returned string may contain ANSI escape codes but no trailing
 // newline. sessionForTitle is the session usage used for the title bar update;
 // it is nil when quota information is unavailable.
