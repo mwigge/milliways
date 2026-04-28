@@ -76,6 +76,7 @@ var historyAgents = map[string]bool{
 	"codex":   true,
 	"copilot": true,
 	"minimax": true,
+	"local":   true,
 }
 
 const (

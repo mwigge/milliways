@@ -30,6 +30,7 @@ var commandHandlers = map[string]commandHandler{
 	"login":             handleLogin,
 	"logout":            handleLogout,
 	"auth":              handleAuth,
+	"model":             handleModel,
 	"claude-reasoning":  handleClaudeReasoning,
 	"claude-model":      handleClaudeModel,
 	"minimax-reasoning": handleMinimaxReasoning,
@@ -50,6 +51,8 @@ var commandHandlers = map[string]commandHandler{
 	"codex-image":       handleCodexImage,
 	"apply":             handleApply,
 	"image":             handleImage,
+	"pptx":              handlePptx,
+	"drawio":            handleDrawio,
 	"review-all":        handleReviewAll,
 	"metrics":           handleMetrics,
 	"logs":              handleLogs,
@@ -654,6 +657,74 @@ func handleAuth(ctx context.Context, r *REPL, args string) error {
 	return nil
 }
 
+func handleModel(ctx context.Context, r *REPL, args string) error {
+	if r.runner == nil {
+		return fmt.Errorf("no runner selected")
+	}
+	args = strings.TrimSpace(args)
+	switch runner := r.runner.(type) {
+	case *ClaudeRunner:
+		if args == "" {
+			r.printClaudeModelCatalog(runner)
+			return nil
+		}
+		runner.SetModel(args)
+		r.printClaudeSettings(runner)
+	case *CodexRunner:
+		if args == "" {
+			r.printCodexModelCatalog(runner)
+			return nil
+		}
+		runner.SetModel(args)
+		r.printCodexSettings(runner)
+	case *MinimaxRunner:
+		return handleMinimaxModel(ctx, r, args)
+	case *CopilotRunner:
+		r.println(MutedText("copilot: model selection is managed by GitHub — not configurable here"))
+	default:
+		r.println(MutedText(fmt.Sprintf("%s: /model not supported", r.runner.Name())))
+	}
+	return nil
+}
+
+func (r *REPL) printClaudeModelCatalog(cl *ClaudeRunner) {
+	current := cl.Settings().Model
+	r.println(RunnerAccentText("claude", "Claude models:"))
+	r.println("")
+	for _, e := range ClaudeModelCatalog {
+		marker := "  "
+		if e.ID == current {
+			marker = "* "
+		}
+		note := ""
+		if e.Note != "" {
+			note = "  " + MutedText(e.Note)
+		}
+		r.println(fmt.Sprintf("  %s%-34s%s", marker, e.ID, note))
+	}
+	r.println("")
+	r.println(MutedText("  /model <id> to switch"))
+}
+
+func (r *REPL) printCodexModelCatalog(codex *CodexRunner) {
+	current := codex.Settings().Model
+	r.println(RunnerAccentText("codex", "Codex models:"))
+	r.println("")
+	for _, e := range CodexModelCatalog {
+		marker := "  "
+		if e.ID == current {
+			marker = "* "
+		}
+		note := ""
+		if e.Note != "" {
+			note = "  " + MutedText(e.Note)
+		}
+		r.println(fmt.Sprintf("  %s%-20s%s", marker, e.ID, note))
+	}
+	r.println("")
+	r.println(MutedText("  /model <id> to switch"))
+}
+
 func handleClaudeReasoning(ctx context.Context, r *REPL, args string) error {
 	value := ClaudeReasoningMode(strings.ToLower(strings.TrimSpace(args)))
 	if value == "" {
@@ -727,9 +798,34 @@ func handleMinimaxModel(ctx context.Context, r *REPL, args string) error {
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(args) == "" {
+		r.printMinimaxCatalog()
+		return nil
+	}
 	mm.SetModel(args)
 	r.printMinimaxSettings(mm)
 	return nil
+}
+
+func (r *REPL) printMinimaxCatalog() {
+	r.println(RunnerAccentText("minimax", "MiniMax models:"))
+	r.println("")
+	kinds := []MinimaxModelKind{MinimaxKindChat, MinimaxKindImage, MinimaxKindMusic, MinimaxKindLyrics}
+	for _, kind := range kinds {
+		r.println(fmt.Sprintf("  %s:", string(kind)))
+		for _, e := range MinimaxModelCatalog {
+			if e.Kind != kind {
+				continue
+			}
+			note := ""
+			if e.Note != "" {
+				note = "  " + MutedText(e.Note)
+			}
+			r.println(fmt.Sprintf("    %-26s%s", e.ID, note))
+		}
+		r.println("")
+	}
+	r.println(MutedText("  /minimax-model <id> to switch"))
 }
 
 func (r *REPL) minimaxRunner() (*MinimaxRunner, error) {
@@ -748,6 +844,7 @@ func (r *REPL) printMinimaxSettings(mm *MinimaxRunner) {
 	settings := mm.Settings()
 	r.println(RunnerAccentText("minimax", "MiniMax settings:"))
 	r.println(fmt.Sprintf("  model:     %s", valueOrDefault(settings.Model, "default")))
+	r.println(fmt.Sprintf("  kind:      %s", string(settings.Kind)))
 	r.println(fmt.Sprintf("  reasoning: %s", string(settings.ReasoningMode)))
 	r.println(fmt.Sprintf("  url:       %s", settings.URL))
 	const doubledPath = "/text/chatcompletion_v2/text/chatcompletion_v2"
@@ -1220,6 +1317,8 @@ func handleHelp(ctx context.Context, r *REPL, args string) error {
 	r.println("    /switch <runner>  Switch to another runner")
 	r.println("    /stick           Keep current runner until released")
 	r.println("    /back            Reverse the most recent switch")
+	r.println("    /model           List models for the current runner")
+	r.println("    /model <id>      Set model for the current runner")
 	r.println("")
 	r.println("  Session:")
 	r.println("    /session [name]  Show or name the session")
@@ -1259,7 +1358,8 @@ func handleHelp(ctx context.Context, r *REPL, args string) error {
 	r.println("")
 	r.println("  MiniMax:")
 	r.println("    /minimax-reasoning [mode]  Set progress detail: off, summary, verbose (default: verbose)")
-	r.println("    /minimax-model <model>     Set model for /minimax prompts")
+	r.println("    /minimax-model             List all available models (chat, image, music, lyrics)")
+	r.println("    /minimax-model <model>     Set model — routes to the correct endpoint automatically")
 	r.println("")
 	r.println("  Codex:")
 	r.println("    /codex-review [args]    Run codex review (default: --uncommitted)")
@@ -1277,7 +1377,9 @@ func handleHelp(ctx context.Context, r *REPL, args string) error {
 	r.println("    /codex-search <on|off>  Toggle web search for /codex prompts")
 	r.println("    /codex-image add|clear|list [path]  Attach images to /codex prompts")
 	r.println("")
-	r.println("  Code blocks:")
+	r.println("  Artifacts:")
+	r.println("    /pptx <topic>    Generate a PowerPoint presentation (python-pptx, saved to cwd)")
+	r.println("    /drawio <topic>  Generate a draw.io diagram XML (saved to cwd)")
 	r.println("    /apply           Extract fenced code blocks from last AI response and write to files")
 	r.println("")
 	r.println("  Observability:")

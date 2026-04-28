@@ -21,6 +21,7 @@ const (
 	AgentIDCodex   = "codex"
 	AgentIDCopilot = "copilot"
 	AgentIDMiniMax = "minimax"
+	AgentIDLocal   = "local"
 )
 
 // Metric names used by the runners. Mirror the registrations in

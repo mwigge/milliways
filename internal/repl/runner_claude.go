@@ -12,6 +12,18 @@ import (
 	"time"
 )
 
+type claudeModelEntry struct {
+	ID   string
+	Note string
+}
+
+// ClaudeModelCatalog lists the current Claude model family available via /model.
+var ClaudeModelCatalog = []claudeModelEntry{
+	{"claude-opus-4-7", "most capable"},
+	{"claude-sonnet-4-6", "balanced"},
+	{"claude-haiku-4-5-20251001", "fast"},
+}
+
 // ClaudeReasoningMode controls how much live progress Claude shows during execution.
 type ClaudeReasoningMode string
 

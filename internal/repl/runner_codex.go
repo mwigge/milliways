@@ -12,6 +12,23 @@ import (
 	"sync"
 )
 
+type codexModelEntry struct {
+	ID   string
+	Note string
+}
+
+// CodexModelCatalog lists the OpenAI models supported by the codex CLI via /model.
+var CodexModelCatalog = []codexModelEntry{
+	{"o4-mini", "fast reasoning"},
+	{"o3", "strong reasoning"},
+	{"o3-mini", "fast reasoning"},
+	{"o1", "strong reasoning"},
+	{"gpt-4.1", ""},
+	{"gpt-4.1-mini", ""},
+	{"gpt-4.1-nano", ""},
+	{"gpt-4o", ""},
+}
+
 type CodexRunner struct {
 	binary        string
 	model         string
