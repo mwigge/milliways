@@ -59,6 +59,42 @@ The system SHALL generate a briefing containing: the triggering task, a summary 
 - **WHEN** current working directory is not a git repository
 - **THEN** `## Files changed` section SHALL be omitted
 
+### Requirement: TTY transcript sidecar
+
+The system SHALL write an ANSI-stripped plain-text transcript of all terminal output to a sidecar `.log` file alongside each session's `.json` file. The transcript SHALL capture every token written to the terminal — runner responses, tool-use progress lines, and user prompts — appended continuously as the session runs.
+
+#### Scenario: Transcript file created alongside session
+
+- **WHEN** a new session is initialised
+- **THEN** system SHALL open `<session-id>.log` next to `<session-id>.json`
+- **AND** all terminal output SHALL be written to that file with ANSI escape sequences stripped
+
+#### Scenario: ANSI codes removed from transcript
+
+- **WHEN** a runner emits output containing ANSI colour codes or cursor-control sequences
+- **THEN** the `.log` file SHALL contain only the plain-text content
+- **AND** control sequences (ESC codes, CSI sequences, OSC sequences) SHALL be omitted
+
+#### Scenario: Transcript used as briefing source on takeover
+
+- **WHEN** takeover briefing is generated
+- **AND** the session `.log` file exists and is readable
+- **THEN** `GenerateBriefing` SHALL use the transcript as its source
+- **AND** briefing SHALL reflect the full session history, not just the last 20 turns
+
+#### Scenario: Briefing falls back to turn ring when transcript absent
+
+- **WHEN** takeover briefing is generated
+- **AND** no `.log` sidecar file exists (e.g. session pre-dates this feature)
+- **THEN** `GenerateBriefing` SHALL fall back to the `ConversationTurn` ring buffer
+
+#### Scenario: Transcript pruned with session
+
+- **WHEN** auto-session pruning runs (keep-5 rule)
+- **THEN** the `.log` file SHALL be deleted alongside its corresponding `.json` file
+- **WHEN** a `.log` file is older than 7 days
+- **THEN** it SHALL be deleted on milliways startup
+
 ### Requirement: MemPalace snapshot on takeover
 
 When MemPalace MCP is configured, the system SHALL asynchronously write the takeover briefing as a drawer to the active palace before switching runners.

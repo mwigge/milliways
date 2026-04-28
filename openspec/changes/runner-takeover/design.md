@@ -89,13 +89,39 @@ type RingConfig struct {
 
 ### D5: Briefing generation — local, no LLM call
 
-**Decision:** The briefing is generated locally from `ConversationTurn` data using heuristics (last N turns, keyword extraction for decisions). No outgoing LLM call is made during the briefing step.
+**Decision:** The briefing is generated locally from the TTY transcript (see D6) using heuristics. No outgoing LLM call is made during the briefing step.
 
 **Rationale:** The outgoing runner may be in a broken state (limit reached). Sending a "summarise yourself" prompt would fail or produce a low-quality summary. Local generation is deterministic and instant.
 
+### D6: TTY transcript as briefing source — sidecar log file, ANSI stripped
+
+**Decision:** milliways writes a running ANSI-stripped transcript of every token written to the terminal to a sidecar file alongside the session JSON: `~/.local/share/milliways/sessions/<session-id>.log`. The transcript captures everything — runner responses, tool-use lines, user prompts — down to the second. On takeover, `GenerateBriefing` reads this file rather than the sparse `ConversationTurn` ring buffer.
+
+The briefing generator uses the transcript as its raw material:
+- Full fidelity: no 20-turn loss — the entire session is available
+- ANSI stripped at write time: `● Shell  cmd...` progress lines are written as plain text
+- Still summarised before injection: the generator extracts task / progress / decisions / next-step and caps at 500 tokens, so the new runner's context window is not blown
+
+The `ConversationTurn` ring buffer is retained as a fallback (e.g. if the log file is absent or unreadable).
+
+```
+~/.local/share/milliways/sessions/
+  auto-a3f2b1c4-20260428T1432.json   ← existing session file
+  auto-a3f2b1c4-20260428T1432.log    ← new sidecar transcript
+```
+
+**Alternatives considered:**
+- Read from `ConversationTurn` ring only: hard cap at 20 turns; older context is lost; briefing quality degrades on long sessions
+- Capture at the OS PTY layer (pty master): more complete but requires OS-level pty wiring; ANSI stripping is harder; out of scope for this change
+- Store full raw TTY bytes: noisy (ANSI codes, cursor moves, spinner frames); stripping at read time is slow for large files — better to strip at write time
+
+**Write path:** A thin `io.Writer` wrapper (`TranscriptWriter`) wraps the existing terminal output writer. It strips ANSI escape sequences via a simple state machine and appends to the `.log` file. It is inserted in `repl.go` when the session is initialised.
+
+**Size management:** Log files are rotated alongside session pruning — the 5-most-recent auto-session rule already applies. Log files older than 7 days are deleted on startup.
+
 ## Risks / Trade-offs
 
-- **Context loss past 20 turns** → Mitigation: MemPalace snapshot captures key facts; document the limit clearly in `/takeover` output
+- **Context loss past 20 turns** → Resolved by TTY transcript: full session history available regardless of turn count
 - **False positive limit detection** → Mitigation: detection patterns are conservative (require specific substrings, not just non-zero exit); log the raw signal for debugging
 - **Ring loops back to an exhausted runner** → Mitigation: ring skips runners whose quota is `0` in `pantry`; if all are exhausted, surface a clear error rather than looping infinitely
 - **Briefing noise** → The synthetic turn adds tokens to the new runner's context; it is capped at 500 tokens and the oldest real turn is dropped to compensate
