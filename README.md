@@ -2,9 +2,11 @@
 
 > The Restaurant at the End of the Universe — one CLI to route them all.
 
-Milliways is a terminal-first AI cockpit. The default `milliways` launch starts the daemon-backed native terminal (`milliways-term`) so Claude, Codex, MiniMax, Copilot, Pool, and Gemini run in first-class terminal panes with shared sessions, context injection, sleep/wake awareness, and a live status bar.
+Milliways is a native AI terminal for macOS — the restaurant at the end of the universe where Claude, Codex, Pool, Gemini, Copilot, and MiniMax all show up for dinner.
 
-It calls the CLIs and APIs you already have set up. It does not manage credentials or run models itself.
+Open a tab and you're talking to an AI agent. Switch runners mid-session without losing context. Hit a quota limit and milliways rotates to the next one automatically, briefing it on exactly where things left off. Don't Panic — the full transcript is always on disk.
+
+It wraps the CLIs and APIs you already have set up. It does not run models or manage credentials. Bring your own towel.
 
 ---
 
