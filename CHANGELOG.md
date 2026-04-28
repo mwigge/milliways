@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.14] - 2026-04-28
+
+### Added
+- `pool` runner — Poolside AI CLI (`pool exec`) integrated as a first-class milliways runner; supports `--model` and `--mode` flags, session-limit detection, and `pool login` / `pool logout`
+- `gemini` runner — Google Gemini CLI (`gemini -p`) integrated as a first-class milliways runner; supports `--model` flag and session-limit detection via `resource_exhausted` / quota patterns
+- `/pool`, `/gemini` shorthands — equivalent to `/switch pool` and `/switch gemini`
+- `/pool-model <m>`, `/pool-mode <m>` — set pool model/mode
+- `/gemini-model <m>` — set Gemini model
+- `?` shortcut — typing `?` at the milliways prompt shows the milliways shortcuts reference (runners, key commands, takeover, shell)
+
 ## [0.4.13] - 2026-04-28
 
 ### Added

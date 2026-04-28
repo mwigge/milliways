@@ -111,6 +111,10 @@ func ParseInput(input string) Input {
 		Content: trimmed,
 	}
 
+	if trimmed == "?" {
+		return Input{Kind: InputCommand, Raw: raw, Command: "?", Content: ""}
+	}
+
 	if len(trimmed) <= 1 {
 		if trimmed != "" {
 			parsed.Content = trimmed
@@ -126,7 +130,7 @@ func ParseInput(input string) Input {
 
 		command, content := splitHead(body)
 		if content == "" {
-			if command == "claude" || command == "codex" || command == "minimax" || command == "copilot" {
+			if command == "claude" || command == "codex" || command == "minimax" || command == "copilot" || command == "pool" || command == "gemini" {
 				content = command
 			}
 		}

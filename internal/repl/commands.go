@@ -86,7 +86,16 @@ var commandHandlers = map[string]commandHandler{
 	"codex":   func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "codex") },
 	"minimax": func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "minimax") },
 	"copilot": func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "copilot") },
-	"local":   func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "local") },
+	"pool":   func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "pool") },
+	"gemini": func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "gemini") },
+	"local":  func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "local") },
+	// Pool-specific commands
+	"pool-model": handlePoolModel,
+	"pool-mode":  handlePoolMode,
+	// Gemini-specific commands
+	"gemini-model": handleGeminiModel,
+	// ? — show milliways shortcuts reference
+	"?": handleShortcuts,
 	// Rotation ring and takeover
 	"takeover-ring": handleTakeoverRing,
 	"takeover":      handleTakeover,
@@ -121,6 +130,10 @@ func handleSwitch(ctx context.Context, r *REPL, args string) error {
 		r.printMinimaxSettings(runner)
 	case *CopilotRunner:
 		r.printCopilotSettings(runner)
+	case *PoolRunner:
+		r.printPoolSettings(runner)
+	case *GeminiRunner:
+		r.printGeminiSettings(runner)
 	}
 
 	return nil
@@ -1254,6 +1267,108 @@ func (r *REPL) printCodexSettings(codex *CodexRunner) {
 func (r *REPL) printCopilotSettings(c *CopilotRunner) {
 	r.println(RunnerAccentText("copilot", "Copilot settings:"))
 	r.println(fmt.Sprintf("  binary:  %s", c.binary))
+}
+
+func handlePoolModel(ctx context.Context, r *REPL, args string) error {
+	p, ok := r.runner.(*PoolRunner)
+	if !ok {
+		return fmt.Errorf("not on pool runner — use /pool first")
+	}
+	if args == "" {
+		model := p.model
+		if model == "" {
+			model = "(default)"
+		}
+		r.println(fmt.Sprintf("pool model: %s", model))
+		return nil
+	}
+	p.SetModel(args)
+	r.println(fmt.Sprintf("pool model set to %s", args))
+	return nil
+}
+
+func handlePoolMode(ctx context.Context, r *REPL, args string) error {
+	p, ok := r.runner.(*PoolRunner)
+	if !ok {
+		return fmt.Errorf("not on pool runner — use /pool first")
+	}
+	if args == "" {
+		mode := p.mode
+		if mode == "" {
+			mode = "(default)"
+		}
+		r.println(fmt.Sprintf("pool mode: %s", mode))
+		return nil
+	}
+	p.SetMode(args)
+	r.println(fmt.Sprintf("pool mode set to %s", args))
+	return nil
+}
+
+func (r *REPL) printPoolSettings(p *PoolRunner) {
+	r.println(RunnerAccentText("pool", "Pool settings:"))
+	r.println(fmt.Sprintf("  binary:  %s", p.binary))
+	if p.model != "" {
+		r.println(fmt.Sprintf("  model:   %s", p.model))
+	}
+	if p.mode != "" {
+		r.println(fmt.Sprintf("  mode:    %s", p.mode))
+	}
+}
+
+func (r *REPL) printGeminiSettings(g *GeminiRunner) {
+	r.println(RunnerAccentText("gemini", "Gemini settings:"))
+	r.println(fmt.Sprintf("  binary:  %s", g.binary))
+	if g.model != "" {
+		r.println(fmt.Sprintf("  model:   %s", g.model))
+	}
+}
+
+func handleGeminiModel(ctx context.Context, r *REPL, args string) error {
+	g, ok := r.runner.(*GeminiRunner)
+	if !ok {
+		return fmt.Errorf("not on gemini runner — use /gemini first")
+	}
+	if args == "" {
+		model := g.model
+		if model == "" {
+			model = "(default)"
+		}
+		r.println(fmt.Sprintf("gemini model: %s", model))
+		return nil
+	}
+	g.SetModel(args)
+	r.println(fmt.Sprintf("gemini model set to %s", args))
+	return nil
+}
+
+// handleShortcuts prints the milliways key shortcuts and command reference.
+func handleShortcuts(_ context.Context, r *REPL, _ string) error {
+	lines := []string{
+		"milliways shortcuts:",
+		"  ?               Show this shortcuts reference",
+		"  /help           Full command list",
+		"  /switch <r>     Switch runner  (or just /<runner>)",
+		"  /claude         Switch to claude",
+		"  /codex          Switch to codex",
+		"  /copilot        Switch to copilot",
+		"  /gemini         Switch to gemini",
+		"  /minimax        Switch to minimax",
+		"  /pool           Switch to pool",
+		"  /model          List/set model for current runner",
+		"  /takeover [r]   Handoff with briefing injection",
+		"  /takeover-ring  Configure rotation ring",
+		"  /session        Session management",
+		"  /history        Show conversation history",
+		"  /cost           Show session cost",
+		"  /login <r>      Authenticate a runner",
+		"  !<cmd>          Run a shell command",
+		"  /exit           Quit milliways",
+	}
+	for _, l := range lines {
+		r.println(l)
+	}
+	return nil
 }
 
 func valueOrDefault(value, fallback string) string {

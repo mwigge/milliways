@@ -344,6 +344,8 @@ func authMethodForKitchen(name string) string {
 		return "Env var (ANTHROPIC_API_KEY)"
 	case "goose":
 		return "Env var (GOOSE_API_KEY)"
+	case "pool":
+		return "pool login"
 	default:
 		return "Unknown"
 	}
@@ -1637,6 +1639,12 @@ func runREPL(configPath string, noRestore bool) error {
 
 	// Register copilot runner
 	r.Register("copilot", repl.NewCopilotRunner())
+
+	// Register pool runner (Poolside AI)
+	r.Register("pool", repl.NewPoolRunner())
+
+	// Register gemini runner
+	r.Register("gemini", repl.NewGeminiRunner())
 
 	r.SetNoRestore(noRestore)
 
