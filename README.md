@@ -2,7 +2,7 @@
 
 > The Restaurant at the End of the Universe — one CLI to route them all.
 
-Milliways is a terminal-first AI cockpit. The default `milliways` launch starts the daemon-backed native terminal (`milliways-term`) so Claude, Codex, MiniMax, and Copilot run in first-class terminal panes with shared sessions, context injection, sleep/wake awareness, and a live status bar.
+Milliways is a terminal-first AI cockpit. The default `milliways` launch starts the daemon-backed native terminal (`milliways-term`) so Claude, Codex, MiniMax, Copilot, Pool, and Gemini run in first-class terminal panes with shared sessions, context injection, sleep/wake awareness, and a live status bar.
 
 It calls the CLIs and APIs you already have set up. It does not manage credentials or run models itself.
 
@@ -95,9 +95,12 @@ Sessions are auto-saved per working directory and restored on the next `milliway
 | `/codex` | Switch to codex |
 | `/minimax` | Switch to minimax |
 | `/copilot` | Switch to copilot |
+| `/pool` | Switch to pool |
+| `/gemini` | Switch to gemini |
 | `/local` | Switch to local |
 | `/stick` | Keep current runner until released |
 | `/back` | Undo the most recent switch |
+| `?` | Show milliways shortcuts reference |
 | `/model` | Interactive model picker (arrow keys) or list |
 | `/model <id>` | Set model for the current runner |
 | `/takeover [runner]` | Hand off to another runner with full context briefing |
@@ -172,6 +175,19 @@ Sessions are auto-saved per working directory and restored on the next `milliway
 | `/codex-mcp [args]` | Manage Codex MCP servers |
 | `/codex-features [args]` | Inspect Codex features |
 
+**Pool**
+
+| Command | Description |
+|---------|-------------|
+| `/pool-model <model>` | Set the pool model |
+| `/pool-mode <mode>` | Set the pool session mode |
+
+**Gemini**
+
+| Command | Description |
+|---------|-------------|
+| `/gemini-model <model>` | Override model |
+
 **Observability**
 
 | Command | Description |
@@ -217,7 +233,7 @@ milliways --recipe <name> "prompt"           # run a named recipe
 
 ## Runners
 
-**Agent runners** (used in the AI terminal, and in legacy fallback mode with `/switch` or shorthand `/claude`, `/codex` etc.):
+**Agent runners** (used in the AI terminal with `/switch` or shorthand `/claude`, `/codex` etc.):
 
 | Runner | Color | Best At | Cost |
 |--------|-------|---------|------|
@@ -225,6 +241,8 @@ milliways --recipe <name> "prompt"           # run a named recipe
 | codex | amber | Agentic coding, tool use | Cloud |
 | minimax | purple | Reasoning, image/music/lyrics generation | Cloud |
 | copilot | red | GitHub Copilot chat | Subscription |
+| pool | cyan | Large codebase navigation, ACP agent | Cloud |
+| gemini | blue | Research, web search, 1M-token context | Free tier |
 
 **CLI kitchens** (routed by the sommelier in headless mode):
 
@@ -236,6 +254,127 @@ milliways --recipe <name> "prompt"           # run a named recipe
 | aider | `aider --message` | Multi-file editing | Cloud/Local |
 | goose | `goose` | MCP tools, databases | Local |
 | cline | `cline -y --json` | Parallel fleet | Cloud |
+
+---
+
+## AI clients
+
+Milliways wraps each AI CLI as a first-class runner. They all speak the same interface internally — you switch between them with `/claude`, `/codex`, `/pool` etc. and milliways handles context injection, history, and output streaming the same way for all of them.
+
+```
+  you                 milliways              runner (claude / codex / pool / …)
+   │                      │                          │
+   │   "explain auth"     │                          │
+   ├─────────────────────>│                          │
+   │                      │   inject history         │
+   │                      │   + rules + context      │
+   │                      ├─────────────────────────>│
+   │                      │                          │  ● Read  auth/middleware.go
+   │   streamed output    │   stream tokens           │  ● Bash  go test ./...
+   │<─────────────────────┤<─────────────────────────│
+   │                      │                          │
+   │                      │   session limit?         │
+   │                      │   ──────────────         │
+   │                      │   /takeover-ring active? │
+   │                      │   yes → rotate to next   │
+   │                      ├─────────────────────────>│ (next runner)
+```
+
+When a runner hits a context or quota limit, milliways rotates to the next one in your ring and re-dispatches the original prompt — the new runner gets a structured briefing so it knows exactly where things left off.
+
+### Claude Code
+
+**Website:** [claude.ai/code](https://claude.ai/code)
+
+Claude Code is probably the strongest all-rounder in the lineup. It has the deepest tool-use loop (Bash, file read/write, MCP servers, computer use), a thinking mode for hard problems, and three reasoning levels you can dial up or down. If you're doing architecture reviews, debugging gnarly issues, or anything that needs genuine reasoning over a lot of context — this is your runner.
+
+milliways feeds it history and rules as synthetic input turns over `--input-format stream-json`, and parses `--output-format stream-json` for progress lines and cost tracking.
+
+```bash
+▶ /claude
+▶ /claude-model claude-opus-4-7
+▶ /claude-reasoning verbose
+```
+
+### Codex
+
+**Website:** [github.com/openai/codex](https://github.com/openai/codex)
+
+Codex is OpenAI's open-source agentic coding CLI. Its standout feature is the sandbox: every shell command and file edit runs inside a configurable approval policy, which you can set to fully autonomous (`auto-edit` or `none`) for unattended runs. It emits structured JSON events that milliways parses for the same `● ToolName  detail` progress display used for Claude.
+
+Good pick for: autonomous coding tasks where you want tight sandboxing control.
+
+```bash
+▶ /codex
+▶ /codex-model o4-mini
+▶ /codex-approval auto-edit
+▶ /codex-sandbox none
+```
+
+### MiniMax
+
+**Website:** [minimaxi.com](https://www.minimaxi.com)
+
+MiniMax is the odd one out in a good way — it's the only runner that does text, image, music, lyrics, and speech generation all through the same API. The M2.7 model handles reasoning and code fine, but the real reason you'd reach for it is when a task crosses into creative or multimodal territory that the other runners can't touch.
+
+milliways connects to the MiniMax HTTP API directly (no CLI wrapper), so you configure it in `carte.yaml` rather than pointing at a binary.
+
+```yaml
+kitchens:
+  minimax:
+    http_client:
+      base_url: https://api.minimax.io/v1
+      auth_key: MINIMAX_API_KEY
+      model: MiniMax-M2.7
+```
+
+```bash
+▶ /minimax
+▶ /minimax-model MiniMax-M2.7
+▶ /minimax-reasoning verbose
+```
+
+### GitHub Copilot
+
+**Website:** [github.com/features/copilot](https://github.com/features/copilot)
+
+Copilot's edge is GitHub integration. It runs agentic sessions with native awareness of pull requests, issues, and repository metadata — which makes it unusually useful for tasks like "summarise what changed in this PR" or "write a release note from these commits". Requires a Copilot subscription; scoped to repos the authenticated GitHub account can access.
+
+milliways runs `copilot -p <prompt> --allow-all-tools --add-dir <cwd>`, with the working directory pinned to prevent it from wandering into system paths.
+
+```bash
+▶ /copilot
+milliways login copilot   # auth via GitHub
+```
+
+### Pool
+
+**Website:** [poolside.ai](https://www.poolside.ai)
+
+Pool is Poolside's coding agent, built on ACP (Agent Communication Protocol) — an open standard for agentic clients that is also used by Gemini. Pool is tuned for large, complex codebases: it indexes your project at session start and keeps a structural understanding of it across turns. The non-interactive `pool exec` mode supports model and session-mode selection.
+
+milliways runs `pool exec -p <prompt> --unsafe-auto-allow` with optional `--model` and `--mode`.
+
+```bash
+▶ /pool
+▶ /pool-model <model>
+▶ /pool-mode plan        # plan mode — read-only, no writes
+pool login               # auth (run once)
+```
+
+### Gemini CLI
+
+**Website:** [github.com/google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli)
+
+Gemini's headline number is its context window — 1 million tokens, the largest of any runner milliways supports. That means you can point it at a big codebase or document set and it can read the whole thing in one shot. It also has native Google Search integration, which makes it a natural first pick for research-heavy prompts. The free tier is generous enough that many workloads run at zero cost.
+
+milliways runs `gemini -p <prompt> -y` (`-y` auto-approves all tool actions — equivalent to other runners' yolo/unsafe modes).
+
+```bash
+▶ /gemini
+▶ /gemini-model gemini-2.5-pro
+gcloud auth login        # auth (run once)
+```
 
 ---
 
@@ -336,6 +475,42 @@ Without an active ring, `/takeover` requires an explicit target runner.
 
 milliways writes a full ANSI-stripped transcript of every token printed to the terminal to a stable per-working-directory `.log` file in the session store. The briefing generator reads this transcript rather than the 20-turn ring buffer, so **the new runner gets complete context back to the first prompt** — not just the last 20 turns.
 
+```
+  terminal                milliways                   next runner
+     │                        │                            │
+     │   ──── session ────    │                            │
+     │   token stream         │                            │
+     │───────────────────────>│──> TranscriptWriter        │
+     │                        │       ↓                    │
+     │                        │   session.log  (on disk)   │
+     │                        │                            │
+     │   /takeover codex ─    │                            │
+     │   (or: auto-rotate)    │                            │
+     │───────────────────────>│                            │
+     │                        │   BriefingGenerator        │
+     │                        │   reads session.log        │
+     │                        │   ↓                        │
+     │                        │   structured briefing      │
+     │                        │   ┌────────────────────┐   │
+     │                        │   │ ## Current task    │   │
+     │                        │   │ ## Progress        │   │
+     │                        │   │ ## Files changed   │   │
+     │                        │   │ ## Next step       │   │
+     │                        │   └────────────────────┘   │
+     │                        │                            │
+     │                        │   inject briefing          │
+     │                        │   + original prompt        │
+     │                        ├──────────────────────────> │
+     │                        │                            │  ● continues work
+     │   streamed output      │   stream tokens            │
+     │<───────────────────────┤<───────────────────────────│
+     │                        │                            │
+     │                        │   MemPalace (async)        │
+     │                        │   snapshot to palace ─────>│ (background)
+```
+
+The MemPalace snapshot runs in the background — it does not block the handoff. When the new runner is up and running, relevant memories from previous sessions are already available via MCP.
+
 ### Ring commands
 
 | Command | Description |
@@ -344,6 +519,46 @@ milliways writes a full ANSI-stripped transcript of every token printed to the t
 | `/takeover-ring` | Show current ring |
 | `/takeover-ring off` | Clear ring |
 | `/takeover [runner]` | Manual handoff with briefing |
+
+---
+
+## Observability
+
+Every dispatch is instrumented. milliways writes a structured NDJSON log and exposes token usage, cost, and per-runner stats without you needing to dig through terminal output.
+
+```
+  terminal                milliways                    on-disk / UI
+     │                        │                            │
+     │   token stream         │                            │
+     │───────────────────────>│──> TranscriptWriter        │
+     │                        │       ↓                    │
+     │                        │   ~/.local/share/          │
+     │                        │   milliways/<cwd>.log      │
+     │                        │                            │
+     │                        │──> events.ndjson           │
+     │                        │   { ts, runner, tokens,    │
+     │                        │     cost_usd, prompt_id }  │
+     │                        │                            │
+     │   /metrics             │                            │
+     │───────────────────────>│                            │
+     │                        │   aggregate events         │
+     │   runner     in    out   cost                       │
+     │   claude    12k   4.2k  $0.18  ◄───────────────────│
+     │   codex      8k   2.1k  $0.09                       │
+     │   pool       3k   0.9k  $0.00                       │
+     │                        │                            │
+     │   /cost                │                            │
+     │───────────────────────>│                            │
+     │   session: $0.27  ─────────────────────────────────│
+     │   today:   $1.43                                    │
+     │   week:    $6.20                                    │
+```
+
+```bash
+▶ /metrics          # per-runner token + cost breakdown
+▶ /cost             # session / today / week totals
+▶ /quota            # remaining quota per runner (where available)
+```
 
 ---
 
