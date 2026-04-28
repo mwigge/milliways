@@ -1,0 +1,71 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      # The wezterm-gui binary is not built in CI — it's pre-built and stored
+      # as a release asset in the wezterm-fork repo under the tag `milliways-wezterm`.
+      # When the wezterm patches change, update that release asset and bump
+      # WEZTERM_RELEASE below.
+      - name: Download wezterm binaries
+        env:
+          WEZTERM_RELEASE: milliways-wezterm
+          WEZTERM_REPO: mwigge/wezterm-fork
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/wezterm-bin
+          gh release download "$WEZTERM_RELEASE" \
+            --repo "$WEZTERM_REPO" \
+            --pattern "wezterm-gui" \
+            --pattern "wezterm-mux-server" \
+            --dir /tmp/wezterm-bin \
+            --clobber
+          chmod +x /tmp/wezterm-bin/wezterm-gui /tmp/wezterm-bin/wezterm-mux-server
+
+      - name: Build and bundle
+        run: |
+          make bundle-macos WEZTERM_SRC=/tmp/wezterm-bin
+        env:
+          PREFIX: /tmp/milliways-install
+
+      - name: Build milliways binaries (all platforms)
+        run: |
+          mkdir -p dist
+          GOOS=darwin  GOARCH=arm64 go build -ldflags "-X main.version=${{ github.ref_name }}" \
+            -o dist/milliways_darwin_arm64  ./cmd/milliways
+          GOOS=darwin  GOARCH=amd64 go build -ldflags "-X main.version=${{ github.ref_name }}" \
+            -o dist/milliways_darwin_amd64  ./cmd/milliways
+          GOOS=linux   GOARCH=amd64 go build -ldflags "-X main.version=${{ github.ref_name }}" \
+            -o dist/milliways_linux_amd64   ./cmd/milliways
+          GOOS=linux   GOARCH=arm64 go build -ldflags "-X main.version=${{ github.ref_name }}" \
+            -o dist/milliways_linux_arm64   ./cmd/milliways
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "milliways ${{ github.ref_name }}" \
+            --generate-notes \
+            dist/milliways_darwin_arm64 \
+            dist/milliways_darwin_amd64 \
+            dist/milliways_linux_amd64 \
+            dist/milliways_linux_arm64 \
+            dist/MilliWays.app.zip

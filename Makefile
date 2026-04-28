@@ -5,7 +5,8 @@ PREFIX ?= $(HOME)/.local
 BIN := $(PREFIX)/bin
 
 .PHONY: smoke plugin-test install mempalace-dev mempalace-test \
-        all term daemon ctl repl gen-rpc clean-rpc
+        all term daemon ctl repl gen-rpc clean-rpc \
+        bundle-macos release
 
 # ---------------------------------------------------------------------------
 # milliways-emulator-fork build targets
@@ -86,3 +87,75 @@ plugin-test:
 	  2>&1
 
 install: repl
+
+# ---------------------------------------------------------------------------
+# macOS app bundle — assembles MilliWays.app and zips it for release.
+#
+# Requires: the patched wezterm-gui and wezterm-mux-server binaries.
+# Source priority:
+#   1. WEZTERM_BIN_DIR env var (CI sets this to a downloaded artifact dir)
+#   2. /Applications/MilliWays.app/Contents/MacOS  (dev machine shortcut)
+# ---------------------------------------------------------------------------
+BUNDLE_DIR  := $(CURDIR)/bundle/macos
+DIST_DIR    := $(CURDIR)/dist
+APP_NAME    := MilliWays.app
+APP_DIR     := $(DIST_DIR)/$(APP_NAME)
+WEZTERM_SRC ?= /Applications/MilliWays.app/Contents/MacOS
+
+bundle-macos: repl
+	@echo "==> Assembling $(APP_NAME) ($(VERSION))"
+	@[ -d "$(WEZTERM_SRC)" ] || { \
+		echo "ERROR: wezterm binaries not found."; \
+		echo "  Set WEZTERM_BIN_DIR=<dir containing wezterm-gui and wezterm-mux-server>"; \
+		echo "  or install MilliWays.app to /Applications first."; \
+		exit 1; \
+	}
+	rm -rf "$(APP_DIR)"
+	mkdir -p "$(APP_DIR)/Contents/MacOS" "$(APP_DIR)/Contents/Resources"
+	# wezterm binaries
+	cp "$(WEZTERM_SRC)/wezterm-gui"        "$(APP_DIR)/Contents/MacOS/"
+	cp "$(WEZTERM_SRC)/wezterm-mux-server" "$(APP_DIR)/Contents/MacOS/"
+	chmod +x "$(APP_DIR)/Contents/MacOS/wezterm-gui" \
+	          "$(APP_DIR)/Contents/MacOS/wezterm-mux-server"
+	# milliways binary (built by `repl` target above)
+	cp "$(BIN)/milliways" "$(APP_DIR)/Contents/MacOS/"
+	# resources
+	cp "$(BUNDLE_DIR)/milliways.icns" "$(APP_DIR)/Contents/Resources/"
+	sed "s/__VERSION__/$(VERSION)/g" "$(BUNDLE_DIR)/Info.plist" \
+		> "$(APP_DIR)/Contents/Info.plist"
+	# strip quarantine so Gatekeeper doesn't block unsigned binaries
+	xattr -cr "$(APP_DIR)" 2>/dev/null || true
+	# zip for upload
+	cd "$(DIST_DIR)" && zip -qr "$(APP_NAME).zip" "$(APP_NAME)"
+	@echo "==> $(DIST_DIR)/$(APP_NAME).zip"
+
+# ---------------------------------------------------------------------------
+# release — tag, build, and publish a GitHub Release.
+#
+# Usage: make release TAG=v0.4.14
+#   Requires: gh CLI authenticated, clean working tree.
+# ---------------------------------------------------------------------------
+TAG ?= $(VERSION)
+
+release: bundle-macos
+	@command -v gh >/dev/null 2>&1 || { echo "gh CLI required: brew install gh"; exit 1; }
+	@git diff --quiet HEAD || { echo "Working tree is dirty — commit or stash first"; exit 1; }
+	@echo "==> Building cross-platform milliways binaries"
+	GOOS=darwin  GOARCH=arm64  go build -ldflags "$(LDFLAGS)" \
+		-o "$(DIST_DIR)/milliways_darwin_arm64"  ./cmd/milliways
+	GOOS=darwin  GOARCH=amd64  go build -ldflags "$(LDFLAGS)" \
+		-o "$(DIST_DIR)/milliways_darwin_amd64"  ./cmd/milliways
+	GOOS=linux   GOARCH=amd64  go build -ldflags "$(LDFLAGS)" \
+		-o "$(DIST_DIR)/milliways_linux_amd64"   ./cmd/milliways
+	GOOS=linux   GOARCH=arm64  go build -ldflags "$(LDFLAGS)" \
+		-o "$(DIST_DIR)/milliways_linux_arm64"   ./cmd/milliways
+	@echo "==> Creating GitHub Release $(TAG)"
+	gh release create "$(TAG)" \
+		--title "milliways $(TAG)" \
+		--notes-file <(git log --pretty=format:'- %s' $$(git describe --tags --abbrev=0 HEAD^)..HEAD 2>/dev/null || echo "See CHANGELOG.md") \
+		"$(DIST_DIR)/milliways_darwin_arm64" \
+		"$(DIST_DIR)/milliways_darwin_amd64" \
+		"$(DIST_DIR)/milliways_linux_amd64" \
+		"$(DIST_DIR)/milliways_linux_arm64" \
+		"$(DIST_DIR)/$(APP_NAME).zip"
+	@echo "==> Released $(TAG)"
