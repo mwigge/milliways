@@ -267,8 +267,8 @@ type minimaxImageResponse struct {
 		ImageBase64 []string `json:"image_base64"`
 	} `json:"data"`
 	Metadata struct {
-		SuccessCount int `json:"success_count"`
-		FailedCount  int `json:"failed_count"`
+		SuccessCount json.Number `json:"success_count"`
+		FailedCount  json.Number `json:"failed_count"`
 	} `json:"metadata"`
 	BaseResp struct {
 		StatusCode int    `json:"status_code"`

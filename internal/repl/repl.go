@@ -401,9 +401,22 @@ func (r *REPL) Run(ctx context.Context) error {
 	r.input.SetCompleter(func(line string) []string {
 		var completions []string
 		if strings.HasPrefix(line, "/") {
-			prefix := strings.TrimPrefix(line, "/")
+			// Model-ID completion for runner-specific model commands.
+			if ids, partial, prefix := modelCompletionContext(r, line); ids != nil {
+				for _, id := range ids {
+					if strings.HasPrefix(id, partial) {
+						completions = append(completions, prefix+id)
+					}
+				}
+				if len(completions) > 0 {
+					return completions
+				}
+			}
+
+			// Default: complete command names.
+			cmdPrefix := strings.TrimPrefix(line, "/")
 			for cmd := range commandHandlers {
-				if strings.HasPrefix(cmd, prefix) {
+				if strings.HasPrefix(cmd, cmdPrefix) {
 					completions = append(completions, "/"+cmd)
 				}
 			}

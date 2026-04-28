@@ -23,10 +23,26 @@ local config = wezterm.config_builder and wezterm.config_builder() or {}
 
 -- ── Appearance ──────────────────────────────────────────────────────────────
 
-config.color_scheme       = 'Gruvbox dark, medium (base16)'
+-- Black background, phosphor green text — matches the REPL's own color palette.
+config.colors = {
+  foreground = '#4db51f',   -- phosphor green
+  background = '#000000',
+  cursor_bg  = '#4db51f',
+  cursor_fg  = '#000000',
+  selection_bg = '#1a3d0a',
+  selection_fg = '#80d040',
+  ansi = {
+    '#1a1a1a', '#cc2222', '#4db51f', '#9a8a00',
+    '#1a6abf', '#7a3faa', '#1a9090', '#b0b0a0',
+  },
+  brights = {
+    '#3a3a3a', '#ee4444', '#80d040', '#cfc000',
+    '#4499ee', '#aa66dd', '#22bbbb', '#e8e8d8',
+  },
+}
 config.font               = wezterm.font('JetBrains Mono', { weight = 'Regular' })
 config.font_size          = 13.0
-config.window_decorations = 'RESIZE'
+config.window_decorations = 'TITLE | RESIZE'
 config.hide_tab_bar_if_only_one_tab = false
 config.use_fancy_tab_bar  = false
 config.tab_bar_at_bottom  = true
