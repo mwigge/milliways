@@ -229,6 +229,7 @@ type REPL struct {
 	pendingAttachments []Attachment
 	lastCtrlC          time.Time // for double-Ctrl-C exit detection
 	statusBar          *StatusBar
+	ring               *RingConfig // nil = no ring configured
 }
 
 func (r *REPL) SetVersion(v string) {
@@ -378,6 +379,7 @@ func (r *REPL) Run(ctx context.Context) error {
 		cwd, _ := os.Getwd()
 		if sess, ok := r.sessionStore.FindLatestForCwd(cwd); ok {
 			r.turnBuffer = sess.Turns
+			r.ring = sess.Ring
 			fmt.Fprintf(r.stdout, "restored %d turns from %s\n",
 				len(sess.Turns), sess.SavedAt.Format("2006-01-02 15:04"))
 			r.replayTurnsToSubstrate(ctx)
@@ -406,6 +408,7 @@ func (r *REPL) Run(ctx context.Context) error {
 				RulesHash:  rulesHash(r.rules),
 				WorkDir:    cwd,
 				Turns:      r.turnBuffer,
+				Ring:       r.ring,
 			}
 			if err := r.sessionStore.Save("", sess); err != nil {
 				slog.Warn("auto-save session failed", "err", err)
@@ -985,7 +988,11 @@ func (r *REPL) buildStatusContent(ctx context.Context) (content string, sessionF
 		if r.runnerState.IsRunning() {
 			dot = "●"
 		}
-		parts = append(parts, RunnerAccentText(name, dot+name))
+		runnerSeg := dot + name
+		if r.ring != nil {
+			runnerSeg += fmt.Sprintf(" %d/%d", r.ring.Pos+1, len(r.ring.Runners))
+		}
+		parts = append(parts, RunnerAccentText(name, runnerSeg))
 	}
 
 	if r.session != nil {
