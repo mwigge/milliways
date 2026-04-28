@@ -124,15 +124,15 @@ func (c *CodeGraphClient) FileComplexity(ctx context.Context, filePath string) (
 		return 0, 0, fmt.Errorf("codegraph_files: %w", err)
 	}
 
-	// Parse result for symbol count
-	text, parseErr := extractText(result)
-	if parseErr != nil {
-		return 0, 0, parseErr
+	syms, err := parseToolContent[[]SymbolInfo](result)
+	if err != nil {
+		return 0, 0, err
 	}
-	// Rough heuristic: count lines as proxy for complexity
-	// A proper implementation would parse the structured response
-	_ = text
-	return 0, 0, nil // placeholder — enriched in MW-11
+	totalCallers := 0
+	for _, s := range syms {
+		totalCallers += s.Callers
+	}
+	return len(syms), totalCallers, nil
 }
 
 // Close terminates the MCP server.
