@@ -787,6 +787,13 @@ Human-readable audit trail: `~/.config/milliways/ledger.ndjson`
 
 ---
 
+---
+
+> *"A towel is about the most massively useful thing an interstellar hitchhiker can have."*
+> A context window is a close second. milliways keeps track of both.
+
+---
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) for the full text.
