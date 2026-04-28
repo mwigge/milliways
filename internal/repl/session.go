@@ -18,6 +18,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -52,6 +53,9 @@ type SessionStore struct {
 	dir string
 }
 
+// Dir returns the storage directory used by this SessionStore.
+func (s *SessionStore) Dir() string { return s.dir }
+
 // NewSessionStore resolves the storage directory under XDG_DATA_HOME or
 // ~/.local/share/milliways/sessions and creates it if needed.
 func NewSessionStore() (*SessionStore, error) {
@@ -73,7 +77,33 @@ func NewSessionStoreAt(dir string) (*SessionStore, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("session store: creating dir %q: %w", dir, err)
 	}
-	return &SessionStore{dir: dir}, nil
+	s := &SessionStore{dir: dir}
+	CleanOldTranscripts(dir)
+	return s, nil
+}
+
+// CleanOldTranscripts deletes .log files in dir that are older than 7 days.
+func CleanOldTranscripts(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().AddDate(0, 0, -7)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			path := filepath.Join(dir, e.Name())
+			if err := os.Remove(path); err != nil {
+				slog.Warn("session store: removing old transcript", "path", path, "err", err)
+			}
+		}
+	}
 }
 
 // Save writes a named session file. If name is "" it writes an auto-session
@@ -237,6 +267,9 @@ func (s *SessionStore) pruneAutoSessions(cwdH string) {
 	toDelete := matches[:len(matches)-maxAutoSessions]
 	for _, name := range toDelete {
 		_ = os.Remove(filepath.Join(s.dir, name))
+		// Also remove the sidecar transcript log if it exists.
+		logName := strings.TrimSuffix(name, ".json") + ".log"
+		_ = os.Remove(filepath.Join(s.dir, logName))
 	}
 }
 
