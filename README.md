@@ -339,4 +339,9 @@ Human-readable audit trail: `~/.config/milliways/ledger.ndjson`
 
 ## License
 
-Private repository. Not yet licensed for distribution.
+Apache License 2.0 — see [LICENSE](LICENSE) for the full text.
+
+The `crates/milliways-term` directory contains a modified fork of
+[WezTerm](https://github.com/wez/wezterm) (MIT licensed). See
+[MILLIWAYS_NOTICE.md](MILLIWAYS_NOTICE.md) and [NOTICE](NOTICE) for
+attribution details.

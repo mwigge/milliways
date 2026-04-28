@@ -6,7 +6,7 @@ However, milliways has no awareness of *what* is being worked on — the project
 
 **Current state**:
 - Conversation palace: `~/.milliways/palace` (mempalace-milliways fork)
-- Project palaces: separate instances (e.g., `~/dev/src/docs_local/palace`, `~/projects/acme/.mempalace`)
+- Project palaces: separate instances (e.g., `~/projects/acme/.mempalace`, `~/work/myproject/.mempalace`)
 - No cross-reference between them
 - CodeGraph available but not integrated into milliways session context
 
@@ -164,8 +164,8 @@ type RepoAccess struct {
 projects:
   company:
     paths:
-      - ~/dev/src/ghorg
-      - ~/dev/src/docs_local
+      - ~/work
+      - ~/src/company
     access:
       read: "project"  # restrict cross-reads
       write: "project"

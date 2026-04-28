@@ -1,3 +1,17 @@
+// Copyright 2024 The milliways Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package main
 
 import (
@@ -60,10 +74,10 @@ func main() {
 	})))
 
 	// Top-level launcher dispatch runs *before* cobra so we can implement the
-	// cockpit-by-default behaviour (`milliways` with no flags exec's
-	// milliways-term) and the legacy `--repl` path with its deprecation
-	// notice. Anything that doesn't match falls through to the existing
-	// cobra root command.
+	// milliways-term-by-default behaviour (`milliways` with no flags exec's
+	// milliways-term) and the built-in terminal `--repl` path with its
+	// deprecation notice. Anything that doesn't match falls through to the
+	// existing cobra root command.
 	switch parseLauncherMode(os.Args[1:], os.Getenv("MILLIWAYS_REPL")) {
 	case modeCockpit:
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -81,11 +95,11 @@ func main() {
 			printREPLDeprecationNotice()
 		}
 		// Strip the leading --repl so cobra doesn't reparse it (we already
-		// know the user meant the legacy REPL). Other flags (e.g.
+		// know the user wants the built-in terminal mode). Other flags (e.g.
 		// --no-restore) pass through unchanged.
 		stripped := stripLeadingREPLFlag(os.Args[1:])
 		args := append([]string{os.Args[0]}, stripped...)
-		// Force cobra into the REPL path even if MILLIWAYS_REPL=1 was the
+		// Force cobra into the --repl path even if MILLIWAYS_REPL=1 was the
 		// trigger by appending --repl back if it isn't already there.
 		args = ensureREPLFlag(args)
 		os.Args = args
@@ -101,8 +115,8 @@ func main() {
 }
 
 // stripLeadingREPLFlag removes a leading "--repl" token from args (if
-// present). Used after the dispatcher has decided to run the legacy REPL
-// and we want cobra to see whatever else the user passed.
+// present). Used after the dispatcher has decided to use the built-in
+// terminal mode and we want cobra to see whatever else the user passed.
 func stripLeadingREPLFlag(args []string) []string {
 	if len(args) > 0 && args[0] == "--repl" {
 		return args[1:]
@@ -111,8 +125,8 @@ func stripLeadingREPLFlag(args []string) []string {
 }
 
 // ensureREPLFlag re-injects "--repl" into argv so cobra's RunE picks the
-// legacy REPL branch. The dispatcher may have entered REPL mode via env var
-// alone, in which case argv carries no --repl flag.
+// built-in terminal branch. The dispatcher may have entered this mode via
+// env var alone, in which case argv carries no --repl flag.
 func ensureREPLFlag(args []string) []string {
 	for _, a := range args[1:] {
 		if a == "--repl" {
@@ -157,7 +171,7 @@ based on what each tool does best.
 		Version: version,
 		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// REPL is the default when no prompt args are given.
+			// Built-in terminal mode is the default when no prompt args are given.
 			if len(args) == 0 || replFlag {
 				noRestore, _ := cmd.Flags().GetBool("no-restore")
 				return runREPL(configPath, noRestore)
@@ -211,7 +225,7 @@ based on what each tool does best.
 	cmd.Flags().BoolVar(&asyncFlag, "async", false, "Dispatch asynchronously, return ticket ID")
 	cmd.Flags().BoolVar(&detachFlag, "detach", false, "Dispatch detached (survives exit)")
 	cmd.Flags().BoolVar(&keepContext, "keep-context", false, "Keep recipe context files")
-	cmd.Flags().BoolVar(&replFlag, "repl", false, "Interactive REPL mode (default when no args)")
+	cmd.Flags().BoolVar(&replFlag, "repl", false, "Interactive terminal mode (default when no args)")
 	cmd.Flags().StringVar(&projectRoot, "project-root", "", "Override project repository root")
 	cmd.Flags().StringVar(&contextJSON, "context-json", "", "Pass editor context bundle JSON directly on the CLI")
 	cmd.Flags().StringVar(&contextFile, "context-file", "", "Read editor context bundle JSON from a file")
@@ -304,7 +318,7 @@ func authMethodForKitchen(name string) string {
 	case "claude", "gemini":
 		return "Browser OAuth"
 	case "opencode":
-		return "Interactive TUI"
+		return "Interactive terminal"
 	case "minimax":
 		return "API key (carte.yaml)"
 	case "groq":
@@ -849,7 +863,6 @@ func readMMXAPIKey() string {
 // It checks in order:
 //  1. MILLIWAYS_MEMPALACE_MCP_CMD env var (if set)
 //  2. python3 -m mempalace.mcp_server (system Python with mempalace installed)
-//  3. ~/dev/src/pprojects/mempalace-milliways/.venv/bin/python -m mempalace.mcp_server
 //
 // Returns (cmd, args). If not found, returns ("", nil).
 func detectMempalaceMCP(palacePath string) (string, []string) {
@@ -865,19 +878,6 @@ func detectMempalaceMCP(palacePath string) (string, []string) {
 			args = append(args, "--palace", palacePath)
 		}
 		return cmdPath, args
-	}
-
-	// 3. Known venv location.
-	home, err := os.UserHomeDir()
-	if err == nil {
-		venvPython := filepath.Join(home, "dev/src/pprojects/mempalace-milliways/.venv/bin/python")
-		if _, err := os.Stat(venvPython); err == nil {
-			args := []string{"-m", "mempalace.mcp_server"}
-			if palacePath != "" {
-				args = append(args, "--palace", palacePath)
-			}
-			return venvPython, args
-		}
 	}
 
 	return "", nil

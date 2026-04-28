@@ -1,3 +1,17 @@
+// Copyright 2024 The milliways Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package maitre
 
 import (
@@ -9,28 +23,34 @@ import (
 
 func TestReadMode_Default(t *testing.T) {
 	t.Parallel()
-	// If ~/.claude/mode doesn't exist, should default to private
 	mode := ReadMode()
-	// Can't predict actual value — just verify it returns a valid mode
 	if mode != ModeCompany && mode != ModePrivate {
 		t.Errorf("ReadMode() = %q, want company or private", mode)
 	}
 }
 
 func TestPathAllowed_CompanyMode(t *testing.T) {
-	t.Parallel()
-	home, _ := os.UserHomeDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	companyDir := filepath.Join(home, "work")
+	privateDir := filepath.Join(home, "personal")
+	// Create dirs so EvalSymlinks resolves consistently (macOS /var → /private/var)
+	if err := os.MkdirAll(companyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.MkdirAll(privateDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	t.Setenv("MILLIWAYS_COMPANY_ROOTS", companyDir)
+	t.Setenv("MILLIWAYS_PRIVATE_ROOTS", privateDir)
 
 	tests := []struct {
 		name    string
 		path    string
 		wantErr bool
 	}{
-		{"company path allowed", filepath.Join(home, "dev/src/ghorg/chaostooling/foo"), false},
-		{"docs_local allowed", filepath.Join(home, "dev/src/docs_local/bar"), false},
-		{"private path blocked", filepath.Join(home, "dev/src/pprojects/milliways"), true},
-		{"api_projects blocked", filepath.Join(home, "dev/src/api_projects/foo"), true},
-		{"ai_local neutral", filepath.Join(home, "dev/src/ai_local/foo"), false},
+		{"company path allowed", filepath.Join(companyDir, "project/foo"), false},
+		{"private path blocked", filepath.Join(privateDir, "project"), true},
 		{"ssh neutral", filepath.Join(home, ".ssh/config"), false},
 		{"claude config neutral", filepath.Join(home, ".claude/settings.json"), false},
 		{"tmp allowed", "/tmp/foo", false},
@@ -38,7 +58,6 @@ func TestPathAllowed_CompanyMode(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			err := PathAllowed(tt.path, ModeCompany)
 			if tt.wantErr && err == nil {
 				t.Errorf("expected error for %s in company mode", tt.path)
@@ -51,25 +70,31 @@ func TestPathAllowed_CompanyMode(t *testing.T) {
 }
 
 func TestPathAllowed_PrivateMode(t *testing.T) {
-	t.Parallel()
-	home, _ := os.UserHomeDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	companyDir := filepath.Join(home, "work")
+	privateDir := filepath.Join(home, "personal")
+	if err := os.MkdirAll(companyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.MkdirAll(privateDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	t.Setenv("MILLIWAYS_COMPANY_ROOTS", companyDir)
+	t.Setenv("MILLIWAYS_PRIVATE_ROOTS", privateDir)
 
 	tests := []struct {
 		name    string
 		path    string
 		wantErr bool
 	}{
-		{"private path allowed", filepath.Join(home, "dev/src/pprojects/milliways"), false},
-		{"api_projects allowed", filepath.Join(home, "dev/src/api_projects/foo"), false},
-		{"company path blocked", filepath.Join(home, "dev/src/ghorg/chaostooling/foo"), true},
-		{"docs_local blocked", filepath.Join(home, "dev/src/docs_local/bar"), true},
-		{"ai_local neutral", filepath.Join(home, "dev/src/ai_local/foo"), false},
+		{"private path allowed", filepath.Join(privateDir, "project"), false},
+		{"company path blocked", filepath.Join(companyDir, "project/foo"), true},
 		{"tmp allowed", "/tmp/foo", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			err := PathAllowed(tt.path, ModePrivate)
 			if tt.wantErr && err == nil {
 				t.Errorf("expected error for %s in private mode", tt.path)
@@ -82,32 +107,27 @@ func TestPathAllowed_PrivateMode(t *testing.T) {
 }
 
 func TestPathAllowed_ResolvesSymlinksBeforeCheckingPrefixes(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("user home dir: %v", err)
-	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	companyDir := filepath.Join(home, "work")
+	privateDir := filepath.Join(home, "personal")
+	t.Setenv("MILLIWAYS_COMPANY_ROOTS", companyDir)
+	t.Setenv("MILLIWAYS_PRIVATE_ROOTS", privateDir)
 
-	blockedTarget := filepath.Join(home, "dev", "src", "ghorg", "blocked-project-test-symlink")
-	allowedAlias := filepath.Join(home, "dev", "src", "ai_local", "allowed-link-test-symlink")
-	t.Cleanup(func() {
-		_ = os.RemoveAll(allowedAlias)
-		_ = os.RemoveAll(blockedTarget)
-	})
+	blockedTarget := filepath.Join(companyDir, "blocked-project")
+	allowedAlias := filepath.Join(home, ".config", "milliways", "allowed-link")
 
-	if err := os.MkdirAll(filepath.Dir(blockedTarget), 0o755); err != nil {
-		t.Fatalf("mkdir blocked parent: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(allowedAlias), 0o755); err != nil {
-		t.Fatalf("mkdir allowed parent: %v", err)
-	}
 	if err := os.MkdirAll(blockedTarget, 0o755); err != nil {
 		t.Fatalf("mkdir blocked target: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(allowedAlias), 0o755); err != nil {
+		t.Fatalf("mkdir allowed alias parent: %v", err)
 	}
 	if err := os.Symlink(blockedTarget, allowedAlias); err != nil {
 		t.Fatalf("create symlink: %v", err)
 	}
 
-	err = PathAllowed(allowedAlias, ModePrivate)
+	err := PathAllowed(allowedAlias, ModePrivate)
 	if err == nil {
 		t.Fatal("expected symlinked blocked path to be rejected")
 	}
@@ -120,20 +140,19 @@ func TestPathAllowed_ResolvesSymlinksBeforeCheckingPrefixes(t *testing.T) {
 }
 
 func TestPathAllowed_DoesNotLeakBlockedPathInError(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("user home dir: %v", err)
-	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	companyDir := filepath.Join(home, "work")
+	privateDir := filepath.Join(home, "personal")
+	t.Setenv("MILLIWAYS_COMPANY_ROOTS", companyDir)
+	t.Setenv("MILLIWAYS_PRIVATE_ROOTS", privateDir)
 
-	blockedPath := filepath.Join(home, "dev", "src", "pprojects", "milliways-test-blocked-path")
-	t.Cleanup(func() {
-		_ = os.RemoveAll(blockedPath)
-	})
+	blockedPath := filepath.Join(privateDir, "milliways-test-blocked")
 	if err := os.MkdirAll(blockedPath, 0o755); err != nil {
 		t.Fatalf("mkdir blocked path: %v", err)
 	}
 
-	err = PathAllowed(blockedPath, ModeCompany)
+	err := PathAllowed(blockedPath, ModeCompany)
 	if err == nil {
 		t.Fatal("expected blocked path to be rejected")
 	}

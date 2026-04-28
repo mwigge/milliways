@@ -891,8 +891,8 @@ Status: completed (182.3s)
 
 | Mode | Available Kitchens | Allowed Paths |
 |------|-------------------|---------------|
-| `company` | Approved kitchens only (e.g., claude, opencode) | `~/dev/src/ghorg/`, `~/dev/src/docs_local/` |
-| `private` | All kitchens | `~/dev/src/pprojects/`, `~/dev/src/ai_local/` |
+| `company` | Approved kitchens only (e.g., claude, opencode) | `~/work/`, `~/src/company/` |
+| `private` | All kitchens | `~/personal/`, `~/src/private/` |
 
 **PreRoute enforcement**:
 - If task targets a file in a blocked path: **hard stop**. No retry, no fallback. Return error immediately.

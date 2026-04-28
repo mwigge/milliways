@@ -6,9 +6,9 @@ The system SHALL resolve citation handles to their source palace, even when that
 
 #### Scenario: Citation to non-active palace
 - **WHEN** active project is "acme-saas"
-- **AND** turn 5 has a citation to palace "docs_local", drawer "xyz123"
+- **AND** turn 5 has a citation to palace "work-docs", drawer "xyz123"
 - **AND** user asks "what was that thing about Jeli?"
-- **THEN** system SHALL query "docs_local" palace for drawer "xyz123"
+- **THEN** system SHALL query "work-docs" palace for drawer "xyz123"
 - **AND** result SHALL be returned with palace attribution
 
 #### Scenario: Citation to unreachable palace
@@ -47,13 +47,13 @@ The system SHALL track all palaces cited in the current conversation for efficie
 The system SHALL verify citation validity when resolving, not at write time.
 
 #### Scenario: Valid citation
-- **WHEN** resolving citation to drawer "xyz123" in palace "docs_local"
+- **WHEN** resolving citation to drawer "xyz123" in palace "work-docs"
 - **AND** that drawer exists
 - **THEN** resolution SHALL succeed
 - **AND** drawer content SHALL be returned
 
 #### Scenario: Stale citation - drawer deleted
-- **WHEN** resolving citation to drawer "xyz123" in palace "docs_local"
+- **WHEN** resolving citation to drawer "xyz123" in palace "work-docs"
 - **AND** that drawer no longer exists
 - **THEN** resolution SHALL fail with "Citation stale: drawer not found"
 - **AND** citation.verified_at SHALL be updated with failure status

@@ -1,3 +1,17 @@
+// Copyright 2024 The milliways Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package session
 
 import (
@@ -107,13 +121,17 @@ func TestFileStoreLoadMissingSession(t *testing.T) {
 func TestFileStoreSaveBlocksReadOnlyModePath(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
+	privateDir := filepath.Join(homeDir, "personal")
+	t.Setenv("MILLIWAYS_PRIVATE_ROOTS", privateDir)
+	t.Setenv("MILLIWAYS_COMPANY_ROOTS", filepath.Join(homeDir, "work"))
 
-	store := NewFileStore(filepath.Join(homeDir, "dev", "src", "pprojects", "sessions"))
+	sessionsDir := filepath.Join(privateDir, "sessions")
+	store := NewFileStore(sessionsDir)
 	err := store.Save(Session{ID: "session-1", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()})
 	if err == nil {
 		t.Fatal("Save() error = nil, want error")
 	}
-	if _, statErr := os.Stat(filepath.Join(homeDir, "dev", "src", "pprojects", "sessions", "session-1.json")); !errors.Is(statErr, os.ErrNotExist) {
+	if _, statErr := os.Stat(filepath.Join(sessionsDir, "session-1.json")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("session file stat error = %v, want not exist", statErr)
 	}
 }

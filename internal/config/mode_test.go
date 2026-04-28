@@ -1,3 +1,17 @@
+// Copyright 2024 The milliways Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package config
 
 import (
@@ -34,6 +48,16 @@ func TestNewModeManagerCreatesNeutralModeFile(t *testing.T) {
 func TestModeManagerCanWriteByMode(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
+	privateDir := filepath.Join(homeDir, "personal")
+	companyDir := filepath.Join(homeDir, "work")
+	if err := os.MkdirAll(privateDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.MkdirAll(companyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	t.Setenv("MILLIWAYS_PRIVATE_ROOTS", privateDir)
+	t.Setenv("MILLIWAYS_COMPANY_ROOTS", companyDir)
 
 	mgr, err := NewModeManager()
 	if err != nil {
@@ -41,7 +65,7 @@ func TestModeManagerCanWriteByMode(t *testing.T) {
 	}
 	defer func() { _ = mgr.Close() }()
 
-	projectPath := filepath.Join(homeDir, "dev", "src", "pprojects", "milliways")
+	projectPath := filepath.Join(privateDir, "milliways")
 	if err := mgr.Set(string(ModeCompany)); err != nil {
 		t.Fatalf("Set(company): %v", err)
 	}

@@ -1,3 +1,17 @@
+// Copyright 2024 The milliways Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package repl
 
 import (
@@ -5,7 +19,7 @@ import (
 	"time"
 )
 
-// ConversationTurn is one history entry in the REPL ring buffer.
+// ConversationTurn is one history entry in the terminal ring buffer.
 type ConversationTurn struct {
 	Role   string // "user" | "assistant"
 	Text   string
@@ -17,7 +31,7 @@ type ConversationTurn struct {
 type DispatchRequest struct {
 	Prompt      string
 	History     []ConversationTurn // oldest-first; already capped to MaxHistoryTurns
-	Rules       string             // content of ai_local/CLAUDE.md; "" if not found
+	Rules       string             // global rules content from AGENTS.md/CLAUDE.md; "" if not found
 	ClientID    string             // e.g. "repl/claude"
 	Context     []ContextFragment  // injected context, prepended by runners
 	Attachments []Attachment       // images queued via /image command

@@ -1,8 +1,7 @@
 # Service Plan — Milliways
 
 **Type**: tasting-menu
-**Maitre d'**: Morgan
-**Repo**: `pprojects/milliways` (private, GitHub)
+**Repo**: `github.com/mwigge/milliways`
 **Language**: Go 1.22+ (Bubble Tea, Lipgloss, Cobra, go-sqlite3)
 **Kitchens available**: claude, opencode, gemini, aider, goose, cline
 **Services**: 6 (core -> pantry -> kitchens -> TUI -> full pantry -> neovim)
@@ -19,7 +18,7 @@
 **MCP servers**: reuse existing MemPalace + CodeGraph installations
 **Testing**: `go test ./...` with table-driven tests, mocked kitchen execs
 **Lint**: `golangci-lint run` (includes govet, errcheck, staticcheck)
-**Go skills**: samber/cc-skills-golang (installed at `ai_local/skills/golang/`)
+**Go skills**: samber/cc-skills-golang
 
 ---
 
@@ -226,7 +225,7 @@
 - **Coverage**: >=80% on all changed files -- `go test -coverprofile=coverage.out ./...`
 - **Lint**: `golangci-lint run` clean (govet, errcheck, staticcheck, gosimple)
 - **Format**: `gofmt` applied to all files
-- **Go skills**: samber/cc-skills-golang available at `ai_local/skills/golang/` -- consult for idiomatic patterns
+- **Go skills**: samber/cc-skills-golang -- consult for idiomatic patterns
 - **Commits**: Conventional -- `feat(milliways): add claude kitchen adapter`
 - **Branch per course**: `feat/MW-{N}/{description}`
 - **Review**: `@reviewer` 4-lens review (correctness, security, performance, maintainability) before every commit

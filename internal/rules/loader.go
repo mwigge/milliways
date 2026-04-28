@@ -1,3 +1,17 @@
+// Copyright 2024 The milliways Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package rules
 
 import (
@@ -13,7 +27,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// AgentDef describes one agent loaded from ai_local.
+// AgentDef describes one agent loaded from the agents directory.
 type AgentDef struct {
 	Name        string
 	Description string
@@ -48,7 +62,7 @@ type skillRule struct {
 	Path    string
 }
 
-// NewRulesLoader creates a loader for ai_local-driven agent and skill rules.
+// NewRulesLoader creates a loader for agent and skill rules.
 func NewRulesLoader(aiLocalDir, rulesDir string) *RulesLoader {
 	return &RulesLoader{
 		aiLocalDir: strings.TrimSpace(aiLocalDir),
@@ -58,7 +72,7 @@ func NewRulesLoader(aiLocalDir, rulesDir string) *RulesLoader {
 	}
 }
 
-// LoadAgents loads agent definitions from ai_local/opencode/agents.
+// LoadAgents loads agent definitions from the agents directory (opencode/agents subdir).
 func (l *RulesLoader) LoadAgents() error {
 	agentsDir := filepath.Join(l.aiLocalDir, "opencode", "agents")
 	if err := config.GuardReadPath(agentsDir); err != nil {
@@ -100,7 +114,7 @@ func (l *RulesLoader) LoadAgents() error {
 	return nil
 }
 
-// LoadSkills loads skill match rules from ai_local/.claude/skill-rules.json.
+// LoadSkills loads skill match rules from the agents directory (.claude/skill-rules.json).
 func (l *RulesLoader) LoadSkills() error {
 	path := filepath.Join(l.aiLocalDir, ".claude", "skill-rules.json")
 	if err := config.GuardReadPath(path); err != nil {

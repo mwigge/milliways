@@ -1,3 +1,17 @@
+// Copyright 2024 The milliways Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package config
 
 import (
@@ -202,29 +216,21 @@ func pathAllowed(path string, mode Mode, homeDir string) error {
 		return fmt.Errorf("resolve home dir: %w", err)
 	}
 
+	// Always allow config and tool dirs regardless of mode.
 	neutralRoots := []string{
 		filepath.Join(homeDir, ".config"),
 		filepath.Join(homeDir, ".claude"),
 		filepath.Join(homeDir, ".ssh"),
-		filepath.Join(homeDir, "dev", "src", "ai_local"),
 	}
 	if hasAllowedPrefix(abs, neutralRoots...) {
 		return nil
 	}
 
-	companyRoots := []string{
-		filepath.Join(homeDir, "dev", "src", "ghorg"),
-		filepath.Join(homeDir, "dev", "src", "docs_local"),
-		filepath.Join(homeDir, "dev", "src", "chaostooling"),
-		filepath.Join(homeDir, "dev", "src", "chaostooling2"),
-		filepath.Join(homeDir, "dev", "src", "chaostooling3"),
-		filepath.Join(homeDir, "dev", "src", "tokens"),
-		filepath.Join(homeDir, "dev", "src", "scripts"),
-	}
-	privateRoots := []string{
-		filepath.Join(homeDir, "dev", "src", "pprojects"),
-		filepath.Join(homeDir, "dev", "src", "api_projects"),
-	}
+	// companyRoots and privateRoots are intentionally empty by default.
+	// Configure them in carte.yaml under the `mode` section so milliways
+	// knows which directories belong to which context.
+	companyRoots := pathsFromEnv("MILLIWAYS_COMPANY_ROOTS", homeDir)
+	privateRoots := pathsFromEnv("MILLIWAYS_PRIVATE_ROOTS", homeDir)
 
 	switch mode {
 	case ModeNeutral:
@@ -281,6 +287,27 @@ func resolveExistingPath(path string) (string, bool) {
 		missing = append(missing, filepath.Base(current))
 		current = parent
 	}
+}
+
+// pathsFromEnv reads a colon-separated list of paths from an env var and
+// expands them relative to homeDir. Returns nil (empty list) if unset.
+func pathsFromEnv(envKey, homeDir string) []string {
+	val := os.Getenv(envKey)
+	if val == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(val, string(os.PathListSeparator)) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if strings.HasPrefix(p, "~/") {
+			p = filepath.Join(homeDir, p[2:])
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 func hasAllowedPrefix(path string, roots ...string) bool {

@@ -1,6 +1,6 @@
 schema: tasting-menu
 created: 2026-04-13
-repo: pprojects/milliways
+repo: github.com/mwigge/milliways
 courses:
   - milliways-core
   - milliways-pantry

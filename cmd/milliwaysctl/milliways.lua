@@ -1,6 +1,6 @@
 -- milliways wezterm integration
 --
--- Default program: milliways (the agent REPL). Every new tab opens milliways.
+-- Default program: milliways (the AI terminal). Every new tab opens milliways.
 -- Status bar reads ${state}/observe.cur written by milliwaysctl observe --watch
 --
 -- Layout: [⚡ woke Xm ago] [≈≈ MW v0.x] [~/path] [●claude] [1:C 2:X 3:G 4:M 5:L]
@@ -10,7 +10,7 @@
 --   Leader + a         open milliways agent pane (split below)
 --   Leader + 1..4      switch active runner via milliwaysctl open
 --   Leader + r         resume modal — shows wake/session summary, re-opens last agent
---   Leader + k         cockpit overlay (context view)
+--   Leader + k         context overlay
 --   Leader + w         observe-render overlay (metrics/spans)
 --   Leader + z         open a plain shell tab (escape hatch)
 
@@ -23,7 +23,7 @@ local config = wezterm.config_builder and wezterm.config_builder() or {}
 
 -- ── Appearance ──────────────────────────────────────────────────────────────
 
--- Black background, phosphor green text — matches the REPL's own color palette.
+-- Black background, phosphor green text — matches the terminal's own color palette.
 config.colors = {
   foreground = '#4db51f',   -- phosphor green
   background = '#000000',
@@ -55,9 +55,9 @@ if not path_env:find(local_bin, 1, true) then
 end
 config.set_environment_variables = { PATH = path_env }
 
--- Every new tab/pane runs the milliways REPL.
--- MILLIWAYS_REPL=1 tells the launcher to skip the cockpit exec (which would
--- try to re-exec milliways-term) and drop straight into the in-terminal TUI.
+-- Every new tab/pane runs milliways.
+-- MILLIWAYS_REPL=1 tells the launcher to skip the milliways-term exec and
+-- drop straight into the built-in terminal mode.
 config.set_environment_variables.MILLIWAYS_REPL = '1'
 config.default_prog = { local_bin .. '/milliways' }
 
@@ -236,7 +236,7 @@ config.keys = {
       )
     end),
   },
-  -- Leader + k  →  cockpit context overlay
+  -- Leader + k  →  context overlay
   {
     key = 'k', mods = 'LEADER',
     action = act.SpawnCommandInNewTab { args = { 'milliwaysctl', 'context', '--all' } },

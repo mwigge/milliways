@@ -1,7 +1,21 @@
-// launcher.go implements the `milliways` (no-flags) cockpit launcher: it
-// resolves the daemon UDS, starts `milliwaysd` detached if not reachable,
-// then exec(2)s `milliways-term` with the user's remaining args. The legacy
-// in-host REPL is preserved behind `--repl` (or env MILLIWAYS_REPL=1).
+// Copyright 2024 The milliways Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// launcher.go implements the `milliways` (no-flags) launcher: it resolves
+// the daemon UDS, starts `milliwaysd` detached if not reachable, then
+// exec(2)s `milliways-term` with the user's remaining args. The built-in
+// terminal mode is preserved behind `--repl` (or env MILLIWAYS_REPL=1).
 //
 // See openspec/changes/milliways-emulator-fork/specs/repl-fallback/spec.md.
 package main
@@ -27,7 +41,7 @@ const (
 	modeCobra launcherMode = iota
 	// modeCockpit means: start the daemon (if needed), exec milliways-term.
 	modeCockpit
-	// modeREPL means: run the legacy in-host REPL with a deprecation notice.
+	// modeREPL means: run the built-in terminal mode with a deprecation notice.
 	modeREPL
 )
 
@@ -36,9 +50,9 @@ const (
 //
 // Rules (first match wins):
 //
-//  1. --repl as the first positional → modeREPL
-//  2. MILLIWAYS_REPL == "1" → modeREPL
-//  3. argv is empty → modeCockpit
+//  1. --repl as the first positional → modeREPL (built-in terminal mode)
+//  2. MILLIWAYS_REPL == "1" → modeREPL (built-in terminal mode)
+//  3. argv is empty → modeCockpit (launch milliways-term)
 //  4. otherwise → modeCobra (--version, --help, subcommands, prompts)
 func parseLauncherMode(args []string, replEnv string) launcherMode {
 	if len(args) > 0 && args[0] == "--repl" {
@@ -86,7 +100,7 @@ func daemonSocket() string { return filepath.Join(stateDir(), "sock") }
 func daemonLogPath() string { return filepath.Join(stateDir(), "milliwaysd.log") }
 
 // cockpitHintMarker is the file whose presence suppresses the first-run
-// hint about wezterm config + the --repl alias.
+// hint about wezterm config + the --repl flag.
 func cockpitHintMarker() string { return filepath.Join(stateDir(), "cockpit-hint-shown") }
 
 // runCockpit is the default mode: ensure the daemon is up, then exec
@@ -103,7 +117,7 @@ func runCockpit(ctx context.Context, args []string) error {
 	socketPath := daemonSocket()
 	if !socketReachable(socketPath, 200*time.Millisecond) {
 		if err := startDaemonDetached(state); err != nil {
-			return fmt.Errorf("starting milliwaysd: %w\n\nFallback: run `milliways --repl` for the legacy in-host TUI.", err)
+			return fmt.Errorf("starting milliwaysd: %w\n\nFallback: run `milliways --repl` to use the built-in terminal.", err)
 		}
 		if err := waitForSocket(ctx, socketPath, 5*time.Second); err != nil {
 			tail := tailFile(daemonLogPath(), 4096)
@@ -111,7 +125,7 @@ func runCockpit(ctx context.Context, args []string) error {
 			if tail != "" {
 				fmt.Fprintf(os.Stderr, "--- tail of %s ---\n%s\n--- end ---\n", daemonLogPath(), tail)
 			}
-			fmt.Fprintf(os.Stderr, "Fallback: run `milliways --repl` for the legacy in-host TUI.\n")
+			fmt.Fprintf(os.Stderr, "Fallback: run `milliways --repl` to use the built-in terminal.\n")
 			return err
 		}
 	}
@@ -119,8 +133,8 @@ func runCockpit(ctx context.Context, args []string) error {
 	termPath, err := exec.LookPath("milliways-term")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "milliways: could not find `milliways-term` on PATH.\n")
-		fmt.Fprintf(os.Stderr, "  Install it (build the cockpit terminal fork) or run `milliways --repl`\n")
-		fmt.Fprintf(os.Stderr, "  for the legacy in-host TUI.\n")
+		fmt.Fprintf(os.Stderr, "  Install it (build the milliways-term fork) or run `milliways --repl`\n")
+		fmt.Fprintf(os.Stderr, "  to use the built-in terminal.\n")
 		return fmt.Errorf("milliways-term not found on PATH")
 	}
 
@@ -210,14 +224,14 @@ func tailFile(path string, max int) string {
 }
 
 // maybePrintCockpitHint shows a one-time hint on stderr the first time the
-// cockpit launcher runs, pointing at the wezterm sample config and the
-// `milliways --repl` alias for the legacy TUI.
+// milliways-term launcher runs, pointing at the wezterm sample config and
+// the `milliways --repl` flag for the built-in terminal mode.
 func maybePrintCockpitHint(state string) {
 	marker := filepath.Join(state, "cockpit-hint-shown")
 	if _, err := os.Stat(marker); err == nil {
 		return
 	}
-	fmt.Fprintln(os.Stderr, "milliways cockpit starting. Set up wezterm config: see ~/.local/share/milliways/sample-wezterm.lua. Add `milliways --repl` to your shell aliases for the legacy in-host TUI.")
+	fmt.Fprintln(os.Stderr, "milliways starting. Set up wezterm config: see ~/.local/share/milliways/sample-wezterm.lua. Use `milliways --repl` to launch the built-in terminal mode directly.")
 	if f, err := os.OpenFile(marker, os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
 		_ = f.Close()
 	}
@@ -226,5 +240,5 @@ func maybePrintCockpitHint(state string) {
 // printREPLDeprecationNotice writes the spec-mandated deprecation notice
 // to stderr. Required to be the first line on stderr per the spec scenario.
 func printREPLDeprecationNotice() {
-	fmt.Fprintln(os.Stderr, "milliways --repl: legacy in-host TUI. Removal scheduled in v0.6.0; switch to the cockpit by running `milliways` (no flags).")
+	fmt.Fprintln(os.Stderr, "milliways --repl: built-in terminal mode. Removal scheduled in v0.6.0; switch to milliways-term by running `milliways` (no flags).")
 }

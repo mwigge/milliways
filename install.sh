@@ -203,7 +203,7 @@ printf '\n'
 printf '  Get started:\n'
 printf '    milliwaysd &              # start the agent daemon\n'
 printf '    milliwaysctl status       # check runner availability\n'
-printf '    milliways                 # open the REPL\n'
+printf '    milliways                 # open the terminal\n'
 if [ "$PLATFORM" = "darwin" ]; then
   printf '    open /Applications/MilliWays.app   # native terminal\n'
 fi
