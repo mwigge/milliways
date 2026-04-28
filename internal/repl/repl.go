@@ -436,7 +436,7 @@ func (r *REPL) Run(ctx context.Context) error {
 		header = fmt.Sprintf(" milliways %s ", r.version)
 	}
 	r.println(PhosphorHeader(header))
-	r.println(PhosphorText("  REPL  |  type /help for commands"))
+	r.println(PhosphorText("  type /help for commands"))
 	if r.session != nil {
 		r.println(MutedText(fmt.Sprintf("  session: %s", r.session.conversationID)))
 	} else {
@@ -559,9 +559,9 @@ func (r *REPL) startConversation(ctx context.Context) error {
 	convID := fmt.Sprintf("milliways-%d", time.Now().Unix())
 
 	repoPath := findGitRoot(cwd())
-	prompt := fmt.Sprintf("milliways REPL session started at %s", time.Now().Format(time.RFC3339))
+	prompt := fmt.Sprintf("milliways session started at %s", time.Now().Format(time.RFC3339))
 	if repoPath != "" {
-		prompt = fmt.Sprintf("milliways REPL session in %s at %s", repoPath, time.Now().Format(time.RFC3339))
+		prompt = fmt.Sprintf("milliways session in %s at %s", repoPath, time.Now().Format(time.RFC3339))
 	}
 
 	_, err := r.substrate.ConversationStart(ctx, substrate.StartRequest{
