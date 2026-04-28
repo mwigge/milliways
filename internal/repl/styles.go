@@ -13,15 +13,15 @@ const (
 	ClaudeBG     = "\x1b[48;2;0;0;0m"
 	ClaudeAccent = "\x1b[38;2;140;230;80m"
 
-	// Codex: black terminal base, electric purple body, cyan highlights.
-	CodexFG     = "\x1b[38;2;190;132;255m"
+	// Codex: amber/orange
+	CodexFG     = "\x1b[38;2;255;180;50m"
 	CodexBG     = "\x1b[48;2;0;0;0m"
-	CodexAccent = "\x1b[38;2;68;214;255m"
+	CodexAccent = "\x1b[38;2;255;215;100m"
 
-	// MiniMax: black/blue — medium blue body, light blue accent
-	MiniMaxFG     = "\x1b[38;2;80;140;255m"
+	// MiniMax: purple/violet
+	MiniMaxFG     = "\x1b[38;2;190;100;255m"
 	MiniMaxBG     = "\x1b[48;2;0;0;0m"
-	MiniMaxAccent = "\x1b[38;2;150;195;255m"
+	MiniMaxAccent = "\x1b[38;2;220;160;255m"
 
 	// Copilot: black/red
 	CopilotFG     = "\x1b[38;2;255;80;80m"

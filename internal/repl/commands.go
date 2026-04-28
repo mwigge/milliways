@@ -96,10 +96,14 @@ func handleSwitch(ctx context.Context, r *REPL, args string) error {
 
 	// Print runner-specific config so the user can verify settings on switch.
 	switch runner := r.runner.(type) {
-	case *MinimaxRunner:
-		r.printMinimaxSettings(runner)
 	case *ClaudeRunner:
 		r.printClaudeSettings(runner)
+	case *CodexRunner:
+		r.printCodexSettings(runner)
+	case *MinimaxRunner:
+		r.printMinimaxSettings(runner)
+	case *CopilotRunner:
+		r.printCopilotSettings(runner)
 	}
 
 	return nil
@@ -1226,6 +1230,11 @@ func (r *REPL) printCodexSettings(codex *CodexRunner) {
 	}
 }
 
+func (r *REPL) printCopilotSettings(c *CopilotRunner) {
+	r.println(RunnerAccentText("copilot", "Copilot settings:"))
+	r.println(fmt.Sprintf("  binary:  %s", c.binary))
+}
+
 func valueOrDefault(value, fallback string) string {
 	if strings.TrimSpace(value) == "" {
 		return fallback
@@ -1517,7 +1526,7 @@ func handleHelp(ctx context.Context, r *REPL, args string) error {
 	r.println("")
 	r.println("  System:")
 	r.println("    /help            Show this help")
-	r.println("    /exit            Exit the REPL")
+	r.println("    /exit            Exit")
 	r.println("")
 	r.println("  Bash:")
 	r.println("    !<command>       Run a bash command")
