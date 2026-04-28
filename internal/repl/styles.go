@@ -71,6 +71,15 @@ func CopilotScheme() ColorScheme {
 	return ColorScheme{FG: CopilotFG, Accent: CopilotAccent, Runner: "copilot"}
 }
 
+// PoolScheme returns the color scheme for pool output
+func PoolScheme() ColorScheme {
+	return ColorScheme{
+		FG:     "\x1b[38;5;45m", // Cyan/teal for Pool
+		Accent: "\x1b[38;5;45m",
+		Runner: "pool",
+	}
+}
+
 func SchemeForRunner(name string) ColorScheme {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "claude":
@@ -81,6 +90,10 @@ func SchemeForRunner(name string) ColorScheme {
 		return MiniMaxScheme()
 	case "copilot":
 		return CopilotScheme()
+	case "pool":
+		return PoolScheme()
+	case "gemini":
+		return GeminiScheme()
 	default:
 		return ClaudeScheme()
 	}

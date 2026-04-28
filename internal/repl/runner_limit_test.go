@@ -415,3 +415,279 @@ func TestRunCopilotCmdNoSentinelOnNormalStderr(t *testing.T) {
 		t.Errorf("output must not contain SessionLimitSentinel; got: %q", buf.String())
 	}
 }
+
+// ----- Pool -----
+
+func TestPoolStderrSignalsLimit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		lines []string
+		want  bool
+	}{
+		{
+			name:  "context window phrase",
+			lines: []string{"Error: context window exceeded"},
+			want:  true,
+		},
+		{
+			name:  "context_length field",
+			lines: []string{"context_length=128000 exceeded"},
+			want:  true,
+		},
+		{
+			name:  "quota phrase",
+			lines: []string{"quota exceeded for model"},
+			want:  true,
+		},
+		{
+			name:  "rate limit phrase",
+			lines: []string{"rate limit exceeded"},
+			want:  true,
+		},
+		{
+			name:  "token limit phrase",
+			lines: []string{"token limit reached"},
+			want:  true,
+		},
+		{
+			name:  "session limit phrase",
+			lines: []string{"session limit reached"},
+			want:  true,
+		},
+		{
+			name:  "max turns phrase",
+			lines: []string{"max turns exceeded"},
+			want:  true,
+		},
+		{
+			name:  "turn limit phrase",
+			lines: []string{"turn limit reached"},
+			want:  true,
+		},
+		{
+			name:  "too long phrase",
+			lines: []string{"prompt is too long"},
+			want:  true,
+		},
+		{
+			name:  "exceeded phrase",
+			lines: []string{"limit exceeded"},
+			want:  true,
+		},
+		{
+			name:  "resource_exhausted phrase",
+			lines: []string{"resource_exhausted"},
+			want:  true,
+		},
+		{
+			name:  "daily limit phrase",
+			lines: []string{"daily limit reached"},
+			want:  true,
+		},
+		{
+			name:  "limit reached phrase",
+			lines: []string{"limit reached"},
+			want:  true,
+		},
+		{
+			name:  "context_length_exceeded phrase",
+			lines: []string{"context_length_exceeded"},
+			want:  true,
+		},
+		{
+			name:  "case insensitive",
+			lines: []string{"CONTEXT WINDOW FULL"},
+			want:  true,
+		},
+		{
+			name:  "unrelated error",
+			lines: []string{"network timeout", "unexpected EOF"},
+			want:  false,
+		},
+		{
+			name:  "empty lines",
+			lines: nil,
+			want:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := poolStderrSignalsLimit(tt.lines)
+			if got != tt.want {
+				t.Errorf("poolStderrSignalsLimit(%v) = %v, want %v", tt.lines, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunPoolCmdEmitsSentinelOnLimitStderr(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Simulate pool writing a context-limit message to stderr and exiting non-zero.
+	cmd := exec.CommandContext(ctx, "sh", "-c",
+		`echo 'context window exceeded' >&2; exit 1`)
+
+	var buf bytes.Buffer
+	_, err := runPoolCmd(ctx, cmd, &buf, "test prompt")
+
+	if !errors.Is(err, ErrSessionLimit) {
+		t.Errorf("expected error wrapping ErrSessionLimit; got: %v", err)
+	}
+}
+
+func TestRunPoolCmdNoSentinelOnNormalError(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", `echo 'network timeout' >&2; exit 1`)
+
+	var buf bytes.Buffer
+	_, err := runPoolCmd(ctx, cmd, &buf, "test prompt")
+
+	if errors.Is(err, ErrSessionLimit) {
+		t.Errorf("error must not wrap ErrSessionLimit for non-limit error; got: %v", err)
+	}
+}
+
+// ----- Gemini -----
+
+func TestGeminiStderrSignalsLimit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		lines []string
+		want  bool
+	}{
+		{
+			name:  "context window phrase",
+			lines: []string{"Error: context window exceeded"},
+			want:  true,
+		},
+		{
+			name:  "context_length field",
+			lines: []string{"context_length=128000 exceeded"},
+			want:  true,
+		},
+		{
+			name:  "quota phrase",
+			lines: []string{"quota exceeded for model"},
+			want:  true,
+		},
+		{
+			name:  "rate limit phrase",
+			lines: []string{"rate limit exceeded"},
+			want:  true,
+		},
+		{
+			name:  "token limit phrase",
+			lines: []string{"token limit reached"},
+			want:  true,
+		},
+		{
+			name:  "session limit phrase",
+			lines: []string{"session limit reached"},
+			want:  true,
+		},
+		{
+			name:  "max turns phrase",
+			lines: []string{"max turns exceeded"},
+			want:  true,
+		},
+		{
+			name:  "turn limit phrase",
+			lines: []string{"turn limit reached"},
+			want:  true,
+		},
+		{
+			name:  "too long phrase",
+			lines: []string{"prompt is too long"},
+			want:  true,
+		},
+		{
+			name:  "exceeded phrase",
+			lines: []string{"limit exceeded"},
+			want:  true,
+		},
+		{
+			name:  "resource_exhausted phrase",
+			lines: []string{"resource_exhausted"},
+			want:  true,
+		},
+		{
+			name:  "daily limit phrase",
+			lines: []string{"daily limit reached"},
+			want:  true,
+		},
+		{
+			name:  "limit reached phrase",
+			lines: []string{"limit reached"},
+			want:  true,
+		},
+		{
+			name:  "context_length_exceeded phrase",
+			lines: []string{"context_length_exceeded"},
+			want:  true,
+		},
+		{
+			name:  "case insensitive",
+			lines: []string{"CONTEXT WINDOW FULL"},
+			want:  true,
+		},
+		{
+			name:  "unrelated error",
+			lines: []string{"network timeout", "unexpected EOF"},
+			want:  false,
+		},
+		{
+			name:  "empty lines",
+			lines: nil,
+			want:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := geminiStderrSignalsLimit(tt.lines)
+			if got != tt.want {
+				t.Errorf("geminiStderrSignalsLimit(%v) = %v, want %v", tt.lines, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunGeminiCmdEmitsSentinelOnLimitStderr(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Simulate gemini writing a context-limit message to stderr and exiting non-zero.
+	cmd := exec.CommandContext(ctx, "sh", "-c",
+		`echo 'context window exceeded' >&2; exit 1`)
+
+	var buf bytes.Buffer
+	_, err := runGeminiCmd(ctx, cmd, &buf, "test prompt")
+
+	if !errors.Is(err, ErrSessionLimit) {
+		t.Errorf("expected error wrapping ErrSessionLimit; got: %v", err)
+	}
+}
+
+func TestRunGeminiCmdNoSentinelOnNormalError(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "sh", "-c", `echo 'network timeout' >&2; exit 1`)
+
+	var buf bytes.Buffer
+	_, err := runGeminiCmd(ctx, cmd, &buf, "test prompt")
+
+	if errors.Is(err, ErrSessionLimit) {
+		t.Errorf("error must not wrap ErrSessionLimit for non-limit error; got: %v", err)
+	}
+}

@@ -30,6 +30,12 @@ import (
 type GeminiRunner struct {
 	binary string
 	model  string
+
+	mu                sync.Mutex
+	sessionIn         int
+	sessionOut        int
+	sessionCostUSD    float64
+	sessionDispatches int
 }
 
 func NewGeminiRunner() *GeminiRunner {
@@ -57,7 +63,17 @@ func (r *GeminiRunner) Execute(ctx context.Context, req DispatchRequest, out io.
 
 	cmd := exec.CommandContext(ctx, r.binary, args...)
 	cmd.Dir = cwd
-	return runGeminiCmd(ctx, cmd, out)
+
+	usage, err := runGeminiCmd(ctx, cmd, out, req.Prompt)
+	if usage != nil {
+		r.mu.Lock()
+		r.sessionIn += usage.inputTokens
+		r.sessionOut += usage.outputTokens
+		r.sessionCostUSD += usage.costUSD
+		r.sessionDispatches++
+		r.mu.Unlock()
+	}
+	return err
 }
 
 func (r *GeminiRunner) SetModel(model string) {
@@ -65,20 +81,19 @@ func (r *GeminiRunner) SetModel(model string) {
 }
 
 // runGeminiCmd runs gemini in headless mode, streams stdout to out, and
-// captures stderr to detect session-limit signals.
-func runGeminiCmd(ctx context.Context, cmd *exec.Cmd, out io.Writer) error {
-	pr, pw := io.Pipe()
-	cmd.Stdout = pw
-
-	stderrPR, stderrPW := io.Pipe()
-	cmd.Stderr = stderrPW
+// captures stderr to detect session-limit signals. Returns session usage if available.
+func runGeminiCmd(ctx context.Context, cmd *exec.Cmd, out io.Writer, prompt string) (*geminiSessionUsage, error) {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
 
 	if err := cmd.Start(); err != nil {
-		_ = pw.CloseWithError(err)
-		_ = pr.Close()
-		_ = stderrPW.CloseWithError(err)
-		_ = stderrPR.Close()
-		return err
+		return nil, err
 	}
 
 	var stderrLines []string
@@ -88,7 +103,7 @@ func runGeminiCmd(ctx context.Context, cmd *exec.Cmd, out io.Writer) error {
 	stderrWg.Add(1)
 	go func() {
 		defer stderrWg.Done()
-		scanner := bufio.NewScanner(stderrPR)
+		scanner := bufio.NewScanner(stderr)
 		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
@@ -101,46 +116,103 @@ func runGeminiCmd(ctx context.Context, cmd *exec.Cmd, out io.Writer) error {
 		}
 	}()
 
-	waitDone := make(chan error, 1)
-	go func() {
-		err := cmd.Wait()
-		_ = pw.CloseWithError(err)
-		_ = stderrPW.CloseWithError(err)
-		waitDone <- err
-	}()
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
 
-	_, copyErr := io.Copy(out, pr)
-	_ = pr.Close()
+	var mu sync.Mutex
+	var outputLines []string
 
+scanLoop:
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			break scanLoop
+		default:
+		}
+
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		mu.Lock()
+		outputLines = append(outputLines, line)
+		mu.Unlock()
+
+		// Write output with coloring
+		colored := ColorText(GeminiScheme(), line)
+		if _, werr := out.Write([]byte(colored + "\n")); werr != nil {
+			break scanLoop
+		}
+	}
+	scanErr := scanner.Err()
+
+	_ = stdout.Close()
+	waitErr := cmd.Wait()
 	stderrWg.Wait()
-	waitErr := <-waitDone
 
-	if geminiStderrSignalsLimit(stderrLines) {
-		if waitErr != nil {
-			return fmt.Errorf("%w: %w", ErrSessionLimit, waitErr)
+	mu.Lock()
+	var sessionUsage *geminiSessionUsage
+	if len(outputLines) > 0 {
+		// Estimate token usage from output length (rough approximation)
+		outputText := strings.Join(outputLines, "\n")
+		sessionUsage = &geminiSessionUsage{
+			inputTokens:  len(prompt) / 4,
+			outputTokens: len(outputText) / 4,
 		}
-		return ErrSessionLimit
 	}
-	if copyErr != nil {
+	mu.Unlock()
+
+	stderrMu.Lock()
+	lines := append([]string(nil), stderrLines...)
+	stderrMu.Unlock()
+
+	// Check session limit first
+	if geminiStderrSignalsLimit(lines) {
 		if waitErr != nil {
-			return fmt.Errorf("gemini stdout read error: %v: %w", copyErr, waitErr)
+			return sessionUsage, fmt.Errorf("%w: %w", ErrSessionLimit, waitErr)
 		}
-		return fmt.Errorf("gemini stdout read error: %w", copyErr)
+		return sessionUsage, ErrSessionLimit
 	}
-	return waitErr
+
+	if scanErr != nil {
+		if waitErr != nil {
+			return sessionUsage, fmt.Errorf("gemini stdout read error: %v: %w", scanErr, waitErr)
+		}
+		return sessionUsage, fmt.Errorf("gemini stdout read error: %w", scanErr)
+	}
+	return sessionUsage, waitErr
+}
+
+type geminiSessionUsage struct {
+	inputTokens  int
+	outputTokens int
+	costUSD      float64
 }
 
 // geminiStderrSignalsLimit returns true when any stderr line from gemini
 // indicates a quota or context-window exhaustion.
+// This is comprehensive detection matching ClaudeRunner's approach.
 func geminiStderrSignalsLimit(lines []string) bool {
 	for _, l := range lines {
 		lower := strings.ToLower(l)
+		// Comprehensive session limit detection for gemini CLI
+		// Covers context window, quota, rate limits, token limits, and various error messages
+		// Includes Gemini-specific signals like "resource_exhausted" from the API
 		if strings.Contains(lower, "context window") ||
 			strings.Contains(lower, "context_length") ||
 			strings.Contains(lower, "quota") ||
 			strings.Contains(lower, "rate limit") ||
 			strings.Contains(lower, "resource_exhausted") ||
-			strings.Contains(lower, "token limit") {
+			strings.Contains(lower, "token limit") ||
+			strings.Contains(lower, "session limit") ||
+			strings.Contains(lower, "max turns") ||
+			strings.Contains(lower, "turn limit") ||
+			strings.Contains(lower, "too long") ||
+			strings.Contains(lower, "exceeded") ||
+			strings.Contains(lower, "daily limit") ||
+			strings.Contains(lower, "limit reached") ||
+			strings.Contains(lower, "context_length_exceeded") {
 			return true
 		}
 	}
@@ -164,5 +236,38 @@ func (r *GeminiRunner) Logout() error {
 }
 
 func (r *GeminiRunner) Quota() (*QuotaInfo, error) {
-	return nil, nil
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.sessionDispatches == 0 {
+		return nil, nil
+	}
+	return &QuotaInfo{
+		Session: &SessionUsage{
+			InputTokens:  r.sessionIn,
+			OutputTokens: r.sessionOut,
+			CostUSD:      r.sessionCostUSD,
+			Dispatches:   r.sessionDispatches,
+		},
+	}, nil
+}
+
+// GeminiSettings holds the configurable settings for the gemini runner.
+type GeminiSettings struct {
+	Model string
+}
+
+// Settings returns the current runner configuration.
+func (r *GeminiRunner) Settings() GeminiSettings {
+	return GeminiSettings{
+		Model: r.model,
+	}
+}
+
+// GeminiScheme returns the color scheme for gemini output
+func GeminiScheme() ColorScheme {
+	return ColorScheme{
+		FG:     "\x1b[38;5;75m", // Blue/green for Gemini
+		Accent: "\x1b[38;5;75m",
+		Runner: "gemini",
+	}
 }

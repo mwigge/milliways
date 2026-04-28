@@ -21,6 +21,13 @@ local os      = os
 
 local config = wezterm.config_builder and wezterm.config_builder() or {}
 
+-- Suppress domain entries from the Shell menu.
+-- WezTerm auto-detects SSH hosts from ~/.ssh/config and adds "New Tab (Domain SSH:*)"
+-- entries for every host. For milliways we don't use SSH domains — clear them so
+-- the Shell menu only shows the built-in window/pane actions.
+config.ssh_domains  = {}
+config.unix_domains = {}
+
 -- ── Appearance ──────────────────────────────────────────────────────────────
 
 -- Black background, phosphor green text — matches the terminal's own color palette.
