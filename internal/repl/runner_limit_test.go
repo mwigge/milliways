@@ -74,7 +74,6 @@ func TestClaudeStderrSignalsLimit(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := claudeStderrSignalsLimit(tt.lines)
@@ -169,7 +168,6 @@ func TestCodexLineSignalsSessionLimit(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := codexLineSignalsSessionLimit(tt.line)
@@ -272,7 +270,6 @@ func TestMinimaxBodySignalsLimit(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := minimaxBodySignalsLimit([]byte(tt.body))
@@ -369,7 +366,6 @@ func TestCopilotStderrSignalsLimit(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := copilotStderrSignalsLimit(tt.lines)
