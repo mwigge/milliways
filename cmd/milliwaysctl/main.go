@@ -352,13 +352,18 @@ func watchStatus(socket, stateDir string, debounceMs int) {
 }
 
 // observeConfig holds the static list of available agents shown in the status bar.
-var observeAgents = []string{"claude", "codex", "copilot", "minimax"}
+var observeAgents = []string{"claude", "codex", "copilot", "minimax", "local"}
 
 // runObserve writes a compact JSON status to ${stateDir}/observe.cur every debounceMs.
 // Format: {"v":"<version>","p":"<cwd>","c":"<current_agent>","a":["claude","codex","copilot","minimax"]}
 //
 // This file is read by the wezterm Lua sidecar to render the full status bar:
 //   [≈≈ MW v0.x] [path] [●claude] [1:C 2:X 3:G 4:M 5:L]
+//
+// Also writes a heartbeat file every 30s. On startup, if the heartbeat is
+// stale by more than 60s, the system was asleep — a "woke_ago" field is
+// included in observe.cur for the following 5 minutes so wezterm can show
+// a wake badge.
 func runObserve(socket, stateDir string, debounceMs int) {
 	if debounceMs < 250 {
 		debounceMs = 250
@@ -384,6 +389,17 @@ func runObserve(socket, stateDir string, debounceMs int) {
 	}
 	tmpPath := filepath.Join(stateDir, "observe.cur.tmp")
 	finalPath := filepath.Join(stateDir, "observe.cur")
+	hbPath := filepath.Join(stateDir, "heartbeat")
+
+	// Detect wake: if heartbeat is >60s stale, the process was suspended.
+	var wokeAt time.Time
+	if hbData, err := os.ReadFile(hbPath); err == nil {
+		if ts, err := time.Parse(time.RFC3339, strings.TrimSpace(string(hbData))); err == nil {
+			if time.Since(ts) > 60*time.Second {
+				wokeAt = time.Now()
+			}
+		}
+	}
 
 	// Get current working directory for path display.
 	cwd, _ := os.Getwd()
@@ -404,6 +420,26 @@ func runObserve(socket, stateDir string, debounceMs int) {
 				if os.Getppid() == 1 && pp != 1 {
 					os.Exit(0)
 				}
+			}
+		}
+	}()
+
+	// heartbeat ticker — write current timestamp every 30s.
+	// When the system sleeps, this process is suspended, so the file
+	// becomes stale. On next startup, the staleness reveals the sleep.
+	go func() {
+		writeHB := func() {
+			_ = os.WriteFile(hbPath, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
+		}
+		writeHB()
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				writeHB()
 			}
 		}
 	}()
@@ -482,6 +518,15 @@ func runObserve(socket, stateDir string, debounceMs int) {
 			"p": cwd,
 			"c": cur,
 			"a": observeAgents,
+		}
+		// Include woke_ago (seconds) for 5 minutes after a detected wake.
+		if !wokeAt.IsZero() {
+			elapsed := time.Since(wokeAt)
+			if elapsed < 5*time.Minute {
+				status["woke_ago"] = int(elapsed.Seconds())
+			} else {
+				wokeAt = time.Time{} // clear after 5 min
+			}
 		}
 		b, _ := json.Marshal(status)
 		select {

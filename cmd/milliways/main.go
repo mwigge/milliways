@@ -74,7 +74,12 @@ func main() {
 		}
 		return
 	case modeREPL:
-		printREPLDeprecationNotice()
+		// Only print the deprecation notice when --repl was passed explicitly;
+		// when MILLIWAYS_REPL=1 triggers this path we're inside the terminal
+		// already and the notice is just noise.
+		if len(os.Args) > 1 && os.Args[1] == "--repl" {
+			printREPLDeprecationNotice()
+		}
 		// Strip the leading --repl so cobra doesn't reparse it (we already
 		// know the user meant the legacy REPL). Other flags (e.g.
 		// --no-restore) pass through unchanged.

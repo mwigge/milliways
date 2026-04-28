@@ -196,6 +196,8 @@ func (r *AgentRegistry) Open(agentID string) (*AgentSession, error) {
 		go runCopilot(sess, mo)
 	case "minimax":
 		go runMiniMax(sess, mo)
+	case "local":
+		go runLocal(sess, mo)
 	default:
 		// Unknown / not yet lifted.
 		r.mu.Lock()
@@ -265,6 +267,16 @@ func runMiniMax(sess *AgentSession, metrics runners.MetricsObserver) {
 	runners.RunMiniMax(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
 	stream.Close()
 	slog.Debug("minimax session ended", "handle", sess.Handle)
+}
+
+func runLocal(sess *AgentSession, metrics runners.MetricsObserver) {
+	stream := waitForStream(sess)
+	if stream == nil {
+		return
+	}
+	runners.RunLocal(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	stream.Close()
+	slog.Debug("local session ended", "handle", sess.Handle)
 }
 
 // waitForStream blocks until sess.stream is non-nil or the session is
