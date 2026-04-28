@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -196,9 +197,10 @@ type claudeStreamMessage struct {
 }
 
 type claudeStreamContent struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
-	Name string `json:"name,omitempty"`
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 type claudeStreamRateLimit struct {
@@ -479,7 +481,7 @@ func claudeProgressText(line string, reasoningMode ClaudeReasoningMode) (string,
 		}
 		for _, c := range evt.Message.Content {
 			if c.Type == "tool_use" && c.Name != "" {
-				return fmt.Sprintf("* claude: %s", c.Name), true
+				return formatToolUse(c.Name, c.Input), true
 			}
 		}
 
@@ -514,4 +516,100 @@ func claudeProgressText(line string, reasoningMode ClaudeReasoningMode) (string,
 	}
 
 	return "", false
+}
+
+// formatToolUse renders a tool_use block as a compact human-readable line.
+// Format mirrors Copilot's style: "● ToolName  key-arg  secondary-arg"
+func formatToolUse(name string, input json.RawMessage) string {
+	home, _ := os.UserHomeDir()
+	abbrevPath := func(p string) string {
+		if home != "" && strings.HasPrefix(p, home) {
+			return "~" + p[len(home):]
+		}
+		return p
+	}
+	truncate := func(s string, n int) string {
+		if len(s) <= n {
+			return s
+		}
+		return s[:n] + "…"
+	}
+
+	var args map[string]json.RawMessage
+	_ = json.Unmarshal(input, &args)
+	strArg := func(key string) string {
+		v, ok := args[key]
+		if !ok {
+			return ""
+		}
+		var s string
+		if json.Unmarshal(v, &s) == nil {
+			return s
+		}
+		return strings.Trim(string(v), `"`)
+	}
+	intArg := func(key string) int {
+		v, ok := args[key]
+		if !ok {
+			return 0
+		}
+		var n int
+		_ = json.Unmarshal(v, &n)
+		return n
+	}
+
+	var detail string
+	switch name {
+	case "Read":
+		p := abbrevPath(strArg("file_path"))
+		offset, limit := intArg("offset"), intArg("limit")
+		if offset > 0 && limit > 0 {
+			detail = fmt.Sprintf("%s  L%d:%d", p, offset, offset+limit)
+		} else if offset > 0 {
+			detail = fmt.Sprintf("%s  L%d+", p, offset)
+		} else {
+			detail = p
+		}
+	case "Write":
+		detail = abbrevPath(strArg("file_path"))
+	case "Edit":
+		detail = abbrevPath(strArg("file_path"))
+	case "Bash":
+		detail = truncate(strArg("command"), 72)
+	case "Grep":
+		pat := truncate(strArg("pattern"), 30)
+		path := abbrevPath(strArg("path"))
+		if path != "" {
+			detail = fmt.Sprintf("%q  %s", pat, path)
+		} else {
+			detail = fmt.Sprintf("%q", pat)
+		}
+	case "Glob":
+		detail = strArg("pattern")
+		if p := strArg("path"); p != "" {
+			detail += "  in " + abbrevPath(p)
+		}
+	case "WebSearch":
+		detail = truncate(strArg("query"), 60)
+	case "WebFetch":
+		detail = truncate(strArg("url"), 60)
+	case "Agent":
+		detail = truncate(strArg("description"), 60)
+	case "NotebookEdit":
+		detail = abbrevPath(strArg("notebook_path"))
+	default:
+		// Generic: show first string-valued arg if any.
+		for _, v := range args {
+			var s string
+			if json.Unmarshal(v, &s) == nil && s != "" {
+				detail = truncate(s, 60)
+				break
+			}
+		}
+	}
+
+	if detail != "" {
+		return fmt.Sprintf("● %s  %s", name, detail)
+	}
+	return fmt.Sprintf("● %s", name)
 }
