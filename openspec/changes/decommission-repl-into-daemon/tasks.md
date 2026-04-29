@@ -1,21 +1,21 @@
 ## 1. Branch and tooling
 
 - [x] 1.1 Create branch `chore/decommission-repl-into-daemon` off `master` (renamed from `fix/codex-default-sandbox-approval`)
-- [ ] 1.2 Verify clean baseline: `go build ./... && go test ./internal/daemon/... ./internal/repl/...` is green before any port begins
-- [ ] 1.3 Capture a manifest of REPL runner exports (types, constants, functions) so nothing referenced by `cmd/milliways/main.go` is silently lost
+- [x] 1.2 Verify clean baseline: `go build ./... && go test ./internal/daemon/... ./internal/repl/...` is green before any port begins
+- [x] 1.3 Capture a manifest of REPL runner exports (types, constants, functions) so nothing referenced by `cmd/milliways/main.go` is silently lost — see `manifest.md`
 
 ## 1a. Codex kitchen-adapter sandbox/approval defaults (folded in, already implemented)
 
 - [x] 1a.1 Add tests in `internal/kitchen/adapter/codex_test.go` for `buildCodexArgs`: defaults inject `--sandbox workspace-write` and `--ask-for-approval never`; user-supplied flags via `cfg.Args` win; prompt is always the last positional arg
 - [x] 1a.2 Extract `buildCodexArgs(cfg, task) []string` and `hasFlag` helper in `internal/kitchen/adapter/codex.go`; replace inline arg construction in `Exec`
 - [x] 1a.3 `go test ./internal/kitchen/adapter/ -run TestBuildCodexArgs` green; full kitchen suite green
-- [ ] 1a.4 Commit `fix(kitchen): default codex sandbox=workspace-write approval=never` (separate atomic commit so it stays revertable if codex defaults change again)
+- [x] 1a.4 Commit `fix(kitchen): default codex sandbox=workspace-write approval=never` (separate atomic commit so it stays revertable if codex defaults change again) — `f65fcc5`
 
 ## 2. Shared agentic tool-loop helper
 
-- [ ] 2.1 Add `internal/daemon/runners/tooling.go` with `RunAgenticLoop(ctx, client, registry, opts) (Result, error)` plus `LoopOptions{MaxTurns: 10}` default
-- [ ] 2.2 Add `internal/daemon/runners/tooling_test.go` covering: multi-chunk argument reassembly, multiple tool calls per turn, max-turn cap, clean stop, tool failure folded as `error: ...`
-- [ ] 2.3 Document the loop contract referenced by `runner-tool-execution` spec
+- [x] 2.1 Add `internal/daemon/runners/tooling.go` with `RunAgenticLoop(ctx, client, registry, messages, opts) (LoopResult, error)` plus `DefaultMaxTurns = 10`
+- [x] 2.2 Add `internal/daemon/runners/tooling_test.go` covering: clean stop, multiple tool calls per turn (in order), max-turn cap (custom + default 10), tool failure folded as `error: ...`, unknown tool folded as error, malformed JSON args folded as error
+- [x] 2.3 Document the loop contract via godoc on `RunAgenticLoop` and the `Client`/`Message`/`ToolCall` types; multi-chunk SSE delta reassembly is per-runner (the `Client.Send` adapter), not in the shared loop
 
 ## 3. Minimax port (highest drift, owns the new tool loop)
 
@@ -40,11 +40,18 @@
 - [ ] 5.3 Diff `internal/repl/runner_local.go` vs `internal/daemon/runners/local.go`; identify backend (ollama/llama.cpp); wire `RunAgenticLoop` if HTTP-based; sync tests; commit `feat(daemon): sync local runner with REPL feature parity`
 - [ ] 5.4 Diff `internal/repl/runner_copilot.go` vs `internal/daemon/runners/copilot.go`; minor sync; wire `RunAgenticLoop`; sync tests; commit `feat(daemon): sync copilot runner with REPL feature parity`
 
-## 6. Wire daemon runners into cmd/milliways
+## 6. Excise REPL setup from cmd/milliways/main.go (revised — see manifest.md)
 
-- [ ] 6.1 Update `cmd/milliways/main.go` to construct daemon runners (not REPL runners) for the routes that currently use REPL
-- [ ] 6.2 Verify `cmd/milliways/main.go` compiles with all eight daemon runners registered and no `internal/repl` import in the runner-construction path
-- [ ] 6.3 Run `go build ./...` and `go test ./...` (all passing); commit `refactor(cmd): construct runners from internal/daemon/runners`
+The original task assumed `cmd/milliways/main.go` would be rewritten to construct
+daemon runners directly. The manifest revealed the daemon runners are invoked
+through the daemon RPC layer, not from `cmd/milliways/main.go`. So this section
+*deletes* the REPL construction code instead of porting it.
+
+- [ ] 6.1 Move shared types `Runner`, `RunResult`, `SessionUsage`, `QuotaInfo`, `QuotaPeriod`, `NullRunner` from `internal/repl/runner.go` to `internal/daemon/runners/types.go` (referenced by `cmd/milliways/main.go` as `repl.QuotaInfo`/`QuotaPeriod`)
+- [ ] 6.2 Update `cmd/milliways/main.go` quota-callback signatures to use `runners.QuotaInfo`/`QuotaPeriod` instead of `repl.QuotaInfo`/`QuotaPeriod`
+- [ ] 6.3 Delete the entire `runREPL(...)` function (~100 lines, `main.go:1557–1660`) and its REPL-only callers (`NewREPL`, `NewREPLWithSubstrate`, `NewREPLPane`, `NewShell`, `NewReplLogHandler`, all `repl.New<X>Runner()` calls)
+- [ ] 6.4 Verify `cmd/milliways/main.go` no longer imports `internal/repl`
+- [ ] 6.5 Run `go build ./...` and `go test ./...` (all passing); commit `refactor(cmd): excise REPL construction from main`
 
 ## 7. Strip --repl flag and MILLIWAYS_REPL env
 
