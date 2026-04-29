@@ -21,18 +21,20 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // LocalRunner talks to any OpenAI-compatible /v1/chat/completions endpoint.
-// Default backend: llama-server on http://localhost:8080/v1 (set up by
+// Default backend: llama-server on http://localhost:8765/v1 (set up by
 // scripts/install_local.sh). Compatible with llama-swap, vLLM, LMStudio,
 // and Ollama's /v1 endpoint when MILLIWAYS_LOCAL_ENDPOINT is set.
 type LocalRunner struct {
-	endpoint string
-	model    string
-	client   *http.Client
+	client *http.Client
 
 	mu                sync.Mutex
+	endpoint          string
+	model             string
+	apiKey            string
 	sessionIn         int
 	sessionOut        int
 	sessionDispatches int
@@ -50,6 +52,7 @@ func NewLocalRunner() *LocalRunner {
 	return &LocalRunner{
 		endpoint: strings.TrimRight(endpoint, "/"),
 		model:    model,
+		apiKey:   os.Getenv("MILLIWAYS_LOCAL_API_KEY"),
 		client:   &http.Client{Timeout: 0},
 	}
 }
@@ -114,9 +117,9 @@ type localChatMessage struct {
 }
 
 type localChatRequest struct {
-	Model    string        `json:"model"`
+	Model    string             `json:"model"`
 	Messages []localChatMessage `json:"messages"`
-	Stream   bool          `json:"stream"`
+	Stream   bool               `json:"stream"`
 }
 
 type localChatStreamChoice struct {
@@ -136,13 +139,13 @@ type localChatStreamChunk struct {
 
 func (r *LocalRunner) Execute(ctx context.Context, req DispatchRequest, out io.Writer) error {
 	if len(req.Attachments) > 0 {
-		// local models we ship with do not handle images
 		fmt.Fprintln(out, ColorText(LocalScheme(), "[local: image attachments ignored]"))
 	}
 
 	r.mu.Lock()
 	endpoint := r.endpoint
 	model := r.model
+	apiKey := r.apiKey
 	r.mu.Unlock()
 
 	messages := buildLocalMessages(req)
@@ -160,6 +163,9 @@ func (r *LocalRunner) Execute(ctx context.Context, req DispatchRequest, out io.W
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	if apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 
 	resp, err := r.client.Do(httpReq)
 	if err != nil {
@@ -170,13 +176,18 @@ func (r *LocalRunner) Execute(ctx context.Context, req DispatchRequest, out io.W
 	}
 	defer resp.Body.Close()
 
+	// Ensure ctx-cancel actually unblocks the SSE reader: closing the body
+	// causes the next scanner.Scan() to return an error immediately.
+	stop := context.AfterFunc(ctx, func() { _ = resp.Body.Close() })
+	defer stop()
+
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		lower := strings.ToLower(string(body))
+		errBody, _ := io.ReadAll(resp.Body)
+		lower := strings.ToLower(string(errBody))
 		if localBodySignalsLimit(lower) {
-			return fmt.Errorf("%w: %s", ErrSessionLimit, string(body))
+			return fmt.Errorf("%w: %s", ErrSessionLimit, string(errBody))
 		}
-		return fmt.Errorf("local: HTTP %d: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("local: HTTP %d: %s", resp.StatusCode, string(errBody))
 	}
 
 	tokens, err := streamLocalSSE(ctx, resp.Body, out)
@@ -222,12 +233,14 @@ func buildLocalMessages(req DispatchRequest) []localChatMessage {
 
 // streamLocalSSE reads a text/event-stream from llama-server / Ollama / vLLM
 // and writes the assistant's content to out as it arrives. Returns an
-// approximate output-token count (chars/4).
+// approximate output-token count (chars/4 with utf8 awareness).
 func streamLocalSSE(ctx context.Context, body io.Reader, out io.Writer) (int, error) {
 	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	// 8 MiB max line — covers tool-call blobs and large deltas without dropping.
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 
 	scheme := LocalScheme()
+	useColor := isTerminalWriter(out)
 	var written int
 	startedLine := false
 
@@ -263,41 +276,55 @@ func streamLocalSSE(ctx context.Context, body io.Reader, out io.Writer) (int, er
 			if c.Delta.Content == "" {
 				continue
 			}
-			if !startedLine {
+			if useColor && !startedLine {
 				_, _ = out.Write([]byte(BlackBackground + scheme.FG))
 				startedLine = true
 			}
 			_, _ = out.Write([]byte(c.Delta.Content))
-			written += len(c.Delta.Content) / 4
-			if strings.Contains(c.Delta.Content, "\n") {
+			written += utf8.RuneCountInString(c.Delta.Content) / 4
+			if useColor && strings.Contains(c.Delta.Content, "\n") {
 				_, _ = out.Write([]byte(ResetColor + BlackBackground + scheme.FG))
 			}
 		}
 	}
 
-	if startedLine {
+	if useColor && startedLine {
 		_, _ = out.Write([]byte(ResetColor + "\n"))
 	}
 
 	if err := scanner.Err(); err != nil {
+		// ctx cancellation closes the body and surfaces here as a read error;
+		// prefer the canonical context error.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return written, ctxErr
+		}
+		// bufio.ErrTooLong indicates a > 8 MiB single SSE event — surface it
+		// rather than silently truncating the response.
+		if errors.Is(err, bufio.ErrTooLong) {
+			return written, fmt.Errorf("local: SSE event larger than 8MiB: %w", err)
+		}
 		return written, fmt.Errorf("local: read stream: %w", err)
 	}
 	return written, nil
 }
 
 func promptCharsToTokens(req DispatchRequest) int {
-	n := len(req.Prompt) + len(req.Rules)
+	n := utf8.RuneCountInString(req.Prompt) + utf8.RuneCountInString(req.Rules)
 	for _, t := range req.History {
-		n += len(t.Text)
+		n += utf8.RuneCountInString(t.Text)
 	}
 	for _, f := range req.Context {
-		n += len(f.Content)
+		n += utf8.RuneCountInString(f.Content)
 	}
 	return n / 4
 }
 
-// localBodySignalsLimit recognises context/quota exhaustion in
+// localBodySignalsLimit recognises context-window / rate-limit exhaustion in
 // llama-server / vLLM / Ollama / OpenAI-compatible error bodies.
+//
+// We deliberately do NOT match a bare "quota" — that produces false positives
+// on disk-quota / inode-quota / EDQUOT messages. A real quota signal will use
+// "rate limit", "exceeded", or be paired with "tokens"/"requests".
 func localBodySignalsLimit(lower string) bool {
 	patterns := []string{
 		"context window",
@@ -308,7 +335,9 @@ func localBodySignalsLimit(lower string) bool {
 		"too many tokens",
 		"prompt is too long",
 		"rate limit",
-		"quota",
+		"rate_limit",
+		"token limit",
+		"insufficient_quota",
 	}
 	for _, p := range patterns {
 		if strings.Contains(lower, p) {
@@ -347,11 +376,15 @@ func (r *LocalRunner) HealthCheck(ctx context.Context) error {
 func (r *LocalRunner) ListModels(ctx context.Context) ([]string, error) {
 	r.mu.Lock()
 	endpoint := r.endpoint
+	apiKey := r.apiKey
 	r.mu.Unlock()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/models", nil)
 	if err != nil {
 		return nil, err
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	resp, err := r.client.Do(req)
 	if err != nil {
@@ -375,4 +408,23 @@ func (r *LocalRunner) ListModels(ctx context.Context) ([]string, error) {
 		out = append(out, m.ID)
 	}
 	return out, nil
+}
+
+// isTerminalWriter reports whether out is a writer that should receive ANSI
+// colour codes. Best-effort: returns true for *os.File pointing at a tty,
+// false for anything else (pipes, log files, the shell-buffer multiwriter).
+func isTerminalWriter(out io.Writer) bool {
+	type fileLike interface {
+		Stat() (os.FileInfo, error)
+		Fd() uintptr
+	}
+	f, ok := out.(fileLike)
+	if !ok {
+		return true // multiwriter case — keep colour, the REPL strips it on disk
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return true
+	}
+	return (info.Mode() & os.ModeCharDevice) != 0
 }

@@ -1897,6 +1897,23 @@ func handleLocalModel(ctx context.Context, r *REPL, args string) error {
 	}
 	l.SetModel(args)
 	r.println(fmt.Sprintf("local model set to %s", args))
+
+	// Cross-check against the backend's model list so we don't silently send
+	// requests with a model name the server will ignore (llama-server) or
+	// reject (vLLM strict mode). If the lookup fails or the name isn't in
+	// the list, warn but don't fail — llama-server is permissive.
+	if models, err := l.ListModels(ctx); err == nil {
+		found := false
+		for _, m := range models {
+			if m == args {
+				found = true
+				break
+			}
+		}
+		if !found {
+			r.println(fmt.Sprintf("[warn] backend reports models: %v — '%s' may be ignored. With llama-server, restart the server with a different -m to actually load a different model.", models, args))
+		}
+	}
 	return nil
 }
 
