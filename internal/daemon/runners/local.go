@@ -14,11 +14,27 @@
 
 package runners
 
+// RunLocal targets an OpenAI-compatible chat-completions endpoint at
+// $MILLIWAYS_LOCAL_ENDPOINT (default http://localhost:8765/v1). The
+// default endpoint matches what scripts/install_local.sh configures and
+// what `milliwaysctl local install-server` provisions. Compatible
+// backends include llama.cpp's `llama-server`, `llama-swap`, vLLM,
+// LMStudio, and Ollama's `/v1` shim.
+//
+// This is a deliberate change from the previous Ollama-native
+// (`/api/chat`) implementation: every other piece of the local-model
+// stack in this repo (REPL runner, milliwaysctl local subcommands,
+// install_local.sh, install_local_swap.sh) targets the OpenAI-compatible
+// path at port 8765. Aligning the daemon path here removes the silent
+// misconfiguration where the daemon would talk to a different
+// backend/port from what the user installed.
+
 import (
 	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -26,6 +42,17 @@ import (
 	"time"
 )
 
+const (
+	localDefaultEndpoint = "http://localhost:8765/v1"
+	localDefaultModel    = "qwen2.5-coder-1.5b"
+	localTimeout         = 5 * time.Minute
+)
+
+// RunLocal is the daemon-side local-model session loop. Drains the input
+// channel; for each prompt issues one chat-completion request to the
+// configured backend and streams content deltas as
+// {"t":"data","b64":...} events. Closing the input channel pushes a
+// final {"t":"end"}.
 func RunLocal(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
 	for prompt := range input {
 		if stream == nil {
@@ -38,111 +65,171 @@ func RunLocal(ctx context.Context, input <-chan []byte, stream Pusher, metrics M
 	}
 }
 
-const localDefaultBaseURL = "http://localhost:11434"
-const localDefaultModel = "llama3"
-const localTimeout = 5 * time.Minute
-
-type ollamaMessage struct {
+type localChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
-type ollamaRequest struct {
-	Model    string         `json:"model"`
-	Stream   bool           `json:"stream"`
-	Messages []ollamaMessage `json:"messages"`
+type localChatRequest struct {
+	Model    string             `json:"model"`
+	Stream   bool               `json:"stream"`
+	Messages []localChatMessage `json:"messages"`
 }
 
-type ollamaChunk struct {
-	Message struct {
+type localChatChoice struct {
+	Delta struct {
 		Content string `json:"content"`
-	} `json:"message"`
-	Done bool `json:"done"`
+	} `json:"delta"`
+	Message *struct {
+		Content string `json:"content"`
+	} `json:"message,omitempty"`
+	FinishReason string `json:"finish_reason,omitempty"`
+}
+
+type localChatChunk struct {
+	Choices []localChatChoice `json:"choices"`
+	Usage   *struct {
+		PromptTokens     int `json:"prompt_tokens"`
+		CompletionTokens int `json:"completion_tokens"`
+		TotalTokens      int `json:"total_tokens"`
+	} `json:"usage,omitempty"`
 }
 
 func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
-	baseURL := strings.TrimRight(os.Getenv("OLLAMA_BASE_URL"), "/")
-	if baseURL == "" {
-		baseURL = localDefaultBaseURL
+	endpoint := strings.TrimRight(os.Getenv("MILLIWAYS_LOCAL_ENDPOINT"), "/")
+	if endpoint == "" {
+		endpoint = localDefaultEndpoint
 	}
-	model := strings.TrimSpace(os.Getenv("OLLAMA_MODEL"))
+	model := strings.TrimSpace(os.Getenv("MILLIWAYS_LOCAL_MODEL"))
 	if model == "" {
 		model = localDefaultModel
 	}
+	apiKey := strings.TrimSpace(os.Getenv("MILLIWAYS_LOCAL_API_KEY"))
 
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		return
 	}
 
-	payload := ollamaRequest{
+	payload := localChatRequest{
 		Model:  model,
 		Stream: true,
-		Messages: []ollamaMessage{
+		Messages: []localChatMessage{
 			{Role: "user", Content: text},
 		},
 	}
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
 		observeError(metrics, AgentIDLocal)
-		stream.Push(map[string]any{"t": "err", "msg": "ollama marshal: " + err.Error()})
+		stream.Push(map[string]any{"t": "err", "msg": "local marshal: " + err.Error()})
 		return
 	}
 
-	url := baseURL + "/api/chat"
+	url := endpoint + "/chat/completions"
 	ctx, cancel := context.WithTimeout(parent, localTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
 		observeError(metrics, AgentIDLocal)
-		stream.Push(map[string]any{"t": "err", "msg": "ollama request: " + err.Error()})
+		stream.Push(map[string]any{"t": "err", "msg": "local request: " + err.Error()})
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 
-	client := &http.Client{Timeout: localTimeout}
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		observeError(metrics, AgentIDLocal)
-		stream.Push(map[string]any{"t": "err", "msg": "ollama connect: " + err.Error()})
+		stream.Push(map[string]any{
+			"t":   "err",
+			"msg": fmt.Sprintf("local connect %s: %v (is the backend running? `milliwaysctl local install-server` to bootstrap)", url, err),
+		})
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		observeError(metrics, AgentIDLocal)
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		stream.Push(map[string]any{
 			"t":   "err",
-			"msg": "ollama " + resp.Status + ": " + strings.TrimSpace(string(body)),
+			"msg": fmt.Sprintf("local API %s: %s", resp.Status, strings.TrimSpace(string(body))),
 		})
 		return
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
+	usage := streamLocalSSE(ctx, resp.Body, stream)
+	if usage != nil {
+		observeTokens(metrics, AgentIDLocal, usage.promptTokens, usage.completionTokens, 0)
+	}
+	chunkEnd := map[string]any{"t": "chunk_end", "cost_usd": 0.0}
+	if usage != nil {
+		chunkEnd["input_tokens"] = usage.promptTokens
+		chunkEnd["output_tokens"] = usage.completionTokens
+		chunkEnd["total_tokens"] = usage.totalTokens
+	}
+	stream.Push(chunkEnd)
+}
+
+type localUsage struct {
+	promptTokens     int
+	completionTokens int
+	totalTokens      int
+}
+
+// streamLocalSSE reads SSE / NDJSON lines, pushes content deltas as
+// {"t":"data","b64":...} events, and returns the final usage block (or
+// nil if none was emitted).
+func streamLocalSSE(ctx context.Context, r io.Reader, stream Pusher) *localUsage {
+	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
+
+	var usage *localUsage
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
-			return
+			return usage
 		default:
 		}
+
 		line := scanner.Text()
-		if line == "" {
+		var jsonData string
+		switch {
+		case strings.HasPrefix(line, "data: "):
+			jsonData = strings.TrimPrefix(line, "data: ")
+			if jsonData == "[DONE]" {
+				return usage
+			}
+		case strings.HasPrefix(line, "{"):
+			jsonData = line
+		default:
 			continue
 		}
-		var chunk ollamaChunk
-		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
+
+		var chunk localChatChunk
+		if err := json.Unmarshal([]byte(jsonData), &chunk); err != nil {
 			continue
 		}
-		if chunk.Message.Content != "" {
-			stream.Push(encodeData(chunk.Message.Content))
+		if chunk.Usage != nil {
+			usage = &localUsage{
+				promptTokens:     chunk.Usage.PromptTokens,
+				completionTokens: chunk.Usage.CompletionTokens,
+				totalTokens:      chunk.Usage.TotalTokens,
+			}
 		}
-		if chunk.Done {
-			break
+		for _, choice := range chunk.Choices {
+			content := choice.Delta.Content
+			if content == "" && choice.Message != nil {
+				content = choice.Message.Content
+			}
+			if content != "" {
+				stream.Push(encodeData(content))
+			}
 		}
 	}
-	stream.Push(map[string]any{"t": "chunk_end"})
+	return usage
 }
