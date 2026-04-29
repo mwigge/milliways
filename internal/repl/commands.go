@@ -1900,12 +1900,12 @@ func (r *REPL) printLocalSettings(l *LocalRunner) {
 	if s.Temperature >= 0 {
 		r.println(fmt.Sprintf("  temperature: %.2f", s.Temperature))
 	} else {
-		r.println("  temperature: (server default)")
+		r.println("  temperature: server default")
 	}
 	if s.MaxTokens > 0 {
 		r.println(fmt.Sprintf("  max_tokens:  %d", s.MaxTokens))
 	} else {
-		r.println("  max_tokens:  (unlimited)")
+		r.println("  max_tokens:  unlimited")
 	}
 }
 

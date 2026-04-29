@@ -697,8 +697,22 @@ All standard milliways commands work with `local`. The runner-prefixed forms are
 | `MILLIWAYS_LOCAL_ENDPOINT` | `http://localhost:8765/v1` | Where the OpenAI-compatible API lives |
 | `MILLIWAYS_LOCAL_MODEL` | `qwen2.5-coder-1.5b` | Initial model id sent in every request |
 | `MILLIWAYS_LOCAL_API_KEY` | — | Sent as `Authorization: Bearer …` (for llama-server `--api-key`, vLLM strict mode) |
-| `MILLIWAYS_LOCAL_TEMPERATURE` | server default | Override sampling temperature globally |
+| `MILLIWAYS_LOCAL_TEMPERATURE` | `0.2` | Sampling temperature — coding-friendly default. Set to `-1` to fall back to the server's own default |
 | `MILLIWAYS_LOCAL_MAX_TOKENS` | unlimited | Cap reply length globally |
+
+### Temperature
+
+Temperature controls how random the model's next-token pick is. The model assigns a probability to every possible next word; temperature divides those scores before sampling — lower temperature sharpens the distribution toward the most-likely token, higher temperature flattens it so unlikely words can win.
+
+| Temperature | Behaviour | When to use |
+|---|---|---|
+| `0.0` | Always picks the most-likely token | Deterministic test fixtures; some local models loop at exactly 0 — pick `0.1` if so |
+| `0.2` *(default)* | Almost always the top pick, with rare deviations | Coding, refactoring, anything where correctness > creativity |
+| `0.7` | Balanced — varied but coherent | Chat, summarisation, commit messages |
+| `1.0+` | More creative, more error-prone | Brainstorming, drafting prose |
+| `1.5+` | Often incoherent | Rarely useful |
+
+Switch at runtime with `/local-temp 0.7` or `/local-temp default` (lets the server pick). The current value shows up in `/switch local`'s settings dump, so you can always check what's active.
 
 ### Troubleshooting
 

@@ -53,10 +53,13 @@ func NewLocalRunner() *LocalRunner {
 		model = "qwen2.5-coder-1.5b"
 	}
 	r := &LocalRunner{
-		endpoint:    strings.TrimRight(endpoint, "/"),
-		model:       model,
-		apiKey:      os.Getenv("MILLIWAYS_LOCAL_API_KEY"),
-		temperature: -1,
+		endpoint: strings.TrimRight(endpoint, "/"),
+		model:    model,
+		apiKey:   os.Getenv("MILLIWAYS_LOCAL_API_KEY"),
+		// 0.2 is a coding-friendly default — sharpens the distribution toward
+		// the highest-probability token without going fully deterministic
+		// (some local models loop at exactly 0). Override with /local-temp.
+		temperature: 0.2,
 		maxTokens:   0,
 		client:      &http.Client{Timeout: 0},
 	}
