@@ -103,13 +103,13 @@ through the daemon RPC layer, not from `cmd/milliways/main.go`. So this section
 
 ### 11b. wezterm Lua slash-command dispatcher
 
-- [ ] 11b.1 Read `cmd/milliwaysctl/milliways.lua` end-to-end; understand current keymap and event surface
-- [ ] 11b.2 Add a `register_slash_dispatcher(config)` function that binds an input-line keystroke (e.g., `Ctrl+Shift+P` or default to `/` when the active line is empty) which prompts for input, splits on whitespace, and runs `milliwaysctl <args...>` via `wezterm.run_child_process` (or `act.SpawnCommandInNewTab` if the verb is long-running)
-- [ ] 11b.3 Stream output back into the tab via a status overlay or a temporary pane; on exit, restore focus
-- [ ] 11b.4 Tab-completion: when the user types `/local-` and presses Tab, query `milliwaysctl --json-completions` (new flag in 11a.9) or fall back to a hard-coded list of known verbs
-- [ ] 11b.5 Document the dispatcher in `cmd/milliwaysctl/README.wezterm.md`: how to enable, default keybindings, how to override
-- [ ] 11b.6 Smoke test: type `/local-list-models` in a milliways tab → output appears inline; exit code propagates to a status badge
-- [ ] 11b.7 Commit `feat(wezterm): generic slash-command dispatcher to milliwaysctl`
+- [x] 11b.1 Read `cmd/milliwaysctl/milliways.lua` end-to-end (existing leader-key pattern uses `act.PromptInputLine` + `wezterm.action_callback` already, e.g. the resume modal at line 205)
+- [x] 11b.2 Bind `Leader + /` to a `wezterm.action_callback` that opens an `InputSelector` palette (curated `ctl_choices`, `fuzzy=true`); chosen complete verbs dispatch to `act.SpawnCommandInNewTab { args = {'milliwaysctl', ...} }` directly; verbs taking args (trailing space in id) and the free-form escape hatch fall through to `PromptInputLine` with optional `initial_value` prefill
+- [x] 11b.3 Output streams in the new tab spawned by `SpawnCommandInNewTab` (wezterm hosts the spawned process directly; exit visible in the tab); no extra streaming layer needed
+- [x] 11b.4 Completion via `InputSelector` with `fuzzy=true` — wezterm-native filter over the curated `ctl_choices` list. Free-form escape hatch covers verbs not in the curated list. (Original task wording suggested `--json-completions` querying ctl; the wezterm-native InputSelector pattern is simpler and idiomatic per docs.)
+- [x] 11b.5 `cmd/milliwaysctl/README.wezterm.md` updated with the palette flow, examples, limitations, and a smoke test recipe
+- [x] 11b.6 Smoke validated via `wezterm --config-file …/milliways.lua show-keys` — config parses cleanly, `LEADER /` registers as the expected `EmitEvent`/callback chain. End-to-end "press Leader+/" smoke requires a wezterm GUI session and is documented for the user to run.
+- [x] 11b.7 Commit `feat(wezterm): milliwaysctl command palette via Leader+/`
 
 ### 11c. Wiring and docs
 

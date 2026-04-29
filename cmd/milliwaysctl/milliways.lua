@@ -12,6 +12,8 @@
 --   Leader + r         resume modal — shows wake/session summary, re-opens last agent
 --   Leader + k         context overlay
 --   Leader + w         observe-render overlay (metrics/spans)
+--   Leader + /         milliwaysctl slash dispatcher — type `/<verb> [args...]`
+--                      runs `milliwaysctl <verb> [args...]` in a new tab
 --   Leader + z         open a plain shell tab (escape hatch)
 
 local wezterm = require 'wezterm'
@@ -253,7 +255,123 @@ config.keys = {
     key = 'w', mods = 'LEADER',
     action = act.SpawnCommandInNewTab { args = { 'milliwaysctl', 'observe-render' } },
   },
+  -- Leader + /  →  milliwaysctl command palette
+  --
+  -- Opens an InputSelector overlay populated with curated ctl invocations.
+  -- - Type to fuzzy-filter the list (wezterm's built-in fuzzy mode).
+  -- - Pick a complete verb → dispatched immediately in a new tab.
+  -- - Pick a verb that takes args (trailing space in id) → falls through
+  --   to a PromptInputLine prefilled with that verb so you fill in the rest.
+  -- - Pick "free-form" → opens an empty PromptInputLine for arbitrary input
+  --   (e.g., to dispatch a ctl subcommand not in the curated list).
+  --
+  -- Adding a new ctl subcommand requires updating ctl_choices below to make
+  -- it discoverable, but ANY ctl subcommand stays callable via the free-form
+  -- escape hatch — the dispatcher itself stays generic.
+  {
+    key = '/', mods = 'LEADER',
+    action = wezterm.action_callback(function(window, pane)
+      window:perform_action(open_ctl_palette(), pane)
+    end),
+  },
 }
+
+-- ── ctl palette helpers ─────────────────────────────────────────────────────
+
+-- ctl_choices lists the curated commands surfaced in the Leader + / palette.
+-- An id ending in a single space tells the picker "this verb takes args";
+-- the picker then opens a PromptInputLine prefilled with that prefix so the
+-- user can complete the invocation.
+local ctl_choices = {
+  -- Discovery
+  { label = 'agents                    list registered agents',                    id = 'agents' },
+  { label = 'quota                     show quota snapshots',                      id = 'quota' },
+  { label = 'status                    fetch live cockpit state',                  id = 'status' },
+  { label = 'routing                   peek recent sommelier decisions',           id = 'routing' },
+  { label = 'spans                     recent OTel spans',                         id = 'spans' },
+  -- Local-model bootstrap
+  { label = 'local list-models         show models served by the active backend',  id = 'local list-models' },
+  { label = 'local install-server      install llama.cpp + default coder model',   id = 'local install-server' },
+  { label = 'local install-swap        install llama-swap (hot model swap)',       id = 'local install-swap' },
+  { label = 'local switch-server …     pick backend (llama-server | ollama | …)',  id = 'local switch-server ' },
+  { label = 'local download-model …    fetch a GGUF from HuggingFace',             id = 'local download-model ' },
+  { label = 'local setup-model …       download + register in llama-swap.yaml',    id = 'local setup-model ' },
+  -- Free-form escape hatch (kept last so casual fuzzy-typing finds curated entries first)
+  { label = '… free-form milliwaysctl invocation …',                                id = '__free_form__' },
+}
+
+-- dispatch_ctl_args takes the parsed argv (without the leading "milliwaysctl")
+-- and spawns it in a new tab. Returns nil if argv is empty.
+function dispatch_ctl_args(window, pane, argv)
+  if #argv == 0 then return end
+  local args = { 'milliwaysctl' }
+  for _, w in ipairs(argv) do
+    table.insert(args, w)
+  end
+  window:perform_action(act.SpawnCommandInNewTab { args = args }, pane)
+end
+
+-- split_ws splits a string on runs of whitespace (no quoting support;
+-- values containing spaces aren't expressible from this dispatcher).
+function split_ws(s)
+  local out = {}
+  for word in s:gmatch('%S+') do
+    table.insert(out, word)
+  end
+  return out
+end
+
+-- open_ctl_palette returns the InputSelector action for Leader + /.
+function open_ctl_palette()
+  return act.InputSelector {
+    title = 'milliwaysctl',
+    fuzzy = true,
+    description = 'Pick a command (Esc to cancel, type to filter)',
+    fuzzy_description = 'milliwaysctl ▸ ',
+    choices = ctl_choices,
+    action = wezterm.action_callback(function(win, pn, id, _)
+      -- Cancel: id and label are both nil per docs.
+      if id == nil then return end
+
+      -- Free-form escape hatch → empty PromptInputLine.
+      if id == '__free_form__' then
+        win:perform_action(open_ctl_prompt(''), pn)
+        return
+      end
+
+      -- Verb that takes args (trailing space in id) → prefilled prompt.
+      if id:sub(-1) == ' ' then
+        win:perform_action(open_ctl_prompt(id), pn)
+        return
+      end
+
+      -- Complete verb → dispatch immediately.
+      dispatch_ctl_args(win, pn, split_ws(id))
+    end),
+  }
+end
+
+-- open_ctl_prompt returns a PromptInputLine action that accepts free-form
+-- text and dispatches it as `milliwaysctl <args...>`. `initial` is prefilled
+-- text; pass '' for a blank prompt.
+function open_ctl_prompt(initial)
+  return act.PromptInputLine {
+    description = wezterm.format({
+      { Attribute = { Intensity = 'Bold' } },
+      { Foreground = { Color = '#4db51f' } },
+      { Text = 'milliwaysctl ▸ ' },
+    }),
+    initial_value = initial,
+    action = wezterm.action_callback(function(win, pn, line)
+      -- nil = Esc; '' = Enter on empty. Both bail.
+      if line == nil or line == '' then return end
+      -- Strip a single leading '/' so `/local list-models` and
+      -- `local list-models` both work.
+      if line:sub(1, 1) == '/' then line = line:sub(2) end
+      dispatch_ctl_args(win, pn, split_ws(line))
+    end),
+  }
+end
 
 -- ── Auto-start milliwaysd when wezterm opens ─────────────────────────────────
 -- Spawns the daemon once; subsequent windows reuse the existing socket.
