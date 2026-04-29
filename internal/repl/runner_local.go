@@ -18,6 +18,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,8 @@ type LocalRunner struct {
 	endpoint          string
 	model             string
 	apiKey            string
+	temperature       float64 // -1 means "do not send"
+	maxTokens         int     // 0 means "do not send"
 	sessionIn         int
 	sessionOut        int
 	sessionDispatches int
@@ -49,12 +52,25 @@ func NewLocalRunner() *LocalRunner {
 	if model == "" {
 		model = "qwen2.5-coder-1.5b"
 	}
-	return &LocalRunner{
-		endpoint: strings.TrimRight(endpoint, "/"),
-		model:    model,
-		apiKey:   os.Getenv("MILLIWAYS_LOCAL_API_KEY"),
-		client:   &http.Client{Timeout: 0},
+	r := &LocalRunner{
+		endpoint:    strings.TrimRight(endpoint, "/"),
+		model:       model,
+		apiKey:      os.Getenv("MILLIWAYS_LOCAL_API_KEY"),
+		temperature: -1,
+		maxTokens:   0,
+		client:      &http.Client{Timeout: 0},
 	}
+	if v := os.Getenv("MILLIWAYS_LOCAL_TEMPERATURE"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			r.temperature = f
+		}
+	}
+	if v := os.Getenv("MILLIWAYS_LOCAL_MAX_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			r.maxTokens = n
+		}
+	}
+	return r
 }
 
 func (r *LocalRunner) Name() string { return "local" }
@@ -79,6 +95,24 @@ func (r *LocalRunner) SetEndpoint(endpoint string) {
 	r.mu.Unlock()
 }
 
+// SetTemperature sets the sampling temperature. Pass a negative value to
+// fall back to the server-side default (i.e. omit the field from the request).
+func (r *LocalRunner) SetTemperature(t float64) {
+	r.mu.Lock()
+	r.temperature = t
+	r.mu.Unlock()
+}
+
+// SetMaxTokens caps the model's reply length. Pass 0 to omit the field.
+func (r *LocalRunner) SetMaxTokens(n int) {
+	if n < 0 {
+		n = 0
+	}
+	r.mu.Lock()
+	r.maxTokens = n
+	r.mu.Unlock()
+}
+
 func (r *LocalRunner) AuthStatus() (bool, error) { return true, nil }
 func (r *LocalRunner) Login() error              { return nil }
 func (r *LocalRunner) Logout() error             { return nil }
@@ -100,14 +134,21 @@ func (r *LocalRunner) Quota() (*QuotaInfo, error) {
 }
 
 type LocalSettings struct {
-	Endpoint string
-	Model    string
+	Endpoint    string
+	Model       string
+	Temperature float64
+	MaxTokens   int
 }
 
 func (r *LocalRunner) Settings() LocalSettings {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return LocalSettings{Endpoint: r.endpoint, Model: r.model}
+	return LocalSettings{
+		Endpoint:    r.endpoint,
+		Model:       r.model,
+		Temperature: r.temperature,
+		MaxTokens:   r.maxTokens,
+	}
 }
 
 // localChatMessage matches the OpenAI Chat Completions schema.
@@ -117,9 +158,11 @@ type localChatMessage struct {
 }
 
 type localChatRequest struct {
-	Model    string             `json:"model"`
-	Messages []localChatMessage `json:"messages"`
-	Stream   bool               `json:"stream"`
+	Model       string             `json:"model"`
+	Messages    []localChatMessage `json:"messages"`
+	Stream      bool               `json:"stream"`
+	Temperature *float64           `json:"temperature,omitempty"`
+	MaxTokens   int                `json:"max_tokens,omitempty"`
 }
 
 type localChatStreamChoice struct {
@@ -146,11 +189,17 @@ func (r *LocalRunner) Execute(ctx context.Context, req DispatchRequest, out io.W
 	endpoint := r.endpoint
 	model := r.model
 	apiKey := r.apiKey
+	temperature := r.temperature
+	maxTokens := r.maxTokens
 	r.mu.Unlock()
 
 	messages := buildLocalMessages(req)
 
-	body := localChatRequest{Model: model, Messages: messages, Stream: true}
+	body := localChatRequest{Model: model, Messages: messages, Stream: true, MaxTokens: maxTokens}
+	if temperature >= 0 {
+		t := temperature
+		body.Temperature = &t
+	}
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("local: marshal request: %w", err)

@@ -391,9 +391,18 @@ The first iteration is intentionally proof-of-concept: smaller `-coder` models, 
 
 ```bash
 ▶ /local
-▶ /local-models                    # ask the backend what's loaded
-▶ /local-model qwen2.5-coder-7b   # switch model alias (requires server restart)
+▶ /local-models                              # ask the backend what's loaded
+▶ /local-model qwen2.5-coder-7b              # switch model alias (warns if not loaded)
 ▶ /local-endpoint http://localhost:8081/v1   # point at a different backend
+▶ /local-temp 0.2                            # sampling temperature (0.0–2.0, or 'default')
+▶ /local-max-tokens 512                      # cap reply length, or 'off' for unlimited
+```
+
+For real hot-swap (load any GGUF on demand instead of restarting the server), run the optional `install_local_swap.sh`. It installs [llama-swap](https://github.com/mostlygeek/llama-swap), generates a config from every `.gguf` in `$MODEL_DIR`, and stands it up as a launchd/systemd unit on the same port:
+
+```bash
+./scripts/install_local_swap.sh
+# /local-models now lists every GGUF on disk; /local-model <alias> swaps in seconds
 ```
 
 Setup is one script:

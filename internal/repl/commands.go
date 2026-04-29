@@ -86,18 +86,20 @@ var commandHandlers = map[string]commandHandler{
 	"codex":   func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "codex") },
 	"minimax": func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "minimax") },
 	"copilot": func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "copilot") },
-	"pool":   func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "pool") },
-	"gemini": func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "gemini") },
-	"local":  func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "local") },
+	"pool":    func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "pool") },
+	"gemini":  func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "gemini") },
+	"local":   func(ctx context.Context, r *REPL, _ string) error { return handleSwitch(ctx, r, "local") },
 	// Pool-specific commands
 	"pool-model": handlePoolModel,
 	"pool-mode":  handlePoolMode,
 	// Gemini-specific commands
 	"gemini-model": handleGeminiModel,
 	// Local-specific commands
-	"local-model":    handleLocalModel,
-	"local-models":   handleLocalModels,
-	"local-endpoint": handleLocalEndpoint,
+	"local-model":      handleLocalModel,
+	"local-models":     handleLocalModels,
+	"local-endpoint":   handleLocalEndpoint,
+	"local-temp":       handleLocalTemp,
+	"local-max-tokens": handleLocalMaxTokens,
 	// ? — show milliways shortcuts reference
 	"?": handleShortcuts,
 	// Rotation ring and takeover
@@ -1882,8 +1884,18 @@ func handleTakeover(ctx context.Context, r *REPL, args string) error {
 func (r *REPL) printLocalSettings(l *LocalRunner) {
 	s := l.Settings()
 	r.println(RunnerAccentText("local", "Local settings:"))
-	r.println(fmt.Sprintf("  endpoint: %s", s.Endpoint))
-	r.println(fmt.Sprintf("  model:    %s", s.Model))
+	r.println(fmt.Sprintf("  endpoint:    %s", s.Endpoint))
+	r.println(fmt.Sprintf("  model:       %s", s.Model))
+	if s.Temperature >= 0 {
+		r.println(fmt.Sprintf("  temperature: %.2f", s.Temperature))
+	} else {
+		r.println("  temperature: (server default)")
+	}
+	if s.MaxTokens > 0 {
+		r.println(fmt.Sprintf("  max_tokens:  %d", s.MaxTokens))
+	} else {
+		r.println("  max_tokens:  (unlimited)")
+	}
 }
 
 func handleLocalModel(ctx context.Context, r *REPL, args string) error {
@@ -1953,5 +1965,64 @@ func handleLocalModels(ctx context.Context, r *REPL, _ string) error {
 		}
 		r.println(fmt.Sprintf("%s%s", marker, m))
 	}
+	return nil
+}
+
+func handleLocalTemp(_ context.Context, r *REPL, args string) error {
+	l, ok := r.runner.(*LocalRunner)
+	if !ok {
+		return fmt.Errorf("not on local runner — use /local first")
+	}
+	if args == "" {
+		s := l.Settings()
+		if s.Temperature < 0 {
+			r.println("local temperature: (server default)")
+		} else {
+			r.println(fmt.Sprintf("local temperature: %.2f", s.Temperature))
+		}
+		return nil
+	}
+	if strings.EqualFold(args, "default") || strings.EqualFold(args, "off") {
+		l.SetTemperature(-1)
+		r.println("local temperature reset to server default")
+		return nil
+	}
+	t, err := strconv.ParseFloat(args, 64)
+	if err != nil {
+		return fmt.Errorf("invalid temperature %q (try 0.0–2.0, or 'default')", args)
+	}
+	if t < 0 || t > 2 {
+		return fmt.Errorf("temperature out of range: %v (use 0.0–2.0)", t)
+	}
+	l.SetTemperature(t)
+	r.println(fmt.Sprintf("local temperature set to %.2f", t))
+	return nil
+}
+
+func handleLocalMaxTokens(_ context.Context, r *REPL, args string) error {
+	l, ok := r.runner.(*LocalRunner)
+	if !ok {
+		return fmt.Errorf("not on local runner — use /local first")
+	}
+	if args == "" {
+		s := l.Settings()
+		if s.MaxTokens == 0 {
+			r.println("local max_tokens: (unlimited)")
+		} else {
+			r.println(fmt.Sprintf("local max_tokens: %d", s.MaxTokens))
+		}
+		return nil
+	}
+	if strings.EqualFold(args, "off") || strings.EqualFold(args, "unlimited") || args == "0" {
+		l.SetMaxTokens(0)
+		r.println("local max_tokens reset to unlimited")
+		return nil
+	}
+	n, err := strconv.Atoi(args)
+	if err != nil || n < 1 {
+		return fmt.Errorf("invalid max_tokens %q (positive integer, or 'off')", args)
+	}
+	l.SetMaxTokens(n)
+	r.println(fmt.Sprintf("local max_tokens set to %d", n))
 	return nil
 }
