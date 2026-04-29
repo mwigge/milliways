@@ -652,28 +652,36 @@ In hot mode you need RAM for the **sum** of every model you want resident, plus 
 
 ### Setup
 
+The fastest path uses `milliwaysctl local` from any milliways-term tab — no leaving the terminal, no hand-editing yaml.
+
 **Single model (simplest):**
 
 ```bash
-./scripts/install_local.sh
-milliways-local-server &
-milliways
-▶ /local
-▶ write me a fizzbuzz in Go
+milliwaysctl local install-server          # llama.cpp + qwen2.5-coder-1.5b (default)
+milliways                                  # /local is now ready to use
 ```
+
+In milliways-term, the same flow is available via the `Leader + /` palette: press `Ctrl+Space` then `/`, pick `local install-server`, hit Enter. A new tab spawns the install with output streaming inline.
 
 **Hot-swap between several models:**
 
 ```bash
-./scripts/install_local.sh                          # first model: qwen-1.5b
-MODEL_REPO=unsloth/Qwen2.5-Coder-7B-Instruct-GGUF \
-  MODEL_ALIAS=qwen-7b ./scripts/install_local.sh    # second
-./scripts/install_local_swap.sh                     # standby (memory-safe)
-# OR for instant switching:
-HOT_MODE=1 ./scripts/install_local_swap.sh          # warms every model at startup
+milliwaysctl local install-server                              # first model
+milliwaysctl local download-model unsloth/Qwen2.5-Coder-7B-Instruct-GGUF
+milliwaysctl local install-swap --hot                          # warm every model at startup
+# Or for memory-safe (unload after idle):
+milliwaysctl local install-swap                                # standby
 ```
 
+`milliwaysctl local setup-model <repo>` composes the download + llama-swap config registration + verification in one shot — useful for adding a new model to an already-running swap proxy.
+
+`milliwaysctl local switch-server <kind>` writes `~/.config/milliways/local.env` to point milliways at `llama-server`, `llama-swap`, `ollama`, `vllm`, or `lmstudio` without re-installing anything.
+
+`milliwaysctl local list-models` prints what the active backend is currently serving (handy after a `setup-model` to confirm registration took).
+
 The installer drops a launchd plist (macOS) or systemd-user unit (Linux) bound to port 8765, so the swap proxy comes back up after reboot.
+
+**Fallback (the old script-direct flow):** the underlying scripts are still callable for CI or air-gapped setups: `./scripts/install_local.sh` and `./scripts/install_local_swap.sh`. The `milliwaysctl local` verbs are thin wrappers over them.
 
 ### Commands
 

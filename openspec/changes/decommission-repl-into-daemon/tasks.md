@@ -113,6 +113,6 @@ through the daemon RPC layer, not from `cmd/milliways/main.go`. So this section
 
 ### 11c. Wiring and docs
 
-- [ ] 11c.1 Update `README.md` "Local models" section with the new `/local-*` UX (replace the manual `scripts/install_local.sh` instructions)
-- [ ] 11c.2 Update `CHANGELOG.md` with the new local-model self-service entry
-- [ ] 11c.3 Commit `docs: local-model self-service via milliwaysctl + slash dispatcher`
+- [x] 11c.1 Update `README.md` "Local models / Setup" section to lead with `milliwaysctl local <verb>` + Leader+/ palette; keep `scripts/install_local.sh` as a fallback path
+- [x] 11c.2 Update `CHANGELOG.md` `[Unreleased]` with Added (ctl `local` tree, Leader+/ palette, agentic tool-loop helper) + Fixed (codex sandbox/approval defaults)
+- [x] 11c.3 Commit `docs: local-model self-service via milliwaysctl + slash dispatcher`
