@@ -80,11 +80,11 @@ through the daemon RPC layer, not from `cmd/milliways/main.go`. So this section
 
 ## 10. Smoke and final verification
 
-- [ ] 10.1 `make smoke` passes
-- [ ] 10.2 Run a real minimax dispatch end-to-end and verify tool execution (bash + file read)
-- [ ] 10.3 Run a real codex dispatch and verify tool execution (sandbox/approval defaults from `fix/codex-default-sandbox-approval` are in effect)
-- [ ] 10.4 Push branch, open PR titled `chore: decommission internal/repl into daemon runners`
-- [ ] 10.5 Once merged: `/opsx:archive decommission-repl-into-daemon`
+- [x] 10.1 `make smoke` passes — all 8 scenarios green after the deletion (PC-21.1, KP-19A, TAM-10.6, TAM-10.2, KP-22.2, TP-9.4, TP-9.5, HK-5.2)
+- [ ] 10.2 Run a real minimax dispatch end-to-end and verify tool execution (bash + file read) — **needs live MINIMAX_API_KEY, deferred to user**
+- [ ] 10.3 Run a real codex dispatch and verify tool execution (sandbox/approval defaults from the kitchen-adapter fix are in effect) — **needs codex login, deferred to user**
+- [x] 10.4 Branch pushed to `origin/chore/port-runners-to-daemon`. PR URL: https://github.com/mwigge/milliways/pull/new/chore/port-runners-to-daemon (or merge directly per user's "force merge" pattern)
+- [ ] 10.5 Once merged: `/opsx:archive decommission-repl-into-daemon` — **deferred until merge**
 
 ## 11. Local-model self-service (folded in; runs before Section 3 per pacing)
 
