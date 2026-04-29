@@ -289,13 +289,13 @@ local ctl_choices = {
   { label = 'status                    fetch live cockpit state',                  id = 'status' },
   { label = 'routing                   peek recent sommelier decisions',           id = 'routing' },
   { label = 'spans                     recent OTel spans',                         id = 'spans' },
-  -- Local-model bootstrap
-  { label = 'local list-models         show models served by the active backend',  id = 'local list-models' },
-  { label = 'local install-server      install llama.cpp + default coder model',   id = 'local install-server' },
-  { label = 'local install-swap        install llama-swap (hot model swap)',       id = 'local install-swap' },
-  { label = 'local switch-server …     pick backend (llama-server | ollama | …)',  id = 'local switch-server ' },
-  { label = 'local download-model …    fetch a GGUF from HuggingFace',             id = 'local download-model ' },
-  { label = 'local setup-model …       download + register in llama-swap.yaml',    id = 'local setup-model ' },
+  -- Local-model bootstrap (slash-command alias on the left, ctl invocation on the right)
+  { label = '/list-local-models        show models served by the active backend',  id = 'local list-models' },
+  { label = '/install-local-server     install llama.cpp + default coder model',   id = 'local install-server' },
+  { label = '/install-local-swap       install llama-swap (hot model swap)',       id = 'local install-swap' },
+  { label = '/switch-local-server …    pick backend (llama-server | ollama | …)',  id = 'local switch-server ' },
+  { label = '/download-local-model …   fetch a GGUF from HuggingFace',             id = 'local download-model ' },
+  { label = '/setup-local-model …      download + register in llama-swap.yaml',    id = 'local setup-model ' },
   -- Free-form escape hatch (kept last so casual fuzzy-typing finds curated entries first)
   { label = '… free-form milliwaysctl invocation …',                                id = '__free_form__' },
 }
