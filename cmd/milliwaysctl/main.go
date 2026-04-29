@@ -45,6 +45,13 @@ func main() {
 	sub := os.Args[1]
 	rest := os.Args[2:]
 
+	// Subcommands that need their own flag parsing must dispatch before the
+	// global FlagSet runs (which uses flag.ExitOnError and would reject any
+	// flag it does not know about).
+	if sub == "local" {
+		os.Exit(runLocal(rest, os.Stdout, os.Stderr))
+	}
+
 	fs := flag.NewFlagSet(sub, flag.ExitOnError)
 	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
 	stateDir := fs.String("state", "", "state directory (default: XDG_RUNTIME_DIR or ~/.local/state/milliways)")
@@ -730,6 +737,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  history-append --agent <id> --data <json>  — append to per-agent history (history.append)")
 	fmt.Fprintln(os.Stderr, "  history-get --agent <id> [--index N]        — fetch per-agent history (history.get)")
 	fmt.Fprintln(os.Stderr, "  history-summary --agent <id> [--index N]    — compact cost+token summary for wezterm status")
+	fmt.Fprintln(os.Stderr, "  local <verb> [args...]                     — local-model bootstrap (try `milliwaysctl local --help`)")
 }
 
 func die(f string, a ...any) {
