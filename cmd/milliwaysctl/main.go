@@ -51,6 +51,9 @@ func main() {
 	if sub == "local" {
 		os.Exit(runLocal(rest, os.Stdout, os.Stderr))
 	}
+	if sub == "opsx" {
+		os.Exit(runOpsx(rest, os.Stdout, os.Stderr))
+	}
 
 	fs := flag.NewFlagSet(sub, flag.ExitOnError)
 	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
@@ -738,6 +741,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  history-get --agent <id> [--index N]        — fetch per-agent history (history.get)")
 	fmt.Fprintln(os.Stderr, "  history-summary --agent <id> [--index N]    — compact cost+token summary for wezterm status")
 	fmt.Fprintln(os.Stderr, "  local <verb> [args...]                     — local-model bootstrap (try `milliwaysctl local --help`)")
+	fmt.Fprintln(os.Stderr, "  opsx <verb> [args...]                      — openspec wrapper (try `milliwaysctl opsx --help`)")
 }
 
 func die(f string, a ...any) {

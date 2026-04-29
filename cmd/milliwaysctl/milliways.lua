@@ -289,6 +289,12 @@ local ctl_choices = {
   { label = 'status                    fetch live cockpit state',                  id = 'status' },
   { label = 'routing                   peek recent sommelier decisions',           id = 'routing' },
   { label = 'spans                     recent OTel spans',                         id = 'spans' },
+  -- OpenSpec (opsx) — thin shell over the openspec CLI
+  { label = '/opsx-list                list openspec changes',                     id = 'opsx list' },
+  { label = '/opsx-status …            show change progress',                     id = 'opsx status ' },
+  { label = '/opsx-show …              show full change detail',                  id = 'opsx show ' },
+  { label = '/opsx-archive …           archive a completed change',               id = 'opsx archive ' },
+  { label = '/opsx-validate …          validate a change',                        id = 'opsx validate ' },
   -- Local-model bootstrap (slash-command alias on the left, ctl invocation on the right)
   { label = '/list-local-models        show models served by the active backend',  id = 'local list-models' },
   { label = '/install-local-server     install llama.cpp + default coder model',   id = 'local install-server' },
