@@ -103,6 +103,23 @@ var commandHandlers = map[string]commandHandler{
 	"local-temp":       handleLocalTemp,
 	"local-max-tokens": handleLocalMaxTokens,
 	"local-hot":        handleLocalHot,
+	// Local-bootstrap aliases — dispatch to `milliwaysctl local <verb>` so the
+	// legacy --repl line-reader has the same UX as the milliways-term Leader+/
+	// palette. Multiple word orderings registered for muscle memory.
+	"install-local-server":  localCtlAlias("install-server"),
+	"local-install-server":  localCtlAlias("install-server"),
+	"local-server-install":  localCtlAlias("install-server"),
+	"install-local-swap":    localCtlAlias("install-swap"),
+	"local-install-swap":    localCtlAlias("install-swap"),
+	"local-swap-install":    localCtlAlias("install-swap"),
+	"list-local-models":     localCtlAlias("list-models"),
+	"local-list-models":     localCtlAlias("list-models"),
+	"switch-local-server":   localCtlAlias("switch-server"),
+	"local-switch-server":   localCtlAlias("switch-server"),
+	"download-local-model":  localCtlAlias("download-model"),
+	"local-download-model":  localCtlAlias("download-model"),
+	"setup-local-model":     localCtlAlias("setup-model"),
+	"local-setup-model":     localCtlAlias("setup-model"),
 	// /models — list available models for the active runner (local-first).
 	"models": handleModelsContextual,
 	// ? — show milliways shortcuts reference
