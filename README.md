@@ -214,22 +214,44 @@ Sessions are auto-saved per working directory and restored on the next `milliway
 
 ## CLI mode
 
-For one-off requests without opening the AI terminal:
+The primary milliways UX is **milliways-term** (a wezterm-based terminal where every tab opens milliways). Slash commands inside any tab dispatch via `milliwaysctl` — see `cmd/milliwaysctl/README.wezterm.md` for the `Leader + /` palette. The CLI surface below exists for **scripting, one-shot prompts, and CI** — when you don't want to open the AI terminal.
 
 ```bash
-milliways "explain the auth flow"            # route to best kitchen
-milliways --kitchen opencode "refactor"      # force a specific kitchen
-milliways --explain "refactor store.py"      # see routing decision without executing
-milliways --verbose "design JWT middleware"  # show sommelier reasoning
-milliways --json "explain this"              # JSON output for scripting
-milliways --async "long-running job"         # async dispatch, returns ticket ID
-milliways status                             # check kitchen availability
-milliways login claude                       # authenticate to a kitchen
-milliways login --list                       # show all auth status
-milliways report                             # routing statistics
-milliways report --tiered                    # tiered-CLI performance analysis
-milliways --recipe <name> "prompt"           # run a named recipe
+# One-shot prompts
+milliways "explain the auth flow"             # route to best kitchen via sommelier
+milliways -k claude "review this"             # force a specific kitchen (--kitchen)
+milliways -e "refactor store.py"              # show routing decision; do not execute (--explain)
+milliways -v "design JWT middleware"          # print sommelier reasoning to stderr (--verbose)
+milliways -j "explain this"                   # structured JSON output for scripting (--json)
+milliways -r <recipe> "prompt"                # run a named multi-course recipe (--recipe)
+milliways --async  "long-running job"         # dispatch in background; returns a ticket ID
+milliways --detach "long-running job"         # dispatch detached so it survives shell exit
+milliways --session <name> "follow-up"        # resume a named session
+milliways --switch-to claude --session foo    # rebind a session to a different kitchen
+milliways --timeout 10m "long task"           # override the 5m default dispatch timeout
+
+# Editor / IDE integration
+milliways --context-stdin "..."               # read editor context bundle JSON from stdin
+milliways --context-file ctx.json "..."       # read editor context bundle JSON from a file
+milliways --context-json '{...}' "..."        # pass the bundle directly on the CLI
+
+# Subcommands
+milliways status                              # kitchen availability + pantry health + ledger stats
+milliways setup <kitchen>                     # install + authenticate a kitchen
+milliways login <kitchen>                     # authenticate to a kitchen
+milliways login --list                        # show auth status for every kitchen
+milliways report                              # ledger routing statistics
+milliways report --tiered                     # tiered-CLI performance analysis
+milliways init                                # initialise a new milliways config
+milliways mode                                # show / set the current routing mode
+milliways trace                               # OTel trace inspection
+milliways pantry ...                          # pantry (quota / ledger) management
+milliways ticket <id>                         # inspect an async-dispatch ticket
+milliways tickets                             # list all async tickets
+milliways rate                                # rate limit inspection
 ```
+
+`milliways --repl` (deprecated; removal scheduled in v0.6.0) launches the legacy built-in line-reader; use milliways-term instead. See `milliways --help` for the canonical authoritative flag/subcommand list.
 
 ---
 
@@ -683,14 +705,27 @@ The installer drops a launchd plist (macOS) or systemd-user unit (Linux) bound t
 
 **Fallback (the old script-direct flow):** the underlying scripts are still callable for CI or air-gapped setups: `./scripts/install_local.sh` and `./scripts/install_local_swap.sh`. The `milliwaysctl local` verbs are thin wrappers over them.
 
-### Commands
+### Bootstrap commands
+
+These dispatch to `milliwaysctl local <verb>` via the milliways-term `Leader + /` palette (Ctrl+Space then `/`). Pick from the list, fuzzy-filter by typing, hit Enter — or invoke `milliwaysctl local <verb>` directly in any tab. Adding a new ctl subcommand surfaces it in the palette automatically.
+
+| Command | Underlying ctl | Action |
+|---|---|---|
+| `/install-local-server` | `milliwaysctl local install-server` | install llama.cpp + the default coder model (qwen2.5-coder-1.5b) |
+| `/install-local-swap` | `milliwaysctl local install-swap` | install llama-swap (memory-safe, unloads on TTL); add `--hot` to warm every model at startup |
+| `/list-local-models` | `milliwaysctl local list-models` | list models the active backend serves (hits `/v1/models`) |
+| `/switch-local-server <kind>` | `milliwaysctl local switch-server <kind>` | rebind milliways to `llama-server` / `llama-swap` / `ollama` / `vllm` / `lmstudio` |
+| `/download-local-model <repo>` | `milliwaysctl local download-model <repo>` | curl a GGUF from HuggingFace into `$MODEL_DIR` |
+| `/setup-local-model <repo>` | `milliwaysctl local setup-model <repo>` | download → idempotent insert into `~/.config/milliways/llama-swap.yaml` → verify |
+
+### In-session commands
 
 All standard milliways commands work with `local`. The runner-prefixed forms are still available for muscle memory; the contextual forms work across every runner.
 
 | Command | Action |
 |---|---|
 | `/local` | switch active runner to local |
-| `/models` | list models the backend serves (contextual) |
+| `/models` | list models the backend serves (contextual; same as `/list-local-models`) |
 | `/model <alias>` | switch model (contextual) |
 | `/local-endpoint <url>` | point at a different OpenAI-compatible backend |
 | `/local-temp <0.0–2.0\|default>` | sampling temperature; `default` omits the field |
