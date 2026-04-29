@@ -956,6 +956,25 @@ func (r *REPL) handleBash(ctx context.Context, cmd string) error {
 		return nil
 	}
 
+	if parts[0] == "cd" {
+		var dir string
+		if len(parts) < 2 || parts[1] == "~" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return err
+			}
+			dir = home
+		} else {
+			dir = parts[1]
+		}
+		if err := os.Chdir(dir); err != nil {
+			return err
+		}
+		cwd, _ := os.Getwd()
+		r.println(cwd)
+		return nil
+	}
+
 	execCmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	return streamCmdOutput(ctx, execCmd, io.MultiWriter(r.stdout, r.shellBuf))
 }
