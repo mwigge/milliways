@@ -80,6 +80,15 @@ func PoolScheme() ColorScheme {
 	}
 }
 
+// LocalScheme returns the color scheme for local model output (llama-server / Ollama).
+func LocalScheme() ColorScheme {
+	return ColorScheme{
+		FG:     "\x1b[38;5;120m", // Soft green — local = grounded
+		Accent: "\x1b[38;5;120m",
+		Runner: "local",
+	}
+}
+
 func SchemeForRunner(name string) ColorScheme {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "claude":
@@ -94,6 +103,8 @@ func SchemeForRunner(name string) ColorScheme {
 		return PoolScheme()
 	case "gemini":
 		return GeminiScheme()
+	case "local":
+		return LocalScheme()
 	default:
 		return ClaudeScheme()
 	}

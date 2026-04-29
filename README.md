@@ -245,6 +245,7 @@ milliways --recipe <name> "prompt"           # run a named recipe
 | copilot | red | GitHub Copilot chat | Subscription |
 | pool | cyan | Large codebase navigation, ACP agent | Cloud |
 | gemini | blue | Research, web search, 1M-token context | Free tier |
+| local | green | Offline coding on your laptop (Qwen, DeepSeek, …) | Free, runs locally |
 
 **CLI kitchens** (routed by the sommelier in headless mode):
 
@@ -376,6 +377,42 @@ milliways runs `gemini -p <prompt> -y` (`-y` auto-approves all tool actions — 
 ▶ /gemini
 ▶ /gemini-model gemini-2.5-pro
 gcloud auth login        # auth (run once)
+```
+
+### Local (llama.cpp + Unsloth)
+
+**Website:** [github.com/ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) · [unsloth.ai](https://unsloth.ai/)
+
+The `local` runner is for when the wifi is down, the bill is up, or you just want to know what these things actually do without a credit card in the loop. It talks to any OpenAI-compatible endpoint — by default `llama-server` from llama.cpp on `http://localhost:8080/v1`, but the same code works with llama-swap, vLLM, and LMStudio.
+
+We default to **Unsloth quants** (their dynamic Q4_K_XL / Q4_K_M). They consistently hit better quality-per-byte than vanilla GGUF — about 15–30% faster generation on the same model and noticeably better code output, particularly on smaller models where every bit matters.
+
+The first iteration is intentionally proof-of-concept: smaller `-coder` models, one model loaded at a time, simple completions and offline tasks. Don't expect Claude. Do expect a surprisingly capable laptop coder for the size.
+
+```bash
+▶ /local
+▶ /local-models                    # ask the backend what's loaded
+▶ /local-model qwen2.5-coder-7b   # switch model alias (requires server restart)
+▶ /local-endpoint http://localhost:8081/v1   # point at a different backend
+```
+
+Setup is one script:
+
+```bash
+./scripts/install_local.sh
+# downloads Qwen2.5-Coder-1.5B (~1GB), installs llama-server, writes a
+# launchd/systemd unit, smoke-tests the endpoint
+milliways-local-server          # start in foreground
+# or: launchctl load -w ~/Library/LaunchAgents/dev.milliways.local.plist
+```
+
+Bigger machines (≥24GB RAM) can re-run with a heavier model:
+
+```bash
+MODEL_REPO=unsloth/DeepSeek-Coder-V2-Lite-Instruct-GGUF \
+MODEL_QUANT=Q4_K_M \
+MODEL_ALIAS=deepseek-coder-v2-lite \
+./scripts/install_local.sh
 ```
 
 ---

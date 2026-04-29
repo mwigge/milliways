@@ -94,6 +94,10 @@ var commandHandlers = map[string]commandHandler{
 	"pool-mode":  handlePoolMode,
 	// Gemini-specific commands
 	"gemini-model": handleGeminiModel,
+	// Local-specific commands
+	"local-model":    handleLocalModel,
+	"local-models":   handleLocalModels,
+	"local-endpoint": handleLocalEndpoint,
 	// ? — show milliways shortcuts reference
 	"?": handleShortcuts,
 	// Rotation ring and takeover
@@ -134,6 +138,8 @@ func handleSwitch(ctx context.Context, r *REPL, args string) error {
 		r.printPoolSettings(runner)
 	case *GeminiRunner:
 		r.printGeminiSettings(runner)
+	case *LocalRunner:
+		r.printLocalSettings(runner)
 	}
 
 	return nil
@@ -1868,5 +1874,67 @@ func handleTakeover(ctx context.Context, r *REPL, args string) error {
 	// Snapshot briefing to MemPalace asynchronously (best-effort).
 	snapshotToMemPalaceAsync(briefing)
 
+	return nil
+}
+
+// ----- Local runner commands -----
+
+func (r *REPL) printLocalSettings(l *LocalRunner) {
+	s := l.Settings()
+	r.println(RunnerAccentText("local", "Local settings:"))
+	r.println(fmt.Sprintf("  endpoint: %s", s.Endpoint))
+	r.println(fmt.Sprintf("  model:    %s", s.Model))
+}
+
+func handleLocalModel(ctx context.Context, r *REPL, args string) error {
+	l, ok := r.runner.(*LocalRunner)
+	if !ok {
+		return fmt.Errorf("not on local runner — use /local first")
+	}
+	if args == "" {
+		r.println(fmt.Sprintf("local model: %s", l.Settings().Model))
+		return nil
+	}
+	l.SetModel(args)
+	r.println(fmt.Sprintf("local model set to %s", args))
+	return nil
+}
+
+func handleLocalEndpoint(ctx context.Context, r *REPL, args string) error {
+	l, ok := r.runner.(*LocalRunner)
+	if !ok {
+		return fmt.Errorf("not on local runner — use /local first")
+	}
+	if args == "" {
+		r.println(fmt.Sprintf("local endpoint: %s", l.Settings().Endpoint))
+		return nil
+	}
+	l.SetEndpoint(args)
+	r.println(fmt.Sprintf("local endpoint set to %s", args))
+	return nil
+}
+
+func handleLocalModels(ctx context.Context, r *REPL, _ string) error {
+	l, ok := r.runner.(*LocalRunner)
+	if !ok {
+		return fmt.Errorf("not on local runner — use /local first")
+	}
+	models, err := l.ListModels(ctx)
+	if err != nil {
+		return fmt.Errorf("local: list models: %w", err)
+	}
+	if len(models) == 0 {
+		r.println("No local models found. Run scripts/install_local.sh to set one up.")
+		return nil
+	}
+	current := l.Settings().Model
+	r.println("Local models:")
+	for _, m := range models {
+		marker := "  "
+		if m == current {
+			marker = "* "
+		}
+		r.println(fmt.Sprintf("%s%s", marker, m))
+	}
 	return nil
 }

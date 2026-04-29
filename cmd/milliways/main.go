@@ -1646,6 +1646,9 @@ func runREPL(configPath string, noRestore bool) error {
 	// Register gemini runner
 	r.Register("gemini", repl.NewGeminiRunner())
 
+	// Register local runner (llama-server / llama-swap / Ollama OpenAI-compatible endpoint)
+	r.Register("local", repl.NewLocalRunner())
+
 	r.SetNoRestore(noRestore)
 
 	shell := repl.NewShell(os.Stdout, os.Stderr)
