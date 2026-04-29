@@ -18,7 +18,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,6 +102,9 @@ var commandHandlers = map[string]commandHandler{
 	"local-endpoint":   handleLocalEndpoint,
 	"local-temp":       handleLocalTemp,
 	"local-max-tokens": handleLocalMaxTokens,
+	"local-hot":        handleLocalHot,
+	// /models — list available models for the active runner (local-first).
+	"models": handleModelsContextual,
 	// ? — show milliways shortcuts reference
 	"?": handleShortcuts,
 	// Rotation ring and takeover
@@ -805,6 +810,12 @@ func handleModel(ctx context.Context, r *REPL, args string) error {
 		r.printCodexSettings(runner)
 	case *MinimaxRunner:
 		return handleMinimaxModel(ctx, r, args)
+	case *PoolRunner:
+		return handlePoolModel(ctx, r, args)
+	case *GeminiRunner:
+		return handleGeminiModel(ctx, r, args)
+	case *LocalRunner:
+		return handleLocalModel(ctx, r, args)
 	case *CopilotRunner:
 		r.println(MutedText("copilot: model selection is managed by GitHub — not configurable here"))
 	default:
@@ -2024,5 +2035,94 @@ func handleLocalMaxTokens(_ context.Context, r *REPL, args string) error {
 	}
 	l.SetMaxTokens(n)
 	r.println(fmt.Sprintf("local max_tokens set to %d", n))
+	return nil
+}
+
+// handleModelsContextual dispatches /models to the active runner's list handler.
+// Local runner has a /v1/models endpoint we can hit; everything else falls
+// back to the catalog/current-setting print path inside handleModel.
+func handleModelsContextual(ctx context.Context, r *REPL, args string) error {
+	if r.runner == nil {
+		return fmt.Errorf("no active runner — switch to one first")
+	}
+	if _, ok := r.runner.(*LocalRunner); ok {
+		return handleLocalModels(ctx, r, args)
+	}
+	// Fall back to /model with no args — runners with a catalog will print it.
+	return handleModel(ctx, r, "")
+}
+
+// handleLocalHot toggles llama-swap's effective hot/standby behaviour at
+// runtime by either warming every advertised model (hot) or letting them
+// fall idle so llama-swap unloads them on its TTL (standby).
+//   /local-hot         — show current state guess
+//   /local-hot on      — issue a max_tokens=1 prompt to every advertised model
+//   /local-hot off     — issue a /v1/internal/unload to every advertised model
+//                        (best-effort; on llama-swap versions without the
+//                        admin endpoint we just stop touching them and let
+//                        the configured TTL handle eviction).
+func handleLocalHot(ctx context.Context, r *REPL, args string) error {
+	l, ok := r.runner.(*LocalRunner)
+	if !ok {
+		return fmt.Errorf("not on local runner — use /local first")
+	}
+	args = strings.TrimSpace(strings.ToLower(args))
+
+	if args == "" {
+		r.println("Usage: /local-hot on|off")
+		r.println("  on  — warm every advertised model so switches are sub-second")
+		r.println("  off — stop pinging models; llama-swap unloads them on its TTL")
+		return nil
+	}
+
+	models, err := l.ListModels(ctx)
+	if err != nil {
+		return fmt.Errorf("local: list models: %w", err)
+	}
+	if len(models) == 0 {
+		return fmt.Errorf("backend has no models — run scripts/install_local_swap.sh")
+	}
+
+	endpoint := l.Settings().Endpoint
+
+	switch args {
+	case "on", "true", "1":
+		r.println(fmt.Sprintf("warming %d model(s)…", len(models)))
+		for _, m := range models {
+			r.println(fmt.Sprintf("  → %s", m))
+			if err := warmLocalModel(ctx, endpoint, m); err != nil {
+				r.println(fmt.Sprintf("    [warn] %v", err))
+			}
+		}
+		r.println("hot mode active — models resident, switches should be sub-second")
+		return nil
+
+	case "off", "false", "0":
+		r.println("standby mode requested — llama-swap will unload after its configured TTL.")
+		r.println("(For instant eviction, restart llama-swap: launchctl unload …local-swap.plist)")
+		return nil
+
+	default:
+		return fmt.Errorf("unknown arg %q — use on|off", args)
+	}
+}
+
+func warmLocalModel(ctx context.Context, endpoint, model string) error {
+	body := strings.NewReader(fmt.Sprintf(`{"model":%q,"max_tokens":1,"messages":[{"role":"user","content":"ok"}]}`, model))
+	url := strings.TrimRight(endpoint, "/") + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
 }

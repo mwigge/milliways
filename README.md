@@ -383,46 +383,17 @@ gcloud auth login        # auth (run once)
 
 **Website:** [github.com/ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) · [unsloth.ai](https://unsloth.ai/)
 
-The `local` runner is for when the wifi is down, the bill is up, or you just want to know what these things actually do without a credit card in the loop. It talks to any OpenAI-compatible endpoint — by default `llama-server` from llama.cpp on `http://localhost:8080/v1`, but the same code works with llama-swap, vLLM, and LMStudio.
-
-We default to **Unsloth quants** (their dynamic Q4_K_XL / Q4_K_M). They consistently hit better quality-per-byte than vanilla GGUF — about 15–30% faster generation on the same model and noticeably better code output, particularly on smaller models where every bit matters.
-
-The first iteration is intentionally proof-of-concept: smaller `-coder` models, one model loaded at a time, simple completions and offline tasks. Don't expect Claude. Do expect a surprisingly capable laptop coder for the size.
+The `local` runner is for when the wifi is down, the bill is up, or you just want to know what these things actually do without a credit card in the loop. It talks to any OpenAI-compatible endpoint — by default `llama-server` from llama.cpp on `http://localhost:8765/v1`, but the same code works with llama-swap, vLLM, and LMStudio.
 
 ```bash
 ▶ /local
-▶ /local-models                              # ask the backend what's loaded
-▶ /local-model qwen2.5-coder-7b              # switch model alias (warns if not loaded)
-▶ /local-endpoint http://localhost:8081/v1   # point at a different backend
+▶ /models                                    # list models the backend serves
+▶ /model qwen2.5-coder-1.5b                  # switch (works contextually on every runner)
 ▶ /local-temp 0.2                            # sampling temperature (0.0–2.0, or 'default')
 ▶ /local-max-tokens 512                      # cap reply length, or 'off' for unlimited
 ```
 
-For real hot-swap (load any GGUF on demand instead of restarting the server), run the optional `install_local_swap.sh`. It installs [llama-swap](https://github.com/mostlygeek/llama-swap), generates a config from every `.gguf` in `$MODEL_DIR`, and stands it up as a launchd/systemd unit on the same port:
-
-```bash
-./scripts/install_local_swap.sh
-# /local-models now lists every GGUF on disk; /local-model <alias> swaps in seconds
-```
-
-Setup is one script:
-
-```bash
-./scripts/install_local.sh
-# downloads Qwen2.5-Coder-1.5B (~1GB), installs llama-server, writes a
-# launchd/systemd unit, smoke-tests the endpoint
-milliways-local-server          # start in foreground
-# or: launchctl load -w ~/Library/LaunchAgents/dev.milliways.local.plist
-```
-
-Bigger machines (≥24GB RAM) can re-run with a heavier model:
-
-```bash
-MODEL_REPO=unsloth/DeepSeek-Coder-V2-Lite-Instruct-GGUF \
-MODEL_QUANT=Q4_K_M \
-MODEL_ALIAS=deepseek-coder-v2-lite \
-./scripts/install_local.sh
-```
+There's a full chapter further down — see **[Local models](#local-models)** for architecture, hot-swap setup, memory budgeting, and troubleshooting.
 
 ---
 
@@ -620,6 +591,128 @@ export MILLIWAYS_CODEGRAPH_MCP_ARGS="mcp"
 ```
 
 Milliways injects relevant memories and code context before each dispatch when these are set.
+
+---
+
+## Local models
+
+The `local` runner exists for offline work, privacy-sensitive prompts, and the simple case of "I just want a coder to autocomplete this". It speaks the OpenAI-compatible Chat Completions protocol so any backend that does the same — llama.cpp's `llama-server`, llama-swap, vLLM, LMStudio, even Ollama's `/v1` shim — drops in without code changes.
+
+We default to **Unsloth dynamic quants** because they consistently produce better quality-per-byte than vanilla GGUF (15–30% faster generation, noticeably better code output, especially on smaller models where every bit matters).
+
+### Architecture
+
+There are two deployment shapes, picked by which installer you ran:
+
+```
+                       ┌─────────────────────────────────────┐
+                       │   milliways  (/local runner)        │
+                       │   POST /v1/chat/completions         │
+                       └──────────────────┬──────────────────┘
+                                          │
+                       MILLIWAYS_LOCAL_ENDPOINT (default :8765)
+                                          │
+                  ┌───────────────────────┴────────────────────────┐
+                  │                                                │
+   single-server (install_local.sh)             swap (install_local_swap.sh)
+                  │                                                │
+        ┌─────────▼──────────┐                          ┌──────────▼──────────┐
+        │  llama-server      │                          │  llama-swap proxy   │
+        │  one model loaded  │                          │  routes by model id │
+        │  port 8765         │                          │  port 8765          │
+        └────────────────────┘                          └────┬───────┬───────┘
+                                                             │       │
+                                                ┌────────────▼───┐ ┌─▼──────────────┐
+                                                │ llama-server   │ │ llama-server   │
+                                                │ qwen-1.5b      │ │ deepseek-lite  │
+                                                │ :9100          │ │ :9101          │
+                                                └────────────────┘ └────────────────┘
+```
+
+### Single-server vs swap — pick one
+
+| | `install_local.sh` | `install_local_swap.sh` (standby) | `install_local_swap.sh` (HOT_MODE=1) |
+|---|---|---|---|
+| Models served | one | many | many |
+| Switch latency | restart server (~10s + load) | first hit cold (~5–15s), then warm | sub-second always |
+| RAM at rest | one model | none after TTL expires | every model resident |
+| Best for | one workload, lowest moving parts | mixed workloads on a memory-tight box | mixed workloads on a roomy box |
+
+### Pick the right model for your machine
+
+| RAM | Recommended `MODEL_REPO` | Loaded size (Q4_K_M) |
+|----|---|---|
+| 8 GB | `unsloth/Qwen2.5-Coder-0.5B-Instruct-GGUF` | ~400 MB |
+| 16 GB | `unsloth/Qwen2.5-Coder-1.5B-Instruct-GGUF` (default) | ~1.0 GB |
+| 24 GB | `unsloth/Qwen2.5-Coder-7B-Instruct-GGUF` | ~4.7 GB |
+| 24 GB+ | `unsloth/DeepSeek-Coder-V2-Lite-Instruct-GGUF` | ~10 GB |
+| 32 GB+ | `unsloth/Qwen2.5-Coder-14B-Instruct-GGUF` | ~9 GB |
+
+In hot mode you need RAM for the **sum** of every model you want resident, plus ~4 GB for the OS and your other tabs. So 24 GB will comfortably keep the 1.5B + 7B both warm; trying to add v2-lite on top will start to swap.
+
+### Setup
+
+**Single model (simplest):**
+
+```bash
+./scripts/install_local.sh
+milliways-local-server &
+milliways
+▶ /local
+▶ write me a fizzbuzz in Go
+```
+
+**Hot-swap between several models:**
+
+```bash
+./scripts/install_local.sh                          # first model: qwen-1.5b
+MODEL_REPO=unsloth/Qwen2.5-Coder-7B-Instruct-GGUF \
+  MODEL_ALIAS=qwen-7b ./scripts/install_local.sh    # second
+./scripts/install_local_swap.sh                     # standby (memory-safe)
+# OR for instant switching:
+HOT_MODE=1 ./scripts/install_local_swap.sh          # warms every model at startup
+```
+
+The installer drops a launchd plist (macOS) or systemd-user unit (Linux) bound to port 8765, so the swap proxy comes back up after reboot.
+
+### Commands
+
+All standard milliways commands work with `local`. The runner-prefixed forms are still available for muscle memory; the contextual forms work across every runner.
+
+| Command | Action |
+|---|---|
+| `/local` | switch active runner to local |
+| `/models` | list models the backend serves (contextual) |
+| `/model <alias>` | switch model (contextual) |
+| `/local-endpoint <url>` | point at a different OpenAI-compatible backend |
+| `/local-temp <0.0–2.0\|default>` | sampling temperature; `default` omits the field |
+| `/local-max-tokens <N\|off>` | cap reply length; `off` means unlimited |
+| `/local-hot on\|off` | warm every advertised model (`on`) or let llama-swap unload them on TTL (`off`) |
+| `/takeover-ring claude,local,gemini` | rotation works across local just like cloud runners |
+
+### Environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MILLIWAYS_LOCAL_ENDPOINT` | `http://localhost:8765/v1` | Where the OpenAI-compatible API lives |
+| `MILLIWAYS_LOCAL_MODEL` | `qwen2.5-coder-1.5b` | Initial model id sent in every request |
+| `MILLIWAYS_LOCAL_API_KEY` | — | Sent as `Authorization: Bearer …` (for llama-server `--api-key`, vLLM strict mode) |
+| `MILLIWAYS_LOCAL_TEMPERATURE` | server default | Override sampling temperature globally |
+| `MILLIWAYS_LOCAL_MAX_TOKENS` | unlimited | Cap reply length globally |
+
+### Troubleshooting
+
+**`HTTP 401: Authorization header missing or malformed`** — something else (often a corp SSH tunnel or Spring Boot dev service) is bound to port 8765 and milliways is talking to it. Find it with `lsof -i :8765`, kill it, and restart `milliways-local-server`. The installer auto-shifts to a free port if 8765 is busy at install-time, but a tunnel started afterwards won't be detected.
+
+**Slow first prompt after idle (standby mode)** — this is by design. llama-swap evicts the model after `TTL_SECONDS` of no traffic; the next request pays a 5–15s cold-load. Switch to hot mode (`HOT_MODE=1 ./scripts/install_local_swap.sh`) or run `/local-hot on` to keep them resident.
+
+**`failed to download model from Hugging Face` / Zscaler block page** — corporate proxies that categorise HF as "Generative AI" often intercept the API endpoints (`api.huggingface.co`) but leave the CDN (`cas-bridge.xethub.hf.co`) alone. The installer goes straight to the CDN with `curl`, so this usually just works. If not, request HF be allowlisted under "Developer Tools".
+
+**`/model X` says "X not in backend models"** — with single-server (`install_local.sh`), the model field in the API request is ignored — only the `-m` GGUF actually loaded is served. Restart the server with a different `-m`, or run `install_local_swap.sh` to get real per-request model routing.
+
+**Memory pressure / OOM** — drop to a smaller model (`MODEL_REPO=unsloth/Qwen2.5-Coder-0.5B-Instruct-GGUF`), or stay in standby mode (default for swap). `top` / `Activity Monitor` will show you which `llama-server` child is the heavyweight.
+
+**llama-server died at startup** — `tail ~/.local/share/milliways/local/server.err`. Most common cause: a GGUF that didn't download fully (verify size matches what HuggingFace shows) or a context size larger than the model supports (set `CTX_SIZE=4096` and re-run the installer).
 
 ---
 
