@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -100,22 +101,66 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		return
 	}
 
-	// Drain stderr in parallel; log lines for debugging.
+	// Capture stderr for session-limit detection at the end of the run.
+	var (
+		stderrLines []string
+		stderrMu    sync.Mutex
+		stderrWg    sync.WaitGroup
+	)
+	stderrWg.Add(1)
 	go func() {
+		defer stderrWg.Done()
 		s := bufio.NewScanner(stderr)
 		s.Buffer(make([]byte, 0, 64*1024), 256*1024)
 		for s.Scan() {
-			slog.Debug("copilot stderr", "line", s.Text())
+			line := strings.TrimSpace(s.Text())
+			if line == "" {
+				continue
+			}
+			stderrMu.Lock()
+			stderrLines = append(stderrLines, line)
+			stderrMu.Unlock()
+			slog.Debug("copilot stderr", "line", line)
 		}
 	}()
 
 	streamCopilotStdout(stdout, stream)
 
-	if err := cmd.Wait(); err != nil {
+	waitErr := cmd.Wait()
+	stderrWg.Wait()
+
+	stderrMu.Lock()
+	lines := append([]string(nil), stderrLines...)
+	stderrMu.Unlock()
+
+	if copilotStderrSignalsLimit(lines) {
 		observeError(metrics, AgentIDCopilot)
-		stream.Push(map[string]any{"t": "err", "msg": "copilot exited: " + err.Error()})
+		stream.Push(map[string]any{
+			"t":     "err",
+			"agent": AgentIDCopilot,
+			"msg":   "copilot: session limit reached",
+		})
+	} else if waitErr != nil {
+		observeError(metrics, AgentIDCopilot)
+		stream.Push(map[string]any{"t": "err", "msg": "copilot exited: " + waitErr.Error()})
 	}
 	stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
+}
+
+// copilotStderrSignalsLimit returns true when any captured stderr line
+// indicates a rate-limit or context-window exhaustion. Mirrors REPL's
+// runner_copilot.go check.
+func copilotStderrSignalsLimit(lines []string) bool {
+	for _, l := range lines {
+		lower := strings.ToLower(l)
+		if strings.Contains(lower, "rate limit") ||
+			strings.Contains(lower, "context window") ||
+			strings.Contains(lower, "context_length") ||
+			strings.Contains(lower, "token limit") {
+			return true
+		}
+	}
+	return false
 }
 
 // streamCopilotStdout reads from r in copilotChunkSize chunks and pushes

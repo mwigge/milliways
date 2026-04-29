@@ -35,10 +35,10 @@
 
 ## 5. Drift-sync ports for existing daemon runners
 
-- [ ] 5.1 Diff `internal/repl/runner_claude.go` vs `internal/daemon/runners/claude.go`; port retry, rate-limit detection, image attachments, reasoning modes; sync tests; commit `feat(daemon): sync claude runner with REPL feature parity`
-- [ ] 5.2 Diff `internal/repl/runner_codex.go` vs `internal/daemon/runners/codex.go`; port reasoning modes, sandbox/approval, proxy detection, JSON event parsing; sync tests; commit `feat(daemon): sync codex runner with REPL feature parity`
-- [ ] 5.3 Diff `internal/repl/runner_local.go` vs `internal/daemon/runners/local.go`; identify backend (ollama/llama.cpp); wire `RunAgenticLoop` if HTTP-based; sync tests; commit `feat(daemon): sync local runner with REPL feature parity`
-- [ ] 5.4 Diff `internal/repl/runner_copilot.go` vs `internal/daemon/runners/copilot.go`; minor sync; wire `RunAgenticLoop`; sync tests; commit `feat(daemon): sync copilot runner with REPL feature parity`
+- [x] 5.1 Claude drift-sync: rate_limit_event surfacing, stderr session-limit detection, cache tokens in chunk_end. Out of scope (richer dispatch contract): per-call reasoning, --allowed-tools, --model, --image. Committed `f7b17b1`.
+- [x] 5.2 Codex drift-sync: default `--sandbox workspace-write --ask-for-approval never` (mirrors kitchen-adapter fix), Zscaler/proxy block detection (stdout + stderr), JSON event session-limit detection. Out of scope: per-call reasoning/profile/image/search/model. Committed `b9a3a8d`.
+- [x] 5.3 Local drift-sync: pivoted from Ollama-native (`/api/chat` port 11434, OLLAMA_BASE_URL) to OpenAI-compatible (`/chat/completions` port 8765, MILLIWAYS_LOCAL_ENDPOINT) so daemon matches REPL/ctl/install_local.sh. Bearer auth via MILLIWAYS_LOCAL_API_KEY. Out of scope: tool registry via RunAgenticLoop (local models often unreliable at tool calling — opt-in via env var in a follow-up). Committed `0244419`.
+- [x] 5.4 Copilot drift-sync: stderr session-limit detection (rate limit / context window / context_length / token limit). The smallest of the four ports — copilot was already roughly aligned. Committed in this round.
 
 ## 6. Excise REPL setup from cmd/milliways/main.go (revised — see manifest.md)
 
