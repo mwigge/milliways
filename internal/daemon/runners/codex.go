@@ -27,7 +27,7 @@ import (
 
 // codexJSONEvent mirrors the subset of the `codex exec --json` event
 // stream we care about for the daemon-side bridge. Cribbed (without
-// lifting wholesale) from internal/repl/runner_codex.go.
+// lifting wholesale) from the legacy REPL runner.
 type codexJSONEvent struct {
 	Type    string          `json:"type"`
 	Content string          `json:"content,omitempty"`

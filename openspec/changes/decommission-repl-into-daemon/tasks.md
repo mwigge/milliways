@@ -47,36 +47,36 @@ daemon runners directly. The manifest revealed the daemon runners are invoked
 through the daemon RPC layer, not from `cmd/milliways/main.go`. So this section
 *deletes* the REPL construction code instead of porting it.
 
-- [ ] 6.1 Move shared types `Runner`, `RunResult`, `SessionUsage`, `QuotaInfo`, `QuotaPeriod`, `NullRunner` from `internal/repl/runner.go` to `internal/daemon/runners/types.go` (referenced by `cmd/milliways/main.go` as `repl.QuotaInfo`/`QuotaPeriod`)
-- [ ] 6.2 Update `cmd/milliways/main.go` quota-callback signatures to use `runners.QuotaInfo`/`QuotaPeriod` instead of `repl.QuotaInfo`/`QuotaPeriod`
-- [ ] 6.3 Delete the entire `runREPL(...)` function (~100 lines, `main.go:1557–1660`) and its REPL-only callers (`NewREPL`, `NewREPLWithSubstrate`, `NewREPLPane`, `NewShell`, `NewReplLogHandler`, all `repl.New<X>Runner()` calls)
-- [ ] 6.4 Verify `cmd/milliways/main.go` no longer imports `internal/repl`
-- [ ] 6.5 Run `go build ./...` and `go test ./...` (all passing); commit `refactor(cmd): excise REPL construction from main`
+- [x] 6.1 ~~Move shared types~~ — not needed. Manifest revealed all `repl.QuotaInfo`/`QuotaPeriod` usage was inside `runREPL()`; deleting that function deleted all consumers in one shot.
+- [x] 6.2 N/A (see 6.1)
+- [x] 6.3 Deleted `runREPL` function (lines 1497–1614, ~118 lines) plus the launcher-side `--repl` machinery (`stripLeadingREPLFlag`, `ensureREPLFlag`, `printREPLDeprecationNotice`, `MILLIWAYS_REPL` env handling, `modeREPL` constant). RunE for no-args now returns a clear error pointing at milliways-term.
+- [x] 6.4 `internal/repl` import removed from `cmd/milliways/main.go`.
+- [x] 6.5 `go build ./...` and `go test ./...` green. Committed in this round (combined with sections 7-9 — they're mutually dependent and a single atomic commit is safer than four cascading ones).
 
 ## 7. Strip --repl flag and MILLIWAYS_REPL env
 
-- [ ] 7.1 Remove `--repl` parsing from `cmd/milliways/main.go` (lines ~80–129) — `stripLeadingREPLFlag`, `ensureREPLFlag`, deprecation print path
-- [ ] 7.2 Remove `MILLIWAYS_REPL` env handling from `cmd/milliways/main.go`
-- [ ] 7.3 Remove REPL-mode dispatch from `cmd/milliways/launcher.go` (lines 18, 53–58, 103, 108, 228, 234, 243)
-- [ ] 7.4 Rewrite the launcher's milliwaysd-failure messages (lines 120, 128, 136) to point at troubleshooting `milliwaysd` (logs/lock files), not `--repl`
-- [ ] 7.5 Verify cobra rejects `milliways --repl` with an unknown-flag error (manual run) and `MILLIWAYS_REPL=1 milliways` ignores the env var
-- [ ] 7.6 Commit `feat(cli)!: remove --repl flag and MILLIWAYS_REPL env`
+- [x] 7.1 `--repl` parsing removed (the entire pre-cobra dispatch block, `stripLeadingREPLFlag`, `ensureREPLFlag`, deprecation notice printer)
+- [x] 7.2 `MILLIWAYS_REPL` env handling removed
+- [x] 7.3 REPL-mode dispatch removed from `cmd/milliways/launcher.go` — `modeREPL` constant gone, `parseLauncherMode` simplified to two-mode (cockpit | cobra), `printREPLDeprecationNotice` deleted
+- [x] 7.4 Launcher milliwaysd-failure messages rewritten — point at `daemonLogPath()` for tail and `milliwaysd` (foreground) for diagnostics, not `--repl`
+- [x] 7.5 launcher_test.go updated — `modeREPL`-bearing test cases removed, `parseLauncherMode` signature corrected. Build green; cobra now rejects `--repl` as unknown flag.
+- [x] 7.6 Combined into the single Section 6-9 commit (mutually dependent)
 
 ## 8. Delete internal/repl/
 
-- [ ] 8.1 `git rm -r internal/repl/`
-- [ ] 8.2 Verify no remaining references: `grep -r "internal/repl" --include="*.go" .` returns nothing outside `.claude/worktrees/`
-- [ ] 8.3 Verify no remaining references in main.go: ~100 lines of REPL setup (`main.go:1557–1660`) are gone
-- [ ] 8.4 `go build ./... && go test ./...` green
-- [ ] 8.5 Commit `chore(repl)!: remove internal/repl package`
+- [x] 8.1 `git rm -r internal/repl/` — entire package deleted
+- [x] 8.2 No remaining `internal/repl` imports (verified by grep)
+- [x] 8.3 main.go REPL setup excised (118 lines via `runREPL` deletion)
+- [x] 8.4 `go build ./... && go test ./...` green
+- [x] 8.5 Combined into the single Section 6-9 commit
 
 ## 9. Documentation cleanup
 
-- [ ] 9.1 Update `README.md` (lines 43, 955) to drop `--repl` mentions
-- [ ] 9.2 Update project root `CLAUDE.md` "Key packages" list to remove `internal/repl/` entry
-- [ ] 9.3 Update `cmd/milliwaysctl/README.wezterm.md` if it references `--repl`
-- [ ] 9.4 Update `CHANGELOG.md` with a `BREAKING` entry under the next version
-- [ ] 9.5 Commit `docs: drop --repl and internal/repl references`
+- [x] 9.1 README.md `--repl` mentions removed (the legacy-fallback paragraph + the CLI-mode block trailer)
+- [x] 9.2 CLAUDE.md "Key packages" list updated — `internal/repl/` replaced with `internal/daemon/runners/`, `internal/tools/`, `cmd/milliways/`, `cmd/milliwaysctl/`
+- [x] 9.3 README.wezterm.md is already current (the section was rewritten in Section 11b without `--repl` references)
+- [x] 9.4 CHANGELOG.md `[Unreleased]` block expanded with Added/Changed/Removed entries covering the decommission, all the runner ports, drift-syncs, and the codex sandbox/approval fix
+- [x] 9.5 Combined into the single Section 6-9 commit
 
 ## 10. Smoke and final verification
 

@@ -76,7 +76,7 @@ const minimaxTimeout = 5 * time.Minute
 // minimaxDefaultURL is the production MiniMax chat completion endpoint.
 const minimaxDefaultURL = "https://api.minimax.io/v1/text/chatcompletion_v2"
 
-// minimaxDefaultModel mirrors internal/repl/runner_minimax.go.
+// minimaxDefaultModel matches the historical REPL runner default.
 const minimaxDefaultModel = "MiniMax-M2.7"
 
 // minimaxSystemPrompt is the standard guidance prepended to every

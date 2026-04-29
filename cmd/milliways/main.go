@@ -42,7 +42,6 @@ import (
 	"github.com/mwigge/milliways/internal/orchestrator"
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/project"
-	"github.com/mwigge/milliways/internal/repl"
 	"github.com/mwigge/milliways/internal/sommelier"
 	"github.com/mwigge/milliways/internal/substrate"
 	"github.com/spf13/cobra"
@@ -76,11 +75,9 @@ func main() {
 
 	// Top-level launcher dispatch runs *before* cobra so we can implement the
 	// milliways-term-by-default behaviour (`milliways` with no flags exec's
-	// milliways-term) and the built-in terminal `--repl` path with its
-	// deprecation notice. Anything that doesn't match falls through to the
+	// milliways-term). Anything that doesn't match falls through to the
 	// existing cobra root command.
-	switch parseLauncherMode(os.Args[1:], os.Getenv("MILLIWAYS_REPL")) {
-	case modeCockpit:
+	if parseLauncherMode(os.Args[1:]) == modeCockpit {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		if err := runCockpit(ctx, os.Args[1:]); err != nil {
@@ -88,22 +85,6 @@ func main() {
 			os.Exit(1)
 		}
 		return
-	case modeREPL:
-		// Only print the deprecation notice when --repl was passed explicitly;
-		// when MILLIWAYS_REPL=1 triggers this path we're inside the terminal
-		// already and the notice is just noise.
-		if len(os.Args) > 1 && os.Args[1] == "--repl" {
-			printREPLDeprecationNotice()
-		}
-		// Strip the leading --repl so cobra doesn't reparse it (we already
-		// know the user wants the built-in terminal mode). Other flags (e.g.
-		// --no-restore) pass through unchanged.
-		stripped := stripLeadingREPLFlag(os.Args[1:])
-		args := append([]string{os.Args[0]}, stripped...)
-		// Force cobra into the --repl path even if MILLIWAYS_REPL=1 was the
-		// trigger by appending --repl back if it isn't already there.
-		args = ensureREPLFlag(args)
-		os.Args = args
 	}
 
 	if err := rootCmd().Execute(); err != nil {
@@ -113,28 +94,6 @@ func main() {
 		}
 		os.Exit(1)
 	}
-}
-
-// stripLeadingREPLFlag removes a leading "--repl" token from args (if
-// present). Used after the dispatcher has decided to use the built-in
-// terminal mode and we want cobra to see whatever else the user passed.
-func stripLeadingREPLFlag(args []string) []string {
-	if len(args) > 0 && args[0] == "--repl" {
-		return args[1:]
-	}
-	return args
-}
-
-// ensureREPLFlag re-injects "--repl" into argv so cobra's RunE picks the
-// built-in terminal branch. The dispatcher may have entered this mode via
-// env var alone, in which case argv carries no --repl flag.
-func ensureREPLFlag(args []string) []string {
-	for _, a := range args[1:] {
-		if a == "--repl" {
-			return args
-		}
-	}
-	return append([]string{args[0], "--repl"}, args[1:]...)
 }
 
 func rootCmd() *cobra.Command {
@@ -148,7 +107,6 @@ func rootCmd() *cobra.Command {
 		asyncFlag             bool
 		detachFlag            bool
 		keepContext           bool
-		replFlag              bool
 		useLegacyConversation bool
 		projectRoot           string
 		contextJSON           string
@@ -174,11 +132,11 @@ based on what each tool does best.
 		Version: version,
 		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Built-in terminal mode is only reached via --repl or MILLIWAYS_REPL=1.
-			// Plain `milliways` is handled by the launcher before Cobra.
-			if len(args) == 0 || replFlag {
-				noRestore, _ := cmd.Flags().GetBool("no-restore")
-				return runREPL(configPath, noRestore)
+			// Plain `milliways` (no args) is handled by the launcher before
+			// Cobra. Reaching here with no args means the user invoked a
+			// subcommand without a prompt — surface that explicitly.
+			if len(args) == 0 {
+				return fmt.Errorf("no prompt provided\n\nUse `milliways` (no flags) to launch milliways-term, or pass a prompt:\n  milliways \"explain the auth flow\"")
 			}
 			projectContext, err := project.ResolveProject(projectRoot)
 			if err != nil {
@@ -238,7 +196,6 @@ based on what each tool does best.
 	cmd.Flags().BoolVar(&asyncFlag, "async", false, "Dispatch asynchronously, return ticket ID")
 	cmd.Flags().BoolVar(&detachFlag, "detach", false, "Dispatch detached (survives exit)")
 	cmd.Flags().BoolVar(&keepContext, "keep-context", false, "Keep recipe context files")
-	cmd.Flags().BoolVar(&replFlag, "repl", false, "Deprecated built-in terminal fallback")
 	cmd.Flags().StringVar(&projectRoot, "project-root", "", "Override project repository root")
 	cmd.Flags().StringVar(&contextJSON, "context-json", "", "Pass editor context bundle JSON directly on the CLI")
 	cmd.Flags().StringVar(&contextFile, "context-file", "", "Read editor context bundle JSON from a file")
@@ -247,7 +204,6 @@ based on what each tool does best.
 	cmd.Flags().StringVar(&sessionName, "session", "", "Named session to resume in headless mode")
 	cmd.Flags().StringVar(&switchTo, "switch-to", "", "Switch a named session to a kitchen before continuing")
 	cmd.Flags().DurationVar(&timeoutDur, "timeout", 5*time.Minute, "Dispatch timeout for headless mode")
-	cmd.Flags().Bool("no-restore", false, "Do not auto-restore the last session on startup")
 
 	cmd.AddCommand(statusCmd(&configPath))
 	cmd.AddCommand(reportCmd(&configPath))
@@ -1537,121 +1493,3 @@ func pantryCmd() *cobra.Command {
 	return cmd
 }
 
-func runREPL(configPath string, noRestore bool) error {
-	cfg, err := maitre.LoadConfig(configPath)
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-
-	var sc *substrate.Client
-	mcpCmd := os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD")
-	if mcpCmd != "" {
-		sc, err = substrate.New(mcpCmd, splitEnvArgs(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS"))...)
-		if err != nil {
-			slog.Warn("could not connect to mempalace", "err", err)
-			sc = nil
-		}
-	}
-
-	logHandler := repl.NewReplLogHandler()
-	slog.SetDefault(slog.New(logHandler))
-
-	var r *repl.REPL
-	if sc != nil {
-		r = repl.NewREPLWithSubstrate(os.Stdout, sc)
-		defer sc.Close()
-	} else {
-		r = repl.NewREPL(os.Stdout)
-	}
-	r.SetVersion(version)
-	r.SetLogHandler(logHandler)
-
-	pdb, pdbErr := openPantryDB()
-	if pdbErr == nil {
-		defer pdb.Close()
-		kitchens := cfg.Kitchens
-		r.SetQuotaFunc(func(name string) (*repl.QuotaInfo, error) {
-			qi := &repl.QuotaInfo{}
-			kc := kitchens[name]
-
-			// Day
-			dispatches, _ := pdb.Quotas().DailyDispatches(name)
-			day := &repl.QuotaPeriod{Used: dispatches, Limit: kc.DailyLimit, Resets: "midnight UTC"}
-			if kc.DailyLimit > 0 {
-				day.Ratio = min(float64(dispatches)/float64(kc.DailyLimit), 1.0)
-			}
-			qi.Day = day
-
-			// FiveHour
-			fiveH, _ := pdb.Quotas().FiveHourDispatches(name)
-			fh := &repl.QuotaPeriod{Used: fiveH, Limit: kc.FiveHourLimit}
-			if kc.FiveHourLimit > 0 {
-				fh.Ratio = min(float64(fiveH)/float64(kc.FiveHourLimit), 1.0)
-			}
-			qi.FiveHour = fh
-
-			// Week
-			weekly, _ := pdb.Quotas().WeeklyDispatches(name)
-			wk := &repl.QuotaPeriod{Used: weekly, Limit: kc.WeeklyLimit}
-			if kc.WeeklyLimit > 0 {
-				wk.Ratio = min(float64(weekly)/float64(kc.WeeklyLimit), 1.0)
-			}
-			qi.Week = wk
-
-			// Month
-			monthly, _ := pdb.Quotas().MonthlyDispatches(name)
-			mo := &repl.QuotaPeriod{Used: monthly, Limit: kc.MonthlyLimit}
-			if kc.MonthlyLimit > 0 {
-				mo.Ratio = min(float64(monthly)/float64(kc.MonthlyLimit), 1.0)
-			}
-			qi.Month = mo
-
-			return qi, nil
-		})
-	}
-
-	// Register claude runner
-	r.Register("claude", repl.NewClaudeRunner())
-
-	// Register codex runner
-	r.Register("codex", repl.NewCodexRunner())
-
-	// Register minimax runner
-	var minimaxKey, minimaxModel, minimaxURL string
-	if cfg.Kitchens["minimax"].HTTPClient != nil {
-		// AuthKey is either a literal key or an env var name — resolve it.
-		authKeyField := cfg.Kitchens["minimax"].HTTPClient.AuthKey
-		if resolved := os.Getenv(authKeyField); resolved != "" {
-			minimaxKey = resolved
-		} else {
-			// Fallback: read from ~/.mmx/config.json (mmx CLI config).
-			minimaxKey = readMMXAPIKey()
-		}
-		minimaxModel = cfg.Kitchens["minimax"].HTTPClient.Model
-		base := strings.TrimSuffix(cfg.Kitchens["minimax"].HTTPClient.BaseURL, "/text/chatcompletion_v2")
-		base = strings.TrimSuffix(base, "/text")
-		base = strings.TrimSuffix(base, "/")
-		if base != "" {
-			minimaxURL = base + "/text/chatcompletion_v2"
-		}
-	}
-	r.Register("minimax", repl.NewMinimaxRunner(minimaxKey, minimaxModel, minimaxURL))
-
-	// Register copilot runner
-	r.Register("copilot", repl.NewCopilotRunner())
-
-	// Register pool runner (Poolside AI)
-	r.Register("pool", repl.NewPoolRunner())
-
-	// Register gemini runner
-	r.Register("gemini", repl.NewGeminiRunner())
-
-	// Register local runner (llama-server / llama-swap / Ollama OpenAI-compatible endpoint)
-	r.Register("local", repl.NewLocalRunner())
-
-	r.SetNoRestore(noRestore)
-
-	shell := repl.NewShell(os.Stdout, os.Stderr)
-	shell.AddPane(repl.NewREPLPane(r, "repl"))
-	return shell.Run(context.Background())
-}

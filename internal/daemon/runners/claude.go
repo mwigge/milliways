@@ -34,7 +34,7 @@ type Pusher interface {
 
 // claudeStreamEvent mirrors the subset of the claude --output-format
 // stream-json protocol we care about for the daemon-side bridge. Cribbed
-// (without lifting wholesale) from internal/repl/runner_claude.go.
+// (without lifting wholesale) from the legacy REPL runner.
 type claudeStreamEvent struct {
 	Type    string               `json:"type"`
 	Message *claudeStreamMessage `json:"message,omitempty"`

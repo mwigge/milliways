@@ -67,8 +67,6 @@ When the laptop wakes from sleep, the status bar shows an orange **⚡ woke Xm a
 
 Start the AI terminal with `milliways` (default when no arguments are given). The launcher starts `milliwaysd` if needed, then execs `milliways-term`.
 
-The legacy built-in terminal mode is still available as `milliways --repl` for fallback and migration only. It is deprecated and scheduled for removal after cockpit parity.
-
 ```text
 milliways 0.4.12
   type /help for commands
@@ -251,7 +249,7 @@ milliways tickets                             # list all async tickets
 milliways rate                                # rate limit inspection
 ```
 
-`milliways --repl` (deprecated; removal scheduled in v0.6.0) launches the legacy built-in line-reader; use milliways-term instead. See `milliways --help` for the canonical authoritative flag/subcommand list.
+See `milliways --help` for the canonical authoritative flag/subcommand list. The legacy `--repl` built-in line-reader was removed in this release; the milliways-term path is now the only interactive surface.
 
 ---
 
