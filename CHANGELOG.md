@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `milliwaysctl local` subcommand tree — install-server, install-swap, list-models, switch-server, download-model, setup-model. Wraps the existing `scripts/install_local.sh` and `scripts/install_local_swap.sh` and adds new logic for HuggingFace GGUF download and llama-swap config registration. Lets users complete the full local-model bootstrap without leaving the milliways terminal.
+- `Leader + /` palette in milliways-term — opens a `wezterm` `InputSelector` (fuzzy filter) populated with curated `milliwaysctl` invocations. Picking a complete verb dispatches in a new tab; verbs that take args fall through to a prefilled `PromptInputLine`; a free-form escape hatch covers any ctl call. Adding a new ctl subcommand keeps it callable via the free-form path; the curated list is edited to surface it in the picker.
+- `internal/daemon/runners/tooling.go` — shared agentic tool-loop helper (`RunAgenticLoop`) for HTTP-based runners. Drives assistant→tool→assistant cycles with `internal/tools/` Registry, a 10-turn safety cap, and `error: …` fold-back for tool failures, unknown tools, and malformed args.
+
+### Fixed
+- `internal/kitchen/adapter/codex.go` defaults `--sandbox workspace-write --ask-for-approval never` when the user hasn't set them via `cfg.Args`. Recent codex defaults to `read-only`/`on-request` in `exec --json` mode and silently refused tool execution; this restores tool execution by default while preserving user overrides.
+
 ## [0.4.14] - 2026-04-28
 
 ### Added

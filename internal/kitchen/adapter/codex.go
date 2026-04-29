@@ -50,6 +50,37 @@ type codexEvent struct {
 	Status  string `json:"status,omitempty"`
 }
 
+// buildCodexArgs assembles the codex CLI arguments. It always begins with
+// "exec --json", then merges any user-supplied flags from cfg.Args, injects
+// safe agentic defaults for --sandbox and --ask-for-approval when the user
+// hasn't set them, and appends the prompt as the final positional argument.
+//
+// Defaults: --sandbox workspace-write --ask-for-approval never. Without these,
+// codex exec runs in read-only / on-request mode and silently refuses to
+// execute its tools when invoked non-interactively, which is the entire
+// point of routing through milliways.
+func buildCodexArgs(cfg kitchen.GenericConfig, task kitchen.Task) []string {
+	args := []string{"exec", "--json"}
+	args = append(args, cfg.Args...)
+	if !hasFlag(cfg.Args, "--sandbox") {
+		args = append(args, "--sandbox", "workspace-write")
+	}
+	if !hasFlag(cfg.Args, "--ask-for-approval") {
+		args = append(args, "--ask-for-approval", "never")
+	}
+	args = append(args, task.Prompt)
+	return args
+}
+
+func hasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
+}
+
 // Exec starts codex with --json and returns an event channel.
 func (a *CodexAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Event, error) {
 	cfg := a.kitchen.Config()
@@ -58,7 +89,7 @@ func (a *CodexAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Even
 		return nil, fmt.Errorf("command %q not in allowed list", cfg.Cmd)
 	}
 
-	args := []string{"exec", "--json", task.Prompt}
+	args := buildCodexArgs(cfg, task)
 
 	cmd := exec.CommandContext(ctx, cfg.Cmd, args...)
 	if task.Dir != "" {
