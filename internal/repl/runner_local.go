@@ -41,7 +41,7 @@ type LocalRunner struct {
 func NewLocalRunner() *LocalRunner {
 	endpoint := os.Getenv("MILLIWAYS_LOCAL_ENDPOINT")
 	if endpoint == "" {
-		endpoint = "http://localhost:8080/v1"
+		endpoint = "http://localhost:8765/v1"
 	}
 	model := os.Getenv("MILLIWAYS_LOCAL_MODEL")
 	if model == "" {

@@ -10,7 +10,8 @@
 set -euo pipefail
 
 BIND_HOST="${BIND_HOST:-127.0.0.1}"
-PORT="${PORT:-8080}"
+# 8765 — uncommon enough to avoid the usual web/dev-tunnel collisions on 8080.
+PORT="${PORT:-8765}"
 MODEL_REPO="${MODEL_REPO:-unsloth/Qwen2.5-Coder-1.5B-Instruct-GGUF}"
 MODEL_QUANT="${MODEL_QUANT:-Q4_K_M}"
 MODEL_ALIAS="${MODEL_ALIAS:-qwen2.5-coder-1.5b}"
@@ -24,6 +25,32 @@ warn()  { color 33 "! $*"; }
 fail()  { color 31 "✗ $*"; exit 1; }
 
 OS="$(uname -s)"
+
+port_in_use() {
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nPiTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
+  else
+    nc -z 127.0.0.1 "$1" >/dev/null 2>&1
+  fi
+}
+
+pick_free_port() {
+  local p="$1"
+  for _ in $(seq 1 20); do
+    if ! port_in_use "$p"; then
+      echo "$p"
+      return
+    fi
+    p=$((p + 1))
+  done
+  fail "could not find a free port near $1 — set PORT=NNNN and re-run"
+}
+
+if port_in_use "$PORT"; then
+  warn "port $PORT is already in use (likely an SSH tunnel or another dev service)"
+  PORT="$(pick_free_port $((PORT + 1)))"
+  ok "using port $PORT instead"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Install llama.cpp
@@ -168,13 +195,17 @@ smoke_test() {
   pid=$!
   trap 'kill $pid 2>/dev/null || true' EXIT
 
-  for i in $(seq 1 30); do
+  # First run can be slow if the GGUF still needs downloading (~1GB).
+  for i in $(seq 1 120); do
     if curl -sf "http://${BIND_HOST}:${PORT}/v1/models" >/dev/null 2>&1; then
       ok "llama-server responding on http://${BIND_HOST}:${PORT}/v1"
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
       trap - EXIT
       return
+    fi
+    if [ $((i % 10)) -eq 0 ]; then
+      info "still waiting on llama-server (${i}s) — first run may be downloading the model"
     fi
     sleep 1
   done
@@ -207,8 +238,14 @@ main() {
   info "  /local"
   info "  hello, can you write a fizzbuzz in Go?"
   info ""
-  info "The default endpoint is http://${BIND_HOST}:${PORT}/v1 — milliways"
-  info "picks this up automatically. Override with MILLIWAYS_LOCAL_ENDPOINT."
+  if [ "$PORT" != "8765" ]; then
+    warn "milliways defaults to port 8765 — yours runs on $PORT"
+    info "Add this to your shell profile so milliways finds it:"
+    info "  export MILLIWAYS_LOCAL_ENDPOINT=http://${BIND_HOST}:${PORT}/v1"
+  else
+    info "Default endpoint http://${BIND_HOST}:${PORT}/v1 — milliways picks this up automatically."
+    info "Override with MILLIWAYS_LOCAL_ENDPOINT if you need a different backend."
+  fi
 }
 
 main "$@"
