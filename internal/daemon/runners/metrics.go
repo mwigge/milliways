@@ -36,6 +36,9 @@ const (
 	AgentIDCopilot = "copilot"
 	AgentIDMiniMax = "minimax"
 	AgentIDLocal   = "local"
+	AgentIDGemini  = "gemini"
+	AgentIDOpsx    = "opsx"
+	AgentIDPool    = "pool"
 )
 
 // Metric names used by the runners. Mirror the registrations in
