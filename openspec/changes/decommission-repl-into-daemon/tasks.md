@@ -29,9 +29,9 @@
 
 ## 4. Greenfield daemon runners
 
-- [ ] 4.1 Create `internal/daemon/runners/gemini.go` mirroring REPL's `runner_gemini.go` structure; add tests; commit `feat(daemon): add gemini runner`
+- [x] 4.1 `internal/daemon/runners/gemini.go` created (CLI shell-out, stderr session-limit detection); 5 tests pass; committed `9a57c11 feat(daemon): add gemini runner`
 - [ ] 4.2 ~~Create `internal/daemon/runners/opsx.go`~~ — **pivoted** per design's D2 open question and the D8 milliwaysctl pattern. Opsx is request/response with subcommands (`list`, `status`, `show`, `archive`, `validate`), and apply/explore need orchestration with a chat runner. The daemon's hardcoded `Run<Provider>(ctx, chan, stream, metrics)` shape doesn't fit. Instead: add a `milliwaysctl opsx <verb>` subcommand tree (same shape as `milliwaysctl local`); the wezterm Leader+/ palette surfaces them as `/opsx-list`, `/opsx-status`, etc. for free. Apply/explore (compose verbs) deferred — they need orchestration design (probably `--agent <name>` that talks to daemon agent.send); file as follow-up.
-- [ ] 4.3 Create `internal/daemon/runners/pool.go` (multi-provider routing); add tests; commit `feat(daemon): add pool runner`
+- [x] 4.3 `internal/daemon/runners/pool.go` created (Poolside CLI shell-out — name was misleading; pool is a Poolside-AI CLI wrapper, not a multi-provider router); 5 tests pass; committed in this round
 
 ## 5. Drift-sync ports for existing daemon runners
 
