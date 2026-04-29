@@ -89,6 +89,20 @@ The REPL runners have substantial test coverage (esp. minimax stream-integrity, 
 
 **Alternatives considered:** Ship as a separate PR — rejected per direction; the codex kitchen path and the daemon-runner-port path are conceptually one body of work ("tools work everywhere").
 
+### D8. Local-model self-service: milliwaysctl subcommands + generic wezterm Lua dispatcher
+
+Users currently have to drop to a shell and run `scripts/install_local.sh` / `scripts/install_local_swap.sh` / `curl <gguf-url>` / hand-edit yaml to wire up local models. With REPL going away there's no in-app slash-command surface. Two-layer solution:
+
+- **Implementation layer**: `milliwaysctl local <verb>` subcommands (`install-server`, `install-swap`, `switch-server`, `list-models`, `download-model`, `setup-model`). Each verb is a Go function in `cmd/milliwaysctl/local.go`. Bootstrap verbs shell out to the existing scripts; `list-models` hits the running backend's `/v1/models`; `download-model` curls a HuggingFace GGUF into `$HOME/.local/share/milliways/models/`; `setup-model` combines download + llama-swap config registration + verification.
+- **UX layer**: a generic slash-command dispatcher in `cmd/milliwaysctl/milliways.lua`. When the user types `/<word> [args...]` in a milliways-term tab, the dispatcher runs `milliwaysctl <word> [args...]` and streams output back into the tab. Adding a new ctl subcommand automatically gets a `/<word>` slash command — no per-command Lua wiring.
+
+This pattern means slash commands are decommissioning-safe (REPL slash commands die, wezterm-hosted ones live in milliways-term) and the work surface is single-source-of-truth (milliwaysctl). A future TUI overlay can shell out to the same ctl binary; nothing in this design forces wezterm specifically.
+
+**Alternatives considered:**
+- Hard-code each slash command in Lua individually — rejected; doubles maintenance for every new subcommand.
+- Skip the Lua layer and tell users to run `milliwaysctl local install-server` in any tab — rejected because the user explicitly asked for `/<command>` shortcut UX.
+- Add a separate `milliways-local` binary — rejected; milliwaysctl is the right home for ops verbs against milliways state.
+
 ## Risks / Trade-offs
 
 - **[Risk]** Minimax tool-loop port introduces a regression on the agentic execution that just landed → **Mitigation**: golden-path test that mocks the chat endpoint, asserts tool calls are invoked, and the assistant→tool→assistant turn sequence is correct. Keep the existing REPL implementation in `git log` for diffing if needed.

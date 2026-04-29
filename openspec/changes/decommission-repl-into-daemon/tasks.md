@@ -85,3 +85,34 @@ through the daemon RPC layer, not from `cmd/milliways/main.go`. So this section
 - [ ] 10.3 Run a real codex dispatch and verify tool execution (sandbox/approval defaults from `fix/codex-default-sandbox-approval` are in effect)
 - [ ] 10.4 Push branch, open PR titled `chore: decommission internal/repl into daemon runners`
 - [ ] 10.5 Once merged: `/opsx:archive decommission-repl-into-daemon`
+
+## 11. Local-model self-service (folded in; runs before Section 3 per pacing)
+
+### 11a. milliwaysctl `local` subcommand tree
+
+- [ ] 11a.1 Create `cmd/milliwaysctl/local.go` with a `runLocal(args []string) int` dispatcher; register it in `main.go`'s switch as `case "local":`
+- [ ] 11a.2 Implement `local install-server` — shell out to `scripts/install_local.sh`, stream output, propagate exit code. Pass through `MODEL_REPO`/`MODEL_QUANT`/`MODEL_ALIAS`/`PORT`/`BIND_HOST` from flags or env.
+- [ ] 11a.3 Implement `local install-swap` — shell out to `scripts/install_local_swap.sh`, same pattern. Honor `HOT_MODE`/`TTL_SECONDS`.
+- [ ] 11a.4 Implement `local list-models` — GET `$MILLIWAYS_LOCAL_ENDPOINT/models` (default `http://localhost:8765/v1/models`); print model IDs one per line; non-zero exit if backend unreachable.
+- [ ] 11a.5 Implement `local switch-server <kind>` — write `$HOME/.config/milliways/local.env` with `MILLIWAYS_LOCAL_ENDPOINT=<URL>` based on kind (`llama-server`, `llama-swap`, `ollama`, `vllm`, `lmstudio`); print the resolved endpoint.
+- [ ] 11a.6 Implement `local download-model <repo> [--quant Q4_K_M] [--alias <name>]` — curl the GGUF from HuggingFace into `$HOME/.local/share/milliways/models/<alias>.gguf`; verify SHA-256 if available; print absolute path on success.
+- [ ] 11a.7 Implement `local setup-model <repo> [--quant Q] [--alias N]` — compose: download (11a.6) → register in `~/.config/milliways/llama-swap.yaml` (insert model entry, preserve existing entries) → restart llama-swap if running → verify via `list-models`.
+- [ ] 11a.8 Tests in `cmd/milliwaysctl/local_test.go`: arg parsing per verb, flag pass-through to scripts, llama-swap config insert/idempotency (golden file), download URL construction, list-models JSON parsing.
+- [ ] 11a.9 Update `cmd/milliwaysctl/main.go` `usage()` to document the `local` verb tree.
+- [ ] 11a.10 `go build ./...` and `go test ./cmd/milliwaysctl/...` green; commit `feat(ctl): add local subcommand tree for in-app model setup`
+
+### 11b. wezterm Lua slash-command dispatcher
+
+- [ ] 11b.1 Read `cmd/milliwaysctl/milliways.lua` end-to-end; understand current keymap and event surface
+- [ ] 11b.2 Add a `register_slash_dispatcher(config)` function that binds an input-line keystroke (e.g., `Ctrl+Shift+P` or default to `/` when the active line is empty) which prompts for input, splits on whitespace, and runs `milliwaysctl <args...>` via `wezterm.run_child_process` (or `act.SpawnCommandInNewTab` if the verb is long-running)
+- [ ] 11b.3 Stream output back into the tab via a status overlay or a temporary pane; on exit, restore focus
+- [ ] 11b.4 Tab-completion: when the user types `/local-` and presses Tab, query `milliwaysctl --json-completions` (new flag in 11a.9) or fall back to a hard-coded list of known verbs
+- [ ] 11b.5 Document the dispatcher in `cmd/milliwaysctl/README.wezterm.md`: how to enable, default keybindings, how to override
+- [ ] 11b.6 Smoke test: type `/local-list-models` in a milliways tab → output appears inline; exit code propagates to a status badge
+- [ ] 11b.7 Commit `feat(wezterm): generic slash-command dispatcher to milliwaysctl`
+
+### 11c. Wiring and docs
+
+- [ ] 11c.1 Update `README.md` "Local models" section with the new `/local-*` UX (replace the manual `scripts/install_local.sh` instructions)
+- [ ] 11c.2 Update `CHANGELOG.md` with the new local-model self-service entry
+- [ ] 11c.3 Commit `docs: local-model self-service via milliwaysctl + slash dispatcher`

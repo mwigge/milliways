@@ -14,6 +14,8 @@
 - Remove "Fallback: run `milliways --repl`" messages from `cmd/milliways/launcher.go` (lines 120, 128, 136, 234, 243).
 - Update `README.md` and `CLAUDE.md` (project root) references to `internal/repl/` and `--repl`.
 - Default `--sandbox workspace-write --ask-for-approval never` in the codex kitchen adapter (`internal/kitchen/adapter/codex.go`) so codex actually executes its tools when invoked non-interactively via `exec --json`. User-supplied flags via `cfg.Args` continue to override.
+- Add a `local` subcommand tree to `milliwaysctl` so users can install, switch, list, download, and configure local model backends without leaving the milliways terminal. Wraps the existing `scripts/install_local.sh` and `scripts/install_local_swap.sh`; adds new logic for model download (HuggingFace GGUF curl), backend switching, and llama-swap config registration.
+- Add a generic slash-command dispatcher to the wezterm Lua integration (`cmd/milliwaysctl/milliways.lua`): `/<word> [args...]` typed in any milliways-term tab dispatches to `milliwaysctl <word> [args...]` and streams the output back into the tab. Users get `/local-install-server`, `/local-list-models`, `/local-download-model qwen2.5-coder-7b`, etc. for free as soon as the corresponding ctl subcommand exists.
 
 ## Capabilities
 
@@ -21,6 +23,7 @@
 
 - `daemon-runners`: The contract for runner implementations under `internal/daemon/runners/` — what each runner must implement, the dispatch lifecycle, history/quota/auth surfaces, and how outputs flow back through the daemon to clients.
 - `runner-tool-execution`: The agentic tool-loop contract for HTTP-based runners — how `tools.Registry` is invoked, how tool calls are streamed, how tool results are folded back into the conversation, and the maximum-turn safety bound.
+- `local-model-self-service`: User-facing UX for installing, switching, downloading, and configuring local model backends entirely inside milliways-term. Covers the `milliwaysctl local <verb>` subcommand tree and the wezterm Lua slash-command dispatcher that surfaces those subcommands as `/<verb>` in any milliways tab.
 
 ### Modified Capabilities
 
