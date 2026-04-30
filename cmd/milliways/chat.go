@@ -253,13 +253,49 @@ func (s *chatSession) send(prompt string) error {
 
 // chatLoop ties the readline input + the daemon stream + slash dispatch
 // into one foreground loop.
+//
+// Memory bridge (v0.7.0): the loop accumulates per-runner turns in
+// turnLog so that on /switch, the briefing builder can hand the new
+// runner the recent exchange. Today the log is in-memory only — lost
+// on chat exit. Future work persists via daemon's history.* RPCs and/or
+// mempalace's conversation primitive.
 type chatLoop struct {
 	client *rpc.Client
 	sess   *chatSession
 	rl     *readline.Instance
 	out    io.Writer
 	errw   io.Writer
+
+	// turnLog is the rolling exchange across whichever runners the user
+	// has talked to in this chat session. Capped at chatTurnLogCap most-
+	// recent turns to bound briefing size and memory.
+	turnMu  sync.Mutex
+	turnLog []chatTurn
+	// pendingAssistant accumulates streamed deltas for the in-flight
+	// assistant response. Drained into turnLog on chunk_end.
+	pendingAssistant strings.Builder
 }
+
+// chatTurn is one exchange entry across runners. Role is "user" or
+// "assistant"; for assistant turns AgentID names which runner produced
+// the text. Used to build the briefing on /switch.
+type chatTurn struct {
+	Role    string
+	AgentID string // empty for user turns
+	Text    string
+}
+
+// chatTurnLogCap caps how many turns we keep in memory. Old turns roll
+// off the front. 12 = roughly 6 user/assistant pairs, comfortably
+// covers a meaningful exchange without dragging the briefing past the
+// briefing-cap below.
+const chatTurnLogCap = 12
+
+// chatBriefingMaxBytes is the upper bound on a /switch briefing body.
+// Long assistant responses (multi-KB code dumps) are truncated with a
+// "[…truncated]" marker so a single fat turn doesn't blow the new
+// runner's context window.
+const chatBriefingMaxBytes = 4096
 
 func (l *chatLoop) run(ctx context.Context) error {
 	// Drain the agent stream in a goroutine; deltas land on stdout
@@ -327,10 +363,18 @@ func (l *chatLoop) drainStream() {
 			if b64, ok := ev["b64"].(string); ok {
 				if raw, err := base64.StdEncoding.DecodeString(b64); err == nil {
 					_, _ = l.out.Write(raw)
+					// Accumulate for the in-flight assistant turn so /switch
+					// can carry the response forward as part of the briefing.
+					l.pendingAssistant.Write(raw)
 				}
 			}
 		case "chunk_end":
 			fmt.Fprintln(l.out)
+			// Snapshot + reset the streamed response into a turn entry.
+			if text := strings.TrimRight(l.pendingAssistant.String(), "\n"); text != "" {
+				l.appendTurn(chatTurn{Role: "assistant", AgentID: l.sess.agentID, Text: text})
+			}
+			l.pendingAssistant.Reset()
 			l.sess.busyMu.Lock()
 			l.sess.busy = false
 			l.sess.busyMu.Unlock()
@@ -494,6 +538,13 @@ func lookupCtlBinary() string {
 // switchAgent closes the current session (if any) and opens a new one
 // for newID. From the landing zone (no current session), this is the
 // "first switch" that drops the user into a client.
+//
+// Memory bridge (v0.7.0): if the user is switching from one runner to
+// another and there are recent turns in the log, build a briefing and
+// send it as the new runner's first prompt. The new runner sees the
+// recent exchange + an instruction to wait for the user before taking
+// any action. From the landing zone (no prior session), no briefing is
+// sent.
 func (l *chatLoop) switchAgent(newID string) {
 	if l.sess != nil && newID == l.sess.agentID {
 		fmt.Fprintln(l.errw, "(already on "+newID+")")
@@ -511,7 +562,9 @@ func (l *chatLoop) switchAgent(newID string) {
 		return
 	}
 
+	var fromID string
 	if l.sess != nil {
+		fromID = l.sess.agentID
 		if err := l.sess.close(); err != nil {
 			fmt.Fprintln(l.errw, "warn: closing previous session: "+err.Error())
 		}
@@ -526,7 +579,134 @@ func (l *chatLoop) switchAgent(newID string) {
 	l.sess = newSess
 	go l.drainStream()
 	l.rl.SetPrompt(chatPrompt(newID))
+
+	// Memory bridge — only when there's actual prior conversation to carry.
+	if fromID != "" && fromID != newID {
+		if briefing, ok := l.buildBriefing(fromID, newID); ok {
+			fmt.Fprintln(l.out, "→ "+newID+"  (briefing carried from "+fromID+")")
+			if err := newSess.send(briefing); err != nil {
+				fmt.Fprintln(l.errw, "warn: send briefing: "+err.Error())
+			}
+			return
+		}
+	}
 	fmt.Fprintln(l.out, "→ "+newID)
+}
+
+// buildBriefing assembles a handoff message summarising the recent
+// exchange so the new runner can continue the conversation. Returns
+// (briefing, true) when there's at least one user turn to carry, or
+// ("", false) for a clean landing-zone entry / no-history switch.
+//
+// Format: a short framing header, the recent turns rendered in role
+// blocks, and an instruction to wait for the next user prompt before
+// taking action. Capped at chatBriefingMaxBytes total — long assistant
+// responses get a "[…truncated]" marker so a single fat turn doesn't
+// blow the new runner's context window.
+func (l *chatLoop) buildBriefing(fromID, newID string) (string, bool) {
+	turns := l.snapshotTurns()
+	if len(turns) == 0 {
+		return "", false
+	}
+	// Did the user actually say anything? Without a user turn the
+	// briefing has no semantic content.
+	hasUser := false
+	for _, t := range turns {
+		if t.Role == "user" {
+			hasUser = true
+			break
+		}
+	}
+	if !hasUser {
+		return "", false
+	}
+
+	var b strings.Builder
+	fmt.Fprintln(&b, "[Context handoff]")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "You are taking over a conversation that the user was having with `"+fromID+"`. Below is the recent exchange (most-recent last). The user has just switched to you (`"+newID+"`).")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "INSTRUCTIONS:")
+	fmt.Fprintln(&b, "- Treat this handoff as context only — do not invoke tools or take destructive actions based on it alone.")
+	fmt.Fprintln(&b, "- Wait for the user's next message before acting.")
+	fmt.Fprintln(&b, "- If the user asks 'where were we', summarise from this exchange.")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "RECENT EXCHANGE")
+	fmt.Fprintln(&b, "===============")
+
+	header := b.Len()
+	budget := chatBriefingMaxBytes - header - 64 // leave headroom for footer
+
+	rendered := renderTurnsWithBudget(turns, budget)
+	b.WriteString(rendered)
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "===============")
+	fmt.Fprintln(&b, "(End of handoff. Reply briefly to acknowledge, then await the user's next prompt.)")
+	return b.String(), true
+}
+
+// renderTurnsWithBudget renders turns into the briefing body, capping
+// the cumulative byte count at `budget`. Earlier turns are dropped
+// (most-recent kept); within a kept turn that's individually too long,
+// the body is truncated with a marker.
+func renderTurnsWithBudget(turns []chatTurn, budget int) string {
+	// Render newest-first so we can count budget greedily, then reverse.
+	type rendered struct {
+		text string
+		size int
+	}
+	var blocks []rendered
+	used := 0
+	for i := len(turns) - 1; i >= 0; i-- {
+		t := turns[i]
+		text := renderOneTurn(t)
+		if used+len(text) > budget {
+			// Try to fit a truncated version.
+			room := budget - used
+			if room < 80 {
+				break // not worth it
+			}
+			text = renderOneTurnTruncated(t, room)
+		}
+		blocks = append(blocks, rendered{text: text, size: len(text)})
+		used += len(text)
+		if used >= budget {
+			break
+		}
+	}
+	// Reverse to chronological order.
+	var b strings.Builder
+	for i := len(blocks) - 1; i >= 0; i-- {
+		b.WriteString(blocks[i].text)
+	}
+	return b.String()
+}
+
+func renderOneTurn(t chatTurn) string {
+	prefix := "User"
+	if t.Role == "assistant" {
+		prefix = t.AgentID
+	}
+	return "\n[" + prefix + "]\n" + t.Text + "\n"
+}
+
+func renderOneTurnTruncated(t chatTurn, max int) string {
+	const marker = "\n[…truncated]\n"
+	prefix := "User"
+	if t.Role == "assistant" {
+		prefix = t.AgentID
+	}
+	header := "\n[" + prefix + "]\n"
+	footer := marker
+	bodyBudget := max - len(header) - len(footer)
+	if bodyBudget < 1 {
+		return header + footer
+	}
+	body := t.Text
+	if len(body) > bodyBudget {
+		body = body[:bodyBudget]
+	}
+	return header + body + footer
 }
 
 // handleBang runs an arbitrary shell command via $SHELL -c "<cmd>".
@@ -552,11 +732,14 @@ func (l *chatLoop) handleBang(cmd string) {
 
 // handlePrompt sends a typed line to the active runner. From the
 // landing zone (no agent active), prints a hint instead of dispatching.
+// Records the user turn in turnLog so /switch can hand the briefing to
+// the next runner.
 func (l *chatLoop) handlePrompt(prompt string) {
 	if l.sess == nil {
 		fmt.Fprintln(l.errw, "✗ no client picked yet — type /1 (claude), /2 (codex), /4 (minimax), /6 (local) etc, or /help for the full list")
 		return
 	}
+	l.appendTurn(chatTurn{Role: "user", Text: prompt})
 	if err := l.sess.send(prompt); err != nil {
 		fmt.Fprintln(l.errw, "✗ send: "+err.Error())
 		return
@@ -564,6 +747,26 @@ func (l *chatLoop) handlePrompt(prompt string) {
 	// We don't block here — the response streams async. The next
 	// readline cycle starts right after, but the user typically waits
 	// for the response visually before typing the next prompt.
+}
+
+// appendTurn pushes a turn onto the rolling log. Caps at chatTurnLogCap;
+// older entries fall off the front. Safe under the streaming goroutine.
+func (l *chatLoop) appendTurn(t chatTurn) {
+	l.turnMu.Lock()
+	defer l.turnMu.Unlock()
+	l.turnLog = append(l.turnLog, t)
+	if over := len(l.turnLog) - chatTurnLogCap; over > 0 {
+		l.turnLog = l.turnLog[over:]
+	}
+}
+
+// snapshotTurns returns a defensive copy of the current turn log.
+func (l *chatLoop) snapshotTurns() []chatTurn {
+	l.turnMu.Lock()
+	defer l.turnMu.Unlock()
+	out := make([]chatTurn, len(l.turnLog))
+	copy(out, l.turnLog)
+	return out
 }
 
 // printAgents queries the daemon's agent.list and prints a numbered
