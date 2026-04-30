@@ -47,6 +47,8 @@ import (
 	"time"
 
 	"github.com/chzyer/readline"
+	"github.com/mwigge/milliways/internal/mempalace"
+	"github.com/mwigge/milliways/internal/project"
 	"github.com/mwigge/milliways/internal/rpc"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -192,6 +194,22 @@ func runChat(ctx context.Context) error {
 		out:    os.Stdout,
 		errw:   os.Stderr,
 	}
+
+	// Wire palace recall for daemon runner sessions. Resolve the project from
+	// cwd; if a palace exists, connect and inject context on every user prompt.
+	if pc, err := project.ResolveProject(""); err == nil {
+		palacePath := ""
+		if pc.PalacePath != nil {
+			palacePath = *pc.PalacePath
+		}
+		if mcpCmd, mcpArgs := detectMempalaceMCP(palacePath); mcpCmd != "" {
+			if palaceClient, err := mempalace.NewClient(mcpCmd, mcpArgs...); err == nil {
+				loop.palace = palaceClient
+				defer func() { _ = palaceClient.Close() }()
+			}
+		}
+	}
+
 	loop.printLanding()
 	return loop.run(ctx)
 }
@@ -334,6 +352,9 @@ type chatLoop struct {
 	rl     *readline.Instance
 	out    io.Writer
 	errw   io.Writer
+	// palace, when non-nil, is queried on each user prompt to inject
+	// relevant project memory as a context prefix before the runner sees it.
+	palace *mempalace.Client
 
 	// turnLog is the rolling exchange across whichever runners the user
 	// has talked to in this chat session. Capped at chatTurnLogCap most-
@@ -825,6 +846,33 @@ func (l *chatLoop) handleBang(cmd string) {
 	}
 }
 
+// enrichWithPalace prepends relevant project memory to prompt. Returns
+// the original prompt unchanged if palace is unavailable or yields no hits.
+func (l *chatLoop) enrichWithPalace(ctx context.Context, prompt string) string {
+	if l.palace == nil {
+		return prompt
+	}
+	results, err := l.palace.Search(ctx, prompt, 3)
+	if err != nil || len(results) == 0 {
+		return prompt
+	}
+	var sb strings.Builder
+	sb.WriteString("[Project memory:\n")
+	for _, r := range results {
+		summary := r.FactSummary
+		if summary == "" {
+			summary = r.Content
+		}
+		if len(summary) > 200 {
+			summary = summary[:200] + "…"
+		}
+		fmt.Fprintf(&sb, "- %s/%s: %s\n", r.Wing, r.Room, summary)
+	}
+	sb.WriteString("]\n\n")
+	sb.WriteString(prompt)
+	return sb.String()
+}
+
 // handlePrompt sends a typed line to the active runner. From the
 // landing zone (no agent active), prints a hint instead of dispatching.
 // Records the user turn in turnLog so /switch can hand the briefing to
@@ -835,7 +883,8 @@ func (l *chatLoop) handlePrompt(prompt string) {
 		return
 	}
 	l.appendTurn(chatTurn{Role: "user", Text: prompt})
-	if err := l.sess.send(prompt); err != nil {
+	enriched := l.enrichWithPalace(context.Background(), prompt)
+	if err := l.sess.send(enriched); err != nil {
 		fmt.Fprintln(l.errw, "✗ send: "+err.Error())
 		return
 	}
