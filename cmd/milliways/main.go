@@ -47,7 +47,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "0.5.2"
+var version = "0.6.0"
 
 func init() {
 	// Expose this main package's link-time-injected `version` to launcher.go's
@@ -110,7 +110,16 @@ func main() {
 		}
 		return
 	case modeWelcome:
-		printWelcome()
+		// Inside milliways-term with no args → drop into the chat REPL.
+		// If the daemon isn't reachable (or the user prefers a brief
+		// quickstart), fall back to the welcome banner.
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if err := runChat(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "milliways chat: %v\n\n", err)
+			printWelcome()
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -244,6 +253,7 @@ based on what each tool does best.
 	cmd.Flags().StringVar(&switchTo, "switch-to", "", "Switch a named session to a kitchen before continuing")
 	cmd.Flags().DurationVar(&timeoutDur, "timeout", 5*time.Minute, "Dispatch timeout for headless mode")
 
+	cmd.AddCommand(chatCmd())
 	cmd.AddCommand(statusCmd(&configPath))
 	cmd.AddCommand(reportCmd(&configPath))
 	cmd.AddCommand(setupCmd(&configPath))
