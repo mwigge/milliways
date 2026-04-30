@@ -489,9 +489,25 @@ func (l *chatLoop) drainStream() {
 	}
 }
 
+// maxTurnsSummaryPrompt is sent automatically when the agentic loop hits
+// its turn cap. It asks the runner to produce a structured handoff summary
+// so the user gets a clear picture of what was done and a natural prompt
+// to continue.
+const maxTurnsSummaryPrompt = `You've reached the agentic turn limit for this task. Please respond with:
+
+**Implemented** — bullet list of what was built or changed
+**Fixes** — what problem or requirement this addresses
+**Done** — a markdown table: | Task | Status |
+Then ask the user what they'd like to do next.
+
+Keep it concise — this is a handoff summary, not a full report.`
+
 // refreshPromptHint optionally folds chunk_end metadata (token count,
 // max_turns_hit) into a one-line trailer below the response so the user
 // sees cost/turn signal without flooding stdout.
+//
+// When max_turns_hit is set, the terse flag is replaced by a visible break
+// separator and an automatic summarization turn that streams back to the user.
 func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any) {
 	var parts []string
 	if cost, ok := chunkEnd["cost_usd"].(float64); ok && cost > 0 {
@@ -503,7 +519,18 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any) {
 		}
 	}
 	if mh, _ := chunkEnd["max_turns_hit"].(bool); mh {
-		parts = append(parts, "⚠ max-turns-hit")
+		fmt.Fprintln(l.out, "\n────────────────────────────────────────")
+		fmt.Fprintln(l.out, " ⚑  Reached the 100-turn agentic limit.")
+		fmt.Fprintln(l.out, "────────────────────────────────────────")
+		if l.sess != nil {
+			// Send a summarization prompt — the response streams back
+			// normally so the user gets a clean handoff summary.
+			_ = l.sess.send(maxTurnsSummaryPrompt)
+			if len(parts) > 0 {
+				fmt.Fprintln(l.errw, "  ("+strings.Join(parts, " · ")+")")
+			}
+			return
+		}
 	}
 	if len(parts) > 0 {
 		fmt.Fprintln(l.errw, "  ("+strings.Join(parts, " · ")+")")
