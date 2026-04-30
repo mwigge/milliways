@@ -68,7 +68,7 @@ When the laptop wakes from sleep, the status bar shows an orange **⚡ woke Xm a
 Start the AI terminal with `milliways` (default when no arguments are given). The launcher starts `milliwaysd` if needed, then execs `milliways-term`.
 
 ```text
-milliways v0.9.4
+milliways v0.9.6
   /login [client]  set up auth      /help  show all commands      /exit  quit
   /1 claude  /2 codex  /3 copilot  /4 minimax  /5 gemini  /6 local  /7 pool
 
@@ -103,16 +103,21 @@ Tab completion is available for all commands. Type `/` and press Tab to see the 
 | Command | Description |
 |---------|-------------|
 | `/ring [r1,r2,...]` | Show or set the auto-rotation ring; `/ring off` disables |
+| `/history` | Show the current turn log |
+| `/cost` | Token usage per runner (last hour) |
+| `/retry` | Re-send the last user prompt |
+| `/undo` | Drop the last user + assistant turn pair |
 | `/compact` | Summarise the session with the active runner, replace turn log with the summary |
 | `/clear` | Wipe the local turn log |
-| `/quota` | Live token/cost usage per runner (last hour) |
+| `/quota` | Raw quota snapshot from daemon |
 | `/login [client]` | Auth setup — API key prompt or CLI steps |
+| `/metrics` | Live rolling metrics table (1min / 1h / 24h / 7d / 30d) |
 
 **Artifacts (all runners)**
 
 | Command | Description |
 |---------|-------------|
-| `/pptx <topic>` | Ask the active runner to generate a python-pptx script, run it, save `.pptx` to cwd |
+| `/pptx <topic>` | Ask the active runner to generate a python-pptx script; validated via Python AST before execution, saved to cwd |
 | `/drawio <topic>` | Ask the active runner to generate draw.io XML, save `.drawio` to cwd |
 | `/review [focus]` | Get `git diff HEAD` and ask the active runner to review it |
 
