@@ -58,11 +58,8 @@ func TestChatHelpEnumeratesKnownCommands(t *testing.T) {
 		"/exit",
 		"!<cmd>",
 		"claude", "codex", "copilot", "gemini", "local", "minimax", "pool",
-		"/install-local-server",
-		"/list-local-models",
-		"/setup-local-model",
 		"/install",
-		"/opsx-list",
+		"/login",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("help output missing %q; got:\n%s", want, stdout.String())

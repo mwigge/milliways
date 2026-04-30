@@ -387,6 +387,9 @@ func (l *chatLoop) drainStream() {
 		case "err":
 			msg, _ := ev["msg"].(string)
 			fmt.Fprintln(l.errw, "✗ "+msg)
+			if strings.Contains(msg, "not set") || strings.Contains(msg, "API_KEY") {
+				fmt.Fprintln(l.errw, "  → /login  for auth setup")
+			}
 			l.sess.busyMu.Lock()
 			l.sess.busy = false
 			l.sess.busyMu.Unlock()
@@ -459,6 +462,12 @@ func (l *chatLoop) handleSlash(line string) {
 		l.switchAgent(rest)
 	case "agents":
 		l.printAgents()
+	case "login":
+		agent := rest
+		if agent == "" && l.sess != nil {
+			agent = l.sess.agentID
+		}
+		l.printLogin(agent)
 	case "quota":
 		l.printQuota()
 	case "help", "?":
@@ -851,7 +860,7 @@ func (l *chatLoop) printLanding() {
 	}
 	fmt.Fprintln(l.out)
 
-	fmt.Fprintln(l.out, "  /help    all commands   /exit  quit   !<cmd>  shell")
+	fmt.Fprintln(l.out, "  /login [client]   auth setup    /help  all commands   /exit  quit")
 	fmt.Fprintln(l.out)
 }
 
@@ -870,3 +879,74 @@ func (l *chatLoop) printQuota() {
 // printHelp re-runs the landing-zone banner so /help and the startup
 // banner stay in sync. (Single source of truth = printLanding.)
 func (l *chatLoop) printHelp() { l.printLanding() }
+
+// printLogin shows auth setup instructions for one runner (or all if
+// agent is ""). Called by /login [agent] and automatically hinted
+// after API-key-not-set errors.
+func (l *chatLoop) printLogin(agent string) {
+	type loginInfo struct {
+		envVar  string
+		steps   []string
+	}
+	infos := map[string]loginInfo{
+		"claude": {
+			steps: []string{
+				"run `claude` once outside milliways to authenticate",
+				"or set ANTHROPIC_API_KEY and restart the daemon",
+			},
+		},
+		"codex": {
+			steps: []string{
+				"run `codex login` or set OPENAI_API_KEY and restart the daemon",
+			},
+		},
+		"copilot": {
+			steps: []string{
+				"run `gh auth login`",
+				"then restart the daemon: pkill milliwaysd && milliwaysd &",
+			},
+		},
+		"gemini": {
+			steps: []string{
+				"run `gemini auth login` or set GEMINI_API_KEY and restart the daemon",
+			},
+		},
+		"minimax": {
+			envVar: "MINIMAX_API_KEY",
+			steps: []string{
+				"export MINIMAX_API_KEY=<your-key>",
+				"restart the daemon: pkill milliwaysd && milliwaysd &",
+			},
+		},
+		"local": {
+			steps: []string{
+				"run /install-local-server to install llama.cpp",
+				"or set MILLIWAYS_LOCAL_ENDPOINT to a running backend",
+			},
+		},
+	}
+
+	print1 := func(name string, info loginInfo) {
+		fmt.Fprintf(l.out, "  %s:\n", name)
+		for _, s := range info.steps {
+			fmt.Fprintf(l.out, "    → %s\n", s)
+		}
+	}
+
+	if agent != "" {
+		info, ok := infos[agent]
+		if !ok {
+			fmt.Fprintf(l.errw, "no login info for %q (pool/custom runners need no auth)\n", agent)
+			return
+		}
+		print1(agent, info)
+		return
+	}
+
+	fmt.Fprintln(l.out, "Auth setup per runner:")
+	for _, name := range chatSwitchableAgents {
+		if info, ok := infos[name]; ok {
+			print1(name, info)
+		}
+	}
+}
