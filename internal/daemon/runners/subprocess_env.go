@@ -50,6 +50,10 @@ var safeRunnerEnvKeys = map[string]bool{
 	"ANTHROPIC_API_KEY": true, "OPENAI_API_KEY": true,
 	"GOOGLE_API_KEY": true, "GEMINI_API_KEY": true,
 	"OLLAMA_HOST": true,
+	// Model selection — injected live via config.setenv so /model <name>
+	// takes effect without restarting the daemon or its subprocesses.
+	"ANTHROPIC_MODEL": true, "OPENAI_MODEL": true, "CODEX_MODEL": true,
+	"CLAUDE_MODEL": true, "GEMINI_MODEL": true, "GOOGLE_MODEL": true,
 }
 
 // safeRunnerEnv returns a filtered environment for runner subprocess

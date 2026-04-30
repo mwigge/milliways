@@ -1018,23 +1018,72 @@ func runnerModelSpec(agentID string) modelSpec {
 	case "claude":
 		cur := os.Getenv("ANTHROPIC_MODEL")
 		if cur == "" {
-			cur = "claude (CLI default)"
+			cur = os.Getenv("CLAUDE_MODEL")
 		}
-		return modelSpec{current: cur, endpoint: "claude CLI"}
+		if cur == "" {
+			cur = "claude-opus-4-5"
+		}
+		return modelSpec{
+			envKey:   "ANTHROPIC_MODEL",
+			current:  cur,
+			endpoint: "claude CLI",
+			choices: []string{
+				"claude-opus-4-5",
+				"claude-opus-4-7",
+				"claude-sonnet-4-6",
+				"claude-haiku-4-5-20251001",
+				"claude-3-5-sonnet-20241022",
+				"claude-3-5-haiku-20241022",
+			},
+		}
 	case "codex":
 		cur := os.Getenv("CODEX_MODEL")
 		if cur == "" {
-			cur = "codex (CLI default)"
+			cur = os.Getenv("OPENAI_MODEL")
 		}
-		return modelSpec{current: cur, endpoint: "codex CLI"}
+		if cur == "" {
+			cur = "o4-mini"
+		}
+		return modelSpec{
+			envKey:   "CODEX_MODEL",
+			current:  cur,
+			endpoint: "codex CLI",
+			choices: []string{
+				"o4-mini",
+				"o3",
+				"o3-mini",
+				"gpt-4.1",
+				"gpt-4.1-mini",
+				"gpt-4o",
+			},
+		}
 	case "copilot":
-		return modelSpec{current: "copilot (gh CLI managed)", endpoint: "gh copilot CLI"}
+		return modelSpec{
+			current:  "copilot (gh CLI managed)",
+			endpoint: "gh copilot CLI",
+			choices:  []string{"(model selection managed by GitHub Copilot CLI — use `gh copilot` flags)"},
+		}
 	case "gemini":
 		cur := os.Getenv("GEMINI_MODEL")
 		if cur == "" {
-			cur = "gemini (CLI default)"
+			cur = os.Getenv("GOOGLE_MODEL")
 		}
-		return modelSpec{current: cur, endpoint: "gemini CLI"}
+		if cur == "" {
+			cur = "gemini-2.5-pro"
+		}
+		return modelSpec{
+			envKey:   "GEMINI_MODEL",
+			current:  cur,
+			endpoint: "gemini CLI",
+			choices: []string{
+				"gemini-2.5-pro",
+				"gemini-2.5-flash",
+				"gemini-2.0-flash",
+				"gemini-2.0-flash-lite",
+				"gemini-1.5-pro",
+				"gemini-1.5-flash",
+			},
+		}
 	case "pool":
 		return modelSpec{current: "routes across all runners", endpoint: "internal"}
 	}
@@ -1092,7 +1141,7 @@ func (l *chatLoop) setModel(agentID, newModel string) {
 	}
 	s := runnerModelSpec(agentID)
 	if s.envKey == "" {
-		fmt.Fprintf(l.errw, "✗ %s is a CLI runner — model is set by the CLI itself, not switchable here\n", agentID)
+		fmt.Fprintf(l.errw, "✗ %s model is managed externally — no env var to switch\n", agentID)
 		return
 	}
 	if l.client == nil {
