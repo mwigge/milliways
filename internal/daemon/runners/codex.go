@@ -90,7 +90,9 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		return
 	}
 
-	defer func() { stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0}) }()
+	defer func() {
+		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+	}()
 
 	cwd, _ := os.Getwd()
 	cmd := exec.CommandContext(ctx, codexBinary, buildCodexCmdArgs(text, cwd, nil)...)

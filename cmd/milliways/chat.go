@@ -40,6 +40,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -817,6 +818,8 @@ func (l *chatLoop) switchAgent(newID string) {
 		return
 	}
 	l.sess = newSess
+	l.pendingAssistant.Reset() // clear any partial text from a cancelled in-flight stream
+	slog.Info("runner switch", "from", fromID, "to", newID)
 	go l.drainStream()
 	l.rl.SetPrompt(chatPrompt(newID))
 	if l.completer != nil {

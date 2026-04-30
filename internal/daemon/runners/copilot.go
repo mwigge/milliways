@@ -71,7 +71,9 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		return
 	}
 
-	defer func() { stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0}) }()
+	defer func() {
+		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+	}()
 
 	cwd, _ := os.Getwd()
 	// --add-dir scopes file search to the project directory, avoiding macOS
@@ -126,7 +128,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 			stderrMu.Lock()
 			stderrLines = append(stderrLines, line)
 			stderrMu.Unlock()
-			slog.Debug("copilot stderr", "line", line)
+			slog.Debug("copilot stderr", "line", line, "agent", AgentIDCopilot)
 		}
 	}()
 

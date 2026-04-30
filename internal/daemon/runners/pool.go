@@ -84,7 +84,9 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 		return
 	}
 
-	defer func() { stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0}) }()
+	defer func() {
+		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+	}()
 
 	cwd, _ := os.Getwd()
 	cmd := exec.CommandContext(ctx, poolBinary, poolArgsBuilder(text, cwd)...)

@@ -69,7 +69,7 @@ func (l *chatLoop) handleCompact() {
 	ch := make(chan string, 1)
 	l.artifact.set(ch)
 	fmt.Fprintln(l.out, "  compacting context…")
-	if err := l.sess.send(sb.String()); err != nil {
+	if err := l.sess.send(l.enrichWithPalace(context.Background(), sb.String())); err != nil {
 		l.artifact.set(nil)
 		fmt.Fprintln(l.errw, "✗ send: "+err.Error())
 		return
@@ -142,7 +142,7 @@ func (l *chatLoop) handlePptx(topic string) {
 
 	ch := make(chan string, 1)
 	l.artifact.set(ch)
-	if err := l.sess.send(pptxPrompt(topic, outFile)); err != nil {
+	if err := l.sess.send(l.enrichWithPalace(context.Background(), pptxPrompt(topic, outFile))); err != nil {
 		l.artifact.set(nil)
 		fmt.Fprintln(l.errw, "✗ send: "+err.Error())
 		return
@@ -213,7 +213,7 @@ func (l *chatLoop) handleDrawio(topic string) {
 
 	ch := make(chan string, 1)
 	l.artifact.set(ch)
-	if err := l.sess.send(drawioPrompt(topic)); err != nil {
+	if err := l.sess.send(l.enrichWithPalace(context.Background(), drawioPrompt(topic))); err != nil {
 		l.artifact.set(nil)
 		fmt.Fprintln(l.errw, "✗ send: "+err.Error())
 		return

@@ -89,6 +89,8 @@ var historyAgents = map[string]bool{
 	"claude":  true,
 	"codex":   true,
 	"copilot": true,
+	"gemini":  true,
+	"pool":    true,
 	"minimax": true,
 	"local":   true,
 }
@@ -154,6 +156,27 @@ func (q *HistoryQuota) Check(agentID, stateDir string, payloadBytes int) error {
 	return nil
 }
 
+// sumMetric queries the metrics store for the sum of metric over range r
+// across all agents. Returns 0 on any error.
+func (s *Server) sumMetric(metric string, r *metrics.Range) float64 {
+	if s.metrics == nil {
+		return 0
+	}
+	res, err := s.metrics.RollupGet(metrics.RollupGetParams{
+		Metric: metric,
+		Tier:   "raw",
+		Range:  r,
+	})
+	if err != nil {
+		return 0
+	}
+	var total float64
+	for _, b := range res.Buckets {
+		total += b.Sum
+	}
+	return total
+}
+
 // buildStatus returns the current cockpit Status.
 func (s *Server) buildStatus() Status {
 	s.statusMu.Lock()
@@ -163,16 +186,55 @@ func (s *Server) buildStatus() Status {
 	if curAgent != "" {
 		activeAgent = &curAgent
 	}
+	r5m := &metrics.Range{From: "-5min"}
 	return Status{
 		Proto:       ProtoVersion{Major: ProtoMajor, Minor: ProtoMinor},
 		ActiveAgent: activeAgent,
 		Turn:        0,
-		TokensIn:    0,
-		TokensOut:   0,
-		CostUSD:     0.0,
+		TokensIn:    int(s.sumMetric("tokens_in", r5m)),
+		TokensOut:   int(s.sumMetric("tokens_out", r5m)),
+		CostUSD:     s.sumMetric("cost_usd", r5m),
 		QuotaPct:    0.0,
-		Errors5m:    0,
+		Errors5m:    int(s.sumMetric("error_count", r5m)),
 	}
+}
+
+// buildQuotaSnapshots returns per-agent token/cost usage for the last hour.
+// Cap is 0 (unlimited) for all runners until per-agent limits are configured.
+func (s *Server) buildQuotaSnapshots() []QuotaSnapshot {
+	if s.metrics == nil {
+		return nil
+	}
+	agents := []string{"claude", "codex", "copilot", "gemini", "pool", "minimax", "local"}
+	r1h := &metrics.Range{From: "-1h"}
+	var out []QuotaSnapshot
+	for _, agent := range agents {
+		agentCopy := agent
+		res, err := s.metrics.RollupGet(metrics.RollupGetParams{
+			Metric:  "tokens_in",
+			Tier:    "raw",
+			Range:   r1h,
+			AgentID: &agentCopy,
+		})
+		if err != nil {
+			continue
+		}
+		var used float64
+		for _, b := range res.Buckets {
+			used += b.Sum
+		}
+		if used == 0 {
+			continue
+		}
+		out = append(out, QuotaSnapshot{
+			AgentID: agent,
+			Used:    used,
+			Cap:     0,
+			Pct:     0,
+			Window:  "1h",
+		})
+	}
+	return out
 }
 
 // dispatch routes a JSON-RPC method call to its handler. Methods that are
@@ -226,7 +288,7 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 	case "context.subscribe":
 		s.contextSubscribe(enc, req)
 	case "quota.get":
-		writeResult(enc, req.ID, []QuotaSnapshot{})
+		writeResult(enc, req.ID, s.buildQuotaSnapshots())
 	case "routing.peek":
 		writeResult(enc, req.ID, []RoutingDecision{})
 	case "observability.spans":

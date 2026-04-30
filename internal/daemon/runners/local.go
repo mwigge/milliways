@@ -35,6 +35,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -149,6 +150,7 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 
 	result, err := RunAgenticLoop(ctx, client, registry, &messages, LoopOptions{
 		SessionID: AgentIDLocal,
+		Logger:    slog.Default(),
 	})
 	if err != nil {
 		observeError(metrics, AgentIDLocal)

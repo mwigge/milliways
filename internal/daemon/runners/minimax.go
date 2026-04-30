@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -169,6 +170,7 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 
 	result, err := RunAgenticLoop(ctx, client, registry, &messages, LoopOptions{
 		SessionID: AgentIDMiniMax,
+		Logger:    slog.Default(),
 	})
 	if err != nil {
 		observeError(metrics, AgentIDMiniMax)
