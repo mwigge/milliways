@@ -49,6 +49,7 @@ import (
 	"github.com/chzyer/readline"
 	"github.com/mwigge/milliways/internal/rpc"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // chatSwitchableAgents is the set of runner IDs the user can switch to
@@ -967,8 +968,11 @@ func (l *chatLoop) printLogin(agent string) {
 	}
 
 	// API-key runner — prompt interactively then inject live via RPC.
+	// Use term.ReadPassword on the raw stdin fd rather than readline so
+	// we don't recurse into the readline event loop (which hangs).
 	fmt.Fprintf(l.out, "%s API key: ", agent)
-	key, err := l.rl.ReadPassword("")
+	key, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(l.out) // newline after the hidden input
 	if err != nil || strings.TrimSpace(string(key)) == "" {
 		fmt.Fprintln(l.errw, "✗ cancelled")
 		return
