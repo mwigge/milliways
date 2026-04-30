@@ -95,6 +95,65 @@ var chatCtlAliases = map[string][]string{
 	"opsx-validate": {"opsx", "validate"},
 }
 
+// buildCompleter returns a readline AutoCompleter for all slash commands.
+// Agent shortcuts (/claude, /gemini, …) and numbered aliases (/1..7) are
+// derived from chatSwitchableAgents; ctl aliases from chatCtlAliases.
+func buildCompleter() readline.AutoCompleter {
+	installClients := []readline.PrefixCompleterInterface{
+		readline.PcItem("claude"),
+		readline.PcItem("codex"),
+		readline.PcItem("copilot"),
+		readline.PcItem("gemini"),
+		readline.PcItem("local"),
+	}
+	switchRunners := make([]readline.PrefixCompleterInterface, len(chatSwitchableAgents))
+	for i, name := range chatSwitchableAgents {
+		switchRunners[i] = readline.PcItem(name)
+	}
+
+	items := []readline.PrefixCompleterInterface{
+		// Numbered shortcuts /1../7
+		readline.PcItem("/1"), readline.PcItem("/2"), readline.PcItem("/3"),
+		readline.PcItem("/4"), readline.PcItem("/5"), readline.PcItem("/6"),
+		readline.PcItem("/7"),
+		// Agent name shortcuts
+	}
+	for _, name := range chatSwitchableAgents {
+		items = append(items, readline.PcItem("/"+name))
+	}
+	// Session commands
+	items = append(items,
+		readline.PcItem("/switch", switchRunners...),
+		readline.PcItem("/login", switchRunners...),
+		readline.PcItem("/model"),
+		readline.PcItem("/agents"),
+		readline.PcItem("/quota"),
+		readline.PcItem("/help"),
+		readline.PcItem("/exit"),
+		// Install
+		readline.PcItem("/install", installClients...),
+		readline.PcItem("/install-local-server"),
+		readline.PcItem("/install-local-swap"),
+		readline.PcItem("/list-local-models"),
+		readline.PcItem("/switch-local-server",
+			readline.PcItem("llama-server"),
+			readline.PcItem("llama-swap"),
+			readline.PcItem("ollama"),
+			readline.PcItem("vllm"),
+			readline.PcItem("lmstudio"),
+		),
+		readline.PcItem("/download-local-model"),
+		readline.PcItem("/setup-local-model"),
+		// OpenSpec
+		readline.PcItem("/opsx-list"),
+		readline.PcItem("/opsx-status"),
+		readline.PcItem("/opsx-show"),
+		readline.PcItem("/opsx-archive"),
+		readline.PcItem("/opsx-validate"),
+	)
+	return readline.NewPrefixCompleter(items...)
+}
+
 // runChat is the entry point invoked by the cobra `chat` subcommand AND
 // by the launcher when the user types `milliways` (no args) inside
 // milliways-term.
@@ -119,6 +178,7 @@ func runChat(ctx context.Context) error {
 		HistoryFile:     chatHistoryFile(),
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
+		AutoComplete:    buildCompleter(),
 	})
 	if err != nil {
 		return fmt.Errorf("readline init: %w", err)
