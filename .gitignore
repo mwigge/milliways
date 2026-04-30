@@ -8,6 +8,9 @@ opencode/
 # Claude Code worktrees (agent scratch space)
 .claude/worktrees/
 
+# Internal dev docs (spikes, manual verification — not for end users)
+docs/
+
 # Go build artifacts
 /bin/
 dist/
