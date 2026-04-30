@@ -3,6 +3,10 @@
 
 # OpenCode runtime
 opencode/
+.opencode
+
+# Claude Code worktrees (agent scratch space)
+.claude/worktrees/
 
 # Go build artifacts
 /bin/
