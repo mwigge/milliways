@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -89,8 +90,12 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		return
 	}
 
-	cmd := exec.CommandContext(ctx, codexBinary, buildCodexCmdArgs(text, nil)...)
+	cwd, _ := os.Getwd()
+	cmd := exec.CommandContext(ctx, codexBinary, buildCodexCmdArgs(text, cwd, nil)...)
 	cmd.Env = safeRunnerEnv()
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		observeError(metrics, AgentIDCodex)
@@ -184,17 +189,21 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 }
 
 // buildCodexCmdArgs assembles the codex CLI argv. Always begins with
-// `exec --json --color never --skip-git-repo-check`, then merges any
-// caller-supplied extra flags, then injects safe agentic defaults
+// `exec --json --color never --skip-git-repo-check -C <cwd>`, then merges
+// any caller-supplied extra flags, then injects safe agentic defaults
 // (--sandbox workspace-write --ask-for-approval never) only when the
 // caller has not already set them, and finally appends `-- <prompt>`.
 //
-// Without these defaults, recent codex CLI versions run `exec --json` in
-// read-only / on-request mode and silently refuse tool execution. This
-// mirrors the buildCodexArgs fix landed in internal/kitchen/adapter/
-// codex.go for the kitchen path.
-func buildCodexCmdArgs(prompt string, extra []string) []string {
+// -C sets the working root so codex sees the project directory regardless
+// of what directory the daemon was launched from.
+//
+// Without --sandbox/--ask-for-approval, recent codex CLI versions run in
+// read-only / on-request mode and silently refuse tool execution.
+func buildCodexCmdArgs(prompt, cwd string, extra []string) []string {
 	args := []string{"exec", "--json", "--color", "never", "--skip-git-repo-check"}
+	if cwd != "" && !codexHasFlag(extra, "-C") {
+		args = append(args, "-C", cwd)
+	}
 	args = append(args, extra...)
 	if !codexHasFlag(extra, "--sandbox") {
 		args = append(args, "--sandbox", "workspace-write")

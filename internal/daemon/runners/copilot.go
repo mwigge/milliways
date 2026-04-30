@@ -74,7 +74,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	cwd, _ := os.Getwd()
 	// --add-dir scopes file search to the project directory, avoiding macOS
 	// system paths that produce permission errors when copilot searches broadly.
-	args := []string{"-p", text, "--allow-all-tools"}
+	args := []string{"-p", text, "--allow-all-tools", "--allow-all-paths"}
 	if cwd != "" {
 		args = append(args, "--add-dir", cwd)
 	}

@@ -22,7 +22,7 @@ import (
 func TestBuildCodexCmdArgs_DefaultsInjectSandboxAndApproval(t *testing.T) {
 	t.Parallel()
 
-	args := buildCodexCmdArgs("do the thing", nil)
+	args := buildCodexCmdArgs("do the thing", "/tmp/proj", nil)
 	if !containsCodexPair(args, "--sandbox", "workspace-write") {
 		t.Errorf("missing --sandbox workspace-write default in %v", args)
 	}
@@ -45,7 +45,7 @@ func TestBuildCodexCmdArgs_DefaultsInjectSandboxAndApproval(t *testing.T) {
 func TestBuildCodexCmdArgs_RespectsExtraOverride(t *testing.T) {
 	t.Parallel()
 
-	args := buildCodexCmdArgs("p", []string{"--sandbox", "read-only"})
+	args := buildCodexCmdArgs("p", "/tmp/proj", []string{"--sandbox", "read-only"})
 	if containsCodexPair(args, "--sandbox", "workspace-write") {
 		t.Errorf("default --sandbox workspace-write injected despite override: %v", args)
 	}
