@@ -196,6 +196,7 @@ func buildCompleter(agentID string) readline.AutoCompleter {
 		readline.PcItem("/opsx-archive"),
 		readline.PcItem("/opsx-validate"),
 		// Artifact + context commands (milliways-level, work for all runners).
+		readline.PcItem("/ring"),
 		readline.PcItem("/compact"),
 		readline.PcItem("/clear"),
 		readline.PcItem("/review"),
@@ -250,6 +251,7 @@ func runChat(ctx context.Context) error {
 		completer: sc,
 		out:       os.Stdout,
 		errw:      os.Stderr,
+		ring:      append([]string(nil), chatSwitchableAgents...), // default ring
 	}
 
 	// Wire palace recall for daemon runner sessions. Resolve the project from
@@ -419,6 +421,12 @@ type chatLoop struct {
 	// artifact collects the assistant response text for /pptx, /drawio, /compact.
 	artifact artifactChState
 
+	// ring is the ordered fallback list for automatic runner rotation on
+	// session limits. Defaults to chatSwitchableAgents order. Can be
+	// reconfigured with /ring <r1,r2,...>. Empty = auto-rotation disabled.
+	ring     []string
+	exhausted map[string]bool // runners that hit session limit this session
+
 	// turnLog is the rolling exchange across whichever runners the user
 	// has talked to in this chat session. Capped at chatTurnLogCap most-
 	// recent turns to bound briefing size and memory.
@@ -543,6 +551,7 @@ func (l *chatLoop) drainStream() {
 			l.rl.Refresh()
 		case "err":
 			msg, _ := ev["msg"].(string)
+			agent, _ := ev["agent"].(string)
 			fmt.Fprintln(l.errw, "✗ "+msg)
 			if strings.Contains(msg, "not set") || strings.Contains(msg, "API_KEY") {
 				fmt.Fprintln(l.errw, "  → /login  for auth setup")
@@ -550,6 +559,11 @@ func (l *chatLoop) drainStream() {
 			l.sess.busyMu.Lock()
 			l.sess.busy = false
 			l.sess.busyMu.Unlock()
+			// Auto-rotate on session limit if a ring is configured.
+			if agent != "" && isSessionLimitMsg(msg) {
+				go l.autoRotate(agent)
+				return
+			}
 			l.rl.Refresh()
 		case "rate_limit":
 			status, _ := ev["status"].(string)
@@ -681,6 +695,8 @@ func (l *chatLoop) handleSlash(line string) {
 		l.printLogin(agent)
 	case "quota":
 		l.printQuota()
+	case "ring":
+		l.handleRing(rest)
 	case "compact":
 		l.handleCompact()
 	case "clear":
@@ -1009,6 +1025,103 @@ func (l *chatLoop) enrichWithPalace(ctx context.Context, prompt string) string {
 	return sb.String()
 }
 
+// isSessionLimitMsg returns true when an error message signals that the
+// runner has hit a context window, session, or quota limit.
+func isSessionLimitMsg(msg string) bool {
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "session limit") ||
+		strings.Contains(lower, "context window") ||
+		strings.Contains(lower, "context_length") ||
+		strings.Contains(lower, "quota") ||
+		strings.Contains(lower, "rate limit") ||
+		strings.Contains(lower, "token limit") ||
+		strings.Contains(lower, "limit reached") ||
+		strings.Contains(lower, "daily limit")
+}
+
+// autoRotate is called when the active runner hits a session limit. It marks
+// the runner as exhausted for this session and switches to the next one in
+// the ring, delivering a context briefing so work continues seamlessly.
+func (l *chatLoop) autoRotate(exhaustedAgent string) {
+	if len(l.ring) == 0 {
+		l.rl.Refresh()
+		return
+	}
+	if l.exhausted == nil {
+		l.exhausted = make(map[string]bool)
+	}
+	l.exhausted[exhaustedAgent] = true
+
+	// Find the next runner in the ring that isn't exhausted.
+	var next string
+	for _, name := range l.ring {
+		if !l.exhausted[name] && name != exhaustedAgent {
+			next = name
+			break
+		}
+	}
+	if next == "" {
+		fmt.Fprintln(l.errw, "⚑ all runners in ring exhausted — /ring to reconfigure")
+		l.rl.Refresh()
+		return
+	}
+	fmt.Fprintf(l.out, "\n⚑ %s session limit — rotating to %s\n\n", exhaustedAgent, next)
+	l.switchAgent(next)
+}
+
+// handleRing shows or updates the runner rotation ring.
+func (l *chatLoop) handleRing(args string) {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		// Show current ring.
+		if len(l.ring) == 0 {
+			fmt.Fprintln(l.out, "  ring: off  (type /ring <r1,r2,...> to enable)")
+			return
+		}
+		fmt.Fprintf(l.out, "  ring: %s\n", strings.Join(l.ring, " → "))
+		for _, name := range l.ring {
+			mark := "  "
+			if l.exhausted[name] {
+				mark = "✗ "
+			} else if l.sess != nil && l.sess.agentID == name {
+				mark = "● "
+			}
+			fmt.Fprintf(l.out, "    %s%s\n", mark, name)
+		}
+		return
+	}
+	if args == "off" || args == "clear" {
+		l.ring = nil
+		l.exhausted = nil
+		fmt.Fprintln(l.out, "  ring: off")
+		return
+	}
+	// Parse comma or space-separated runner names.
+	parts := strings.FieldsFunc(args, func(r rune) bool { return r == ',' || r == ' ' })
+	var ring []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		valid := false
+		for _, name := range chatSwitchableAgents {
+			if name == p {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			fmt.Fprintf(l.errw, "✗ unknown runner %q — valid: %s\n", p, strings.Join(chatSwitchableAgents, ", "))
+			return
+		}
+		ring = append(ring, p)
+	}
+	l.ring = ring
+	l.exhausted = nil
+	fmt.Fprintf(l.out, "  ring: %s\n", strings.Join(ring, " → "))
+}
+
 // handlePrompt sends a typed line to the active runner. From the
 // landing zone (no agent active), prints a hint instead of dispatching.
 // Records the user turn in turnLog so /switch can hand the briefing to
@@ -1018,6 +1131,7 @@ func (l *chatLoop) handlePrompt(prompt string) {
 		fmt.Fprintln(l.errw, "✗ no client picked yet — type /1 (claude), /2 (codex), /4 (minimax), /6 (local) etc, or /help for the full list")
 		return
 	}
+	l.exhausted = nil // new prompt clears the per-prompt exhausted set
 	l.appendTurn(chatTurn{Role: "user", Text: prompt})
 	enriched := l.enrichWithPalace(context.Background(), prompt)
 	if err := l.sess.send(enriched); err != nil {
@@ -1210,6 +1324,12 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /login [client]               auth setup — API key prompt or CLI steps")
 	fmt.Fprintln(l.out, "  /exit                         exit (Ctrl+D also works)")
 	fmt.Fprintln(l.out, "  !<cmd>                        run a shell command inline")
+	fmt.Fprintln(l.out)
+
+	fmt.Fprintln(l.out, "Runner rotation:")
+	fmt.Fprintln(l.out, "  /ring                         show the current rotation ring and exhausted runners")
+	fmt.Fprintln(l.out, "  /ring <r1,r2,...>             set the auto-rotation order (e.g. /ring claude,codex,minimax)")
+	fmt.Fprintln(l.out, "  /ring off                     disable auto-rotation")
 	fmt.Fprintln(l.out)
 
 	fmt.Fprintln(l.out, "Artifacts (all runners):")

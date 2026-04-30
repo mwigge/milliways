@@ -102,6 +102,7 @@ Tab completion is available for all commands. Type `/` and press Tab to see the 
 
 | Command | Description |
 |---------|-------------|
+| `/ring [r1,r2,...]` | Show or set the auto-rotation ring; `/ring off` disables |
 | `/compact` | Summarise the session with the active runner, replace turn log with the summary |
 | `/clear` | Wipe the local turn log |
 | `/quota` | Live token/cost usage per runner (last hour) |
@@ -419,9 +420,9 @@ Kitchen: claude  Tier: learned  Risk: high
 
 ---
 
-## Runner switching and context handoff
+## Runner switching and takeover
 
-Type `/<runner>` or `/switch <runner>` to move to a different runner mid-session. Milliways builds a structured briefing from the recent turn log and sends it as the first prompt to the new runner, so it picks up where the previous one left off.
+Type `/<runner>` or `/switch <runner>` to move to a different runner mid-session. Milliways builds a structured briefing from the recent turn log and injects it as the new runner's first prompt, so it picks up exactly where the previous one left off.
 
 ```
 [briefing from claude → codex]
@@ -432,12 +433,42 @@ Recent exchange:
 Continue from here. The user's next prompt follows.
 ```
 
-When the 100-turn agentic loop limit is hit (minimax/local), milliways automatically sends a summarisation prompt asking the runner to describe what was implemented, what it fixes, and what to do next — then waits for the user to direct the next step.
+### Automatic rotation ring
+
+Configure a priority ring and milliways auto-rotates when a runner hits its session limit, quota, or context window — for all seven runners:
 
 ```bash
-▶ /switch codex          # switch and carry context
-▶ /compact               # summarise + shrink the turn log before switching
-▶ /clear                 # wipe the log for a clean start
+▶ /ring claude,codex,minimax,pool   # set rotation order
+▶ /ring                             # show ring + which runners are exhausted
+▶ /ring off                         # disable auto-rotation
+```
+
+When claude hits its limit the terminal shows:
+
+```
+⚑ claude session limit — rotating to codex
+→ codex  model: o4-mini  (codex CLI)
+[codex] ▶ ▌
+```
+
+The new runner receives the turn-log briefing as its first prompt. Exhausted runners are skipped automatically. The exhausted set clears on each new user prompt so runners become available again after a cooling period.
+
+For minimax and local (HTTP runners with a 100-turn agentic loop), hitting the limit triggers a structured summarisation before rotation:
+
+```
+────────────────────────────────────────
+ ⚑  Reached the 100-turn agentic limit.
+────────────────────────────────────────
+[summarisation streams here]
+⚑ minimax session limit — rotating to local
+```
+
+### Manual switch with context
+
+```bash
+▶ /switch codex          # switch and carry briefing
+▶ /compact               # summarise + shrink the turn log first
+▶ /clear                 # wipe log for a clean start
 ```
 
 ---
