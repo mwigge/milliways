@@ -309,12 +309,16 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 			return
 		}
 		allowedEnvKeys := map[string]bool{
-			"MINIMAX_API_KEY":         true,
-			"MINIMAX_ENDPOINT":        true,
-			"GEMINI_API_KEY":          true,
-			"OPENAI_API_KEY":          true,
-			"ANTHROPIC_API_KEY":       true,
+			"MINIMAX_API_KEY":          true,
+			"MINIMAX_MODEL":            true,
+			"MINIMAX_ENDPOINT":         true,
+			"MINIMAX_API_URL":          true,
+			"GEMINI_API_KEY":           true,
+			"OPENAI_API_KEY":           true,
+			"ANTHROPIC_API_KEY":        true,
 			"MILLIWAYS_LOCAL_ENDPOINT": true,
+			"MILLIWAYS_LOCAL_MODEL":    true,
+			"MILLIWAYS_MAX_TURNS":      true,
 		}
 		if !allowedEnvKeys[p.Key] {
 			writeError(enc, req.ID, ErrInvalidParams, "key not in allowed set: "+p.Key)

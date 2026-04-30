@@ -468,11 +468,16 @@ func (l *chatLoop) handleSlash(line string) {
 	case "agents":
 		l.printAgents()
 	case "model", "models":
-		agent := rest
-		if agent == "" && l.sess != nil {
+		agent := ""
+		if l.sess != nil {
 			agent = l.sess.agentID
 		}
-		l.printModel(agent)
+		if rest == "" {
+			l.printModel(agent)
+		} else {
+			// /model <name> — switch model for the active runner.
+			l.setModel(agent, rest)
+		}
 	case "login":
 		agent := rest
 		if agent == "" && l.sess != nil {
@@ -952,7 +957,8 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out)
 
 	fmt.Fprintln(l.out, "Session:")
-	fmt.Fprintln(l.out, "  /model [client]               show active model + endpoint (all if no client)")
+	fmt.Fprintln(l.out, "  /model                        list models for active runner + switch instructions")
+	fmt.Fprintln(l.out, "  /model <name>                 switch model live (minimax / local only)")
 	fmt.Fprintln(l.out, "  /agents                       list clients with live auth status")
 	fmt.Fprintln(l.out, "  /quota                        current quota snapshot")
 	fmt.Fprintln(l.out, "  /switch <runner>              same as /<runner>")
@@ -962,86 +968,148 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out)
 }
 
-// runnerModelInfo returns the model name and endpoint/binary that the daemon
-// will use for the given runner. It reads the same env vars the runner reads
-// so the display is always in sync with what's live.
-func runnerModelInfo(agentID string) (model, endpoint string) {
-	switch agentID {
-	case "minimax":
-		model = os.Getenv("MINIMAX_MODEL")
-		if model == "" {
-			model = "MiniMax-M2.7"
-		}
-		endpoint = os.Getenv("MINIMAX_API_URL")
-		if endpoint == "" {
-			endpoint = "https://api.minimax.io/v1/text/chatcompletion_v2"
-		}
-	case "local":
-		model = os.Getenv("MILLIWAYS_LOCAL_MODEL")
-		if model == "" {
-			model = "qwen2.5-coder-1.5b"
-		}
-		endpoint = os.Getenv("MILLIWAYS_LOCAL_ENDPOINT")
-		if endpoint == "" {
-			endpoint = "http://localhost:8765/v1"
-		}
-	case "claude":
-		model = os.Getenv("ANTHROPIC_MODEL")
-		if model == "" {
-			model = "claude (CLI default)"
-		}
-		endpoint = "claude CLI"
-	case "codex":
-		model = os.Getenv("CODEX_MODEL")
-		if model == "" {
-			model = "codex (CLI default)"
-		}
-		endpoint = "codex CLI"
-	case "copilot":
-		model = "copilot (gh CLI managed)"
-		endpoint = "gh copilot CLI"
-	case "gemini":
-		model = os.Getenv("GEMINI_MODEL")
-		if model == "" {
-			model = "gemini (CLI default)"
-		}
-		endpoint = "gemini CLI"
-	case "pool":
-		model = "routes across all available runners"
-		endpoint = "internal"
-	default:
-		model = "unknown"
-		endpoint = "unknown"
-	}
-	return
+// modelSpec describes a runner's model configuration.
+type modelSpec struct {
+	envKey   string   // env var the daemon reads per-request
+	current  string   // default when envKey is unset
+	endpoint string   // live endpoint (or CLI name)
+	choices  []string // known model names for this runner
 }
 
-// printModel shows the active model and endpoint for a runner.
-func (l *chatLoop) printModel(agentID string) {
-	if agentID == "" {
-		// No active session — show all.
-		fmt.Fprintln(l.out, "Models in use:")
-		for _, name := range chatSwitchableAgents {
-			m, ep := runnerModelInfo(name)
-			color := agentColor(name)
-			reset := "\033[0m"
-			fmt.Fprintf(l.out, "  %s%-8s%s  %s  (%s)\n", color, name, reset, m, ep)
-		}
-		return
-	}
-	m, ep := runnerModelInfo(agentID)
-	color := agentColor(agentID)
-	reset := "\033[0m"
-	fmt.Fprintf(l.out, "%s%s%s  model: %s\n", color, agentID, reset, m)
-	fmt.Fprintf(l.out, "%-10s endpoint: %s\n", "", ep)
-
-	// For HTTP runners show how to override.
+// runnerModelSpec returns the full model spec for a runner.
+func runnerModelSpec(agentID string) modelSpec {
 	switch agentID {
 	case "minimax":
-		fmt.Fprintln(l.out, "  override: MINIMAX_MODEL=<model>  MINIMAX_API_URL=<url>  (restart daemon)")
+		cur := os.Getenv("MINIMAX_MODEL")
+		if cur == "" {
+			cur = "MiniMax-M2.7"
+		}
+		ep := os.Getenv("MINIMAX_API_URL")
+		if ep == "" {
+			ep = "https://api.minimax.io/v1"
+		}
+		return modelSpec{
+			envKey:  "MINIMAX_MODEL",
+			current: cur,
+			endpoint: ep,
+			choices: []string{
+				"MiniMax-M2.7",
+				"MiniMax-Text-01",
+				"abab6.5s-chat",
+				"abab6.5g-chat",
+				"abab5.5-chat",
+			},
+		}
 	case "local":
-		fmt.Fprintln(l.out, "  override: MILLIWAYS_LOCAL_MODEL=<model>  MILLIWAYS_LOCAL_ENDPOINT=<url>  (restart daemon)")
+		cur := os.Getenv("MILLIWAYS_LOCAL_MODEL")
+		if cur == "" {
+			cur = "qwen2.5-coder-1.5b"
+		}
+		ep := os.Getenv("MILLIWAYS_LOCAL_ENDPOINT")
+		if ep == "" {
+			ep = "http://localhost:8765/v1"
+		}
+		return modelSpec{
+			envKey:   "MILLIWAYS_LOCAL_MODEL",
+			current:  cur,
+			endpoint: ep,
+			choices:  []string{"(use /list-local-models to see what's loaded)"},
+		}
+	case "claude":
+		cur := os.Getenv("ANTHROPIC_MODEL")
+		if cur == "" {
+			cur = "claude (CLI default)"
+		}
+		return modelSpec{current: cur, endpoint: "claude CLI"}
+	case "codex":
+		cur := os.Getenv("CODEX_MODEL")
+		if cur == "" {
+			cur = "codex (CLI default)"
+		}
+		return modelSpec{current: cur, endpoint: "codex CLI"}
+	case "copilot":
+		return modelSpec{current: "copilot (gh CLI managed)", endpoint: "gh copilot CLI"}
+	case "gemini":
+		cur := os.Getenv("GEMINI_MODEL")
+		if cur == "" {
+			cur = "gemini (CLI default)"
+		}
+		return modelSpec{current: cur, endpoint: "gemini CLI"}
+	case "pool":
+		return modelSpec{current: "routes across all runners", endpoint: "internal"}
 	}
+	return modelSpec{current: "unknown", endpoint: "unknown"}
+}
+
+// runnerModelInfo is a convenience wrapper returning (model, endpoint).
+func runnerModelInfo(agentID string) (model, endpoint string) {
+	s := runnerModelSpec(agentID)
+	return s.current, s.endpoint
+}
+
+// printModel shows the active model, endpoint, and switchable choices.
+// With no agentID (landing zone) it shows a summary table.
+func (l *chatLoop) printModel(agentID string) {
+	if agentID == "" {
+		fmt.Fprintln(l.out, "Active models:")
+		for _, name := range chatSwitchableAgents {
+			s := runnerModelSpec(name)
+			color := agentColor(name)
+			reset := "\033[0m"
+			fmt.Fprintf(l.out, "  %s%-8s%s  %s\n", color, name, reset, s.current)
+		}
+		fmt.Fprintln(l.out, "Switch into a runner first, then /model to list its models.")
+		return
+	}
+
+	s := runnerModelSpec(agentID)
+	color := agentColor(agentID)
+	reset := "\033[0m"
+	fmt.Fprintf(l.out, "%s%s%s  current: %s\n", color, agentID, reset, s.current)
+	fmt.Fprintf(l.out, "          endpoint: %s\n", s.endpoint)
+	if len(s.choices) > 0 {
+		fmt.Fprintln(l.out, "  available models:")
+		for _, c := range s.choices {
+			marker := "  "
+			if c == s.current {
+				marker = "▶ "
+			}
+			fmt.Fprintf(l.out, "    %s%s\n", marker, c)
+		}
+		if s.envKey != "" {
+			fmt.Fprintf(l.out, "  /model <name>  to switch\n")
+		}
+	}
+}
+
+// setModel switches the active model for the current runner by injecting
+// the runner's model env var into the daemon live via config.setenv.
+// The daemon reads the env var per-request so the next prompt uses it.
+func (l *chatLoop) setModel(agentID, newModel string) {
+	if agentID == "" {
+		fmt.Fprintln(l.errw, "✗ switch to a runner first (e.g. /minimax), then /model <name>")
+		return
+	}
+	s := runnerModelSpec(agentID)
+	if s.envKey == "" {
+		fmt.Fprintf(l.errw, "✗ %s is a CLI runner — model is set by the CLI itself, not switchable here\n", agentID)
+		return
+	}
+	if l.client == nil {
+		fmt.Fprintln(l.errw, "✗ daemon not connected")
+		return
+	}
+	var result map[string]any
+	if err := l.client.Call("config.setenv", map[string]any{
+		"key":   s.envKey,
+		"value": newModel,
+	}, &result); err != nil {
+		fmt.Fprintln(l.errw, "✗ could not set model: "+err.Error())
+		return
+	}
+	color := agentColor(agentID)
+	reset := "\033[0m"
+	fmt.Fprintf(l.out, "✓ %s%s%s model → %s  (next prompt uses it)\n", color, agentID, reset, newModel)
 }
 
 // loginSpec describes how a runner is authenticated.
