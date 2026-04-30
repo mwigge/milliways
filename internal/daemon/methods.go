@@ -295,6 +295,36 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 			return
 		}
 		writeResult(enc, req.ID, res)
+	case "config.setenv":
+		// Injects a single env var into the daemon process so runners that
+		// read it on each request (e.g. MINIMAX_API_KEY) pick it up without
+		// a restart. Only a pre-approved set of milliways-specific keys is
+		// accepted to prevent callers from mutating unrelated env vars.
+		var p struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		}
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+		allowedEnvKeys := map[string]bool{
+			"MINIMAX_API_KEY":         true,
+			"MINIMAX_ENDPOINT":        true,
+			"GEMINI_API_KEY":          true,
+			"OPENAI_API_KEY":          true,
+			"ANTHROPIC_API_KEY":       true,
+			"MILLIWAYS_LOCAL_ENDPOINT": true,
+		}
+		if !allowedEnvKeys[p.Key] {
+			writeError(enc, req.ID, ErrInvalidParams, "key not in allowed set: "+p.Key)
+			return
+		}
+		if err := os.Setenv(p.Key, p.Value); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, "setenv: "+err.Error())
+			return
+		}
+		writeResult(enc, req.ID, map[string]any{"ok": true, "key": p.Key})
 	default:
 		writeError(enc, req.ID, ErrMethodNotFound, "unknown method: "+req.Method)
 	}

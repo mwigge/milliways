@@ -909,73 +909,80 @@ func (l *chatLoop) printQuota() {
 // banner stay in sync. (Single source of truth = printLanding.)
 func (l *chatLoop) printHelp() { l.printLanding() }
 
-// printLogin shows auth setup instructions for one runner (or all if
-// agent is ""). Called by /login [agent] and automatically hinted
-// after API-key-not-set errors.
+// loginSpec describes how a runner is authenticated.
+type loginSpec struct {
+	// envKey is set for runners that authenticate via an API key.
+	// An interactive key prompt is shown and the key is injected live
+	// into the daemon via config.setenv (no restart needed).
+	envKey string
+	// cliSteps lists manual steps for CLI-auth runners (claude, codex,
+	// copilot, gemini) that handle auth in their own OAuth/browser flow.
+	cliSteps []string
+}
+
+var loginSpecs = map[string]loginSpec{
+	"claude":  {cliSteps: []string{"run `claude` once to authenticate (browser flow)"}},
+	"codex":   {cliSteps: []string{"run `codex login` (browser flow) or set OPENAI_API_KEY"}},
+	"copilot": {cliSteps: []string{"run `gh auth login` (browser flow)"}},
+	"gemini":  {cliSteps: []string{"run `gemini auth login` (browser flow) or set GEMINI_API_KEY"}},
+	"minimax": {envKey: "MINIMAX_API_KEY"},
+	"local":   {cliSteps: []string{"run /install-local-server, or set MILLIWAYS_LOCAL_ENDPOINT"}},
+}
+
+// printLogin handles /login [agent]. For API-key runners it prompts
+// interactively and injects the key live into the daemon (no restart).
+// For CLI-auth runners it prints the manual steps.
 func (l *chatLoop) printLogin(agent string) {
-	type loginInfo struct {
-		envVar  string
-		steps   []string
-	}
-	infos := map[string]loginInfo{
-		"claude": {
-			steps: []string{
-				"run `claude` once outside milliways to authenticate",
-				"or set ANTHROPIC_API_KEY and restart the daemon",
-			},
-		},
-		"codex": {
-			steps: []string{
-				"run `codex login` or set OPENAI_API_KEY and restart the daemon",
-			},
-		},
-		"copilot": {
-			steps: []string{
-				"run `gh auth login`",
-				"then restart the daemon: pkill milliwaysd && milliwaysd &",
-			},
-		},
-		"gemini": {
-			steps: []string{
-				"run `gemini auth login` or set GEMINI_API_KEY and restart the daemon",
-			},
-		},
-		"minimax": {
-			envVar: "MINIMAX_API_KEY",
-			steps: []string{
-				"export MINIMAX_API_KEY=<your-key>",
-				"restart the daemon: pkill milliwaysd && milliwaysd &",
-			},
-		},
-		"local": {
-			steps: []string{
-				"run /install-local-server to install llama.cpp",
-				"or set MILLIWAYS_LOCAL_ENDPOINT to a running backend",
-			},
-		},
-	}
-
-	print1 := func(name string, info loginInfo) {
-		fmt.Fprintf(l.out, "  %s:\n", name)
-		for _, s := range info.steps {
-			fmt.Fprintf(l.out, "    → %s\n", s)
+	if agent == "" {
+		// No agent specified — list all.
+		fmt.Fprintln(l.out, "Auth setup per runner (use /login <runner> to configure):")
+		for _, name := range chatSwitchableAgents {
+			spec, ok := loginSpecs[name]
+			if !ok {
+				continue
+			}
+			if spec.envKey != "" {
+				fmt.Fprintf(l.out, "  %-8s  → /login %s  (API key prompt)\n", name, name)
+			} else {
+				fmt.Fprintf(l.out, "  %-8s  → %s\n", name, spec.cliSteps[0])
+			}
 		}
-	}
-
-	if agent != "" {
-		info, ok := infos[agent]
-		if !ok {
-			fmt.Fprintf(l.errw, "no login info for %q (pool/custom runners need no auth)\n", agent)
-			return
-		}
-		print1(agent, info)
 		return
 	}
 
-	fmt.Fprintln(l.out, "Auth setup per runner:")
-	for _, name := range chatSwitchableAgents {
-		if info, ok := infos[name]; ok {
-			print1(name, info)
-		}
+	spec, ok := loginSpecs[agent]
+	if !ok {
+		fmt.Fprintf(l.errw, "no auth info for %q\n", agent)
+		return
 	}
+
+	// CLI-auth runner — can't prompt interactively, show steps.
+	if spec.envKey == "" {
+		fmt.Fprintf(l.out, "%s auth:\n", agent)
+		for _, s := range spec.cliSteps {
+			fmt.Fprintf(l.out, "  → %s\n", s)
+		}
+		fmt.Fprintln(l.out, "  After authenticating, the runner will work immediately.")
+		return
+	}
+
+	// API-key runner — prompt interactively then inject live via RPC.
+	fmt.Fprintf(l.out, "%s API key: ", agent)
+	key, err := l.rl.ReadPassword("")
+	if err != nil || strings.TrimSpace(string(key)) == "" {
+		fmt.Fprintln(l.errw, "✗ cancelled")
+		return
+	}
+	trimmed := strings.TrimSpace(string(key))
+
+	var result map[string]any
+	if err := l.client.Call("config.setenv", map[string]any{
+		"key":   spec.envKey,
+		"value": trimmed,
+	}, &result); err != nil {
+		fmt.Fprintln(l.errw, "✗ could not set key in daemon: "+err.Error())
+		fmt.Fprintf(l.errw, "  Fallback: export %s=<key> and restart the daemon.\n", spec.envKey)
+		return
+	}
+	fmt.Fprintf(l.out, "✓ %s set — try /%s now\n", spec.envKey, agent)
 }
