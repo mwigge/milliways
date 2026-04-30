@@ -1247,6 +1247,21 @@ func (l *chatLoop) printModel(agentID string) {
 		return
 	}
 
+	if agentID == "pool" {
+		fmt.Fprintln(l.out, "pool routes across all runners — models per runner:")
+		for _, name := range chatSwitchableAgents {
+			if name == "pool" {
+				continue
+			}
+			s := runnerModelSpec(name)
+			color := agentColor(name)
+			reset := "\033[0m"
+			fmt.Fprintf(l.out, "  %s%-8s%s  %s\n", color, name, reset, s.current)
+		}
+		fmt.Fprintln(l.out, "Switch into a runner (e.g. /minimax) to change its model.")
+		return
+	}
+
 	s := runnerModelSpec(agentID)
 	color := agentColor(agentID)
 	reset := "\033[0m"
