@@ -58,9 +58,15 @@ func TestSocketReachable(t *testing.T) {
 }
 
 // TestModeDispatch covers the parseLauncherMode argument parser. It is the
-// pre-cobra dispatch hook that decides whether to launch milliways-term or
-// fall through to cobra.
+// pre-cobra dispatch hook that decides whether to launch milliways-term,
+// print the welcome banner, or fall through to cobra.
 func TestModeDispatch(t *testing.T) {
+	// Ensure no test-host env leakage skews the no-args / not-inside-cockpit
+	// cases. WEZTERM_EXECUTABLE may be set if running inside wezterm itself.
+	t.Setenv("WEZTERM_EXECUTABLE", "")
+	t.Setenv("TERM_PROGRAM", "")
+	t.Setenv("MILLIWAYS_IN_COCKPIT", "")
+
 	tests := []struct {
 		name string
 		args []string
@@ -103,6 +109,31 @@ func TestModeDispatch(t *testing.T) {
 			got := parseLauncherMode(tt.args)
 			if got != tt.want {
 				t.Errorf("parseLauncherMode(%v) = %v, want %v", tt.args, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestModeDispatch_InsideMilliwaysTermPrintsWelcome verifies the
+// recursive-launch trap is closed: when WEZTERM_EXECUTABLE / TERM_PROGRAM
+// / MILLIWAYS_IN_COCKPIT are set, no-args returns modeWelcome instead of
+// modeCockpit (which would have re-exec'd milliways-term inside itself).
+func TestModeDispatch_InsideMilliwaysTermPrintsWelcome(t *testing.T) {
+	cases := []struct {
+		envKey, envVal string
+	}{
+		{"WEZTERM_EXECUTABLE", "/Applications/MilliWays.app/Contents/MacOS/wezterm-gui"},
+		{"TERM_PROGRAM", "WezTerm"},
+		{"MILLIWAYS_IN_COCKPIT", "1"},
+	}
+	for _, c := range cases {
+		t.Run(c.envKey, func(t *testing.T) {
+			t.Setenv("WEZTERM_EXECUTABLE", "")
+			t.Setenv("TERM_PROGRAM", "")
+			t.Setenv("MILLIWAYS_IN_COCKPIT", "")
+			t.Setenv(c.envKey, c.envVal)
+			if got := parseLauncherMode(nil); got != modeWelcome {
+				t.Errorf("parseLauncherMode(nil) with %s=%q = %v, want modeWelcome", c.envKey, c.envVal, got)
 			}
 		})
 	}

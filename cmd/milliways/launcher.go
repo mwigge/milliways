@@ -44,20 +44,86 @@ const (
 	modeCobra launcherMode = iota
 	// modeCockpit means: start the daemon (if needed), exec milliways-term.
 	modeCockpit
+	// modeWelcome means: we're already inside a milliways-term tab so
+	// re-execing the cockpit would be a recursive launch (or just confusing).
+	// Print a friendly welcome / quickstart instead.
+	modeWelcome
 )
 
 // parseLauncherMode decides how to dispatch an invocation of `milliways`
-// based on the argv (excluding argv[0]).
+// based on the argv (excluding argv[0]) and the surrounding env.
 //
 // Rules (first match wins):
 //
-//  1. argv is empty → modeCockpit (launch milliways-term)
-//  2. otherwise → modeCobra (--version, --help, subcommands, prompts)
+//  1. argv is empty AND we're already inside milliways-term → modeWelcome
+//     (print quickstart; do NOT recursively exec the cockpit)
+//  2. argv is empty → modeCockpit (launch milliways-term)
+//  3. otherwise → modeCobra (--version, --help, subcommands, prompts)
 func parseLauncherMode(args []string) launcherMode {
 	if len(args) == 0 {
+		if insideMilliwaysTerm() {
+			return modeWelcome
+		}
 		return modeCockpit
 	}
 	return modeCobra
+}
+
+// insideMilliwaysTerm returns true when the current process appears to be
+// running inside milliways-term (the wezterm fork). Detection signals:
+//   - WEZTERM_EXECUTABLE — set by wezterm in every spawned shell
+//   - TERM_PROGRAM == "WezTerm" — set by wezterm too
+//   - MILLIWAYS_IN_COCKPIT == "1" — explicit opt-in we set in the lua
+func insideMilliwaysTerm() bool {
+	if os.Getenv("WEZTERM_EXECUTABLE") != "" {
+		return true
+	}
+	if os.Getenv("TERM_PROGRAM") == "WezTerm" {
+		return true
+	}
+	if os.Getenv("MILLIWAYS_IN_COCKPIT") == "1" {
+		return true
+	}
+	return false
+}
+
+// printWelcome emits the v0.5.0 quickstart banner. Replaces the legacy
+// REPL welcome / /help that was deleted with internal/repl/. Discoverable
+// by typing `milliways` (no args) inside any milliways-term tab.
+func printWelcome() {
+	const banner = `milliways v0.5.0 — already inside MilliWays.app
+
+One-shot prompts (CLI dispatch):
+  milliways "explain the auth flow"
+  milliways -k claude "review this"
+  milliways -j "explain this"               # JSON output
+  milliways --recipe <name> "<prompt>"
+
+Ops via milliwaysctl (also surfaced as slash commands in the Leader+/ palette):
+  milliwaysctl status                       # daemon + agent health
+  milliwaysctl agents                       # registered runners + auth
+  milliwaysctl quota                        # quota / cost snapshot
+  milliwaysctl open --agent <name>          # open an agent session in a new tab
+  milliwaysctl local install-server         # first-time local-model bootstrap
+  milliwaysctl local list-models            # what local backends serve
+  milliwaysctl opsx list                    # OpenSpec changes
+
+Wezterm shortcuts (Leader = Ctrl+Space):
+  Leader + 1..4    → claude / codex / copilot / minimax agent in new tab
+  Leader + a       → claude agent split below
+  Leader + /       → milliwaysctl command palette (fuzzy + free-form)
+  Leader + r       → resume modal (last agent / wake badge)
+  Leader + k       → context overlay
+  Leader + w       → observability render
+
+Discover everything:
+  milliways --help                          # full cobra command + flag list
+  milliwaysctl --help                       # ctl subcommands
+
+The legacy --repl line-reader was removed in v0.5.0.
+Slash commands inside the wezterm palette ARE the new /help.
+`
+	fmt.Fprint(os.Stdout, banner)
 }
 
 // socketReachable returns true if a unix-domain dial to socketPath succeeds
