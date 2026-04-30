@@ -73,6 +73,24 @@ func TestChatHelpEnumeratesKnownCommands(t *testing.T) {
 func TestChatPromptFormat(t *testing.T) {
 	t.Parallel()
 
+	// Strip ANSI escapes before comparing so the test stays readable
+	// when colours are added or tweaked.
+	stripANSI := func(s string) string {
+		var out strings.Builder
+		inEsc := false
+		for _, r := range s {
+			switch {
+			case r == '\033':
+				inEsc = true
+			case inEsc && r == 'm':
+				inEsc = false
+			case !inEsc:
+				out.WriteRune(r)
+			}
+		}
+		return out.String()
+	}
+
 	cases := map[string]string{
 		"":        "[no client — pick one with /1../7 or /<name>] ▶ ",
 		"claude":  "[claude] ▶ ",
@@ -80,8 +98,8 @@ func TestChatPromptFormat(t *testing.T) {
 		"minimax": "[minimax] ▶ ",
 	}
 	for agent, want := range cases {
-		if got := chatPrompt(agent); got != want {
-			t.Errorf("chatPrompt(%q) = %q, want %q", agent, got, want)
+		if got := stripANSI(chatPrompt(agent)); got != want {
+			t.Errorf("chatPrompt(%q) stripped = %q, want %q", agent, got, want)
 		}
 	}
 }

@@ -178,12 +178,16 @@ func chatHistoryFile() string {
 }
 
 // chatPrompt renders the readline prompt header for the active agent.
-// The empty-string case is the landing-zone prompt (no client picked yet).
+// The active runner name is coloured with its identity colour; the
+// reset brings everything back to default before the ▶ cursor.
+// The empty-string case is the plain landing-zone prompt.
 func chatPrompt(agentID string) string {
 	if agentID == "" {
 		return "[no client — pick one with /1../7 or /<name>] ▶ "
 	}
-	return "[" + agentID + "] ▶ "
+	color := agentColor(agentID)
+	reset := "\033[0m"
+	return "[" + color + agentID + reset + "] ▶ "
 }
 
 // chatSession owns the lifecycle of one (agent.open + agent.stream)
@@ -835,6 +839,29 @@ func (l *chatLoop) fetchAgentStatuses() map[string]agentStatus {
 	return out
 }
 
+// agentColor returns a 256-colour ANSI escape for a runner name.
+// Each runner has a stable identity colour so they're visually distinct
+// in the landing zone and in the prompt header.
+func agentColor(name string) string {
+	switch name {
+	case "claude":
+		return "\033[97m" // pearl white (bright white)
+	case "codex":
+		return "\033[38;5;214m" // amber
+	case "copilot":
+		return "\033[38;5;69m" // cornflower blue
+	case "minimax":
+		return "\033[38;5;141m" // soft purple
+	case "gemini":
+		return "\033[38;5;208m" // orange
+	case "local":
+		return "\033[38;5;160m" // red
+	case "pool":
+		return "\033[38;5;117m" // light blue
+	}
+	return ""
+}
+
 // printLanding is the chat-startup banner: header + dynamic daemon /
 // agent state + a curated slash command map. Mirrors what the user
 // would have seen as the REPL welcome — but every command listed here
@@ -856,7 +883,9 @@ func (l *chatLoop) printLanding() {
 		if model == "" {
 			model = "—"
 		}
-		fmt.Fprintf(l.out, "  /%d  /%-10s %s  %s\n", i+1, name, s.mark, model)
+		color := agentColor(name)
+		reset := "\033[0m"
+		fmt.Fprintf(l.out, "  /%d  %s/%-10s%s %s  %s\n", i+1, color, name, reset, s.mark, model)
 	}
 	fmt.Fprintln(l.out)
 
