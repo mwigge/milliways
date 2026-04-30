@@ -90,6 +90,8 @@ var chatCtlAliases = map[string][]string{
 	"switch-local-server":  {"local", "switch-server"},
 	"download-local-model": {"local", "download-model"},
 	"setup-local-model":    {"local", "setup-model"},
+	// Metrics dashboard
+	"metrics": {"metrics"},
 	// OpenSpec wrappers
 	"opsx-list":     {"opsx", "list"},
 	"opsx-status":   {"opsx", "status"},
@@ -245,13 +247,14 @@ func runChat(ctx context.Context) error {
 	defer rl.Close()
 
 	loop := &chatLoop{
-		client:    client,
-		sess:      nil, // landing zone — no active agent until /<runner> picks one
-		rl:        rl,
+		client:   client,
+		sess:     nil, // landing zone — no active agent until /<runner> picks one
+		rl:       rl,
 		completer: sc,
-		out:       os.Stdout,
-		errw:      os.Stderr,
-		ring:      append([]string(nil), chatSwitchableAgents...), // default ring
+		out:      os.Stdout,
+		errw:     os.Stderr,
+		ring:     append([]string(nil), chatSwitchableAgents...), // default ring
+		rotateCh: make(chan string, 1),
 	}
 
 	// Wire palace recall for daemon runner sessions. Resolve the project from
@@ -424,8 +427,14 @@ type chatLoop struct {
 	// ring is the ordered fallback list for automatic runner rotation on
 	// session limits. Defaults to chatSwitchableAgents order. Can be
 	// reconfigured with /ring <r1,r2,...>. Empty = auto-rotation disabled.
+	// ringMu protects ring and exhausted which are read by drainStream's
+	// goroutine and written by the main readline goroutine.
+	ringMu   sync.Mutex
 	ring     []string
 	exhausted map[string]bool // runners that hit session limit this session
+	// rotateCh carries auto-rotation requests from drainStream to the main
+	// readline goroutine so switchAgent is always called from one goroutine.
+	rotateCh chan string
 
 	// turnLog is the rolling exchange across whichever runners the user
 	// has talked to in this chat session. Capped at chatTurnLogCap most-
@@ -471,6 +480,10 @@ func (l *chatLoop) run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case next := <-l.rotateCh:
+			// Auto-rotation request from drainStream — handle on main goroutine.
+			l.switchAgent(next)
+			continue
 		default:
 		}
 
@@ -1039,23 +1052,27 @@ func isSessionLimitMsg(msg string) bool {
 		strings.Contains(lower, "daily limit")
 }
 
-// autoRotate is called when the active runner hits a session limit. It marks
-// the runner as exhausted for this session and switches to the next one in
-// the ring, delivering a context briefing so work continues seamlessly.
+// autoRotate is called from drainStream's goroutine when a session limit fires.
+// It marks the runner as exhausted (under ringMu) and sends the next runner
+// name to rotateCh. The main readline goroutine picks it up in run() and
+// calls switchAgent safely from the correct goroutine.
 func (l *chatLoop) autoRotate(exhaustedAgent string) {
-	if len(l.ring) == 0 {
-		l.rl.Refresh()
-		return
-	}
+	l.ringMu.Lock()
+	ring := append([]string(nil), l.ring...)
 	if l.exhausted == nil {
 		l.exhausted = make(map[string]bool)
 	}
 	l.exhausted[exhaustedAgent] = true
+	exhausted := l.exhausted
+	l.ringMu.Unlock()
 
-	// Find the next runner in the ring that isn't exhausted.
+	if len(ring) == 0 {
+		l.rl.Refresh()
+		return
+	}
 	var next string
-	for _, name := range l.ring {
-		if !l.exhausted[name] && name != exhaustedAgent {
+	for _, name := range ring {
+		if !exhausted[name] && name != exhaustedAgent {
 			next = name
 			break
 		}
@@ -1066,22 +1083,34 @@ func (l *chatLoop) autoRotate(exhaustedAgent string) {
 		return
 	}
 	fmt.Fprintf(l.out, "\n⚑ %s session limit — rotating to %s\n\n", exhaustedAgent, next)
-	l.switchAgent(next)
+	// Non-blocking send: if the channel is full the rotation is dropped
+	// (rare — only happens if two limits fire simultaneously).
+	select {
+	case l.rotateCh <- next:
+	default:
+	}
+	l.rl.Refresh()
 }
 
 // handleRing shows or updates the runner rotation ring.
 func (l *chatLoop) handleRing(args string) {
 	args = strings.TrimSpace(args)
 	if args == "" {
-		// Show current ring.
-		if len(l.ring) == 0 {
+		l.ringMu.Lock()
+		ring := append([]string(nil), l.ring...)
+		exhausted := make(map[string]bool)
+		for k, v := range l.exhausted {
+			exhausted[k] = v
+		}
+		l.ringMu.Unlock()
+		if len(ring) == 0 {
 			fmt.Fprintln(l.out, "  ring: off  (type /ring <r1,r2,...> to enable)")
 			return
 		}
-		fmt.Fprintf(l.out, "  ring: %s\n", strings.Join(l.ring, " → "))
-		for _, name := range l.ring {
+		fmt.Fprintf(l.out, "  ring: %s\n", strings.Join(ring, " → "))
+		for _, name := range ring {
 			mark := "  "
-			if l.exhausted[name] {
+			if exhausted[name] {
 				mark = "✗ "
 			} else if l.sess != nil && l.sess.agentID == name {
 				mark = "● "
@@ -1091,12 +1120,13 @@ func (l *chatLoop) handleRing(args string) {
 		return
 	}
 	if args == "off" || args == "clear" {
+		l.ringMu.Lock()
 		l.ring = nil
 		l.exhausted = nil
+		l.ringMu.Unlock()
 		fmt.Fprintln(l.out, "  ring: off")
 		return
 	}
-	// Parse comma or space-separated runner names.
 	parts := strings.FieldsFunc(args, func(r rune) bool { return r == ',' || r == ' ' })
 	var ring []string
 	for _, p := range parts {
@@ -1117,8 +1147,10 @@ func (l *chatLoop) handleRing(args string) {
 		}
 		ring = append(ring, p)
 	}
+	l.ringMu.Lock()
 	l.ring = ring
 	l.exhausted = nil
+	l.ringMu.Unlock()
 	fmt.Fprintf(l.out, "  ring: %s\n", strings.Join(ring, " → "))
 }
 
@@ -1131,7 +1163,9 @@ func (l *chatLoop) handlePrompt(prompt string) {
 		fmt.Fprintln(l.errw, "✗ no client picked yet — type /1 (claude), /2 (codex), /4 (minimax), /6 (local) etc, or /help for the full list")
 		return
 	}
+	l.ringMu.Lock()
 	l.exhausted = nil // new prompt clears the per-prompt exhausted set
+	l.ringMu.Unlock()
 	l.appendTurn(chatTurn{Role: "user", Text: prompt})
 	enriched := l.enrichWithPalace(context.Background(), prompt)
 	if err := l.sess.send(enriched); err != nil {

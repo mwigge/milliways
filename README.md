@@ -475,41 +475,97 @@ For minimax and local (HTTP runners with a 100-turn agentic loop), hitting the l
 
 ## Observability
 
-Every dispatch is instrumented. milliways writes a structured NDJSON log and exposes token usage, cost, and per-runner stats without you needing to dig through terminal output.
+### Live metrics dashboard
+
+`/metrics` (in the REPL) or `milliwaysctl metrics` (CLI) shows a live rolling table of tokens, cost, and errors across five time windows for every runner:
 
 ```
-  terminal                milliways                    on-disk / UI
-     │                        │                            │
-     │   token stream         │                            │
-     │───────────────────────>│──> TranscriptWriter        │
-     │                        │       ↓                    │
-     │                        │   ~/.local/share/          │
-     │                        │   milliways/<cwd>.log      │
-     │                        │                            │
-     │                        │──> events.ndjson           │
-     │                        │   { ts, runner, tokens,    │
-     │                        │     cost_usd, prompt_id }  │
-     │                        │                            │
-     │   /metrics             │                            │
-     │───────────────────────>│                            │
-     │                        │   aggregate events         │
-     │   runner     in    out   cost                       │
-     │   claude    12k   4.2k  $0.18  ◄───────────────────│
-     │   codex      8k   2.1k  $0.09                       │
-     │   pool       3k   0.9k  $0.00                       │
-     │                        │                            │
-     │   /cost                │                            │
-     │───────────────────────>│                            │
-     │   session: $0.27  ─────────────────────────────────│
-     │   today:   $1.43                                    │
-     │   week:    $6.20                                    │
+milliways metrics  (refreshes every 5s — Ctrl+C to exit)
+
+runner     │  1 min          1 hour          24 hours        7 days          30 days
+───────────┼──────────────────────────────────────────────────────────────────────────
+claude     │  2.1k/0.8k $0.02  18k/6k $0.18  42k/14k $0.41  210k/70k $2.05  …
+codex      │  —              4.2k/1.1k $0.04  —              8k/2k $0.07     …
+minimax    │  8k/3k $0.01    —               31k/11k $0.28   …               …
+gemini     │  —              —               —               —                …
+local      │  1.2k/0.4k —   4k/1.5k —       —               —                …
+pool       │  —              —               —               —                …
+copilot    │  —              —               —               —                …
+───────────┼──────────────────────────────────────────────────────────────────────────
+total      │  11k/4k $0.03   26k/9k $0.22   73k/25k $0.69   218k/72k $2.12  …
+
+columns: tokens_in / tokens_out  cost_usd   (— = no activity in window)
 ```
 
 ```bash
-▶ /quota            # live token usage per runner (last hour)
+▶ /metrics                    # in the REPL (one-shot table)
+milliwaysctl metrics           # same, one-shot
+milliwaysctl metrics --watch   # live refresh every 5s
+milliwaysctl metrics --agent claude --tier hourly   # filter to one runner + tier
 ```
 
-The daemon exposes a `metrics.rollup.get` JSON-RPC method for detailed per-runner token/cost breakdowns, accessible via `milliwaysctl`.
+Time windows map to the metrics store tiers:
+
+| Column | Tier | Range |
+|--------|------|-------|
+| 1 min | raw | last 60 seconds |
+| 1 hour | raw | last 60 minutes (rolling, not wall-clock) |
+| 24 hours | hourly | last 24 hourly buckets |
+| 7 days | daily | last 7 daily buckets |
+| 30 days | daily | last 30 daily buckets |
+
+`/quota` shows a compact per-agent summary (last hour) without the full table.
+
+### Gen AI OpenTelemetry instrumentation
+
+Milliways follows the [OpenTelemetry Semantic Conventions for Generative AI](https://opentelemetry.io/docs/specs/semconv/gen-ai/) on all runners.
+
+**Span hierarchy:**
+
+```
+gen_ai.client.operation (per dispatch)
+  gen_ai.system = "anthropic" | "openai" | "google" | "minimax" | "poolside" | "local"
+  gen_ai.operation.name = "chat"
+  gen_ai.request.model = "claude-opus-4-5"
+  gen_ai.usage.input_tokens = 1200
+  gen_ai.usage.output_tokens = 450
+  gen_ai.response.finish_reasons = ["stop"]
+  │
+  └── gen_ai.execute_tool (per tool call, HTTP runners only)
+        gen_ai.tool.name = "Bash" | "Read" | "Edit" | "WebFetch" | …
+        gen_ai.tool.type = "function"
+        milliways.tool.blocked = false
+        milliways.tool.duration_ms = 142
+```
+
+CLI runners (claude, codex, copilot, gemini, pool) emit one span per subprocess invocation. HTTP runners (minimax, local) emit one parent span per dispatch plus one child span per tool call in the agentic loop.
+
+**Configure the OTel export:**
+
+```bash
+# Jaeger / Honeycomb / any OTLP collector
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+
+# Stdout (default when no endpoint is set)
+export OTEL_TRACES_EXPORTER=console
+
+# Service name shown in traces
+export OTEL_SERVICE_NAME=milliways
+```
+
+Without `OTEL_EXPORTER_OTLP_ENDPOINT` set, traces are written to stdout in JSON — useful for local debugging with `milliways 2>&1 | jq 'select(.Name)'`.
+
+### Metrics store
+
+The daemon stores all metrics in a SQLite database (`~/.local/state/milliways/metrics.db`) with automatic rollup from raw 1-second rows into hourly, daily, weekly, and monthly aggregates. Query it directly:
+
+```bash
+milliwaysctl metrics --metric tokens_in --tier daily --range -30d
+milliwaysctl metrics --metric cost_usd  --tier hourly --agent claude
+milliwaysctl metrics --metric error_count --tier raw --range -1h
+```
+
+Available metrics: `tokens_in`, `tokens_out`, `cost_usd`, `error_count`, `dispatch_count`, `dispatch_latency_ms`.
 
 ---
 

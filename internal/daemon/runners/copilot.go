@@ -71,7 +71,10 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		return
 	}
 
+	_, span := startDispatchSpan(parent, AgentIDCopilot, "")
+	spanErr := ""
 	defer func() {
+		endDispatchSpan(span, 0, 0, 0, spanErr)
 		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
 	}()
 
@@ -143,6 +146,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 
 	if copilotStderrSignalsLimit(lines) {
 		observeError(metrics, AgentIDCopilot)
+		spanErr = "session_limit"
 		stream.Push(map[string]any{
 			"t":     "err",
 			"agent": AgentIDCopilot,
@@ -150,6 +154,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		})
 	} else if waitErr != nil {
 		observeError(metrics, AgentIDCopilot)
+		spanErr = waitErr.Error()
 		stream.Push(map[string]any{"t": "err", "msg": "copilot exited: " + waitErr.Error()})
 	}
 }

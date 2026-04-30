@@ -132,7 +132,8 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(parent, localTimeout)
+	spanCtx, span := startDispatchSpan(parent, AgentIDLocal, model)
+	ctx, cancel := context.WithTimeout(spanCtx, localTimeout)
 	defer cancel()
 
 	registry := localRegistry()
@@ -154,6 +155,7 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	})
 	if err != nil {
 		observeError(metrics, AgentIDLocal)
+		endDispatchSpan(span, 0, 0, 0, err.Error())
 		stream.Push(classifyDispatchError(AgentIDLocal, err))
 		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
 		return
@@ -164,6 +166,7 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		// tokens for usage tracking but cost is always 0.
 		observeTokens(metrics, AgentIDLocal, result.TotalUsage.PromptTokens, result.TotalUsage.CompletionTokens, 0)
 	}
+	endDispatchSpan(span, result.TotalUsage.PromptTokens, result.TotalUsage.CompletionTokens, 0, "")
 	push := map[string]any{
 		"t":             "chunk_end",
 		"cost_usd":      0.0,

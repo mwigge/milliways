@@ -79,7 +79,10 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		return
 	}
 
+	_, span := startDispatchSpan(parent, AgentIDGemini, "")
+	spanErr := ""
 	defer func() {
+		endDispatchSpan(span, 0, 0, 0, spanErr)
 		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
 	}()
 
@@ -143,12 +146,14 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 
 	if geminiStderrSignalsLimit(lines) {
 		observeError(metrics, AgentIDGemini)
+		spanErr = "session_limit"
 		stream.Push(map[string]any{"t": "err", "agent": AgentIDGemini, "msg": "gemini: session limit reached"})
 		return
 	}
 
 	if waitErr != nil {
 		observeError(metrics, AgentIDGemini)
+		spanErr = waitErr.Error()
 		stream.Push(map[string]any{"t": "err", "msg": "gemini exited: " + waitErr.Error()})
 	}
 }

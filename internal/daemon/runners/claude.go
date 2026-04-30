@@ -124,9 +124,6 @@ func RunClaude(ctx context.Context, input <-chan []byte, stream Pusher, metrics 
 }
 
 func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
-	ctx, cancel := context.WithTimeout(parent, claudeTimeout)
-	defer cancel()
-
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		return
@@ -135,6 +132,9 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	// chunkEnd is updated with real cost/tokens before the function returns;
 	// the defer guarantees it is pushed on every exit path including early errors.
 	chunkEnd := map[string]any{"t": "chunk_end", "cost_usd": 0.0}
+	spanCtx, span := startDispatchSpan(parent, AgentIDClaude, "")
+	ctx, cancel := context.WithTimeout(spanCtx, claudeTimeout)
+	defer cancel()
 	defer func() { stream.Push(chunkEnd) }()
 
 	cwd, _ := os.Getwd()
@@ -244,6 +244,7 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		stream.Push(map[string]any{"t": "err", "msg": "claude exited: " + waitErr.Error()})
 	}
 	observeTokens(metrics, AgentIDClaude, lastResult.inputTokens, lastResult.outputTokens, lastResult.costUSD)
+	endDispatchSpan(span, lastResult.inputTokens, lastResult.outputTokens, lastResult.costUSD, "")
 	chunkEnd["cost_usd"] = lastResult.costUSD
 	chunkEnd["input_tokens"] = lastResult.inputTokens
 	chunkEnd["output_tokens"] = lastResult.outputTokens

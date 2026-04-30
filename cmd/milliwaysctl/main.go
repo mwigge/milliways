@@ -136,19 +136,11 @@ func main() {
 		contextRender(*socket, *agentID)
 	case "metrics":
 		if *metricName == "" {
-			die("metrics requires --metric <name>")
+			// No specific metric requested → show full dashboard.
+			runMetricsDashboard(*socket, *watchFlag)
+		} else {
+			callMetricsRollup(*socket, *metricName, *metricTier, *metricRange, *metricAgent)
 		}
-		params := map[string]any{
-			"metric": *metricName,
-			"tier":   *metricTier,
-		}
-		if *metricRange != "" {
-			params["range"] = map[string]any{"from": *metricRange}
-		}
-		if *metricAgent != "" {
-			params["agent_id"] = *metricAgent
-		}
-		callJSON(*socket, "metrics.rollup.get", params)
 	case "observe-render":
 		observeRender(*socket)
 	case "history-append":

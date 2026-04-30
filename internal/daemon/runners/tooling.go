@@ -264,9 +264,12 @@ func executeOneToolCall(ctx context.Context, registry *tools.Registry, sessionID
 			return fmt.Sprintf("error: invalid JSON arguments: %v", err)
 		}
 	}
-	result, err := registry.ExecTool(ctx, sessionID, call.Name, args)
+	toolCtx, toolSpan := startToolSpan(ctx, call.Name)
+	result, err := registry.ExecTool(toolCtx, sessionID, call.Name, args)
 	if err != nil {
+		endToolSpan(toolSpan, err.Error())
 		return fmt.Sprintf("error: %v", err)
 	}
+	endToolSpan(toolSpan, "")
 	return result
 }

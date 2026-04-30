@@ -152,7 +152,8 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		model = minimaxDefaultModel
 	}
 
-	ctx, cancel := context.WithTimeout(parent, minimaxTimeout)
+	spanCtx, span := startDispatchSpan(parent, AgentIDMiniMax, model)
+	ctx, cancel := context.WithTimeout(spanCtx, minimaxTimeout)
 	defer cancel()
 
 	registry := minimaxRegistry()
@@ -174,6 +175,7 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	})
 	if err != nil {
 		observeError(metrics, AgentIDMiniMax)
+		endDispatchSpan(span, 0, 0, 0, err.Error())
 		stream.Push(classifyDispatchError(AgentIDMiniMax, err))
 		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
 		return
@@ -188,6 +190,7 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	if usage.PromptTokens > 0 || usage.CompletionTokens > 0 {
 		observeTokens(metrics, AgentIDMiniMax, usage.PromptTokens, usage.CompletionTokens, cost)
 	}
+	endDispatchSpan(span, usage.PromptTokens, usage.CompletionTokens, cost, "")
 	push := map[string]any{
 		"t":             "chunk_end",
 		"cost_usd":      cost,

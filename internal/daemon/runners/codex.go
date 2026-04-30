@@ -90,7 +90,10 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		return
 	}
 
+	_, span := startDispatchSpan(parent, AgentIDCodex, "")
+	spanErr := ""
 	defer func() {
+		endDispatchSpan(span, 0, 0, 0, spanErr)
 		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
 	}()
 
@@ -173,6 +176,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 
 	if sawProxyBlock.Load() {
 		observeError(metrics, AgentIDCodex)
+		spanErr = "proxy_block"
 		stream.Push(map[string]any{
 			"t":     "err",
 			"agent": AgentIDCodex,
@@ -180,6 +184,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		})
 	} else if sawSessionLimit {
 		observeError(metrics, AgentIDCodex)
+		spanErr = "session_limit"
 		stream.Push(map[string]any{
 			"t":     "err",
 			"agent": AgentIDCodex,
@@ -187,6 +192,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		})
 	} else if waitErr != nil {
 		observeError(metrics, AgentIDCodex)
+		spanErr = waitErr.Error()
 		stream.Push(map[string]any{"t": "err", "msg": "codex exited: " + waitErr.Error()})
 	}
 }
