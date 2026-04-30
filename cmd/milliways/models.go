@@ -38,6 +38,7 @@ type modelCache struct {
 type modelCacheEntry struct {
 	models    []string
 	fetchedAt time.Time
+	fetching  bool // true while a background fetch is in flight
 }
 
 var globalModelCache = &modelCache{
@@ -46,17 +47,26 @@ var globalModelCache = &modelCache{
 	client:  &http.Client{Timeout: 5 * time.Second},
 }
 
-// Models returns the live model list for agentID, fetching from the provider
-// API if the cache is empty or stale. Returns nil when no API key is
-// configured or the fetch fails — callers should fall back to an empty list.
+// Models returns the live model list for agentID. Returns ["(fetching…)"]
+// while a background fetch is in flight so callers can show a loading state.
+// Returns nil when no API key is configured or the fetch permanently fails.
 func (c *modelCache) Models(agentID string) []string {
 	c.mu.RLock()
 	e, ok := c.entries[agentID]
 	c.mu.RUnlock()
+	if ok && e.fetching {
+		return []string{"(fetching…)"}
+	}
 	if ok && time.Since(e.fetchedAt) < c.ttl {
 		return e.models
 	}
+	// Mark as fetching before the blocking call.
+	c.mu.Lock()
+	c.entries[agentID] = modelCacheEntry{fetching: true}
+	c.mu.Unlock()
+
 	models := c.fetch(agentID)
+
 	c.mu.Lock()
 	c.entries[agentID] = modelCacheEntry{models: models, fetchedAt: time.Now()}
 	c.mu.Unlock()

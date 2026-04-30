@@ -147,14 +147,38 @@ func (l *chatLoop) handlePptx(topic string) {
 		fmt.Fprintln(l.errw, "✗ send: "+err.Error())
 		return
 	}
+	// Progress ticker while waiting for the LLM response.
+	tickDone := make(chan struct{})
+	go func() {
+		t := time.NewTicker(5 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-t.C:
+				fmt.Fprintf(l.out, "  …still generating\n")
+				l.rl.Refresh()
+			case <-tickDone:
+				return
+			}
+		}
+	}()
+
 	go func() {
 		raw, ok := <-ch
+		close(tickDone)
 		if !ok || raw == "" {
 			return
 		}
 		script := extractLangBlock(raw, "python", "py")
 		if script == "" {
-			fmt.Fprintln(l.errw, "✗ pptx: no python code block found in response")
+			fmt.Fprintf(l.errw, "✗ pptx: no python code block in response — first 200 chars:\n  %s\n",
+				truncate(raw, 200))
+			l.rl.Refresh()
+			return
+		}
+		if err := validatePythonScript(script); err != nil {
+			fmt.Fprintf(l.errw, "✗ pptx: script validation failed: %v\n  Refusing to execute.\n", err)
+			l.rl.Refresh()
 			return
 		}
 		tmp, err := os.CreateTemp("", "milliways-pptx-*.py")
@@ -181,7 +205,8 @@ func (l *chatLoop) handlePptx(topic string) {
 			}
 		}
 		if runErr != nil {
-			fmt.Fprintf(l.errw, "✗ pptx: script failed: %v\n", runErr)
+			fmt.Fprintf(l.errw, "✗ pptx: script failed: %v\n  Tip: ensure python-pptx is installed: pip install python-pptx\n", runErr)
+			l.rl.Refresh()
 			return
 		}
 		fmt.Fprintf(l.out, "\n  saved: %s\n", outPath)
@@ -365,6 +390,33 @@ func drawioPrompt(topic string) string {
 			"- Lay out shapes so they do not overlap (use x/y coordinates, ~160px apart)",
 		topic, fence,
 	)
+}
+
+// validatePythonScript checks a generated Python script for patterns that
+// could cause harm if the LLM deviated from the prompt. Blocks obvious
+// sandbox escapes; does not guarantee safety — scripts run as the current user.
+func validatePythonScript(script string) error {
+	dangerous := []string{
+		"os.system(", "subprocess.", "shutil.rmtree(", "os.remove(",
+		"os.unlink(", "__import__('os')", "exec(", "eval(",
+		"socket.", "urllib.request", "requests.", "http.client",
+		"os.makedirs(", // allowed only in the form used by pptx, but flag for review
+	}
+	lower := strings.ToLower(script)
+	for _, d := range dangerous {
+		if strings.Contains(lower, strings.ToLower(d)) {
+			return fmt.Errorf("script contains potentially unsafe pattern %q", d)
+		}
+	}
+	return nil
+}
+
+// truncate returns s truncated to maxLen characters, with "…" appended if cut.
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "…"
 }
 
 // slugify converts a string to a lowercase hyphen-separated slug.
