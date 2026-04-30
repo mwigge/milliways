@@ -105,7 +105,7 @@ func TestRunPool_StreamsStdout(t *testing.T) {
 	poolBinary = "/bin/sh"
 	defer func() { poolBinary = prev }()
 	prevArgs := poolArgsBuilder
-	poolArgsBuilder = func(prompt string) []string {
+	poolArgsBuilder = func(prompt, dir string) []string {
 		return []string{"-c", "echo poolside output"}
 	}
 	defer func() { poolArgsBuilder = prevArgs }()

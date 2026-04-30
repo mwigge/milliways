@@ -30,10 +30,14 @@ import (
 var poolBinary = "pool"
 
 // poolArgsBuilder constructs the argv passed to the Poolside CLI for a given
-// prompt. Default builds the headless invocation
-// `pool exec -p <prompt> --unsafe-auto-allow`. Tests can swap it.
-var poolArgsBuilder = func(prompt string) []string {
-	return []string{"exec", "-p", prompt, "--unsafe-auto-allow"}
+// prompt and working directory. Default builds the headless invocation
+// `pool exec -p <prompt> --directory <dir> --unsafe-auto-allow`. Tests can swap it.
+var poolArgsBuilder = func(prompt, dir string) []string {
+	args := []string{"exec", "-p", prompt, "--unsafe-auto-allow"}
+	if dir != "" {
+		args = append(args, "--directory", dir)
+	}
+	return args
 }
 
 // poolTimeout caps a single agent.send call's subprocess lifetime.
@@ -81,7 +85,7 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 	}
 
 	cwd, _ := os.Getwd()
-	cmd := exec.CommandContext(ctx, poolBinary, poolArgsBuilder(text)...)
+	cmd := exec.CommandContext(ctx, poolBinary, poolArgsBuilder(text, cwd)...)
 	cmd.Env = safeRunnerEnv()
 	if cwd != "" {
 		cmd.Dir = cwd

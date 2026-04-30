@@ -1221,7 +1221,7 @@ func runnerModelSpec(agentID string) modelSpec {
 			},
 		}
 	case "pool":
-		return modelSpec{current: "routes across all runners", endpoint: "internal"}
+		return modelSpec{current: "Poolside ACP", endpoint: "~/.config/poolside"}
 	}
 	return modelSpec{current: "unknown", endpoint: "unknown"}
 }
@@ -1248,17 +1248,12 @@ func (l *chatLoop) printModel(agentID string) {
 	}
 
 	if agentID == "pool" {
-		fmt.Fprintln(l.out, "pool routes across all runners — models per runner:")
-		for _, name := range chatSwitchableAgents {
-			if name == "pool" {
-				continue
-			}
-			s := runnerModelSpec(name)
-			color := agentColor(name)
-			reset := "\033[0m"
-			fmt.Fprintf(l.out, "  %s%-8s%s  %s\n", color, name, reset, s.current)
-		}
-		fmt.Fprintln(l.out, "Switch into a runner (e.g. /minimax) to change its model.")
+		s := runnerModelSpec("pool")
+		color := agentColor("pool")
+		reset := "\033[0m"
+		fmt.Fprintf(l.out, "%spool%s  %s\n", color, reset, s.current)
+		fmt.Fprintf(l.out, "       credentials: %s\n", s.endpoint)
+		fmt.Fprintln(l.out, "  Run `pool login` to authenticate. Use /login pool for setup steps.")
 		return
 	}
 
@@ -1330,6 +1325,7 @@ var loginSpecs = map[string]loginSpec{
 	"gemini":  {cliSteps: []string{"run `gemini auth login` (browser flow) or set GEMINI_API_KEY"}},
 	"minimax": {envKey: "MINIMAX_API_KEY"},
 	"local":   {cliSteps: []string{"run /install-local-server, or set MILLIWAYS_LOCAL_ENDPOINT"}},
+	"pool":    {cliSteps: []string{"run `pool login` to authenticate with Poolside"}},
 }
 
 // printLogin handles /login [agent]. For API-key runners it prompts

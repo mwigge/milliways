@@ -103,7 +103,7 @@ var installSpecs = []installSpec{
 	},
 	{
 		client: "pool",
-		info:   "pool is an internal aggregator across the other runners — nothing to install. It activates automatically once at least one underlying runner is configured.",
+		info:   "pool connects to the Poolside ACP server. Run `pool login` to authenticate, then use /pool in the chat.",
 	},
 }
 
