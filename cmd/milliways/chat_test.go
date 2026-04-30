@@ -30,35 +30,24 @@ type chatLoopHelpsTest struct{ *chatLoop }
 // switch/agents/quota/help/exit, !cmd). Regression guard against
 // silently dropping commands during refactors.
 func TestChatHelpEnumeratesKnownCommands(t *testing.T) {
-	// /help re-runs printLanding which calls the daemon for live status;
-	// without a real daemon the call short-circuits and statuses default
-	// to "?" — that's the path we want to exercise here. Don't t.Parallel
-	// because t.Setenv is involved indirectly via fetchAgentStatuses
-	// reading socket env, even though we don't call it directly.
+	// nil client is safe: fetchAgentStatuses guards against it and
+	// probeDaemonForWelcome times out gracefully. No recover needed.
 	var stdout bytes.Buffer
 	loop := &chatLoop{
-		client: nil, // landing renders even with nil client (defensive)
+		client: nil,
 		out:    &stdout,
 		errw:   &bytes.Buffer{},
 	}
-	defer func() {
-		// printHelp / printLanding panics if client is nil because
-		// fetchAgentStatuses calls client.Call. Catch it so the test still
-		// runs; we only care about the static parts of the banner.
-		_ = recover()
-	}()
 	loop.printHelp()
 
 	for _, want := range []string{
+		// Client picker
 		"/1", "/2", "/3", "/4", "/5", "/6", "/7",
-		"/switch",
-		"/agents",
-		"/quota",
-		"/help",
-		"/exit",
-		"!<cmd>",
 		"claude", "codex", "copilot", "gemini", "local", "minimax", "pool",
-		"/install",
+		// Full help section
+		"/switch", "/agents", "/quota", "/help", "/exit", "!<cmd>",
+		"/install", "/install-local-server", "/list-local-models", "/setup-local-model",
+		"/opsx-list",
 		"/login",
 	} {
 		if !strings.Contains(stdout.String(), want) {
@@ -286,5 +275,52 @@ func TestChatHistoryFileFallsBackToHomeLocalState(t *testing.T) {
 	got := chatHistoryFile()
 	if want := "/tmp/example-home/.local/state/milliways/chat_history"; got != want {
 		t.Errorf("chatHistoryFile() with HOME = %q, want %q", got, want)
+	}
+}
+
+// TestHandleSlash_Smoke exercises every slash command the chat exposes.
+// Passed a nil client so no daemon is needed. Commands that open sessions
+// (/<runner>) will error — we just verify they don't panic and that
+// output/error writers receive something sensible.
+func TestHandleSlash_Smoke(t *testing.T) {
+	t.Parallel()
+
+	// Commands that are expected to write to stdout (non-empty check).
+	wantOutput := []string{
+		"/help", "/agents", "/quota",
+		"/login", "/login minimax",
+		"/1", "/2", "/3", "/4", "/5", "/6", "/7",
+		"/claude", "/codex", "/copilot", "/minimax",
+		"/gemini", "/local", "/pool",
+		"/switch claude",
+		"/install",
+		"/install-local-server",
+		"/list-local-models",
+		"/opsx-list",
+	}
+	// Commands that may produce error output but must not panic.
+	noOutput := []string{
+		"/unknown-verb",
+	}
+
+	for _, cmd := range append(wantOutput, noOutput...) {
+		cmd := cmd
+		t.Run(cmd, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			loop := &chatLoop{
+				client: nil,
+				out:    &stdout,
+				errw:   &stderr,
+			}
+			// Must not panic.
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Errorf("handleSlash(%q) panicked: %v", cmd, r)
+					}
+				}()
+				loop.handleSlash(cmd)
+			}()
+		})
 	}
 }

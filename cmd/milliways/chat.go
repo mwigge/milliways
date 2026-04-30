@@ -563,6 +563,10 @@ func lookupCtlBinary() string {
 // any action. From the landing zone (no prior session), no briefing is
 // sent.
 func (l *chatLoop) switchAgent(newID string) {
+	if l.client == nil {
+		fmt.Fprintln(l.errw, "✗ daemon not connected — start milliwaysd first")
+		return
+	}
 	if l.sess != nil && newID == l.sess.agentID {
 		fmt.Fprintln(l.errw, "(already on "+newID+")")
 		return
@@ -816,6 +820,9 @@ func (l *chatLoop) fetchAgentStatuses() map[string]agentStatus {
 	for _, name := range chatSwitchableAgents {
 		out[name] = agentStatus{mark: "?", model: ""}
 	}
+	if l.client == nil {
+		return out
+	}
 	var resp struct {
 		Agents []struct {
 			ID         string `json:"id"`
@@ -896,6 +903,10 @@ func (l *chatLoop) printLanding() {
 
 // printQuota queries the daemon's quota.get.
 func (l *chatLoop) printQuota() {
+	if l.client == nil {
+		fmt.Fprintln(l.errw, "✗ daemon not connected")
+		return
+	}
 	var resp any
 	if err := l.client.Call("quota.get", nil, &resp); err != nil {
 		fmt.Fprintln(l.errw, "✗ quota.get: "+err.Error())
@@ -906,9 +917,40 @@ func (l *chatLoop) printQuota() {
 	_ = enc.Encode(resp)
 }
 
-// printHelp re-runs the landing-zone banner so /help and the startup
-// banner stay in sync. (Single source of truth = printLanding.)
-func (l *chatLoop) printHelp() { l.printLanding() }
+// printHelp shows the full command reference. Kept separate from
+// printLanding so the startup banner stays minimal.
+func (l *chatLoop) printHelp() {
+	l.printLanding() // client list + daemon status
+
+	fmt.Fprintln(l.out, "Client install:")
+	fmt.Fprintln(l.out, "  /install <client>             claude | codex | copilot | gemini | local")
+	fmt.Fprintln(l.out, "  /install                      list supported install routes")
+	fmt.Fprintln(l.out)
+
+	fmt.Fprintln(l.out, "Local-model bootstrap:")
+	fmt.Fprintln(l.out, "  /install-local-server         install llama.cpp + default coder model")
+	fmt.Fprintln(l.out, "  /install-local-swap           install llama-swap (hot model swap)")
+	fmt.Fprintln(l.out, "  /list-local-models            show models the active backend serves")
+	fmt.Fprintln(l.out, "  /switch-local-server <kind>   llama-server | llama-swap | ollama | vllm | lmstudio")
+	fmt.Fprintln(l.out, "  /download-local-model <repo>  fetch a GGUF from HuggingFace")
+	fmt.Fprintln(l.out, "  /setup-local-model <repo>     download + register in llama-swap.yaml")
+	fmt.Fprintln(l.out)
+
+	fmt.Fprintln(l.out, "OpenSpec:")
+	fmt.Fprintln(l.out, "  /opsx-list                    list openspec changes")
+	fmt.Fprintln(l.out, "  /opsx-status <change>         show change progress")
+	fmt.Fprintln(l.out, "  /opsx-show <change>           show full change detail")
+	fmt.Fprintln(l.out)
+
+	fmt.Fprintln(l.out, "Session:")
+	fmt.Fprintln(l.out, "  /agents                       list clients with live auth status")
+	fmt.Fprintln(l.out, "  /quota                        current quota snapshot")
+	fmt.Fprintln(l.out, "  /switch <runner>              same as /<runner>")
+	fmt.Fprintln(l.out, "  /login [client]               auth setup — API key prompt or CLI steps")
+	fmt.Fprintln(l.out, "  /exit                         exit (Ctrl+D also works)")
+	fmt.Fprintln(l.out, "  !<cmd>                        run a shell command inline")
+	fmt.Fprintln(l.out)
+}
 
 // loginSpec describes how a runner is authenticated.
 type loginSpec struct {
