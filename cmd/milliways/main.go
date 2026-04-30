@@ -47,7 +47,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "0.5.0"
+var version = "0.5.1"
 
 // dispatchOpts groups the parameters for the dispatch function.
 type dispatchOpts struct {
