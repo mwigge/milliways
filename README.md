@@ -28,7 +28,7 @@ cd milliways
 ./install.sh          # builds from the checkout, no network needed
 ```
 
-Requires Go 1.22+.
+Requires Go 1.26+.
 
 ### Go install (CLI only)
 
@@ -68,145 +68,103 @@ When the laptop wakes from sleep, the status bar shows an orange **⚡ woke Xm a
 Start the AI terminal with `milliways` (default when no arguments are given). The launcher starts `milliwaysd` if needed, then execs `milliways-term`.
 
 ```text
-milliways 0.5.0
-  type /help for commands
-  runners: claude | codex | copilot | gemini | local | minimax | pool
+milliways v0.9.4
+  /login [client]  set up auth      /help  show all commands      /exit  quit
+  /1 claude  /2 codex  /3 copilot  /4 minimax  /5 gemini  /6 local  /7 pool
 
 ▶ /claude
-Switched to claude
+→ claude  model: claude-opus-4-5  (claude CLI)
 
-▶ explain the auth flow
-[claude] ...streaming...
-✓ claude  3.2s
+[claude] ▶ explain the auth flow
+...streaming...
 
- claude | mo:3 | 1.2k↑ 0.8k↓ | $0.02
+  ($0.02 · 1.2k→0.8k tok)
 ```
 
 Sessions are auto-saved per working directory and restored on the next `milliways` launch. Context fragments expand inline before dispatch: `@file`, `@git`, `@branch`, `@shell`.
 
 ### Commands
 
+Tab completion is available for all commands. Type `/` and press Tab to see the full list; commands are filtered as you type.
+
 **Routing**
 
 | Command | Description |
 |---------|-------------|
-| `/switch <runner>` | Switch to a runner |
-| `/claude` | Switch to claude |
-| `/codex` | Switch to codex |
-| `/minimax` | Switch to minimax |
-| `/copilot` | Switch to copilot |
-| `/pool` | Switch to pool |
-| `/gemini` | Switch to gemini |
-| `/local` | Switch to local |
-| `/stick` | Keep current runner until released |
-| `/back` | Undo the most recent switch |
-| `?` | Show milliways shortcuts reference |
-| `/model` | Interactive model picker (arrow keys) or list |
-| `/model <id>` | Set model for the current runner |
-| `/takeover [runner]` | Hand off to another runner with full context briefing |
-| `/takeover-ring <r1,r2,...>` | Configure auto-rotation ring (cycles on session limit) |
+| `/claude` `/codex` `/copilot` `/minimax` `/gemini` `/local` `/pool` | Switch to a runner |
+| `/1` … `/7` | Numeric shortcut for the runner list |
+| `/switch <runner>` | Same as `/<runner>` |
+| `/model` | Show active model and available choices (fetched live from the provider API) |
+| `/model <name>` | Switch model for the active runner |
+| `/agents` | Show all runners with auth status |
 
-**Session**
+**Session context**
 
 | Command | Description |
 |---------|-------------|
-| `/session [name]` | Show or name the session |
-| `/history` | Show command history (`!N` re-run, `!!` last, `ctrl-r` search) |
-| `/summary` | Show session statistics |
-| `/cost` | Show session cost |
-| `/limit` | Show runner quotas |
-| `/openspec` | Show current OpenSpec change |
-| `/repo` | Show current git repository |
+| `/compact` | Summarise the session with the active runner, replace turn log with the summary |
+| `/clear` | Wipe the local turn log |
+| `/quota` | Live token/cost usage per runner (last hour) |
+| `/login [client]` | Auth setup — API key prompt or CLI steps |
+
+**Artifacts (all runners)**
+
+| Command | Description |
+|---------|-------------|
+| `/pptx <topic>` | Ask the active runner to generate a python-pptx script, run it, save `.pptx` to cwd |
+| `/drawio <topic>` | Ask the active runner to generate draw.io XML, save `.drawio` to cwd |
+| `/review [focus]` | Get `git diff HEAD` and ask the active runner to review it |
+
+**Local-model bootstrap**
+
+| Command | Description |
+|---------|-------------|
+| `/install-local-server` | Install llama.cpp + default coder model |
+| `/install-local-swap` | Install llama-swap (hot model switching) |
+| `/list-local-models` | Show models the backend serves |
+| `/switch-local-server <kind>` | Switch backend: `llama-server` \| `llama-swap` \| `ollama` \| `vllm` \| `lmstudio` |
+| `/download-local-model <repo>` | Fetch a GGUF from HuggingFace |
+| `/setup-local-model <repo>` | Download + register in llama-swap.yaml |
 
 **OpenSpec**
 
 | Command | Description |
 |---------|-------------|
-| `/opsx:list` | List active changes |
-| `/opsx:status [name]` | Show task completion |
-| `/opsx:show <name>` | Show change detail |
-| `/opsx:apply <name>` | Fetch instructions and dispatch to current runner |
-| `/opsx:explore [name]` | Investigate without implementing |
-| `/opsx:archive <name>` | Archive a completed change |
-| `/opsx:validate <name>` | Validate a change |
+| `/opsx-list` | List OpenSpec changes |
+| `/opsx-status <change>` | Show change progress |
+| `/opsx-show <change>` | Show full change detail |
+| `/opsx-archive <change>` | Archive a completed change |
+| `/opsx-validate <change>` | Validate a change |
 
-**Artifacts**
+**Client-native commands**
 
-| Command | Description |
-|---------|-------------|
-| `/apply` | Write fenced code blocks from the last response to disk |
-| `/image <path>` | Attach an image to the next prompt |
-| `/image list` | List pending images |
-| `/image clear` | Clear pending images |
-| `/pptx <topic>` | Generate a PowerPoint presentation (saved to cwd) |
-| `/drawio <topic>` | Generate a draw.io diagram XML (saved to cwd) |
+Some runners expose their own slash commands that milliways passes through directly. These appear in tab completion when the runner is active.
 
-**Claude**
+| Runner | Native commands |
+|--------|----------------|
+| copilot | `/diff` `/pr` `/review` `/plan` `/delegate` `/research` `/resume` `/compact` `/share` |
+| pool | `/mode` |
+| claude | `/compact` `/clear` |
+| codex | `/compact` |
+| gemini | `/clear` `/chat` |
 
-| Command | Description |
-|---------|-------------|
-| `/claude-reasoning [off\|summary\|verbose]` | Set progress detail (default: verbose) |
-| `/claude-model <model>` | Override model |
-
-**MiniMax**
+**System**
 
 | Command | Description |
 |---------|-------------|
-| `/minimax-reasoning [off\|summary\|verbose]` | Set progress detail |
-| `/minimax-model` | List all models (chat / image / music / lyrics) |
-| `/minimax-model <model>` | Set model — routes to the correct endpoint automatically |
-
-**Codex**
-
-| Command | Description |
-|---------|-------------|
-| `/codex-reasoning [off\|summary\|verbose]` | Set progress detail |
-| `/codex-model <model>` | Override model |
-| `/codex-profile <name>` | Set config profile |
-| `/codex-sandbox <mode>` | Set sandbox policy |
-| `/codex-approval <mode>` | Set approval policy |
-| `/codex-search <on\|off>` | Toggle web search |
-| `/codex-image add\|clear\|list [path]` | Attach images |
-| `/codex-review [args]` | Run codex review (default: `--uncommitted`) |
-| `/codex-resume [args]` | Resume Codex session |
-| `/codex-fork [args]` | Fork Codex session |
-| `/codex-cloud [args]` | Codex Cloud command |
-| `/codex-apply <task-id>` | Apply a Codex task diff |
-| `/codex-mcp [args]` | Manage Codex MCP servers |
-| `/codex-features [args]` | Inspect Codex features |
-
-**Pool**
-
-| Command | Description |
-|---------|-------------|
-| `/pool-model <model>` | Set the pool model |
-| `/pool-mode <mode>` | Set the pool session mode |
-
-**Gemini**
-
-| Command | Description |
-|---------|-------------|
-| `/gemini-model <model>` | Override model |
-
-**Observability**
-
-| Command | Description |
-|---------|-------------|
-| `/metrics` | Per-runner cost and token usage |
-| `/logs [N]` | Last N log entries (default 50) |
-| `/events` | Conversation events this session |
-
-**Auth / system**
-
-| Command | Description |
-|---------|-------------|
-| `/login` | Login to current runner |
-| `/logout` | Logout from current runner |
-| `/auth` | Show auth status for all runners |
-| `/review-all [branch]` | Review branch across all authenticated runners |
 | `/help` | Show all commands |
-| `/exit` | Exit |
-| `!<cmd>` | Run a shell command |
+| `/exit` | Exit (Ctrl+D also works) |
+| `!<cmd>` | Run a shell command inline |
+
+**Install clients**
+
+```bash
+/install claude        # install claude CLI
+/install codex         # install codex CLI
+/install copilot       # install copilot CLI
+/install gemini        # install gemini CLI
+/install local         # install local model server
+```
 
 ---
 
@@ -315,8 +273,7 @@ milliways feeds it history and rules as synthetic input turns over `--input-form
 
 ```bash
 ▶ /claude
-▶ /claude-model claude-opus-4-7
-▶ /claude-reasoning verbose
+▶ /model claude-opus-4-7   # switch model live
 ```
 
 ### Codex
@@ -329,9 +286,7 @@ Good pick for: autonomous coding tasks where you want tight sandboxing control.
 
 ```bash
 ▶ /codex
-▶ /codex-model o4-mini
-▶ /codex-approval auto-edit
-▶ /codex-sandbox none
+▶ /model o4-mini           # switch model live; list fetched from OpenAI API
 ```
 
 ### MiniMax
@@ -353,8 +308,7 @@ kitchens:
 
 ```bash
 ▶ /minimax
-▶ /minimax-model MiniMax-M2.7
-▶ /minimax-reasoning verbose
+▶ /model MiniMax-M2.7      # switch model live; list fetched from MiniMax API
 ```
 
 ### GitHub Copilot
@@ -380,8 +334,7 @@ milliways runs `pool exec -p <prompt> --unsafe-auto-allow` with optional `--mode
 
 ```bash
 ▶ /pool
-▶ /pool-model <model>
-▶ /pool-mode plan        # plan mode — read-only, no writes
+▶ /mode plan             # plan mode — read-only, no writes (forwarded to pool CLI)
 pool login               # auth (run once)
 ```
 
@@ -395,8 +348,8 @@ milliways runs `gemini -p <prompt> -y` (`-y` auto-approves all tool actions — 
 
 ```bash
 ▶ /gemini
-▶ /gemini-model gemini-2.5-pro
-gcloud auth login        # auth (run once)
+▶ /model gemini-2.5-pro    # switch model live; list fetched from Google API
+gcloud auth login          # auth (run once)
 ```
 
 ### Local (llama.cpp + Unsloth)
@@ -407,10 +360,8 @@ The `local` runner is for when the wifi is down, the bill is up, or you just wan
 
 ```bash
 ▶ /local
-▶ /models                                    # list models the backend serves
-▶ /model qwen2.5-coder-1.5b                  # switch (works contextually on every runner)
-▶ /local-temp 0.2                            # sampling temperature (0.0–2.0, or 'default')
-▶ /local-max-tokens 512                      # cap reply length, or 'off' for unlimited
+▶ /list-local-models                         # list models the backend serves
+▶ /model qwen2.5-coder-1.5b                  # switch model live
 ```
 
 There's a full chapter further down — see **[Local models](#local-models)** for architecture, hot-swap setup, memory budgeting, and troubleshooting.
@@ -468,96 +419,26 @@ Kitchen: claude  Tier: learned  Risk: high
 
 ---
 
-## Session rotation and runner takeover
+## Runner switching and context handoff
 
-When a runner hits its session limit (context window, daily quota, rate limit), milliways can automatically rotate to the next runner in a priority ring and re-dispatch the original prompt — so work continues without interruption.
+Type `/<runner>` or `/switch <runner>` to move to a different runner mid-session. Milliways builds a structured briefing from the recent turn log and sends it as the first prompt to the new runner, so it picks up where the previous one left off.
 
-### Automatic rotation
+```
+[briefing from claude → codex]
+Recent exchange:
+  user: implement the auth middleware
+  claude: Added JWT validation...wrote unit tests...
+
+Continue from here. The user's next prompt follows.
+```
+
+When the 100-turn agentic loop limit is hit (minimax/local), milliways automatically sends a summarisation prompt asking the runner to describe what was implemented, what it fixes, and what to do next — then waits for the user to direct the next step.
 
 ```bash
-▶ /takeover-ring claude,codex,minimax
-Rotation ring set: claude → codex → minimax → claude
+▶ /switch codex          # switch and carry context
+▶ /compact               # summarise + shrink the turn log before switching
+▶ /clear                 # wipe the log for a clean start
 ```
-
-The status bar shows your position in the ring: `●claude 1/3`. When claude hits its limit, milliways auto-rotates to codex and prints:
-
-```
-[auto-takeover] claude session limit — continuing on codex
-```
-
-The new runner receives a structured briefing so it knows what was being worked on:
-
-```
-[TAKEOVER from claude → codex]
-## Current task
-Implement the auth middleware
-## Progress
-- Added JWT validation to the middleware chain
-- Wrote unit tests for token expiry
-## Files changed
-internal/auth/middleware.go
-internal/auth/middleware_test.go
-## Next step
-Wire the middleware into the router in cmd/server/main.go
-```
-
-### Manual takeover
-
-```bash
-▶ /takeover codex        # hand off to a specific runner
-▶ /takeover              # use ring-next when a ring is active
-```
-
-Without an active ring, `/takeover` requires an explicit target runner.
-
-### Context fidelity — TTY transcript
-
-milliways writes a full ANSI-stripped transcript of every token printed to the terminal to a stable per-working-directory `.log` file in the session store. The briefing generator reads this transcript rather than the 20-turn ring buffer, so **the new runner gets complete context back to the first prompt** — not just the last 20 turns.
-
-```
-  terminal                milliways                   next runner
-     │                        │                            │
-     │   ──── session ────    │                            │
-     │   token stream         │                            │
-     │───────────────────────>│──> TranscriptWriter        │
-     │                        │       ↓                    │
-     │                        │   session.log  (on disk)   │
-     │                        │                            │
-     │   /takeover codex ─    │                            │
-     │   (or: auto-rotate)    │                            │
-     │───────────────────────>│                            │
-     │                        │   BriefingGenerator        │
-     │                        │   reads session.log        │
-     │                        │   ↓                        │
-     │                        │   structured briefing      │
-     │                        │   ┌────────────────────┐   │
-     │                        │   │ ## Current task    │   │
-     │                        │   │ ## Progress        │   │
-     │                        │   │ ## Files changed   │   │
-     │                        │   │ ## Next step       │   │
-     │                        │   └────────────────────┘   │
-     │                        │                            │
-     │                        │   inject briefing          │
-     │                        │   + original prompt        │
-     │                        ├──────────────────────────> │
-     │                        │                            │  ● continues work
-     │   streamed output      │   stream tokens            │
-     │<───────────────────────┤<───────────────────────────│
-     │                        │                            │
-     │                        │   MemPalace (async)        │
-     │                        │   snapshot to palace ─────>│ (background)
-```
-
-The MemPalace snapshot runs in the background — it does not block the handoff. When the new runner is up and running, relevant memories from previous sessions are already available via MCP.
-
-### Ring commands
-
-| Command | Description |
-|---------|-------------|
-| `/takeover-ring claude,codex,minimax` | Set rotation ring |
-| `/takeover-ring` | Show current ring |
-| `/takeover-ring off` | Clear ring |
-| `/takeover [runner]` | Manual handoff with briefing |
 
 ---
 
@@ -594,10 +475,10 @@ Every dispatch is instrumented. milliways writes a structured NDJSON log and exp
 ```
 
 ```bash
-▶ /metrics          # per-runner token + cost breakdown
-▶ /cost             # session / today / week totals
-▶ /quota            # remaining quota per runner (where available)
+▶ /quota            # live token usage per runner (last hour)
 ```
+
+The daemon exposes a `metrics.rollup.get` JSON-RPC method for detailed per-runner token/cost breakdowns, accessible via `milliwaysctl`.
 
 ---
 
