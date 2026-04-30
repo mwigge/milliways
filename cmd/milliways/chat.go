@@ -1047,7 +1047,7 @@ func (l *chatLoop) printLanding() {
 	}
 	fmt.Fprintln(l.out)
 
-	fmt.Fprintln(l.out, "  /login [client]   auth setup    /help  all commands   /exit  quit")
+	fmt.Fprintln(l.out, "  /login [client]  set up auth      /help  show all commands      /exit  quit")
 	fmt.Fprintln(l.out)
 }
 
@@ -1195,8 +1195,8 @@ func runnerModelSpec(agentID string) modelSpec {
 		}
 	case "copilot":
 		return modelSpec{
-			current:  "copilot (gh CLI managed)",
-			endpoint: "gh copilot CLI",
+			current:  "copilot",
+			endpoint: "copilot CLI",
 			choices:  []string{"(model selection managed by GitHub Copilot CLI — use `gh copilot` flags)"},
 		}
 	case "gemini":
