@@ -110,8 +110,8 @@ var clientSlashCommands = map[string][]string{
 	"claude": {"/compact", "/clear"},
 	"codex":  {"/compact"},
 	"gemini": {"/clear", "/chat"},
-	"local":  {},
-	"minimax": {},
+	"local":   {"/compact", "/clear", "/review", "/pptx", "/drawio"},
+	"minimax": {"/compact", "/clear", "/review", "/pptx", "/drawio"},
 }
 
 // switchableCompleter wraps an AutoCompleter behind a mutex so it can be
@@ -194,6 +194,12 @@ func buildCompleter(agentID string) readline.AutoCompleter {
 		readline.PcItem("/opsx-show"),
 		readline.PcItem("/opsx-archive"),
 		readline.PcItem("/opsx-validate"),
+		// Artifact + context commands (milliways-level, work for all runners).
+		readline.PcItem("/compact"),
+		readline.PcItem("/clear"),
+		readline.PcItem("/review"),
+		readline.PcItem("/pptx"),
+		readline.PcItem("/drawio"),
 	)
 	// Append the active client's native slash commands.
 	for _, cmd := range clientSlashCommands[agentID] {
@@ -405,7 +411,9 @@ type chatLoop struct {
 	errw      io.Writer
 	// palace, when non-nil, is queried on each user prompt to inject
 	// relevant project memory as a context prefix before the runner sees it.
-	palace *mempalace.Client
+	palace   *mempalace.Client
+	// artifact collects the assistant response text for /pptx, /drawio, /compact.
+	artifact artifactChState
 
 	// turnLog is the rolling exchange across whichever runners the user
 	// has talked to in this chat session. Capped at chatTurnLogCap most-
@@ -511,10 +519,18 @@ func (l *chatLoop) drainStream() {
 		case "chunk_end":
 			fmt.Fprintln(l.out)
 			// Snapshot + reset the streamed response into a turn entry.
-			if text := strings.TrimRight(l.pendingAssistant.String(), "\n"); text != "" {
-				l.appendTurn(chatTurn{Role: "assistant", AgentID: l.sess.agentID, Text: text})
+			assistantText := strings.TrimRight(l.pendingAssistant.String(), "\n")
+			if assistantText != "" {
+				l.appendTurn(chatTurn{Role: "assistant", AgentID: l.sess.agentID, Text: assistantText})
 			}
 			l.pendingAssistant.Reset()
+			// Deliver response text to any waiting artifact handler.
+			if ch := l.artifact.take(); ch != nil {
+				if assistantText != "" {
+					ch <- assistantText
+				}
+				close(ch)
+			}
 			l.sess.busyMu.Lock()
 			l.sess.busy = false
 			l.sess.busyMu.Unlock()
@@ -611,6 +627,22 @@ func (l *chatLoop) handleSlash(line string) {
 		}
 	}
 
+	// Client-native command: if the active runner has this verb in its table,
+	// pass it through directly (e.g. copilot's /diff, /pr; pool's /mode).
+	// This check runs BEFORE the milliways switch so native client commands
+	// aren't shadowed by milliways built-ins for runners that own them.
+	if l.sess != nil {
+		for _, cmd := range clientSlashCommands[l.sess.agentID] {
+			if strings.TrimPrefix(cmd, "/") == verb {
+				l.appendTurn(chatTurn{Role: "user", Text: line})
+				if err := l.sess.send(line); err != nil {
+					fmt.Fprintln(l.errw, "✗ send: "+err.Error())
+				}
+				return
+			}
+		}
+	}
+
 	// Curated ctl alias: /<alias> → milliwaysctl <args...> [rest...]
 	if args, ok := chatCtlAliases[verb]; ok {
 		l.runCtl(append(append([]string{}, args...), splitFields(rest)...))
@@ -645,6 +677,16 @@ func (l *chatLoop) handleSlash(line string) {
 		l.printLogin(agent)
 	case "quota":
 		l.printQuota()
+	case "compact":
+		l.handleCompact()
+	case "clear":
+		l.handleClear()
+	case "review":
+		l.handleReview(rest)
+	case "pptx":
+		l.handlePptx(rest)
+	case "drawio":
+		l.handleDrawio(rest)
 	case "help", "?":
 		l.printHelp()
 	case "exit", "quit", "bye":
@@ -1162,6 +1204,14 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /login [client]               auth setup — API key prompt or CLI steps")
 	fmt.Fprintln(l.out, "  /exit                         exit (Ctrl+D also works)")
 	fmt.Fprintln(l.out, "  !<cmd>                        run a shell command inline")
+	fmt.Fprintln(l.out)
+
+	fmt.Fprintln(l.out, "Artifacts (all runners):")
+	fmt.Fprintln(l.out, "  /pptx <topic>                 generate a PowerPoint via python-pptx (saved to cwd)")
+	fmt.Fprintln(l.out, "  /drawio <topic>               generate a draw.io diagram XML (saved to cwd)")
+	fmt.Fprintln(l.out, "  /review [focus]               code review the current git diff")
+	fmt.Fprintln(l.out, "  /compact                      summarise + compact the session context")
+	fmt.Fprintln(l.out, "  /clear                        wipe the local context window")
 	fmt.Fprintln(l.out)
 }
 
