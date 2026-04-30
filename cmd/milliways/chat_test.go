@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -110,6 +111,104 @@ func TestParseDigitInRange(t *testing.T) {
 		if got != c.wantN || ok != c.wantOK {
 			t.Errorf("parseDigitInRange(%q,%d,%d) = (%d,%v), want (%d,%v)", c.s, c.lo, c.hi, got, ok, c.wantN, c.wantOK)
 		}
+	}
+}
+
+// TestChatBuildBriefing_NoTurnsEmptyOK — switching from the landing
+// zone (no prior turns) yields no briefing.
+func TestChatBuildBriefing_NoTurnsEmptyOK(t *testing.T) {
+	t.Parallel()
+	loop := &chatLoop{}
+	if got, ok := loop.buildBriefing("claude", "minimax"); ok || got != "" {
+		t.Errorf("expected empty/false from no-turns; got ok=%v len=%d", ok, len(got))
+	}
+}
+
+// TestChatBuildBriefing_NoUserTurnsEmptyOK — assistant-only history
+// (no real user input yet) yields no briefing.
+func TestChatBuildBriefing_NoUserTurnsEmptyOK(t *testing.T) {
+	t.Parallel()
+	loop := &chatLoop{
+		turnLog: []chatTurn{
+			{Role: "assistant", AgentID: "claude", Text: "system greeting"},
+		},
+	}
+	if _, ok := loop.buildBriefing("claude", "minimax"); ok {
+		t.Errorf("expected no briefing from assistant-only log")
+	}
+}
+
+// TestChatBuildBriefing_FormatAndContents — a typical /switch handoff
+// after a couple of turns. Briefing must name from / new agents,
+// include the user's prompt + the assistant's response, and end with
+// the wait-for-user instruction.
+func TestChatBuildBriefing_FormatAndContents(t *testing.T) {
+	t.Parallel()
+	loop := &chatLoop{
+		turnLog: []chatTurn{
+			{Role: "user", Text: "explain the GIL in one paragraph"},
+			{Role: "assistant", AgentID: "claude", Text: "The GIL is a mutex protecting the Python interpreter state..."},
+			{Role: "user", Text: "now show me how to release it from a C extension"},
+			{Role: "assistant", AgentID: "claude", Text: "Use Py_BEGIN_ALLOW_THREADS / Py_END_ALLOW_THREADS macros..."},
+		},
+	}
+	got, ok := loop.buildBriefing("claude", "minimax")
+	if !ok {
+		t.Fatal("expected briefing, got none")
+	}
+	for _, want := range []string{
+		"Context handoff",
+		"`claude`", "`minimax`",
+		"do not invoke tools",
+		"explain the GIL",
+		"Py_BEGIN_ALLOW_THREADS",
+		"await the user's next prompt",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("briefing missing %q", want)
+		}
+	}
+}
+
+// TestChatBuildBriefing_RespectsByteCap — a single fat assistant turn
+// gets truncated rather than pushing the briefing past the cap.
+func TestChatBuildBriefing_RespectsByteCap(t *testing.T) {
+	t.Parallel()
+	huge := strings.Repeat("X", 10*1024)
+	loop := &chatLoop{
+		turnLog: []chatTurn{
+			{Role: "user", Text: "dump everything you know"},
+			{Role: "assistant", AgentID: "claude", Text: huge},
+		},
+	}
+	got, ok := loop.buildBriefing("claude", "minimax")
+	if !ok {
+		t.Fatal("expected briefing")
+	}
+	if len(got) > chatBriefingMaxBytes+512 {
+		t.Errorf("briefing length %d > cap %d (with 512B header headroom)", len(got), chatBriefingMaxBytes)
+	}
+	if !strings.Contains(got, "[…truncated]") {
+		t.Errorf("expected […truncated] marker in oversized briefing")
+	}
+}
+
+// TestChatTurnLogCap — appendTurn rolls older entries off the front
+// when over the cap so memory + briefing size stay bounded.
+func TestChatTurnLogCap(t *testing.T) {
+	t.Parallel()
+	loop := &chatLoop{}
+	for i := 0; i < chatTurnLogCap*2; i++ {
+		loop.appendTurn(chatTurn{Role: "user", Text: fmt.Sprintf("turn %d", i)})
+	}
+	turns := loop.snapshotTurns()
+	if got := len(turns); got != chatTurnLogCap {
+		t.Errorf("turnLog len = %d, want %d", got, chatTurnLogCap)
+	}
+	// Oldest kept turn should be turn(chatTurnLogCap) since we appended 2*cap.
+	wantFirst := fmt.Sprintf("turn %d", chatTurnLogCap)
+	if turns[0].Text != wantFirst {
+		t.Errorf("oldest kept turn = %q, want %q", turns[0].Text, wantFirst)
 	}
 }
 

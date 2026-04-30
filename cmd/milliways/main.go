@@ -47,7 +47,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "0.6.2"
+var version = "0.7.0"
 
 func init() {
 	// Expose this main package's link-time-injected `version` to launcher.go's
