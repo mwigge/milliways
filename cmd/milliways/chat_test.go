@@ -49,6 +49,7 @@ func TestChatHelpEnumeratesKnownCommands(t *testing.T) {
 		"/install", "/install-local-server", "/list-local-models", "/setup-local-model",
 		"/opsx-list",
 		"/login",
+		"/model",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("help output missing %q; got:\n%s", want, stdout.String())
@@ -289,6 +290,7 @@ func TestHandleSlash_Smoke(t *testing.T) {
 	wantOutput := []string{
 		"/help", "/agents", "/quota",
 		"/login", "/login minimax",
+		"/model", "/model minimax",
 		"/1", "/2", "/3", "/4", "/5", "/6", "/7",
 		"/claude", "/codex", "/copilot", "/minimax",
 		"/gemini", "/local", "/pool",

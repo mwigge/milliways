@@ -467,6 +467,12 @@ func (l *chatLoop) handleSlash(line string) {
 		l.switchAgent(rest)
 	case "agents":
 		l.printAgents()
+	case "model", "models":
+		agent := rest
+		if agent == "" && l.sess != nil {
+			agent = l.sess.agentID
+		}
+		l.printModel(agent)
 	case "login":
 		agent := rest
 		if agent == "" && l.sess != nil {
@@ -604,14 +610,17 @@ func (l *chatLoop) switchAgent(newID string) {
 	// Memory bridge — only when there's actual prior conversation to carry.
 	if fromID != "" && fromID != newID {
 		if briefing, ok := l.buildBriefing(fromID, newID); ok {
-			fmt.Fprintln(l.out, "→ "+newID+"  (briefing carried from "+fromID+")")
+			m, ep := runnerModelInfo(newID)
+			fmt.Fprintf(l.out, "→ %s  model: %s  (%s)  [briefing from %s]\n", newID, m, ep, fromID)
 			if err := newSess.send(briefing); err != nil {
 				fmt.Fprintln(l.errw, "warn: send briefing: "+err.Error())
 			}
 			return
 		}
 	}
-	fmt.Fprintln(l.out, "→ "+newID)
+	// Print the live model + endpoint so the user knows exactly what's active.
+	m, ep := runnerModelInfo(newID)
+	fmt.Fprintf(l.out, "→ %s  model: %s  (%s)\n", newID, m, ep)
 }
 
 // buildBriefing assembles a handoff message summarising the recent
@@ -943,6 +952,7 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out)
 
 	fmt.Fprintln(l.out, "Session:")
+	fmt.Fprintln(l.out, "  /model [client]               show active model + endpoint (all if no client)")
 	fmt.Fprintln(l.out, "  /agents                       list clients with live auth status")
 	fmt.Fprintln(l.out, "  /quota                        current quota snapshot")
 	fmt.Fprintln(l.out, "  /switch <runner>              same as /<runner>")
@@ -950,6 +960,88 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /exit                         exit (Ctrl+D also works)")
 	fmt.Fprintln(l.out, "  !<cmd>                        run a shell command inline")
 	fmt.Fprintln(l.out)
+}
+
+// runnerModelInfo returns the model name and endpoint/binary that the daemon
+// will use for the given runner. It reads the same env vars the runner reads
+// so the display is always in sync with what's live.
+func runnerModelInfo(agentID string) (model, endpoint string) {
+	switch agentID {
+	case "minimax":
+		model = os.Getenv("MINIMAX_MODEL")
+		if model == "" {
+			model = "MiniMax-M2.7"
+		}
+		endpoint = os.Getenv("MINIMAX_API_URL")
+		if endpoint == "" {
+			endpoint = "https://api.minimax.io/v1/text/chatcompletion_v2"
+		}
+	case "local":
+		model = os.Getenv("MILLIWAYS_LOCAL_MODEL")
+		if model == "" {
+			model = "qwen2.5-coder-1.5b"
+		}
+		endpoint = os.Getenv("MILLIWAYS_LOCAL_ENDPOINT")
+		if endpoint == "" {
+			endpoint = "http://localhost:8765/v1"
+		}
+	case "claude":
+		model = os.Getenv("ANTHROPIC_MODEL")
+		if model == "" {
+			model = "claude (CLI default)"
+		}
+		endpoint = "claude CLI"
+	case "codex":
+		model = os.Getenv("CODEX_MODEL")
+		if model == "" {
+			model = "codex (CLI default)"
+		}
+		endpoint = "codex CLI"
+	case "copilot":
+		model = "copilot (gh CLI managed)"
+		endpoint = "gh copilot CLI"
+	case "gemini":
+		model = os.Getenv("GEMINI_MODEL")
+		if model == "" {
+			model = "gemini (CLI default)"
+		}
+		endpoint = "gemini CLI"
+	case "pool":
+		model = "routes across all available runners"
+		endpoint = "internal"
+	default:
+		model = "unknown"
+		endpoint = "unknown"
+	}
+	return
+}
+
+// printModel shows the active model and endpoint for a runner.
+func (l *chatLoop) printModel(agentID string) {
+	if agentID == "" {
+		// No active session — show all.
+		fmt.Fprintln(l.out, "Models in use:")
+		for _, name := range chatSwitchableAgents {
+			m, ep := runnerModelInfo(name)
+			color := agentColor(name)
+			reset := "\033[0m"
+			fmt.Fprintf(l.out, "  %s%-8s%s  %s  (%s)\n", color, name, reset, m, ep)
+		}
+		return
+	}
+	m, ep := runnerModelInfo(agentID)
+	color := agentColor(agentID)
+	reset := "\033[0m"
+	fmt.Fprintf(l.out, "%s%s%s  model: %s\n", color, agentID, reset, m)
+	fmt.Fprintf(l.out, "%-10s endpoint: %s\n", "", ep)
+
+	// For HTTP runners show how to override.
+	switch agentID {
+	case "minimax":
+		fmt.Fprintln(l.out, "  override: MINIMAX_MODEL=<model>  MINIMAX_API_URL=<url>  (restart daemon)")
+	case "local":
+		fmt.Fprintln(l.out, "  override: MILLIWAYS_LOCAL_MODEL=<model>  MILLIWAYS_LOCAL_ENDPOINT=<url>  (restart daemon)")
+	}
 }
 
 // loginSpec describes how a runner is authenticated.
