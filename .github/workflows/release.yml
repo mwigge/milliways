@@ -23,8 +23,11 @@ jobs:
       # The wezterm-gui binary is not built in CI — it's pre-built and stored
       # as a release asset in the wezterm-fork repo under the tag `milliways-wezterm`.
       # When the wezterm patches change, update that release asset and bump
-      # WEZTERM_RELEASE below.
+      # WEZTERM_RELEASE below. If the download fails (repo missing / no asset)
+      # the macOS app bundle is skipped but Go binaries still ship.
       - name: Download wezterm binaries
+        id: wezterm
+        continue-on-error: true
         env:
           WEZTERM_RELEASE: milliways-wezterm
           WEZTERM_REPO: mwigge/wezterm-fork
@@ -39,9 +42,9 @@ jobs:
             --clobber
           chmod +x /tmp/wezterm-bin/wezterm-gui /tmp/wezterm-bin/wezterm-mux-server
 
-      - name: Build and bundle
-        run: |
-          make bundle-macos WEZTERM_SRC=/tmp/wezterm-bin
+      - name: Build and bundle macOS app
+        if: steps.wezterm.outcome == 'success'
+        run: make bundle-macos WEZTERM_SRC=/tmp/wezterm-bin
         env:
           PREFIX: /tmp/milliways-install
 
@@ -67,19 +70,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          ASSETS=(
+            dist/milliways_darwin_arm64
+            dist/milliways_darwin_amd64
+            dist/milliways_linux_amd64
+            dist/milliways_linux_arm64
+            dist/milliwaysd_darwin_arm64
+            dist/milliwaysd_darwin_amd64
+            dist/milliwaysd_linux_amd64
+            dist/milliwaysd_linux_arm64
+            dist/milliwaysctl_darwin_arm64
+            dist/milliwaysctl_darwin_amd64
+            dist/milliwaysctl_linux_amd64
+            dist/milliwaysctl_linux_arm64
+          )
+          if [ -f "dist/MilliWays.app.zip" ]; then
+            ASSETS+=(dist/MilliWays.app.zip)
+          fi
           gh release create "${{ github.ref_name }}" \
             --title "milliways ${{ github.ref_name }}" \
             --generate-notes \
-            dist/milliways_darwin_arm64 \
-            dist/milliways_darwin_amd64 \
-            dist/milliways_linux_amd64 \
-            dist/milliways_linux_arm64 \
-            dist/milliwaysd_darwin_arm64 \
-            dist/milliwaysd_darwin_amd64 \
-            dist/milliwaysd_linux_amd64 \
-            dist/milliwaysd_linux_arm64 \
-            dist/milliwaysctl_darwin_arm64 \
-            dist/milliwaysctl_darwin_amd64 \
-            dist/milliwaysctl_linux_amd64 \
-            dist/milliwaysctl_linux_arm64 \
-            dist/MilliWays.app.zip
+            "${ASSETS[@]}"
