@@ -123,17 +123,24 @@ func (m *ModeManager) CanRead(string) bool {
 }
 
 // Watch polls the mode file and invokes callback whenever it changes.
+//
+// Snapshots the "last seen" mode synchronously *before* spawning the
+// poller so a Set() that races with the goroutine startup still
+// triggers the callback. Without this, on slower hosts (Linux CI) the
+// caller's `Set()` could mutate `m.current` before the goroutine
+// executes its `last := m.Current()` line, missing the very first
+// transition the test asserts on.
 func (m *ModeManager) Watch(ctx context.Context, callback func(mode string)) {
 	if m == nil || callback == nil {
 		return
 	}
+	last := m.Current()
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 
-		last := m.Current()
 		for {
 			select {
 			case <-ctx.Done():

@@ -67,22 +67,12 @@ func PathAllowed(path string, mode Mode) error {
 	// Normalize for prefix matching — resolve as many symlink components as possible.
 	abs = resolvePathBestEffort(filepath.Clean(abs))
 
-	// Neutral paths (always allowed regardless of mode)
-	neutral := []string{
-		filepath.Join(home, ".ssh"),
-		filepath.Join(home, ".claude"),
-		filepath.Join(home, ".config"),
-		os.TempDir(),
-	}
-	for _, n := range neutral {
-		if strings.HasPrefix(abs, n) {
-			return nil
-		}
-	}
-
-	// Mode-specific paths — configured via env vars.
-	// Set MILLIWAYS_COMPANY_ROOTS and MILLIWAYS_PRIVATE_ROOTS to colon-separated
-	// path lists to enable context separation.
+	// Mode-specific roots — configured via env vars.
+	// Set MILLIWAYS_COMPANY_ROOTS / MILLIWAYS_PRIVATE_ROOTS to colon-
+	// separated path lists to enable context separation. Checked BEFORE
+	// the neutral blanket so configured roots that happen to live under
+	// $TMPDIR (notably tests using t.TempDir() on Linux, where TempDir
+	// is a subdir of /tmp) still take precedence.
 	companyPaths := splitEnvPaths(os.Getenv("MILLIWAYS_COMPANY_ROOTS"), home)
 	privatePaths := splitEnvPaths(os.Getenv("MILLIWAYS_PRIVATE_ROOTS"), home)
 
@@ -108,6 +98,20 @@ func PathAllowed(path string, mode Mode) error {
 			if strings.HasPrefix(abs, p) {
 				return errors.New("path blocked in private mode — switch: mode company")
 			}
+		}
+	}
+
+	// Neutral paths (always allowed regardless of mode) — only consulted
+	// once we've ruled out an explicit company/private root match above.
+	neutral := []string{
+		filepath.Join(home, ".ssh"),
+		filepath.Join(home, ".claude"),
+		filepath.Join(home, ".config"),
+		os.TempDir(),
+	}
+	for _, n := range neutral {
+		if strings.HasPrefix(abs, n) {
+			return nil
 		}
 	}
 

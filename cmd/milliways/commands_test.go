@@ -30,17 +30,21 @@ import (
 )
 
 func TestBestContinuationKitchen_PrefersResumeCapableProvider(t *testing.T) {
+	// Use Cmd: "echo" so Status() resolves to Ready on hosts that lack
+	// the real claude/codex CLIs (linux CI). The adapter is picked by
+	// Name (factory.go's switch), so capabilities still come from the
+	// codex/claude adapters even though the binary is /usr/bin/echo.
 	reg := kitchen.NewRegistry()
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{
 		Name:     "claude",
-		Cmd:      "claude",
+		Cmd:      "echo",
 		Stations: []string{"review"},
 		Tier:     kitchen.Cloud,
 		Enabled:  true,
 	}))
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{
 		Name:     "codex",
-		Cmd:      "codex",
+		Cmd:      "echo",
 		Stations: []string{"code"},
 		Tier:     kitchen.Cloud,
 		Enabled:  true,
@@ -84,17 +88,19 @@ func TestSelectDecision_ContinuationOverridesWeakerRoute(t *testing.T) {
 			Default:  "gemini",
 		},
 	}
+	// See TestBestContinuationKitchen_PrefersResumeCapableProvider for
+	// the Cmd: "echo" rationale (host-CLI independence on CI).
 	reg := kitchen.NewRegistry()
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{
 		Name:     "gemini",
-		Cmd:      "gemini",
+		Cmd:      "echo",
 		Stations: []string{"research"},
 		Tier:     kitchen.Free,
 		Enabled:  true,
 	}))
 	reg.Register(kitchen.NewGeneric(kitchen.GenericConfig{
 		Name:     "codex",
-		Cmd:      "codex",
+		Cmd:      "echo",
 		Stations: []string{"code"},
 		Tier:     kitchen.Cloud,
 		Enabled:  true,
