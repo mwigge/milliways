@@ -21,12 +21,14 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // codexJSONEvent mirrors the subset of the `codex exec --json` event
 // stream we care about for the daemon-side bridge. Cribbed (without
-// lifting wholesale) from internal/repl/runner_codex.go.
+// lifting wholesale) from the legacy REPL runner.
 type codexJSONEvent struct {
 	Type    string          `json:"type"`
 	Content string          `json:"content,omitempty"`
@@ -87,14 +89,8 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		return
 	}
 
-	cmd := exec.CommandContext(ctx, codexBinary,
-		"exec",
-		"--json",
-		"--color", "never",
-		"--skip-git-repo-check",
-		"--",
-		text,
-	)
+	cmd := exec.CommandContext(ctx, codexBinary, buildCodexCmdArgs(text, nil)...)
+	cmd.Env = safeRunnerEnv()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		observeError(metrics, AgentIDCodex)
@@ -113,33 +109,140 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		return
 	}
 
-	// Drain stderr to avoid blocking the child; log lines for debugging.
+	// Capture stderr; check for proxy-block and session-limit signals at the end.
+	// sawProxyBlock is sync/atomic.Bool — single field, two goroutines, no
+	// need for a separate mutex (Code-quality B5 / Reviewer #17).
+	var (
+		stderrLines   []string
+		stderrMu      sync.Mutex
+		stderrWg      sync.WaitGroup
+		sawProxyBlock atomic.Bool
+	)
+	stderrWg.Add(1)
 	go func() {
+		defer stderrWg.Done()
 		s := bufio.NewScanner(stderr)
 		s.Buffer(make([]byte, 0, 64*1024), 256*1024)
 		for s.Scan() {
-			slog.Debug("codex stderr", "line", s.Text())
+			line := strings.TrimSpace(s.Text())
+			if line == "" {
+				continue
+			}
+			if codexLineLooksProxyBlocked(line) {
+				sawProxyBlock.Store(true)
+			}
+			stderrMu.Lock()
+			stderrLines = append(stderrLines, line)
+			stderrMu.Unlock()
+			slog.Debug("codex stderr", "line", line, "agent", AgentIDCodex)
 		}
 	}()
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
 
+	var sawSessionLimit bool
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
+		}
+		if codexLineLooksProxyBlocked(line) {
+			sawProxyBlock.Store(true)
+			continue
+		}
+		if codexLineSignalsSessionLimit(line) {
+			sawSessionLimit = true
 		}
 		if text, ok := extractCodexAssistantText(line); ok {
 			stream.Push(encodeData(text))
 		}
 	}
 
-	if err := cmd.Wait(); err != nil {
+	waitErr := cmd.Wait()
+	stderrWg.Wait()
+
+	if sawProxyBlock.Load() {
 		observeError(metrics, AgentIDCodex)
-		stream.Push(map[string]any{"t": "err", "msg": "codex exited: " + err.Error()})
+		stream.Push(map[string]any{
+			"t":     "err",
+			"agent": AgentIDCodex,
+			"msg":   "codex: blocked by Zscaler/proxy — open ChatGPT in a browser, approve the security prompt, then retry",
+		})
+	} else if sawSessionLimit {
+		observeError(metrics, AgentIDCodex)
+		stream.Push(map[string]any{
+			"t":     "err",
+			"agent": AgentIDCodex,
+			"msg":   "codex: session limit reached",
+		})
+	} else if waitErr != nil {
+		observeError(metrics, AgentIDCodex)
+		stream.Push(map[string]any{"t": "err", "msg": "codex exited: " + waitErr.Error()})
 	}
 	stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
+}
+
+// buildCodexCmdArgs assembles the codex CLI argv. Always begins with
+// `exec --json --color never --skip-git-repo-check`, then merges any
+// caller-supplied extra flags, then injects safe agentic defaults
+// (--sandbox workspace-write --ask-for-approval never) only when the
+// caller has not already set them, and finally appends `-- <prompt>`.
+//
+// Without these defaults, recent codex CLI versions run `exec --json` in
+// read-only / on-request mode and silently refuse tool execution. This
+// mirrors the buildCodexArgs fix landed in internal/kitchen/adapter/
+// codex.go for the kitchen path.
+func buildCodexCmdArgs(prompt string, extra []string) []string {
+	args := []string{"exec", "--json", "--color", "never", "--skip-git-repo-check"}
+	args = append(args, extra...)
+	if !codexHasFlag(extra, "--sandbox") {
+		args = append(args, "--sandbox", "workspace-write")
+	}
+	if !codexHasFlag(extra, "--ask-for-approval") {
+		args = append(args, "--ask-for-approval", "never")
+	}
+	args = append(args, "--", prompt)
+	return args
+}
+
+func codexHasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
+}
+
+// codexLineLooksProxyBlocked returns true when a stdout/stderr line carries
+// the signature of a Zscaler / corporate-proxy interception of the codex
+// CLI's connection to chatgpt.com. Mirrors REPL's check.
+func codexLineLooksProxyBlocked(line string) bool {
+	lower := strings.ToLower(line)
+	return strings.Contains(lower, "zscaler") ||
+		strings.Contains(lower, "internet security by zscaler") ||
+		strings.Contains(lower, "unexpected status 403 forbidden") ||
+		strings.Contains(lower, "307 temporary redirect") ||
+		(strings.Contains(lower, "chatgpt.com/backend-api/codex") && strings.Contains(lower, "failed to connect"))
+}
+
+// codexLineSignalsSessionLimit returns true when a stdout JSON event line
+// indicates that the codex session has hit its turn or context limit.
+// Mirrors REPL's runner_codex.go check.
+func codexLineSignalsSessionLimit(line string) bool {
+	var evt codexJSONEvent
+	if err := json.Unmarshal([]byte(line), &evt); err != nil {
+		return false
+	}
+	switch evt.Type {
+	case "max_turns", "context_length_exceeded":
+		return true
+	case "error":
+		lower := strings.ToLower(codexFirstNonEmpty(evt.Message, evt.Content, evt.Text))
+		return strings.Contains(lower, "context") || strings.Contains(lower, "limit")
+	}
+	return false
 }
 
 // extractCodexAssistantText returns the assistant text from a codex

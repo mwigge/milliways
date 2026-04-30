@@ -2,7 +2,7 @@
 
 ### Requirement: Uniform tool registry for HTTP runners
 
-Every HTTP-based runner (`minimax`, `copilot`, `local`) SHALL expose the agentic tool loop using `internal/tools/.NewBuiltInRegistry()`. The built-in tool set covers `bash`, file `read`/`write`/`edit`, `grep`, `glob`, and `web_fetch`.
+Every HTTP-based runner SHALL drive the agentic tool loop using `internal/tools/.NewBuiltInRegistry()`. The built-in tool set covers `bash`, file `read`/`write`/`edit`, `grep`, `glob`, and `web_fetch`. The HTTP-based runner set is `minimax` and `local`. Tool execution is a core capability of every milliways runner — not an opt-in mode — because milliways is a development/deployment/devops surface where tool calls (file edit, shell, web fetch) are the workload.
 
 #### Scenario: HTTP runner declares tools to the model
 
@@ -10,11 +10,12 @@ Every HTTP-based runner (`minimax`, `copilot`, `local`) SHALL expose the agentic
 - **THEN** the request payload includes a `tools` array derived from the registered tool schemas
 - **AND** every tool in `NewBuiltInRegistry()` appears in that array
 
-#### Scenario: CLI runners do not run the internal tool loop
+#### Scenario: CLI runners delegate tool execution to the subprocess
 
-- **WHEN** a CLI-based runner (`claude`, `codex`, `gemini`) dispatches
+- **WHEN** a CLI-based runner (`claude`, `codex`, `copilot`, `gemini`, `pool`) dispatches
 - **THEN** no `tools.Registry` is invoked from within the runner
-- **AND** tool execution is delegated to the underlying CLI process
+- **AND** tool execution is delegated to the underlying CLI subprocess (which has its own tool surface — claude/codex CLIs ship with file/bash tools; copilot uses `--allow-all-tools`; gemini and pool likewise expose tools natively)
+- **AND** the daemon runner's job is to parse the CLI's output stream (text and structured events) and surface them via the daemon's `Pusher`
 
 ### Requirement: Streaming tool-call accumulation
 
@@ -76,19 +77,29 @@ HTTP runners SHALL prepend a clean system message to every dispatch instructing 
 - **THEN** the `messages` array begins with a `role: "system"` entry containing the standard guidance
 - **AND** the contents of `req.Rules` are not included in any message
 
-### Requirement: Stream integrity checks for minimax
+### Requirement: Stream integrity for HTTP runners
 
-The minimax runner SHALL detect incomplete streams (unclosed code fences, unclosed shell heredocs) and surface a structured warning when an integrity violation is observed without a clean completion.
+HTTP runners SHALL surface stream truncation and incomplete tool-call assembly as structured errors rather than silently presenting partial results as a clean stop.
 
-#### Scenario: Stream ends with an unclosed code fence
+#### Scenario: Stream ends with content but no terminal event
 
-- **WHEN** the SSE stream closes before the model reaches `finish_reason: stop` and a code fence (` ``` `) was opened but never closed
-- **THEN** the runner emits a warning identifying "unclosed code fence"
-- **AND** the dispatch returns an error wrapping the integrity reason
-- **AND** no tool that the model only partially described inside the fence is executed
+- **WHEN** the SSE stream closes before the model emits `finish_reason: stop` (or any other finish_reason) AND no tool calls were assembled
+- **THEN** the runner returns an error identifying "incomplete stream: EOF before terminal event"
+- **AND** the daemon pushes a structured `err` event before any final `chunk_end`
+- **AND** the loop does NOT treat the partial assistant turn as a clean completion
 
-#### Scenario: Stream contains a heredoc-style file write that never executes
+#### Scenario: Tool call assembled without a function name
 
-- **WHEN** the stream contains `... >> file <<MARKER ... MARKER` outside an executed tool call
-- **THEN** the runner emits a warning that "generated file-write command was not executed"
-- **AND** the dispatch result reflects that no workspace mutation occurred via that path
+- **WHEN** the SSE stream produced tool-call deltas (id, args fragments) but the `function.name` arrived empty by stream end
+- **THEN** the runner surfaces a structured error to the model as the tool result with content `error: incomplete tool call (id=<id>)`
+- **AND** the model can recover (issue another turn, abandon the call) on the next loop iteration
+
+#### Scenario: SSE line exceeds the scanner buffer
+
+- **WHEN** an SSE line (e.g. a tool-call arguments JSON over 1MB) exceeds `bufio.Scanner`'s buffer cap
+- **THEN** the runner surfaces a structured error containing `bufio.ErrTooLong` (or equivalent)
+- **AND** does not silently process partial buffer contents
+
+### Requirement: Lexical integrity checks (deferred, follow-up)
+
+Detection of unclosed code fences and unclosed shell heredocs in assistant content (used by REPL's runner_minimax.go to warn when a model described a file-write but never invoked the tool) is **deferred** to a follow-up change. With the agentic tool loop now wiring file/bash tools into HTTP runners, a model that wants to write a file is expected to invoke the `Write` or `Bash` tool rather than narrate a heredoc — making the integrity check a less load-bearing safety net than it was in the REPL world. Tracked in `openspec/changes/decommission-repl-into-daemon/follow-ups.md`.

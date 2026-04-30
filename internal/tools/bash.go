@@ -16,6 +16,7 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -27,6 +28,14 @@ import (
 const defaultBashTimeout = 60 * time.Second
 
 // handleBash executes a shell command and returns combined output.
+//
+// Safety guardrails:
+//   - cwd pinned to the workspace root (MILLIWAYS_WORKSPACE_ROOT or
+//     process cwd) so commands operate within the same jail as file tools.
+//   - The command string is NOT logged (only the command length and a
+//     sha256 prefix). Models can be induced to construct commands that
+//     contain secrets via env-var interpolation; logging the command at
+//     INFO would leak them into the daemon log on every invocation.
 func handleBash(ctx context.Context, args map[string]any) (string, error) {
 	command, ok := stringArg(args, "command")
 	if !ok || strings.TrimSpace(command) == "" {
@@ -36,9 +45,21 @@ func handleBash(ctx context.Context, args map[string]any) (string, error) {
 	cmdCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	slog.Info("executing bash tool", "command", command, "timeout", timeout.String())
+	cwd := WorkspaceRoot()
+	if cwd == "" {
+		return "", fmt.Errorf("bash refused: workspace root unresolvable")
+	}
+
+	digest := sha256.Sum256([]byte(command))
+	slog.Info("executing bash tool",
+		"cwd", cwd,
+		"length", len(command),
+		"sha256_prefix", fmt.Sprintf("%x", digest[:6]),
+		"timeout", timeout.String(),
+	)
 
 	cmd := exec.CommandContext(cmdCtx, "sh", "-c", command)
+	cmd.Dir = cwd
 	output, err := cmd.CombinedOutput()
 	if cmdCtx.Err() != nil {
 		return string(output), fmt.Errorf("bash command timed out: %w", cmdCtx.Err())

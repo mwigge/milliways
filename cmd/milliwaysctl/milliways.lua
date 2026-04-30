@@ -64,11 +64,16 @@ if not path_env:find(local_bin, 1, true) then
 end
 config.set_environment_variables = { PATH = path_env }
 
--- Every new tab/pane runs milliways.
--- MILLIWAYS_REPL=1 tells the launcher to skip the milliways-term exec and
--- drop straight into the built-in terminal mode.
-config.set_environment_variables.MILLIWAYS_REPL = '1'
-config.default_prog = { local_bin .. '/milliways' }
+-- Every new tab/pane runs the user's shell. Agent surfaces are explicit:
+-- - Leader + 1..4   open a runner via `milliwaysctl open --agent <name>`
+-- - Leader + a      same for the default agent (claude)
+-- - Leader + /      slash-command palette → milliwaysctl <verb> [args...]
+--
+-- The legacy default_prog = milliways pattern was removed when --repl /
+-- MILLIWAYS_REPL=1 was deleted. Setting default_prog to milliways with
+-- the launcher's modeCockpit dispatch in place would recursively syscall
+-- exec milliways-term inside every new tab.
+config.default_prog = { os.getenv('SHELL') or '/bin/zsh' }
 
 -- ── State paths ──────────────────────────────────────────────────────────────
 
@@ -171,13 +176,13 @@ end)
 config.leader = { key = 'Space', mods = 'CTRL', timeout_milliseconds = 1500 }
 
 config.keys = {
-  -- Leader + a  →  open milliways pane split below
+  -- Leader + a  →  open the default (claude) agent pane split below
   {
     key = 'a', mods = 'LEADER',
     action = act.SplitPane {
       direction = 'Down',
       size = { Percent = 40 },
-      command = { args = { local_bin .. '/milliways', '--repl' } },
+      command = { args = { 'milliwaysctl', 'open', '--agent', 'claude' } },
     },
   },
   -- Leader + z  →  plain shell tab (escape hatch)
@@ -289,6 +294,12 @@ local ctl_choices = {
   { label = 'status                    fetch live cockpit state',                  id = 'status' },
   { label = 'routing                   peek recent sommelier decisions',           id = 'routing' },
   { label = 'spans                     recent OTel spans',                         id = 'spans' },
+  -- OpenSpec (opsx) — thin shell over the openspec CLI
+  { label = '/opsx-list                list openspec changes',                     id = 'opsx list' },
+  { label = '/opsx-status …            show change progress',                     id = 'opsx status ' },
+  { label = '/opsx-show …              show full change detail',                  id = 'opsx show ' },
+  { label = '/opsx-archive …           archive a completed change',               id = 'opsx archive ' },
+  { label = '/opsx-validate …          validate a change',                        id = 'opsx validate ' },
   -- Local-model bootstrap (slash-command alias on the left, ctl invocation on the right)
   { label = '/list-local-models        show models served by the active backend',  id = 'local list-models' },
   { label = '/install-local-server     install llama.cpp + default coder model',   id = 'local install-server' },

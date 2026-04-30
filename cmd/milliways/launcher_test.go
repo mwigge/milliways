@@ -58,29 +58,18 @@ func TestSocketReachable(t *testing.T) {
 }
 
 // TestModeDispatch covers the parseLauncherMode argument parser. It is the
-// pre-cobra dispatch hook that decides whether to launch milliways-term,
-// use the built-in terminal mode, or fall through to cobra.
+// pre-cobra dispatch hook that decides whether to launch milliways-term or
+// fall through to cobra.
 func TestModeDispatch(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
-		env  map[string]string
 		want launcherMode
 	}{
 		{
 			name: "no args runs cockpit",
 			args: []string{},
 			want: modeCockpit,
-		},
-		{
-			name: "single --repl runs legacy",
-			args: []string{"--repl"},
-			want: modeREPL,
-		},
-		{
-			name: "--repl with subcommand still legacy",
-			args: []string{"--repl", "subcommand"},
-			want: modeREPL,
 		},
 		{
 			name: "--version delegates to cobra",
@@ -91,18 +80,6 @@ func TestModeDispatch(t *testing.T) {
 			name: "subcommand delegates to cobra",
 			args: []string{"login", "claude"},
 			want: modeCobra,
-		},
-		{
-			name: "MILLIWAYS_REPL=1 forces legacy",
-			args: []string{},
-			env:  map[string]string{"MILLIWAYS_REPL": "1"},
-			want: modeREPL,
-		},
-		{
-			name: "MILLIWAYS_REPL=0 ignored",
-			args: []string{},
-			env:  map[string]string{"MILLIWAYS_REPL": "0"},
-			want: modeCockpit,
 		},
 		{
 			name: "prompt args delegate to cobra",
@@ -123,10 +100,7 @@ func TestModeDispatch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			for k, v := range tt.env {
-				t.Setenv(k, v)
-			}
-			got := parseLauncherMode(tt.args, tt.env["MILLIWAYS_REPL"])
+			got := parseLauncherMode(tt.args)
 			if got != tt.want {
 				t.Errorf("parseLauncherMode(%v) = %v, want %v", tt.args, got, tt.want)
 			}

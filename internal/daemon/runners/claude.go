@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,15 +34,28 @@ type Pusher interface {
 
 // claudeStreamEvent mirrors the subset of the claude --output-format
 // stream-json protocol we care about for the daemon-side bridge. Cribbed
-// (without lifting wholesale) from internal/repl/runner_claude.go.
+// (without lifting wholesale) from the legacy REPL runner.
 type claudeStreamEvent struct {
 	Type    string               `json:"type"`
 	Message *claudeStreamMessage `json:"message,omitempty"`
+
+	// rate_limit_event fields
+	RateLimitInfo *claudeStreamRateLimit `json:"rate_limit_info,omitempty"`
 
 	// result fields
 	TotalCostUSD float64            `json:"total_cost_usd,omitempty"`
 	IsError      bool               `json:"is_error,omitempty"`
 	Usage        *claudeStreamUsage `json:"usage,omitempty"`
+}
+
+// claudeStreamRateLimit carries the rate-limit status surfaced by claude
+// CLI when the user is approaching or has hit a session/quota limit. The
+// Status string is provider-defined (e.g., "approaching", "throttled",
+// "exhausted") and ResetsAt is a Unix timestamp at which the limit lifts
+// (zero if unknown).
+type claudeStreamRateLimit struct {
+	Status   string `json:"status,omitempty"`
+	ResetsAt int64  `json:"resetsAt,omitempty"`
 }
 
 type claudeStreamMessage struct {
@@ -67,10 +81,14 @@ type claudeStreamUsage struct {
 // claudeResult is a small bundle of per-response numbers extracted from
 // a successful `result` event. Returned by extractResult so RunClaude
 // can wire all four numbers (cost + tokens) into the metrics observer.
+// Cache tokens are surfaced separately so chunk_end can carry them
+// without inflating the observed input/output counters.
 type claudeResult struct {
-	costUSD      float64
-	inputTokens  int
-	outputTokens int
+	costUSD          float64
+	inputTokens      int
+	outputTokens     int
+	cacheReadTokens  int
+	cacheWriteTokens int
 }
 
 // claudeBinary is the executable name; var (not const) so tests can swap it.
@@ -119,6 +137,7 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		"--verbose",
 		text,
 	)
+	cmd.Env = safeRunnerEnv()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		observeError(metrics, AgentIDClaude)
@@ -137,12 +156,27 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		return
 	}
 
-	// Drain stderr to avoid blocking the child; log lines for debugging.
+	// Capture stderr so we can inspect for session-limit signals once the
+	// subprocess exits. Lines also go to slog.Debug for ad-hoc debugging.
+	var (
+		stderrLines []string
+		stderrMu    sync.Mutex
+		stderrWg    sync.WaitGroup
+	)
+	stderrWg.Add(1)
 	go func() {
+		defer stderrWg.Done()
 		s := bufio.NewScanner(stderr)
 		s.Buffer(make([]byte, 0, 64*1024), 256*1024)
 		for s.Scan() {
-			slog.Debug("claude stderr", "line", s.Text())
+			line := strings.TrimSpace(s.Text())
+			if line == "" {
+				continue
+			}
+			stderrMu.Lock()
+			stderrLines = append(stderrLines, line)
+			stderrMu.Unlock()
+			slog.Debug("claude stderr", "line", line)
 		}
 	}()
 
@@ -159,22 +193,55 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 			stream.Push(encodeData(text))
 			continue
 		}
+		if info, ok := extractRateLimitEvent(line); ok {
+			ev := map[string]any{
+				"t":      "rate_limit",
+				"agent":  AgentIDClaude,
+				"status": info.Status,
+			}
+			if info.ResetsAt > 0 {
+				ev["resets_at"] = info.ResetsAt
+			}
+			stream.Push(ev)
+			continue
+		}
 		if r, ok := extractResult(line); ok {
 			lastResult = r
 		}
 	}
 
-	if err := cmd.Wait(); err != nil {
+	waitErr := cmd.Wait()
+	stderrWg.Wait()
+
+	stderrMu.Lock()
+	lines := append([]string(nil), stderrLines...)
+	stderrMu.Unlock()
+
+	if claudeStderrSignalsLimit(lines) {
 		observeError(metrics, AgentIDClaude)
-		stream.Push(map[string]any{"t": "err", "msg": "claude exited: " + err.Error()})
+		stream.Push(map[string]any{
+			"t":     "err",
+			"agent": AgentIDClaude,
+			"msg":   "claude: session limit reached",
+		})
+	} else if waitErr != nil {
+		observeError(metrics, AgentIDClaude)
+		stream.Push(map[string]any{"t": "err", "msg": "claude exited: " + waitErr.Error()})
 	}
 	observeTokens(metrics, AgentIDClaude, lastResult.inputTokens, lastResult.outputTokens, lastResult.costUSD)
-	stream.Push(map[string]any{
-		"t":           "chunk_end",
-		"cost_usd":    lastResult.costUSD,
-		"input_tokens": lastResult.inputTokens,
+	push := map[string]any{
+		"t":             "chunk_end",
+		"cost_usd":      lastResult.costUSD,
+		"input_tokens":  lastResult.inputTokens,
 		"output_tokens": lastResult.outputTokens,
-	})
+	}
+	if lastResult.cacheReadTokens > 0 {
+		push["cache_read_tokens"] = lastResult.cacheReadTokens
+	}
+	if lastResult.cacheWriteTokens > 0 {
+		push["cache_write_tokens"] = lastResult.cacheWriteTokens
+	}
+	stream.Push(push)
 }
 
 // extractAssistantText returns the concatenated text of all `text` content
@@ -213,8 +280,44 @@ func extractResult(line string) (claudeResult, bool) {
 	if evt.Usage != nil {
 		r.inputTokens = evt.Usage.InputTokens
 		r.outputTokens = evt.Usage.OutputTokens
+		r.cacheReadTokens = evt.Usage.CacheRead
+		r.cacheWriteTokens = evt.Usage.CacheWrite
 	}
 	return r, true
+}
+
+// extractRateLimitEvent decodes a rate_limit_event line. Returns the
+// populated claudeStreamRateLimit and true if the line is a non-nil
+// rate_limit_event; (zero, false) otherwise.
+func extractRateLimitEvent(line string) (claudeStreamRateLimit, bool) {
+	var evt claudeStreamEvent
+	if err := json.Unmarshal([]byte(line), &evt); err != nil {
+		return claudeStreamRateLimit{}, false
+	}
+	if evt.Type != "rate_limit_event" || evt.RateLimitInfo == nil {
+		return claudeStreamRateLimit{}, false
+	}
+	return *evt.RateLimitInfo, true
+}
+
+// claudeStderrSignalsLimit returns true when any captured stderr line
+// indicates a context-window / session-limit / context-length / "too
+// long" exhaustion. Mirrors REPL's runner_claude.go check; intentionally
+// narrower than the comprehensive set used for gemini/pool because
+// claude CLI surfaces most quota info in-band as rate_limit_event rather
+// than on stderr.
+func claudeStderrSignalsLimit(lines []string) bool {
+	for _, l := range lines {
+		lower := strings.ToLower(l)
+		if strings.Contains(lower, "context window") ||
+			strings.Contains(lower, "session limit") ||
+			strings.Contains(lower, "context_length") ||
+			strings.Contains(lower, "context_length_exceeded") ||
+			strings.Contains(lower, "too long") {
+			return true
+		}
+	}
+	return false
 }
 
 // extractResultCost returns total_cost_usd from a successful `result`

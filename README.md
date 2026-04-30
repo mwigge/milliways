@@ -67,12 +67,10 @@ When the laptop wakes from sleep, the status bar shows an orange **⚡ woke Xm a
 
 Start the AI terminal with `milliways` (default when no arguments are given). The launcher starts `milliwaysd` if needed, then execs `milliways-term`.
 
-The legacy built-in terminal mode is still available as `milliways --repl` for fallback and migration only. It is deprecated and scheduled for removal after cockpit parity.
-
 ```text
-milliways 0.4.12
+milliways 0.5.0
   type /help for commands
-  runners: minimax | copilot | claude | codex
+  runners: claude | codex | copilot | gemini | local | minimax | pool
 
 ▶ /claude
 Switched to claude
@@ -251,7 +249,7 @@ milliways tickets                             # list all async tickets
 milliways rate                                # rate limit inspection
 ```
 
-`milliways --repl` (deprecated; removal scheduled in v0.6.0) launches the legacy built-in line-reader; use milliways-term instead. See `milliways --help` for the canonical authoritative flag/subcommand list.
+See `milliways --help` for the canonical authoritative flag/subcommand list. The legacy `--repl` built-in line-reader was removed in this release; the milliways-term path is now the only interactive surface.
 
 ---
 
@@ -772,6 +770,24 @@ Switch at runtime with `/local-temp 0.7` or `/local-temp default` (lets the serv
 **llama-server died at startup** — `tail ~/.local/share/milliways/local/server.err`. Most common cause: a GGUF that didn't download fully (verify size matches what HuggingFace shows) or a context size larger than the model supports (set `CTX_SIZE=4096` and re-run the installer).
 
 ---
+
+## Tool security
+
+The HTTP-based runners (minimax, local) drive an agentic tool loop that lets the model invoke `bash`, file `read`/`write`/`edit`, `grep`/`glob`, and `web_fetch` on your machine. milliways applies guardrails by default; the bars can be raised but should not be lowered for shared / multi-tenant deployments.
+
+| Constraint | Default | Override | Why |
+|---|---|---|---|
+| **Workspace root** | process cwd | `MILLIWAYS_WORKSPACE_ROOT=<dir>` | File `read`/`write`/`edit`/`grep`/`glob` and `bash`'s cwd are jailed inside this directory. Paths outside the root are refused. |
+| **Credential denylist** | hardcoded | not overridable | Even inside the workspace, `~/.ssh/`, `~/.aws/`, `~/.gnupg/`, `~/.kube/`, `~/.netrc/`, `~/.docker/config.json`, `~/.config/milliways/local.env`, `~/.config/anthropic/auth.json`, `~/.config/gh/hosts.yml` cannot be read or written. |
+| **WebFetch SSRF block** | on | `MILLIWAYS_TOOLS_ALLOW_LOOPBACK=1` | Loopback / RFC1918 / link-local hosts and cloud-metadata IPs (`169.254.169.254`, `metadata.google.internal`) are rejected. Redirects are re-validated. The opt-in env var allows loopback only — cloud-metadata blocking is unconditional. |
+| **Bash command logging** | length + sha256 prefix | not overridable | Model-generated commands can contain secrets via env-var interpolation; the full command is intentionally dropped from the daemon log. |
+| **Tool result wrapping** | `<tool_result>...</tool_result>` markers | not overridable | Tool output is wrapped + system prompt declares it untrusted, mitigating prompt-injection via tool fold-back (a model `Read`-ing an attacker-planted file can't smuggle directives). |
+| **Subprocess env** | safelisted (PATH/HOME/USER/SHELL/TERM/LANG/LC_*/TMPDIR/XDG_* + per-CLI auth keys) | edit `safeRunnerEnvKeys` in the source | claude/codex/copilot/gemini/pool subprocesses do not inherit the daemon's full env. Closes the codex-printenv exfil path. |
+| **Codex sandbox** | `--sandbox workspace-write --ask-for-approval never` | per-kitchen `cfg.Args` overrides win | Without these, codex `exec --json` silently refuses tool execution. The trade-off is documented in `SECURITY.md`. |
+| **Disable tools entirely** | n/a | `MINIMAX_TOOLS=off`, `MILLIWAYS_LOCAL_TOOLS=off` | Chat-only mode for the HTTP runners (debugging, comparison testing). |
+| **Agentic loop turn cap** | 10 | n/a | Hard upper bound on assistant→tool→assistant cycles per dispatch; `chunk_end` carries `max_turns_hit:true` when reached. |
+
+CLI-based runners (claude/codex/copilot/gemini/pool) inherit tool execution from their underlying CLI process. Codex's sandbox applies via the kitchen adapter / daemon-side defaults; the others manage their own filesystem/network access.
 
 ## Agent toolkit
 
