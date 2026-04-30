@@ -14,13 +14,18 @@
 
 // launcher.go implements the `milliways` (no-flags) launcher: it resolves
 // the daemon UDS, starts `milliwaysd` detached if not reachable, then
-// exec(2)s `milliways-term` with the user's remaining args.
+// drops into the chat REPL in the current TTY.
 //
-// The legacy `--repl` / `MILLIWAYS_REPL=1` built-in terminal mode was
-// removed in this change; the milliways-term path is now the only
-// interactive surface. Scripts/users that need a one-shot prompt should
-// invoke `milliways "<prompt>"` (handled by the cobra root command) or
-// use `milliwaysctl` from any terminal tab.
+// History: pre-v0.7.1 this exec(2)'d `milliways-term` (the wezterm fork)
+// when invoked from a non-wezterm shell. That binary panics during
+// `mux::Mux::get` when not launched as a bundled .app, and the panic
+// hook then aborts on UNUserNotificationCenter for non-bundled binaries
+// — so any `milliways` invocation from kitty/iTerm/ssh crashed.
+//
+// The .app bundle's CFBundleExecutable is `wezterm-gui` directly, so
+// the bundle path never needs `milliways` to exec milliways-term. We
+// removed the exec-milliways-term path and just run chat in the
+// current TTY for every invocation.
 package main
 
 import (
@@ -44,29 +49,35 @@ const (
 	// modeCobra means: hand off to the existing cobra root command (handles
 	// --version, --help, subcommands, prompt-as-args dispatch).
 	modeCobra launcherMode = iota
-	// modeCockpit means: start the daemon (if needed), exec milliways-term.
-	modeCockpit
-	// modeWelcome means: we're already inside a milliways-term tab so
-	// re-execing the cockpit would be a recursive launch (or just confusing).
-	// Print a friendly welcome / quickstart instead.
-	modeWelcome
+	// modeChat means: ensure milliwaysd is running, then drop into the
+	// chat REPL in the current TTY. Used for every no-args invocation —
+	// works the same way inside milliways-term, kitty, iTerm, ssh, or
+	// any other terminal.
+	modeChat
+)
+
+// modeCockpit, modeWelcome are deprecated aliases retained so external
+// code/tests that still reference them keep building. New code should
+// use modeChat.
+const (
+	modeCockpit = modeChat
+	modeWelcome = modeChat
 )
 
 // parseLauncherMode decides how to dispatch an invocation of `milliways`
-// based on the argv (excluding argv[0]) and the surrounding env.
+// based on the argv (excluding argv[0]).
 //
-// Rules (first match wins):
+// Rules:
 //
-//  1. argv is empty AND we're already inside milliways-term → modeWelcome
-//     (print quickstart; do NOT recursively exec the cockpit)
-//  2. argv is empty → modeCockpit (launch milliways-term)
-//  3. otherwise → modeCobra (--version, --help, subcommands, prompts)
+//  1. argv is empty → modeChat (ensure daemon, run chat in this TTY)
+//  2. otherwise → modeCobra (--version, --help, subcommands, prompts)
+//
+// The pre-v0.7.1 in-vs-out-of-wezterm branch is gone: chat works from
+// any TTY, and the bundle entry point is wezterm-gui (not milliways)
+// so there's no recursion risk to guard against.
 func parseLauncherMode(args []string) launcherMode {
 	if len(args) == 0 {
-		if insideMilliwaysTerm() {
-			return modeWelcome
-		}
-		return modeCockpit
+		return modeChat
 	}
 	return modeCobra
 }
@@ -265,11 +276,11 @@ func daemonSocket() string { return filepath.Join(stateDir(), "sock") }
 // it spawns the daemon detached.
 func daemonLogPath() string { return filepath.Join(stateDir(), "milliwaysd.log") }
 
-// runCockpit is the default mode: ensure the daemon is up, then exec
-// milliways-term. On any non-recoverable failure we exit non-zero with a
-// message that points the user at troubleshooting milliwaysd (logs, lock
-// files) rather than the removed --repl fallback.
-func runCockpit(ctx context.Context, args []string) error {
+// runCockpit ensures milliwaysd is up, then drops into the chat REPL
+// in the current TTY. Despite the legacy name (kept so external tests
+// keep building), this no longer exec's `milliways-term` — see the
+// package comment for the v0.7.1 crash-cascade story.
+func runCockpit(ctx context.Context, _ []string) error {
 	state := stateDir()
 	if err := os.MkdirAll(state, 0o700); err != nil {
 		return fmt.Errorf("creating state dir %s: %w", state, err)
@@ -293,20 +304,7 @@ func runCockpit(ctx context.Context, args []string) error {
 		}
 	}
 
-	termPath, err := exec.LookPath("milliways-term")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "milliways: could not find `milliways-term` on PATH.\n")
-		fmt.Fprintf(os.Stderr, "  Install it (build the milliways-term fork) — see README for instructions.\n")
-		return fmt.Errorf("milliways-term not found on PATH")
-	}
-
-	// syscall.Exec replaces this process so the launcher disappears from the
-	// process tree the moment the terminal opens.
-	argv := append([]string{"milliways-term"}, args...)
-	if err := syscall.Exec(termPath, argv, os.Environ()); err != nil {
-		return fmt.Errorf("exec milliways-term: %w", err)
-	}
-	return nil // unreachable on success
+	return runChat(ctx)
 }
 
 // startDaemonDetached spawns `milliwaysd` in its own session so it survives

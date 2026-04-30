@@ -96,27 +96,14 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Top-level launcher dispatch runs *before* cobra so we can implement the
-	// milliways-term-by-default behaviour (`milliways` with no flags exec's
-	// milliways-term), the welcome banner when already inside milliways-term,
-	// and falls through to the existing cobra root command for everything else.
-	switch parseLauncherMode(os.Args[1:]) {
-	case modeCockpit:
+	// Top-level launcher dispatch runs *before* cobra. No-args invocations
+	// drop into the chat REPL after ensuring milliwaysd is up; everything
+	// else falls through to the existing cobra root command.
+	if parseLauncherMode(os.Args[1:]) == modeChat {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		if err := runCockpit(ctx, os.Args[1:]); err != nil {
-			fmt.Fprintf(os.Stderr, "milliways: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	case modeWelcome:
-		// Inside milliways-term with no args → drop into the chat REPL.
-		// If the daemon isn't reachable (or the user prefers a brief
-		// quickstart), fall back to the welcome banner.
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-		if err := runChat(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "milliways chat: %v\n\n", err)
+			fmt.Fprintf(os.Stderr, "milliways: %v\n\n", err)
 			printWelcome()
 			os.Exit(1)
 		}

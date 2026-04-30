@@ -75,6 +75,10 @@ var chatSwitchableAgents = []string{
 // shape (cmd/milliwaysctl/milliways.lua's ctl_choices) — keep them in
 // sync until they share a generated source.
 var chatCtlAliases = map[string][]string{
+	// Client install — `/install <client>` shells to milliwaysctl install.
+	// The dispatcher appends the rest of the line (the client name) so a
+	// single alias entry covers /install claude, /install codex, etc.
+	"install": {"install"},
 	// Local-model bootstrap
 	"install-local-server": {"local", "install-server"},
 	"install-local-swap":   {"local", "install-swap"},
@@ -846,6 +850,11 @@ func (l *chatLoop) printLanding() {
 		}
 		fmt.Fprintf(l.out, "  /%d  /%-10s %s  %s\n", i+1, name, s.mark, model)
 	}
+	fmt.Fprintln(l.out)
+
+	fmt.Fprintln(l.out, "Install client CLI (no leaving chat):")
+	fmt.Fprintln(l.out, "  /install <client>             claude | codex | copilot | gemini | local")
+	fmt.Fprintln(l.out, "  /install                      list supported install routes")
 	fmt.Fprintln(l.out)
 
 	fmt.Fprintln(l.out, "Local-model bootstrap (no leaving chat):")

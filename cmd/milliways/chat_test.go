@@ -61,6 +61,7 @@ func TestChatHelpEnumeratesKnownCommands(t *testing.T) {
 		"/install-local-server",
 		"/list-local-models",
 		"/setup-local-model",
+		"/install",
 		"/opsx-list",
 	} {
 		if !strings.Contains(stdout.String(), want) {

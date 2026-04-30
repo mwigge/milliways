@@ -54,6 +54,9 @@ func main() {
 	if sub == "opsx" {
 		os.Exit(runOpsx(rest, os.Stdout, os.Stderr))
 	}
+	if sub == "install" {
+		os.Exit(runInstall(rest, os.Stdout, os.Stderr))
+	}
 
 	fs := flag.NewFlagSet(sub, flag.ExitOnError)
 	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
@@ -742,6 +745,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  history-summary --agent <id> [--index N]    — compact cost+token summary for wezterm status")
 	fmt.Fprintln(os.Stderr, "  local <verb> [args...]                     — local-model bootstrap (try `milliwaysctl local --help`)")
 	fmt.Fprintln(os.Stderr, "  opsx <verb> [args...]                      — openspec wrapper (try `milliwaysctl opsx --help`)")
+	fmt.Fprintln(os.Stderr, "  install <client>                           — install upstream CLI (claude|codex|copilot|gemini|local)")
 }
 
 func die(f string, a ...any) {
