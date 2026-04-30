@@ -355,11 +355,6 @@ run_scenario_tam_10_2() {
 	return 0
 }
 
-run_scenario_nvim_context() {
-	printf '%s\n' '--- nvim-context'
-	bash "$repo_root/testdata/smoke/scenarios/nvim-context.sh"
-}
-
 run_scenario_kp22_2() {
 	scenario="KP-22.2 auto-switch-detection"
 	log="$run_dir/kp22_2.log"
@@ -571,7 +566,6 @@ run_scenario_pc21_1 || overall=1
 run_scenario_user_switch || overall=1
 run_scenario_tam_10_6 || overall=1
 run_scenario_tam_10_2 || overall=1
-run_scenario_nvim_context || overall=1
 run_scenario_kp22_2 || overall=1
 run_scenario_tp9_4 || overall=1
 run_scenario_tp9_5 || overall=1

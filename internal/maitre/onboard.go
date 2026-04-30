@@ -191,7 +191,7 @@ func UpdateKitchenAuth(kitchenName, apiKey string) error {
 	setYAMLMapValue(httpClientNode, "auth_key", strings.TrimSpace(apiKey))
 
 	backupPath := configPath + ".bak"
-	if err := os.WriteFile(backupPath, data, 0o644); err != nil {
+	if err := os.WriteFile(backupPath, data, 0o600); err != nil {
 		return fmt.Errorf("writing backup %s: %w", backupPath, err)
 	}
 

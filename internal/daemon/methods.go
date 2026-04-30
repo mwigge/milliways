@@ -308,35 +308,16 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
 			return
 		}
-		allowedEnvKeys := map[string]bool{
-			// Auth keys
-			"MINIMAX_API_KEY":   true,
-			"GEMINI_API_KEY":    true,
-			"OPENAI_API_KEY":    true,
-			"ANTHROPIC_API_KEY": true,
-			// Model selection (live-switchable via /model <name>)
-			"MINIMAX_MODEL":    true,
-			"MILLIWAYS_LOCAL_MODEL": true,
-			"ANTHROPIC_MODEL":  true,
-			"CLAUDE_MODEL":     true,
-			"OPENAI_MODEL":     true,
-			"CODEX_MODEL":      true,
-			"GEMINI_MODEL":     true,
-			"GOOGLE_MODEL":     true,
-			// Endpoint overrides
-			"MINIMAX_API_URL":          true,
-			"MINIMAX_ENDPOINT":         true,
-			"MILLIWAYS_LOCAL_ENDPOINT": true,
-			// Tuning
-			"MILLIWAYS_MAX_TURNS": true,
-		}
-		if !allowedEnvKeys[p.Key] {
+		if !allowedSetenvKeys[p.Key] {
 			writeError(enc, req.ID, ErrInvalidParams, "key not in allowed set: "+p.Key)
 			return
 		}
 		if err := os.Setenv(p.Key, p.Value); err != nil {
 			writeError(enc, req.ID, ErrInvalidParams, "setenv: "+err.Error())
 			return
+		}
+		if err := persistLocalEnv(localEnvDefaultPath(), p.Key, p.Value); err != nil {
+			slog.Warn("config.setenv: could not persist to local.env", "key", p.Key, "err", err)
 		}
 		writeResult(enc, req.ID, map[string]any{"ok": true, "key": p.Key})
 	default:

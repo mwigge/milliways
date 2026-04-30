@@ -46,6 +46,7 @@ func main() {
 	}
 
 	setupLogger(*logLevel)
+	daemon.LoadLocalEnv(daemon.LocalEnvPath())
 
 	pidPath := filepath.Join(state, "pid")
 	lock, err := daemon.AcquireLock(pidPath)

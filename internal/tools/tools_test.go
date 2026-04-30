@@ -81,9 +81,8 @@ func TestHandleReadWriteAndEdit(t *testing.T) {
 }
 
 func TestHandleGrepAndGlob(t *testing.T) {
-	t.Parallel()
-
 	dir := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", dir)
 	alpha := filepath.Join(dir, "alpha.txt")
 	beta := filepath.Join(dir, "beta.md")
 	if err := os.WriteFile(alpha, []byte("hello\nneedle\n"), 0o600); err != nil {

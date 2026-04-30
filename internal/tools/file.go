@@ -122,9 +122,13 @@ func handleGrep(_ context.Context, args map[string]any) (string, error) {
 	if !ok {
 		return "", errors.New("pattern is required")
 	}
-	root, _ := stringArg(args, "path")
-	if strings.TrimSpace(root) == "" {
-		root = "."
+	rawRoot, _ := stringArg(args, "path")
+	if strings.TrimSpace(rawRoot) == "" {
+		rawRoot = "."
+	}
+	root, err := containedPath(rawRoot)
+	if err != nil {
+		return "", err
 	}
 	include, _ := stringArg(args, "include")
 	re, err := regexp.Compile(pattern)
@@ -148,6 +152,9 @@ func handleGrep(_ context.Context, args map[string]any) (string, error) {
 			if !matched {
 				return nil
 			}
+		}
+		if matchDenylist(path) != "" {
+			return nil
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -177,9 +184,12 @@ func handleGlob(_ context.Context, args map[string]any) (string, error) {
 	if !ok {
 		return "", errors.New("pattern is required")
 	}
-	root, _ := stringArg(args, "path")
-	if strings.TrimSpace(root) != "" {
-		pattern = filepath.Join(root, pattern)
+	rawRoot, _ := stringArg(args, "path")
+	if strings.TrimSpace(rawRoot) != "" {
+		pattern = filepath.Join(rawRoot, pattern)
+	}
+	if _, err := containedPath(filepath.Dir(pattern)); err != nil {
+		return "", fmt.Errorf("glob path outside workspace: %w", err)
 	}
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
