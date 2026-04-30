@@ -267,6 +267,9 @@ func runChat(ctx context.Context) error {
 		}
 	}
 
+	// Warm the model cache in the background so /model shows live data.
+	go globalModelCache.RefreshAsync()
+
 	loop.printLanding()
 	return loop.run(ctx)
 }
@@ -1239,16 +1242,10 @@ func runnerModelSpec(agentID string) modelSpec {
 			ep = "https://api.minimax.io/v1/text/chatcompletion_v2"
 		}
 		return modelSpec{
-			envKey:  "MINIMAX_MODEL",
-			current: cur,
+			envKey:   "MINIMAX_MODEL",
+			current:  cur,
 			endpoint: ep,
-			choices: []string{
-				"MiniMax-M2.7",
-				"MiniMax-Text-01",
-				"abab6.5s-chat",
-				"abab6.5g-chat",
-				"abab5.5-chat",
-			},
+			choices:  globalModelCache.Models("minimax"),
 		}
 	case "local":
 		cur := os.Getenv("MILLIWAYS_LOCAL_MODEL")
@@ -1277,14 +1274,7 @@ func runnerModelSpec(agentID string) modelSpec {
 			envKey:   "ANTHROPIC_MODEL",
 			current:  cur,
 			endpoint: "claude CLI",
-			choices: []string{
-				"claude-opus-4-5",
-				"claude-opus-4-7",
-				"claude-sonnet-4-6",
-				"claude-haiku-4-5-20251001",
-				"claude-3-5-sonnet-20241022",
-				"claude-3-5-haiku-20241022",
-			},
+			choices:  globalModelCache.Models("claude"),
 		}
 	case "codex":
 		cur := os.Getenv("CODEX_MODEL")
@@ -1298,14 +1288,7 @@ func runnerModelSpec(agentID string) modelSpec {
 			envKey:   "CODEX_MODEL",
 			current:  cur,
 			endpoint: "codex CLI",
-			choices: []string{
-				"o4-mini",
-				"o3",
-				"o3-mini",
-				"gpt-4.1",
-				"gpt-4.1-mini",
-				"gpt-4o",
-			},
+			choices:  globalModelCache.Models("codex"),
 		}
 	case "copilot":
 		cur := os.Getenv("COPILOT_MODEL")
@@ -1313,16 +1296,10 @@ func runnerModelSpec(agentID string) modelSpec {
 			cur = "default (set COPILOT_MODEL or use /model copilot <name>)"
 		}
 		return modelSpec{
-			envKey:  "COPILOT_MODEL",
-			current: cur,
+			envKey:   "COPILOT_MODEL",
+			current:  cur,
 			endpoint: "copilot CLI",
-			choices: []string{
-				"gpt-4.5",
-				"gpt-4o",
-				"claude-sonnet-4-5",
-				"claude-opus-4-5",
-				"gemini-2.0-flash",
-			},
+			choices:  globalModelCache.Models("copilot"),
 		}
 	case "gemini":
 		cur := os.Getenv("GEMINI_MODEL")
@@ -1336,14 +1313,7 @@ func runnerModelSpec(agentID string) modelSpec {
 			envKey:   "GEMINI_MODEL",
 			current:  cur,
 			endpoint: "gemini CLI",
-			choices: []string{
-				"gemini-2.5-pro",
-				"gemini-2.5-flash",
-				"gemini-2.0-flash",
-				"gemini-2.0-flash-lite",
-				"gemini-1.5-pro",
-				"gemini-1.5-flash",
-			},
+			choices:  globalModelCache.Models("gemini"),
 		}
 	case "pool":
 		return modelSpec{current: "Poolside ACP", endpoint: "pool CLI (ACP)"}
