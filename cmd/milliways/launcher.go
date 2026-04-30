@@ -33,6 +33,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/mwigge/milliways/internal/rpc"
 )
 
 // launcherMode classifies what the binary should do based on its argv.
@@ -87,43 +89,148 @@ func insideMilliwaysTerm() bool {
 	return false
 }
 
-// printWelcome emits the v0.5.0 quickstart banner. Replaces the legacy
-// REPL welcome / /help that was deleted with internal/repl/. Discoverable
-// by typing `milliways` (no args) inside any milliways-term tab.
+// printWelcome emits the v0.5.x quickstart banner. Discoverable by
+// typing `milliways` (no args) inside any milliways-term tab. Queries
+// the live daemon for status + agent list (graceful fallback when the
+// daemon is down) so the user sees their actual cockpit state, not a
+// static template.
 func printWelcome() {
-	const banner = `milliways v0.5.0 — already inside MilliWays.app
+	out := os.Stdout
+	fmt.Fprintln(out, "milliways "+welcomeVersion()+" — inside MilliWays.app")
+	fmt.Fprintln(out)
 
-One-shot prompts (CLI dispatch):
+	// Live daemon status. Short timeout so a hung daemon doesn't block
+	// the welcome render.
+	state := probeDaemonForWelcome(700 * time.Millisecond)
+	fmt.Fprintln(out, "  daemon  "+state.daemonLine)
+	if state.agentLine != "" {
+		fmt.Fprintln(out, "  agents  "+state.agentLine)
+	}
+	if state.activeLine != "" {
+		fmt.Fprintln(out, "  active  "+state.activeLine)
+	}
+	fmt.Fprintln(out)
+
+	const body = `Switch agent (Ctrl+Space = Leader):
+  Leader + 1   → claude     Leader + 2   → codex
+  Leader + 3   → copilot    Leader + 4   → minimax
+  Leader + a   → claude     (split pane below current tab)
+
+One-shot prompt (no UI; just dispatch):
   milliways "explain the auth flow"
-  milliways -k claude "review this"
-  milliways -j "explain this"               # JSON output
+  milliways -k claude "review this PR"
+  milliways -j "summarise this in JSON"
   milliways --recipe <name> "<prompt>"
 
-Ops via milliwaysctl (also surfaced as slash commands in the Leader+/ palette):
-  milliwaysctl status                       # daemon + agent health
-  milliwaysctl agents                       # registered runners + auth
-  milliwaysctl quota                        # quota / cost snapshot
-  milliwaysctl open --agent <name>          # open an agent session in a new tab
-  milliwaysctl local install-server         # first-time local-model bootstrap
-  milliwaysctl local list-models            # what local backends serve
-  milliwaysctl opsx list                    # OpenSpec changes
-
-Wezterm shortcuts (Leader = Ctrl+Space):
-  Leader + 1..4    → claude / codex / copilot / minimax agent in new tab
-  Leader + a       → claude agent split below
-  Leader + /       → milliwaysctl command palette (fuzzy + free-form)
-  Leader + r       → resume modal (last agent / wake badge)
-  Leader + k       → context overlay
-  Leader + w       → observability render
+Slash command palette — Ctrl+Space then / opens a fuzzy filter:
+  /install-local-server         install llama.cpp + default coder model
+  /list-local-models            show models the active backend serves
+  /setup-local-model <repo>     download GGUF + register in llama-swap
+  /switch-local-server <kind>   llama-server | llama-swap | ollama | vllm | lmstudio
+  /opsx-list                    list openspec changes
+  /opsx-status <change>         show change progress
+  …                             type Tab through the picker for the full list
 
 Discover everything:
-  milliways --help                          # full cobra command + flag list
-  milliwaysctl --help                       # ctl subcommands
+  milliways --help              full command + flag reference
 
-The legacy --repl line-reader was removed in v0.5.0.
-Slash commands inside the wezterm palette ARE the new /help.
+Tip: pasting a multi-line prompt? Wrap in quotes so the shell keeps it whole.
 `
-	fmt.Fprint(os.Stdout, banner)
+	fmt.Fprint(out, body)
+}
+
+// welcomeVersion returns the binary version string for the banner header.
+// Defined out-of-package-main as a thin wrapper so tests can stub it
+// without depending on link-time -X flags.
+var welcomeVersion = func() string {
+	if v := strings.TrimSpace(os.Getenv("MILLIWAYS_WELCOME_VERSION_OVERRIDE")); v != "" {
+		return v
+	}
+	// main.version is set via -ldflags -X. We grab it via a function var
+	// the main package fills in init().
+	if welcomeVersionRef != nil {
+		return welcomeVersionRef()
+	}
+	return "v0.5.x"
+}
+
+// welcomeVersionRef is wired by main.go's init() to expose the
+// link-time-injected `version` string without an import cycle.
+var welcomeVersionRef func() string
+
+// daemonStatusReport summarises the live daemon state for the welcome.
+type daemonStatusReport struct {
+	daemonLine string // e.g. "● running (uptime 3h12m)" or "✗ not running"
+	agentLine  string // e.g. "claude ✓  codex ✓  copilot ✗  …"
+	activeLine string // e.g. "claude (session 0x7f, 2 prompts)"
+}
+
+// probeDaemonForWelcome dials the daemon UDS with a short budget and
+// returns a populated report or a graceful "not running" fallback.
+func probeDaemonForWelcome(budget time.Duration) daemonStatusReport {
+	sock := daemonSocket()
+	if !socketReachable(sock, budget/2) {
+		return daemonStatusReport{
+			daemonLine: "✗ not running   (start it: open MilliWays.app, or run `milliwaysd &` in any tab)",
+		}
+	}
+	c, err := rpc.Dial(sock)
+	if err != nil {
+		return daemonStatusReport{
+			daemonLine: "✗ not reachable: " + err.Error(),
+		}
+	}
+	defer c.Close()
+
+	// Two parallel reads with a tight deadline. agent.list is the cheapest
+	// signal of "daemon is responsive AND knows about runners".
+	deadline := time.Now().Add(budget)
+	report := daemonStatusReport{daemonLine: "● running"}
+
+	type listResp struct {
+		Agents []struct {
+			ID         string `json:"id"`
+			Available  bool   `json:"available"`
+			AuthStatus string `json:"auth_status"`
+		} `json:"agents"`
+	}
+	var agents listResp
+	if err := callWithDeadline(c, "agent.list", nil, &agents, deadline); err == nil && len(agents.Agents) > 0 {
+		var parts []string
+		for _, a := range agents.Agents {
+			mark := "✗"
+			if a.AuthStatus == "ok" {
+				mark = "✓"
+			} else if a.AuthStatus == "unknown" {
+				mark = "?"
+			}
+			parts = append(parts, a.ID+" "+mark)
+		}
+		report.agentLine = strings.Join(parts, "  ")
+	}
+
+	var status map[string]any
+	if err := callWithDeadline(c, "status.get", nil, &status, deadline); err == nil {
+		if cur, _ := status["c"].(string); cur != "" {
+			report.activeLine = cur
+			if h, _ := status["session_handle"].(string); h != "" {
+				report.activeLine += "  (handle " + h + ")"
+			}
+		}
+	}
+
+	return report
+}
+
+// callWithDeadline runs c.Call but bails if `deadline` has passed.
+// The rpc.Client doesn't take a context, so this is best-effort: we
+// gate on time-of-call and let the underlying conn timeout if the
+// server hangs.
+func callWithDeadline(c *rpc.Client, method string, params, result any, deadline time.Time) error {
+	if time.Now().After(deadline) {
+		return fmt.Errorf("budget exceeded before %s", method)
+	}
+	return c.Call(method, params, result)
 }
 
 // socketReachable returns true if a unix-domain dial to socketPath succeeds

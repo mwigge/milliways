@@ -47,7 +47,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "0.5.1"
+var version = "0.5.2"
+
+func init() {
+	// Expose this main package's link-time-injected `version` to launcher.go's
+	// printWelcome without an import cycle.
+	welcomeVersionRef = func() string { return version }
+}
 
 // dispatchOpts groups the parameters for the dispatch function.
 type dispatchOpts struct {
