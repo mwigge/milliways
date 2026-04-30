@@ -39,6 +39,7 @@ var allowedSetenvKeys = map[string]bool{
 	"CODEX_MODEL":           true,
 	"GEMINI_MODEL":          true,
 	"GOOGLE_MODEL":          true,
+	"COPILOT_MODEL":         true,
 	// Endpoint overrides
 	"MINIMAX_API_URL":          true,
 	"MINIMAX_ENDPOINT":         true,

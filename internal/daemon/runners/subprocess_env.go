@@ -54,6 +54,7 @@ var safeRunnerEnvKeys = map[string]bool{
 	// takes effect without restarting the daemon or its subprocesses.
 	"ANTHROPIC_MODEL": true, "OPENAI_MODEL": true, "CODEX_MODEL": true,
 	"CLAUDE_MODEL": true, "GEMINI_MODEL": true, "GOOGLE_MODEL": true,
+	"COPILOT_MODEL": true,
 }
 
 // safeRunnerEnv returns a filtered environment for runner subprocess

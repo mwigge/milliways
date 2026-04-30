@@ -84,6 +84,8 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 		return
 	}
 
+	defer func() { stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0}) }()
+
 	cwd, _ := os.Getwd()
 	cmd := exec.CommandContext(ctx, poolBinary, poolArgsBuilder(text, cwd)...)
 	cmd.Env = safeRunnerEnv()
@@ -142,8 +144,7 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 
 	if poolStderrSignalsLimit(lines) {
 		observeError(metrics, AgentIDPool)
-		stream.Push(map[string]any{"t": "err", "msg": "pool: session limit reached"})
-		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
+		stream.Push(map[string]any{"t": "err", "agent": AgentIDPool, "msg": "pool: session limit reached"})
 		return
 	}
 
@@ -151,7 +152,6 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 		observeError(metrics, AgentIDPool)
 		stream.Push(map[string]any{"t": "err", "msg": "pool exited: " + waitErr.Error()})
 	}
-	stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
 }
 
 // streamPoolStdout reads stdout in poolChunkSize chunks and pushes each

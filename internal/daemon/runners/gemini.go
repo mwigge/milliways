@@ -79,6 +79,8 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		return
 	}
 
+	defer func() { stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0}) }()
+
 	cwd, _ := os.Getwd()
 	cmd := exec.CommandContext(ctx, geminiBinary, geminiArgsBuilder(text)...)
 	cmd.Env = safeRunnerEnv()
@@ -139,8 +141,7 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 
 	if geminiStderrSignalsLimit(lines) {
 		observeError(metrics, AgentIDGemini)
-		stream.Push(map[string]any{"t": "err", "msg": "gemini: session limit reached"})
-		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
+		stream.Push(map[string]any{"t": "err", "agent": AgentIDGemini, "msg": "gemini: session limit reached"})
 		return
 	}
 
@@ -148,7 +149,6 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		observeError(metrics, AgentIDGemini)
 		stream.Push(map[string]any{"t": "err", "msg": "gemini exited: " + waitErr.Error()})
 	}
-	stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
 }
 
 // streamGeminiStdout reads stdout in geminiChunkSize chunks and pushes

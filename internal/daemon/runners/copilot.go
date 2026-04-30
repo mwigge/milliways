@@ -71,10 +71,15 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		return
 	}
 
+	defer func() { stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0}) }()
+
 	cwd, _ := os.Getwd()
 	// --add-dir scopes file search to the project directory, avoiding macOS
 	// system paths that produce permission errors when copilot searches broadly.
 	args := []string{"-p", text, "--allow-all-tools", "--allow-all-paths"}
+	if model := os.Getenv("COPILOT_MODEL"); model != "" {
+		args = append(args, "--model", model)
+	}
 	if cwd != "" {
 		args = append(args, "--add-dir", cwd)
 	}
@@ -145,7 +150,6 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		observeError(metrics, AgentIDCopilot)
 		stream.Push(map[string]any{"t": "err", "msg": "copilot exited: " + waitErr.Error()})
 	}
-	stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
 }
 
 // copilotStderrSignalsLimit returns true when any captured stderr line

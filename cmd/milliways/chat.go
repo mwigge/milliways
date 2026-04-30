@@ -1122,7 +1122,7 @@ func runnerModelSpec(agentID string) modelSpec {
 		}
 		ep := os.Getenv("MINIMAX_API_URL")
 		if ep == "" {
-			ep = "https://api.minimax.io/v1"
+			ep = "https://api.minimax.io/v1/text/chatcompletion_v2"
 		}
 		return modelSpec{
 			envKey:  "MINIMAX_MODEL",
@@ -1194,10 +1194,21 @@ func runnerModelSpec(agentID string) modelSpec {
 			},
 		}
 	case "copilot":
+		cur := os.Getenv("COPILOT_MODEL")
+		if cur == "" {
+			cur = "default (set COPILOT_MODEL or use /model copilot <name>)"
+		}
 		return modelSpec{
-			current:  "copilot",
+			envKey:  "COPILOT_MODEL",
+			current: cur,
 			endpoint: "copilot CLI",
-			choices:  []string{"(model selection managed by GitHub Copilot CLI — use `gh copilot` flags)"},
+			choices: []string{
+				"gpt-4.5",
+				"gpt-4o",
+				"claude-sonnet-4-5",
+				"claude-opus-4-5",
+				"gemini-2.0-flash",
+			},
 		}
 	case "gemini":
 		cur := os.Getenv("GEMINI_MODEL")
@@ -1221,7 +1232,7 @@ func runnerModelSpec(agentID string) modelSpec {
 			},
 		}
 	case "pool":
-		return modelSpec{current: "Poolside ACP", endpoint: "~/.config/poolside"}
+		return modelSpec{current: "Poolside ACP", endpoint: "pool CLI (ACP)"}
 	}
 	return modelSpec{current: "unknown", endpoint: "unknown"}
 }

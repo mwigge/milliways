@@ -90,6 +90,8 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		return
 	}
 
+	defer func() { stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0}) }()
+
 	cwd, _ := os.Getwd()
 	cmd := exec.CommandContext(ctx, codexBinary, buildCodexCmdArgs(text, cwd, nil)...)
 	cmd.Env = safeRunnerEnv()
@@ -185,7 +187,6 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		observeError(metrics, AgentIDCodex)
 		stream.Push(map[string]any{"t": "err", "msg": "codex exited: " + waitErr.Error()})
 	}
-	stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
 }
 
 // buildCodexCmdArgs assembles the codex CLI argv. Always begins with

@@ -132,6 +132,11 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		return
 	}
 
+	// chunkEnd is updated with real cost/tokens before the function returns;
+	// the defer guarantees it is pushed on every exit path including early errors.
+	chunkEnd := map[string]any{"t": "chunk_end", "cost_usd": 0.0}
+	defer func() { stream.Push(chunkEnd) }()
+
 	cwd, _ := os.Getwd()
 	args := []string{
 		"--print",
@@ -239,19 +244,15 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		stream.Push(map[string]any{"t": "err", "msg": "claude exited: " + waitErr.Error()})
 	}
 	observeTokens(metrics, AgentIDClaude, lastResult.inputTokens, lastResult.outputTokens, lastResult.costUSD)
-	push := map[string]any{
-		"t":             "chunk_end",
-		"cost_usd":      lastResult.costUSD,
-		"input_tokens":  lastResult.inputTokens,
-		"output_tokens": lastResult.outputTokens,
-	}
+	chunkEnd["cost_usd"] = lastResult.costUSD
+	chunkEnd["input_tokens"] = lastResult.inputTokens
+	chunkEnd["output_tokens"] = lastResult.outputTokens
 	if lastResult.cacheReadTokens > 0 {
-		push["cache_read_tokens"] = lastResult.cacheReadTokens
+		chunkEnd["cache_read_tokens"] = lastResult.cacheReadTokens
 	}
 	if lastResult.cacheWriteTokens > 0 {
-		push["cache_write_tokens"] = lastResult.cacheWriteTokens
+		chunkEnd["cache_write_tokens"] = lastResult.cacheWriteTokens
 	}
-	stream.Push(push)
 }
 
 // extractAssistantText returns the concatenated text of all `text` content

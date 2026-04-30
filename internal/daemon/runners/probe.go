@@ -108,12 +108,11 @@ func probeCodex(ctx context.Context) AgentInfo {
 }
 
 func probeMinimax(ctx context.Context) AgentInfo {
+	// MiniMax is HTTP-only — no binary required. Available whenever the API key
+	// is set, regardless of whether any 'minimax' binary exists on PATH.
 	info := AgentInfo{ID: "minimax", AuthStatus: "missing_credentials"}
-	if _, err := exec.LookPath("minimax"); err == nil {
-		info.Available = true
-	}
-	// MiniMax is API-key driven; presence of the env var trumps binary check.
 	if k := os.Getenv("MINIMAX_API_KEY"); k != "" {
+		info.Available = true
 		info.AuthStatus = "ok"
 	}
 	return info
@@ -166,6 +165,9 @@ func probePool(ctx context.Context) AgentInfo {
 		return info
 	}
 	info.Available = true
+	// pool --version exits 0 regardless of auth state; treats it as a best-effort
+	// signal that the binary is functional. Real auth is file-based at
+	// ~/.config/poolside/credentials.json and verified at dispatch time.
 	if runOK(ctx, "pool", "--version") {
 		info.AuthStatus = "ok"
 	}
