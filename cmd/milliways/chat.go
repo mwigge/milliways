@@ -851,35 +851,7 @@ func (l *chatLoop) printLanding() {
 	}
 	fmt.Fprintln(l.out)
 
-	fmt.Fprintln(l.out, "Install client CLI (no leaving chat):")
-	fmt.Fprintln(l.out, "  /install <client>             claude | codex | copilot | gemini | local")
-	fmt.Fprintln(l.out, "  /install                      list supported install routes")
-	fmt.Fprintln(l.out)
-
-	fmt.Fprintln(l.out, "Local-model bootstrap (no leaving chat):")
-	fmt.Fprintln(l.out, "  /install-local-server         install llama.cpp + default coder model")
-	fmt.Fprintln(l.out, "  /install-local-swap           install llama-swap (hot model swap)")
-	fmt.Fprintln(l.out, "  /list-local-models            show models the active backend serves")
-	fmt.Fprintln(l.out, "  /switch-local-server <kind>   llama-server | llama-swap | ollama | vllm | lmstudio")
-	fmt.Fprintln(l.out, "  /download-local-model <repo>  fetch a GGUF from HuggingFace")
-	fmt.Fprintln(l.out, "  /setup-local-model <repo>     download + register in llama-swap.yaml")
-	fmt.Fprintln(l.out)
-
-	fmt.Fprintln(l.out, "OpenSpec:")
-	fmt.Fprintln(l.out, "  /opsx-list                    list openspec changes")
-	fmt.Fprintln(l.out, "  /opsx-status <change>         show change progress")
-	fmt.Fprintln(l.out, "  /opsx-show <change>           show full change detail")
-	fmt.Fprintln(l.out)
-
-	fmt.Fprintln(l.out, "Other:")
-	fmt.Fprintln(l.out, "  /agents       list clients with auth status")
-	fmt.Fprintln(l.out, "  /quota        current quota snapshot")
-	fmt.Fprintln(l.out, "  /switch <n>   same as /<runner>")
-	fmt.Fprintln(l.out, "  /help         all slash commands")
-	fmt.Fprintln(l.out, "  /exit         exit chat (Ctrl+D also works)")
-	fmt.Fprintln(l.out, "  !<cmd>        run shell command (vim, less, htop work)")
-	fmt.Fprintln(l.out)
-	fmt.Fprintln(l.out, "Type a slash command to enter a client; once inside, anything you type goes to that runner.")
+	fmt.Fprintln(l.out, "  /help    all commands   /exit  quit   !<cmd>  shell")
 	fmt.Fprintln(l.out)
 }
 
