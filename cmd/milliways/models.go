@@ -26,13 +26,60 @@ import (
 	"time"
 )
 
+// knownModels is the curated fallback list for each runner. These are used
+// when the runner authenticates via OAuth and the OAuth token is not compatible
+// with the provider's model-listing API (e.g. codex ChatGPT OAuth ≠ OpenAI
+// developer API; Claude Code OAuth ≠ Anthropic API). Updated with each
+// milliways release to track current CLI model offerings.
+var knownModels = map[string][]string{
+	// Codex model list from the codex CLI's interactive /model picker.
+	// ChatGPT OAuth tokens are scoped for chatgpt.com, not api.openai.com.
+	"codex": {
+		"gpt-5.5",
+		"gpt-5.4",
+		"gpt-5.4-mini",
+		"gpt-5.3-codex",
+		"gpt-5.2",
+	},
+	// Claude models from Anthropic's public model page.
+	// Claude Code uses Anthropic OAuth, not a developer API key.
+	"claude": {
+		"claude-opus-4-7",
+		"claude-opus-4-5",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5-20251001",
+		"claude-3-5-sonnet-20241022",
+		"claude-3-5-haiku-20241022",
+		"claude-3-opus-20240229",
+	},
+	// Gemini models. gemini-cli uses Google OAuth scoped for Code Assist,
+	// not the Generative Language API — the access token returns 403 there.
+	// GEMINI_API_KEY / GOOGLE_API_KEY enables live fetch.
+	"gemini": {
+		"gemini-2.5-pro",
+		"gemini-2.5-flash",
+		"gemini-2.0-flash",
+		"gemini-2.0-flash-lite",
+		"gemini-1.5-pro",
+		"gemini-1.5-flash",
+	},
+	// Copilot models from GitHub Copilot API (also live-fetched via OAuth).
+	"copilot": {
+		"gpt-4.5",
+		"gpt-4o",
+		"claude-sonnet-4-5",
+		"claude-opus-4-5",
+		"gemini-2.0-flash",
+	},
+}
+
 // modelCache caches the result of a provider model-list fetch so /model
 // does not make a live API call on every invocation.
 type modelCache struct {
-	mu        sync.RWMutex
-	entries   map[string]modelCacheEntry
-	ttl       time.Duration
-	client    *http.Client
+	mu      sync.RWMutex
+	entries map[string]modelCacheEntry
+	ttl     time.Duration
+	client  *http.Client
 }
 
 type modelCacheEntry struct {
@@ -49,7 +96,7 @@ var globalModelCache = &modelCache{
 
 // Models returns the live model list for agentID. Returns ["(fetching…)"]
 // while a background fetch is in flight so callers can show a loading state.
-// Returns nil when no API key is configured or the fetch permanently fails.
+// Falls back to knownModels when a live fetch is unavailable.
 func (c *modelCache) Models(agentID string) []string {
 	c.mu.RLock()
 	e, ok := c.entries[agentID]
@@ -60,8 +107,8 @@ func (c *modelCache) Models(agentID string) []string {
 	if ok && time.Since(e.fetchedAt) < c.ttl {
 		return e.models
 	}
-	// Re-check inside write lock to prevent concurrent callers from
-	// both starting a fetch (TOCTOU between the RLock check above and here).
+	// Re-check inside write lock to prevent two concurrent callers both
+	// starting a fetch (TOCTOU between the RLock check above and here).
 	c.mu.Lock()
 	e2 := c.entries[agentID]
 	if e2.fetching || time.Since(e2.fetchedAt) < c.ttl {
@@ -75,6 +122,9 @@ func (c *modelCache) Models(agentID string) []string {
 	c.mu.Unlock()
 
 	models := c.fetch(agentID)
+	if len(models) == 0 {
+		models = knownModels[agentID] // curated fallback
+	}
 
 	c.mu.Lock()
 	c.entries[agentID] = modelCacheEntry{models: models, fetchedAt: time.Now()}
@@ -83,31 +133,52 @@ func (c *modelCache) Models(agentID string) []string {
 }
 
 // RefreshAsync starts a background goroutine to refresh the model cache for
-// all runners. Called once at chat startup so /model shows live data quickly.
+// all runners at startup so /model shows live data without blocking.
 func (c *modelCache) RefreshAsync() {
 	for _, agentID := range []string{"claude", "codex", "copilot", "gemini", "minimax"} {
 		go func(id string) { c.Models(id) }(agentID)
 	}
 }
 
+// fetch attempts a live model list for agentID using whatever credentials
+// are available. Returns nil if no live fetch is possible — the caller will
+// use knownModels as the fallback.
+//
+// Auth strategy per runner:
+//   - minimax:  MINIMAX_API_KEY env var → live API call
+//   - copilot:  OAuth token from ~/.copilot/ or ~/.config/github-copilot/ → live API call
+//   - gemini:   GEMINI_API_KEY / GOOGLE_API_KEY env var → live API call
+//               (~/.gemini/oauth_creds.json token returns 403 — wrong OAuth scope)
+//   - codex:    OPENAI_API_KEY env var → live API call
+//               (ChatGPT OAuth token is scoped for chatgpt.com, not api.openai.com)
+//   - claude:   ANTHROPIC_API_KEY env var → live API call
+//               (Claude Code OAuth is scoped for Claude Code, not api.anthropic.com)
 func (c *modelCache) fetch(agentID string) []string {
 	switch agentID {
-	case "codex":
-		return c.fetchOpenAI(os.Getenv("OPENAI_API_KEY"), "gpt", "o1", "o3", "o4")
-	case "claude":
-		return c.fetchAnthropic(os.Getenv("ANTHROPIC_API_KEY"))
-	case "gemini":
-		return c.fetchGemini(os.Getenv("GEMINI_API_KEY"), os.Getenv("GOOGLE_API_KEY"))
 	case "minimax":
 		return c.fetchMiniMax(os.Getenv("MINIMAX_API_KEY"))
+
 	case "copilot":
 		return c.fetchCopilot()
+
+	case "gemini":
+		key := os.Getenv("GEMINI_API_KEY")
+		if key == "" {
+			key = os.Getenv("GOOGLE_API_KEY")
+		}
+		return c.fetchGemini(key)
+
+	case "codex":
+		return c.fetchOpenAI(os.Getenv("OPENAI_API_KEY"), "gpt", "o1", "o3", "o4")
+
+	case "claude":
+		return c.fetchAnthropic(os.Getenv("ANTHROPIC_API_KEY"))
 	}
 	return nil
 }
 
-// fetchOpenAI queries the OpenAI /v1/models endpoint and returns IDs that
-// start with any of the given prefixes (filters noise like embedding models).
+// ---- provider fetchers ----
+
 func (c *modelCache) fetchOpenAI(apiKey string, prefixes ...string) []string {
 	if apiKey == "" {
 		return nil
@@ -148,7 +219,6 @@ func (c *modelCache) fetchOpenAI(apiKey string, prefixes ...string) []string {
 	return out
 }
 
-// fetchAnthropic queries the Anthropic /v1/models endpoint.
 func (c *modelCache) fetchAnthropic(apiKey string) []string {
 	if apiKey == "" {
 		return nil
@@ -186,23 +256,17 @@ func (c *modelCache) fetchAnthropic(apiKey string) []string {
 	return out
 }
 
-// fetchGemini queries the Google Generative Language API for available models.
-func (c *modelCache) fetchGemini(apiKey, fallbackKey string) []string {
-	key := apiKey
-	if key == "" {
-		key = fallbackKey
-	}
-	if key == "" {
+func (c *modelCache) fetchGemini(apiKey string) []string {
+	if apiKey == "" {
 		return nil
 	}
-	// Use X-Goog-Api-Key header rather than a query parameter so the key
-	// is not captured in access logs, proxy logs, or OTel URL attributes.
+	// Use X-Goog-Api-Key header so the key is not captured in URL logs.
 	req, err := http.NewRequest(http.MethodGet,
 		"https://generativelanguage.googleapis.com/v1beta/models", nil)
 	if err != nil {
 		return nil
 	}
-	req.Header.Set("X-Goog-Api-Key", key)
+	req.Header.Set("X-Goog-Api-Key", apiKey)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		slog.Debug("models fetch failed", "provider", "gemini", "err", err)
@@ -214,7 +278,7 @@ func (c *modelCache) fetchGemini(apiKey, fallbackKey string) []string {
 	}
 	var payload struct {
 		Models []struct {
-			Name string `json:"name"` // "models/gemini-2.5-pro"
+			Name string `json:"name"`
 		} `json:"models"`
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
@@ -231,7 +295,6 @@ func (c *modelCache) fetchGemini(apiKey, fallbackKey string) []string {
 	return out
 }
 
-// fetchMiniMax queries the MiniMax models endpoint.
 func (c *modelCache) fetchMiniMax(apiKey string) []string {
 	if apiKey == "" {
 		return nil
@@ -268,8 +331,8 @@ func (c *modelCache) fetchMiniMax(apiKey string) []string {
 	return out
 }
 
-// fetchCopilot queries the GitHub Copilot models endpoint using the
-// copilot OAuth token stored by the copilot CLI.
+// fetchCopilot fetches the GitHub Copilot model list using the OAuth token
+// stored by the copilot CLI. Returns nil if no token is found.
 func (c *modelCache) fetchCopilot() []string {
 	token := copilotToken()
 	if token == "" {
@@ -308,15 +371,12 @@ func (c *modelCache) fetchCopilot() []string {
 	return out
 }
 
-// copilotToken reads the OAuth token stored by the copilot CLI.
-// Returns "" if not found.
+// copilotToken reads the GitHub OAuth token stored by the copilot CLI.
 func copilotToken() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	// copilot CLI stores tokens in ~/.copilot/token.json or
-	// ~/.config/github-copilot/hosts.json depending on version.
 	candidates := []string{
 		home + "/.copilot/token.json",
 		home + "/.config/github-copilot/hosts.json",
@@ -326,14 +386,12 @@ func copilotToken() string {
 		if err != nil {
 			continue
 		}
-		// Try simple {"token":"..."} shape first.
 		var simple struct {
 			Token string `json:"token"`
 		}
 		if json.Unmarshal(data, &simple) == nil && simple.Token != "" {
 			return simple.Token
 		}
-		// Try hosts.json shape: {"github.com":{"oauth_token":"..."}}
 		var hosts map[string]struct {
 			OAuthToken string `json:"oauth_token"`
 		}
