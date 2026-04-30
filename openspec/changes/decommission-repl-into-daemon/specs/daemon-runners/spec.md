@@ -19,12 +19,12 @@ All provider runner implementations SHALL live under `internal/daemon/runners/`.
 
 ### Requirement: Provider coverage
 
-The daemon SHALL provide runners for every provider previously available via REPL: `claude`, `codex`, `gemini`, `copilot`, `local`, `minimax`, `opsx`, `pool`.
+The daemon SHALL provide runners for every provider previously available as a chat surface in the REPL: `claude`, `codex`, `gemini`, `copilot`, `local`, `minimax`, `pool`. Note: `opsx` was reclassified during implementation — it is request/response with subcommands, not a chat/stream lifecycle, so it lives as a `milliwaysctl opsx <verb>` subcommand rather than a daemon runner.
 
-#### Scenario: All eight providers register at startup
+#### Scenario: All seven providers register at startup
 
 - **WHEN** the daemon starts
-- **THEN** the runner registry contains entries for `claude`, `codex`, `gemini`, `copilot`, `local`, `minimax`, `opsx`, and `pool`
+- **THEN** the runner registry contains entries for `claude`, `codex`, `gemini`, `copilot`, `local`, `minimax`, and `pool`
 - **AND** each runner's `Name()` returns the expected provider identifier
 
 #### Scenario: Missing API key disables a runner cleanly
@@ -35,7 +35,9 @@ The daemon SHALL provide runners for every provider previously available via REP
 
 ### Requirement: Feature parity with prior REPL implementations
 
-Each ported runner SHALL preserve the user-observable behaviours of its REPL predecessor: rate-limit detection, exhaustion detection, proxy-block detection (where applicable), reasoning-mode controls, attachment handling, session usage accounting, and quota reporting.
+Each ported runner SHALL preserve these user-observable behaviours of its REPL predecessor that map onto the daemon's `Run<Provider>(ctx, input <-chan []byte, stream Pusher, metrics MetricsObserver)` contract: rate-limit detection (in-band events plus stderr signals), exhaustion detection, proxy-block detection (where applicable), and session usage accounting via the metrics observer.
+
+Out of scope for this change because they require a richer per-dispatch contract (per-call config, attachments, reasoning level) that the daemon does not yet expose: per-call reasoning-mode controls, image attachment forwarding, per-call model override, per-call `--allowed-tools` selection. These are tracked as follow-ups; they were available via the REPL runner's `Settings()` surface but the daemon's `agent.send` channel-of-bytes does not currently carry them. Adding them is a separate scoped change that extends the daemon's RPC surface.
 
 #### Scenario: Claude runner detects rate-limit reset time
 

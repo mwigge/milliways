@@ -137,6 +137,7 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		"--verbose",
 		text,
 	)
+	cmd.Env = safeRunnerEnv()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		observeError(metrics, AgentIDClaude)

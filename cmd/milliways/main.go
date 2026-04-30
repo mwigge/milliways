@@ -47,7 +47,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var version = "0.4.13"
+var version = "0.5.0"
 
 // dispatchOpts groups the parameters for the dispatch function.
 type dispatchOpts struct {
@@ -73,6 +73,23 @@ func main() {
 		Level: slog.LevelInfo,
 	})))
 
+	// Migration interceptor: --repl was removed in v0.5.0 along with the
+	// internal/repl/ package. Catch users with shell aliases / scripts /
+	// CI invoking `milliways --repl` (or MILLIWAYS_REPL=1) and surface a
+	// curated migration message before cobra emits its raw "unknown flag"
+	// error.
+	if hasReplArg(os.Args[1:]) || os.Getenv("MILLIWAYS_REPL") == "1" {
+		fmt.Fprintln(os.Stderr, "milliways: --repl was removed in v0.5.0 (the legacy built-in line-reader / internal/repl/ package).")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Use one of:")
+		fmt.Fprintln(os.Stderr, "  milliways                       launch milliways-term (the wezterm-based AI terminal)")
+		fmt.Fprintln(os.Stderr, "  milliways \"<prompt>\"            one-shot CLI dispatch")
+		fmt.Fprintln(os.Stderr, "  milliwaysctl <verb> [args...]   ops verbs (local, opsx, status, agents, …)")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "See README \"AI Terminal\" and \"CLI mode\" sections for the v0.5.0 migration.")
+		os.Exit(2)
+	}
+
 	// Top-level launcher dispatch runs *before* cobra so we can implement the
 	// milliways-term-by-default behaviour (`milliways` with no flags exec's
 	// milliways-term). Anything that doesn't match falls through to the
@@ -94,6 +111,18 @@ func main() {
 		}
 		os.Exit(1)
 	}
+}
+
+// hasReplArg returns true if any element of args is the literal "--repl".
+// Used by the v0.5.0 migration interceptor to give users a curated message
+// instead of cobra's raw "unknown flag" error.
+func hasReplArg(args []string) bool {
+	for _, a := range args {
+		if a == "--repl" {
+			return true
+		}
+	}
+	return false
 }
 
 func rootCmd() *cobra.Command {

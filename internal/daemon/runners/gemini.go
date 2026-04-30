@@ -81,6 +81,7 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 
 	cwd, _ := os.Getwd()
 	cmd := exec.CommandContext(ctx, geminiBinary, geminiArgsBuilder(text)...)
+	cmd.Env = safeRunnerEnv()
 	if cwd != "" {
 		cmd.Dir = cwd
 	}

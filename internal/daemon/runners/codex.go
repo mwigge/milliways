@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -89,6 +90,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	}
 
 	cmd := exec.CommandContext(ctx, codexBinary, buildCodexCmdArgs(text, nil)...)
+	cmd.Env = safeRunnerEnv()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		observeError(metrics, AgentIDCodex)
@@ -108,12 +110,13 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	}
 
 	// Capture stderr; check for proxy-block and session-limit signals at the end.
+	// sawProxyBlock is sync/atomic.Bool — single field, two goroutines, no
+	// need for a separate mutex (Code-quality B5 / Reviewer #17).
 	var (
-		stderrLines     []string
-		stderrMu        sync.Mutex
-		stderrWg        sync.WaitGroup
-		sawProxyBlock   bool
-		sawProxyMu      sync.Mutex
+		stderrLines   []string
+		stderrMu      sync.Mutex
+		stderrWg      sync.WaitGroup
+		sawProxyBlock atomic.Bool
 	)
 	stderrWg.Add(1)
 	go func() {
@@ -126,14 +129,12 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 				continue
 			}
 			if codexLineLooksProxyBlocked(line) {
-				sawProxyMu.Lock()
-				sawProxyBlock = true
-				sawProxyMu.Unlock()
+				sawProxyBlock.Store(true)
 			}
 			stderrMu.Lock()
 			stderrLines = append(stderrLines, line)
 			stderrMu.Unlock()
-			slog.Debug("codex stderr", "line", line)
+			slog.Debug("codex stderr", "line", line, "agent", AgentIDCodex)
 		}
 	}()
 
@@ -147,9 +148,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 			continue
 		}
 		if codexLineLooksProxyBlocked(line) {
-			sawProxyMu.Lock()
-			sawProxyBlock = true
-			sawProxyMu.Unlock()
+			sawProxyBlock.Store(true)
 			continue
 		}
 		if codexLineSignalsSessionLimit(line) {
@@ -163,11 +162,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	waitErr := cmd.Wait()
 	stderrWg.Wait()
 
-	sawProxyMu.Lock()
-	proxyBlocked := sawProxyBlock
-	sawProxyMu.Unlock()
-
-	if proxyBlocked {
+	if sawProxyBlock.Load() {
 		observeError(metrics, AgentIDCodex)
 		stream.Push(map[string]any{
 			"t":     "err",

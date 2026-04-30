@@ -82,6 +82,7 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 
 	cwd, _ := os.Getwd()
 	cmd := exec.CommandContext(ctx, poolBinary, poolArgsBuilder(text)...)
+	cmd.Env = safeRunnerEnv()
 	if cwd != "" {
 		cmd.Dir = cwd
 	}

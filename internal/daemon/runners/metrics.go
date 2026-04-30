@@ -37,9 +37,14 @@ const (
 	AgentIDMiniMax = "minimax"
 	AgentIDLocal   = "local"
 	AgentIDGemini  = "gemini"
-	AgentIDOpsx    = "opsx"
 	AgentIDPool    = "pool"
 )
+
+// Note: opsx is intentionally not a daemon AgentID. It was reclassified
+// during the decommission-repl-into-daemon change as a milliwaysctl
+// subcommand tree (`milliwaysctl opsx <verb>`), not a chat/stream
+// runner. See openspec/changes/decommission-repl-into-daemon/spec.md
+// "Provider coverage" requirement.
 
 // Metric names used by the runners. Mirror the registrations in
 // internal/daemon/server.go's registerCoreMetrics.

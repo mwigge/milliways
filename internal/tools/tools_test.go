@@ -44,9 +44,8 @@ func TestNewBuiltInRegistryContainsAllTools(t *testing.T) {
 }
 
 func TestHandleReadWriteAndEdit(t *testing.T) {
-	t.Parallel()
-
 	dir := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", dir)
 	path := filepath.Join(dir, "sample.txt")
 
 	if _, err := handleWrite(context.Background(), map[string]any{"path": path, "content": "hello\nworld\n"}); err != nil {
@@ -112,8 +111,8 @@ func TestHandleGrepAndGlob(t *testing.T) {
 }
 
 func TestHandleBash(t *testing.T) {
-	t.Parallel()
-
+	// handleBash now pins cwd to the workspace root; test default.
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", t.TempDir())
 	result, err := handleBash(context.Background(), map[string]any{"command": "printf 'hello'", "timeout": 1.0})
 	if err != nil {
 		t.Fatalf("handleBash() error = %v", err)
@@ -124,7 +123,9 @@ func TestHandleBash(t *testing.T) {
 }
 
 func TestHandleWebFetch(t *testing.T) {
-	t.Parallel()
+	// httptest.NewServer binds 127.0.0.1; the production SSRF block
+	// rejects loopback. The opt-in env var allows it for testing.
+	t.Setenv("MILLIWAYS_TOOLS_ALLOW_LOOPBACK", "1")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("payload"))

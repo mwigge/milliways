@@ -79,6 +79,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		args = append(args, "--add-dir", cwd)
 	}
 	cmd := exec.CommandContext(ctx, copilotBinary, args...)
+	cmd.Env = safeRunnerEnv()
 	if cwd != "" {
 		cmd.Dir = cwd
 	}

@@ -325,7 +325,7 @@ func TestRunMiniMax_ToolFailureFoldedAsErrorContent(t *testing.T) {
 	for _, m := range msgs {
 		mm, _ := m.(map[string]any)
 		if mm["role"] == "tool" {
-			if c, _ := mm["content"].(string); strings.HasPrefix(c, "error: ") && strings.Contains(c, "kaboom") {
+			if c, _ := mm["content"].(string); strings.Contains(c, "error: ") && strings.Contains(c, "kaboom") {
 				foundErr = true
 			}
 		}

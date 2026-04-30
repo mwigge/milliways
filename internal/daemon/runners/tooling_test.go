@@ -111,11 +111,13 @@ func TestRunAgenticLoop_MultipleToolCallsExecutedInOrder(t *testing.T) {
 	if len(messages) != 5 {
 		t.Fatalf("messages len = %d, want 5; got %+v", len(messages), messages)
 	}
-	if messages[2].Role != RoleTool || messages[2].ToolCallID != "c1" || messages[2].Content != "first" {
-		t.Errorf("messages[2] = %+v, want tool/c1/first", messages[2])
+	// Tool results are wrapped in <tool_result> markers for prompt-injection
+	// hardening; assert the substring rather than exact equality.
+	if messages[2].Role != RoleTool || messages[2].ToolCallID != "c1" || !strings.Contains(messages[2].Content, "first") {
+		t.Errorf("messages[2] = %+v, want tool/c1 containing 'first'", messages[2])
 	}
-	if messages[3].Role != RoleTool || messages[3].ToolCallID != "c2" || messages[3].Content != "second" {
-		t.Errorf("messages[3] = %+v, want tool/c2/second", messages[3])
+	if messages[3].Role != RoleTool || messages[3].ToolCallID != "c2" || !strings.Contains(messages[3].Content, "second") {
+		t.Errorf("messages[3] = %+v, want tool/c2 containing 'second'", messages[3])
 	}
 }
 
@@ -180,8 +182,10 @@ func TestRunAgenticLoop_ToolFailureFoldedAsErrorAndLoopContinues(t *testing.T) {
 	if foundToolMsg == nil {
 		t.Fatalf("no tool message appended; messages = %+v", messages)
 	}
-	if !strings.HasPrefix(foundToolMsg.Content, "error: ") {
-		t.Errorf("tool content = %q, want prefix \"error: \"", foundToolMsg.Content)
+	// Tool results are wrapped in <tool_result> markers; assert that the
+	// error appears anywhere in the wrapped payload.
+	if !strings.Contains(foundToolMsg.Content, "error: ") {
+		t.Errorf("tool content = %q, want it to contain \"error: \"", foundToolMsg.Content)
 	}
 	if !strings.Contains(foundToolMsg.Content, "kaboom") {
 		t.Errorf("tool content = %q, want it to contain underlying error", foundToolMsg.Content)
@@ -215,8 +219,8 @@ func TestRunAgenticLoop_UnknownToolFoldedAsError(t *testing.T) {
 	if toolMsg == nil {
 		t.Fatalf("no tool message; messages = %+v", messages)
 	}
-	if !strings.HasPrefix(toolMsg.Content, "error: ") || !strings.Contains(toolMsg.Content, "not found") {
-		t.Errorf("tool content = %q, want error prefix mentioning not found", toolMsg.Content)
+	if !strings.Contains(toolMsg.Content, "error: ") || !strings.Contains(toolMsg.Content, "not found") {
+		t.Errorf("tool content = %q, want error mentioning not found", toolMsg.Content)
 	}
 }
 
@@ -247,8 +251,8 @@ func TestRunAgenticLoop_MalformedArgsJSONFoldedAsError(t *testing.T) {
 	if toolMsg == nil {
 		t.Fatalf("no tool message; messages = %+v", messages)
 	}
-	if !strings.HasPrefix(toolMsg.Content, "error: ") {
-		t.Errorf("tool content = %q, want error prefix", toolMsg.Content)
+	if !strings.Contains(toolMsg.Content, "error: ") {
+		t.Errorf("tool content = %q, want it to contain error", toolMsg.Content)
 	}
 }
 

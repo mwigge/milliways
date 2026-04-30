@@ -320,8 +320,11 @@ func TestRunMiniMax_IncompleteStreamEmitsError(t *testing.T) {
 	if !sawErr {
 		t.Fatalf("expected incomplete stream error, got events=%v", events)
 	}
-	if sawChunkEnd {
-		t.Fatalf("unexpected chunk_end for incomplete stream: events=%v", events)
+	// Updated contract (Reviewer MEDIUM 10): every dispatch ends with a
+	// chunk_end, even error paths, so clients waiting on a terminal frame
+	// per agent.send do not hang. The err event must precede the chunk_end.
+	if !sawChunkEnd {
+		t.Fatalf("expected chunk_end for incomplete stream (terminal-frame contract), got events=%v", events)
 	}
 	if got := obs.counterTotal(MetricErrorCount, AgentIDMiniMax); got < 1 {
 		t.Errorf("error_count total = %v, want >= 1 for incomplete stream", got)

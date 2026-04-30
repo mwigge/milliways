@@ -212,6 +212,10 @@ func (r *AgentRegistry) Open(agentID string) (*AgentSession, error) {
 		go runMiniMax(sess, mo)
 	case "local":
 		go runLocal(sess, mo)
+	case "gemini":
+		go runGemini(sess, mo)
+	case "pool":
+		go runPool(sess, mo)
 	default:
 		// Unknown / not yet lifted.
 		r.mu.Lock()
@@ -291,6 +295,36 @@ func runLocal(sess *AgentSession, metrics runners.MetricsObserver) {
 	runners.RunLocal(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
 	stream.Close()
 	slog.Debug("local session ended", "handle", sess.Handle)
+}
+
+// runGemini waits for the sidecar to attach, then hands the session's
+// input channel + stream to runners.RunGemini. Each agent.send call
+// triggers one `gemini -p <prompt> -y` subprocess; the session stays open
+// across sends and ends only when the registry closes the input channel.
+// `metrics` may be nil.
+func runGemini(sess *AgentSession, metrics runners.MetricsObserver) {
+	stream := waitForStream(sess)
+	if stream == nil {
+		return
+	}
+	runners.RunGemini(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	stream.Close()
+	slog.Debug("gemini session ended", "handle", sess.Handle)
+}
+
+// runPool waits for the sidecar to attach, then hands the session's
+// input channel + stream to runners.RunPool. Each agent.send call
+// triggers one `pool exec -p <prompt> --unsafe-auto-allow` subprocess;
+// the session stays open across sends and ends only when the registry
+// closes the input channel. `metrics` may be nil.
+func runPool(sess *AgentSession, metrics runners.MetricsObserver) {
+	stream := waitForStream(sess)
+	if stream == nil {
+		return
+	}
+	runners.RunPool(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	stream.Close()
+	slog.Debug("pool session ended", "handle", sess.Handle)
 }
 
 // waitForStream blocks until sess.stream is non-nil or the session is

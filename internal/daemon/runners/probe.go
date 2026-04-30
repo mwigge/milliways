@@ -13,9 +13,11 @@
 // limitations under the License.
 
 // Package runners probes the local environment for each milliways runner
-// (claude, codex, minimax, copilot). Probing is intentionally minimal —
-// just enough to populate agent.list's auth_status accurately. Full
-// runner code lifts from internal/repl/runner_*.go in a follow-up.
+// (claude, codex, copilot, gemini, local, minimax, pool). Probing is
+// intentionally minimal — just enough to populate agent.list's
+// auth_status accurately. Note: opsx is intentionally not probed; it was
+// reclassified as a `milliwaysctl opsx <verb>` subcommand rather than a
+// chat/stream runner during the decommission-repl-into-daemon change.
 package runners
 
 import (
@@ -36,14 +38,18 @@ type AgentInfo struct {
 	Model      string
 }
 
-// Probe walks all four canonical runners and returns one AgentInfo each.
-// Each probe has a 2-second budget; missing binaries return immediately.
+// Probe walks the seven canonical chat-surface runners and returns one
+// AgentInfo each. Each probe has a 2-second budget; missing binaries
+// return immediately.
 func Probe(ctx context.Context) []AgentInfo {
 	probes := []func(context.Context) AgentInfo{
 		probeClaude,
 		probeCodex,
-		probeMinimax,
 		probeCopilot,
+		probeGemini,
+		probeLocal,
+		probeMinimax,
+		probePool,
 	}
 	out := make([]AgentInfo, 0, len(probes))
 	for _, p := range probes {
@@ -115,13 +121,52 @@ func probeMinimax(ctx context.Context) AgentInfo {
 
 func probeCopilot(ctx context.Context) AgentInfo {
 	info := AgentInfo{ID: "copilot", AuthStatus: "missing_credentials"}
-	if _, err := exec.LookPath("gh"); err != nil {
-		// gh is the only practical channel for copilot CLI auth on this host.
+	// RunCopilot shells the standalone `copilot` binary (not `gh copilot`).
+	// Probe the same binary the runner actually invokes — anything else
+	// produces a probe/runtime mismatch where probe says ok and dispatch
+	// fails with "exec: copilot: not found".
+	if _, err := exec.LookPath("copilot"); err != nil {
 		return info
 	}
 	info.Available = true
-	// `gh copilot --version` succeeds iff the gh-copilot extension is installed.
-	if runOK(ctx, "gh", "copilot", "--version") {
+	if runOK(ctx, "copilot", "--version") {
+		info.AuthStatus = "ok"
+	}
+	return info
+}
+
+func probeGemini(ctx context.Context) AgentInfo {
+	info := AgentInfo{ID: "gemini", AuthStatus: "missing_credentials"}
+	if _, err := exec.LookPath("gemini"); err != nil {
+		return info
+	}
+	info.Available = true
+	// gemini CLI uses gcloud-style auth in $HOME/.config/gcloud or
+	// per-project credentials; presence of the binary + a successful
+	// --version is the strongest non-network signal we can give.
+	if runOK(ctx, "gemini", "--version") {
+		info.AuthStatus = "ok"
+	}
+	return info
+}
+
+func probeLocal(_ context.Context) AgentInfo {
+	// Local is not gated by a binary on PATH — it's an HTTP backend.
+	// The runner has a default endpoint (http://localhost:8765/v1) so
+	// configuration is always present. Real reachability is tested at
+	// dispatch-time; probing here would add network latency to every
+	// agent.list. Mark "ok" so UIs show the runner; users will see a
+	// clear connect error on first use if the backend isn't running.
+	return AgentInfo{ID: "local", Available: true, AuthStatus: "ok"}
+}
+
+func probePool(ctx context.Context) AgentInfo {
+	info := AgentInfo{ID: "pool", AuthStatus: "missing_credentials"}
+	if _, err := exec.LookPath("pool"); err != nil {
+		return info
+	}
+	info.Available = true
+	if runOK(ctx, "pool", "--version") {
 		info.AuthStatus = "ok"
 	}
 	return info

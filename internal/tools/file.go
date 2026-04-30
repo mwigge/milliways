@@ -32,11 +32,16 @@ import (
 
 const defaultReadLimit = 256 * 1024
 
-// handleRead returns file contents up to the configured limit.
+// handleRead returns file contents up to the configured limit. Refuses
+// reads outside the workspace root or matching the credential denylist.
 func handleRead(_ context.Context, args map[string]any) (string, error) {
-	path, ok := pathArg(args)
+	rawPath, ok := pathArg(args)
 	if !ok {
 		return "", errors.New("path is required")
+	}
+	path, err := containedPath(rawPath)
+	if err != nil {
+		return "", err
 	}
 	limit := intArg(args, "limit", defaultReadLimit)
 	data, err := os.ReadFile(path)
@@ -50,10 +55,16 @@ func handleRead(_ context.Context, args map[string]any) (string, error) {
 }
 
 // handleWrite writes file contents and creates a backup for existing files.
+// Refuses writes outside the workspace root or matching the credential
+// denylist (~/.ssh/, ~/.aws/, etc.).
 func handleWrite(_ context.Context, args map[string]any) (string, error) {
-	path, ok := pathArg(args)
+	rawPath, ok := pathArg(args)
 	if !ok {
 		return "", errors.New("path is required")
+	}
+	path, err := containedPath(rawPath)
+	if err != nil {
+		return "", err
 	}
 	content, ok := stringArg(args, "content")
 	if !ok {
@@ -73,11 +84,16 @@ func handleWrite(_ context.Context, args map[string]any) (string, error) {
 	return "ok", nil
 }
 
-// handleEdit applies a minimal unified diff to a file.
+// handleEdit applies a minimal unified diff to a file. Refuses edits
+// outside the workspace root or matching the credential denylist.
 func handleEdit(_ context.Context, args map[string]any) (string, error) {
-	path, ok := pathArg(args)
+	rawPath, ok := pathArg(args)
 	if !ok {
 		return "", errors.New("path is required")
+	}
+	path, err := containedPath(rawPath)
+	if err != nil {
+		return "", err
 	}
 	diff, ok := stringArg(args, "diff")
 	if !ok || strings.TrimSpace(diff) == "" {
@@ -173,15 +189,35 @@ func handleGlob(_ context.Context, args map[string]any) (string, error) {
 	return strings.Join(matches, "\n"), nil
 }
 
-// handleWebFetch fetches a URL and returns the response body.
+// handleWebFetch fetches a URL and returns the response body. Validates
+// the URL against the SSRF allowlist (http(s) only, no loopback /
+// link-local / RFC1918 / cloud-metadata) and re-validates the target on
+// every redirect so a 302 to 169.254.169.254 cannot escape the check.
 func handleWebFetch(ctx context.Context, args map[string]any) (string, error) {
-	url, ok := stringArg(args, "url")
+	rawURL, ok := stringArg(args, "url")
 	if !ok {
 		return "", errors.New("url is required")
 	}
+	if _, err := safeURL(rawURL); err != nil {
+		return "", fmt.Errorf("webfetch refused: %w", err)
+	}
 	timeout := durationArg(args, "timeout", 30*time.Second)
-	client := &http.Client{Timeout: timeout}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	client := &http.Client{
+		Timeout: timeout,
+		// Re-validate every redirect target — without this, an allowed
+		// host could 302 us to 169.254.169.254 and the SSRF check is
+		// bypassed.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			if _, err := safeURL(req.URL.String()); err != nil {
+				return fmt.Errorf("redirect refused: %w", err)
+			}
+			return nil
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
