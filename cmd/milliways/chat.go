@@ -110,8 +110,8 @@ var clientSlashCommands = map[string][]string{
 	"claude": {"/compact", "/clear"},
 	"codex":  {"/compact"},
 	"gemini": {"/clear", "/chat"},
-	"local":   {"/compact", "/clear", "/review", "/pptx", "/drawio"},
-	"minimax": {"/compact", "/clear", "/review", "/pptx", "/drawio"},
+	"local":   {},
+	"minimax": {},
 }
 
 // switchableCompleter wraps an AutoCompleter behind a mutex so it can be
