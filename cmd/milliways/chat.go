@@ -97,10 +97,52 @@ var chatCtlAliases = map[string][]string{
 	"opsx-validate": {"opsx", "validate"},
 }
 
+// clientSlashCommands lists the native slash commands each underlying CLI
+// exposes in headless / exec mode. These are appended to the tab completer
+// when the user switches into that runner, and are forwarded directly to the
+// runner (with the / prefix intact) when typed.
+var clientSlashCommands = map[string][]string{
+	"copilot": {
+		"/diff", "/pr", "/review", "/plan",
+		"/delegate", "/research", "/resume", "/compact", "/share",
+	},
+	"pool":   {"/mode"},
+	"claude": {"/compact", "/clear"},
+	"codex":  {"/compact"},
+	"gemini": {"/clear", "/chat"},
+	"local":  {},
+	"minimax": {},
+}
+
+// switchableCompleter wraps an AutoCompleter behind a mutex so it can be
+// swapped live when the active runner changes without rebuilding readline.
+type switchableCompleter struct {
+	mu sync.RWMutex
+	ac readline.AutoCompleter
+}
+
+func (s *switchableCompleter) Do(line []rune, pos int) ([][]rune, int) {
+	s.mu.RLock()
+	ac := s.ac
+	s.mu.RUnlock()
+	if ac == nil {
+		return nil, 0
+	}
+	return ac.Do(line, pos)
+}
+
+func (s *switchableCompleter) set(ac readline.AutoCompleter) {
+	s.mu.Lock()
+	s.ac = ac
+	s.mu.Unlock()
+}
+
 // buildCompleter returns a readline AutoCompleter for all slash commands.
+// agentID, when non-empty, appends the client's native slash commands so
+// they appear in tab completion while that runner is active.
 // Agent shortcuts (/claude, /gemini, …) and numbered aliases (/1..7) are
 // derived from chatSwitchableAgents; ctl aliases from chatCtlAliases.
-func buildCompleter() readline.AutoCompleter {
+func buildCompleter(agentID string) readline.AutoCompleter {
 	installClients := []readline.PrefixCompleterInterface{
 		readline.PcItem("claude"),
 		readline.PcItem("codex"),
@@ -153,6 +195,10 @@ func buildCompleter() readline.AutoCompleter {
 		readline.PcItem("/opsx-archive"),
 		readline.PcItem("/opsx-validate"),
 	)
+	// Append the active client's native slash commands.
+	for _, cmd := range clientSlashCommands[agentID] {
+		items = append(items, readline.PcItem(cmd))
+	}
 	return readline.NewPrefixCompleter(items...)
 }
 
@@ -175,12 +221,15 @@ func runChat(ctx context.Context) error {
 	}
 	defer client.Close()
 
+	sc := &switchableCompleter{}
+	sc.set(buildCompleter(""))
+
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          chatPrompt(""),
 		HistoryFile:     chatHistoryFile(),
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
-		AutoComplete:    buildCompleter(),
+		AutoComplete:    sc,
 	})
 	if err != nil {
 		return fmt.Errorf("readline init: %w", err)
@@ -188,11 +237,12 @@ func runChat(ctx context.Context) error {
 	defer rl.Close()
 
 	loop := &chatLoop{
-		client: client,
-		sess:   nil, // landing zone — no active agent until /<runner> picks one
-		rl:     rl,
-		out:    os.Stdout,
-		errw:   os.Stderr,
+		client:    client,
+		sess:      nil, // landing zone — no active agent until /<runner> picks one
+		rl:        rl,
+		completer: sc,
+		out:       os.Stdout,
+		errw:      os.Stderr,
 	}
 
 	// Wire palace recall for daemon runner sessions. Resolve the project from
@@ -347,11 +397,12 @@ func (s *chatSession) send(prompt string) error {
 // on chat exit. Future work persists via daemon's history.* RPCs and/or
 // mempalace's conversation primitive.
 type chatLoop struct {
-	client *rpc.Client
-	sess   *chatSession
-	rl     *readline.Instance
-	out    io.Writer
-	errw   io.Writer
+	client    *rpc.Client
+	sess      *chatSession
+	rl        *readline.Instance
+	completer *switchableCompleter
+	out       io.Writer
+	errw      io.Writer
 	// palace, when non-nil, is queried on each user prompt to inject
 	// relevant project memory as a context prefix before the runner sees it.
 	palace *mempalace.Client
@@ -607,10 +658,17 @@ func (l *chatLoop) handleSlash(line string) {
 		// Bare "/" — show help.
 		l.printHelp()
 	default:
-		// Unknown verb — try shelling to milliwaysctl as a generic
-		// fallback (mirrors the wezterm palette's free-form escape).
-		// This makes any future ctl subcommand reachable from chat
-		// without a code change here.
+		// Unknown verb — if a runner is active, forward the raw slash command
+		// to it. Each CLI (copilot /diff, pool /mode, etc.) has its own
+		// vocabulary; milliways passes them through without enrichment.
+		// Fall back to milliwaysctl only when in the landing zone.
+		if l.sess != nil {
+			l.appendTurn(chatTurn{Role: "user", Text: line})
+			if err := l.sess.send(line); err != nil {
+				fmt.Fprintln(l.errw, "✗ send: "+err.Error())
+			}
+			return
+		}
 		l.runCtl(append([]string{verb}, splitFields(rest)...))
 	}
 }
@@ -719,6 +777,9 @@ func (l *chatLoop) switchAgent(newID string) {
 	l.sess = newSess
 	go l.drainStream()
 	l.rl.SetPrompt(chatPrompt(newID))
+	if l.completer != nil {
+		l.completer.set(buildCompleter(newID))
+	}
 
 	// Memory bridge — only when there's actual prior conversation to carry.
 	if fromID != "" && fromID != newID {
