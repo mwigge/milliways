@@ -92,15 +92,19 @@ func main() {
 
 	// Top-level launcher dispatch runs *before* cobra so we can implement the
 	// milliways-term-by-default behaviour (`milliways` with no flags exec's
-	// milliways-term). Anything that doesn't match falls through to the
-	// existing cobra root command.
-	if parseLauncherMode(os.Args[1:]) == modeCockpit {
+	// milliways-term), the welcome banner when already inside milliways-term,
+	// and falls through to the existing cobra root command for everything else.
+	switch parseLauncherMode(os.Args[1:]) {
+	case modeCockpit:
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		if err := runCockpit(ctx, os.Args[1:]); err != nil {
 			fmt.Fprintf(os.Stderr, "milliways: %v\n", err)
 			os.Exit(1)
 		}
+		return
+	case modeWelcome:
+		printWelcome()
 		return
 	}
 
