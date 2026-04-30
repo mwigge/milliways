@@ -64,16 +64,13 @@ if not path_env:find(local_bin, 1, true) then
 end
 config.set_environment_variables = { PATH = path_env }
 
--- Every new tab/pane runs the user's shell. Agent surfaces are explicit:
--- - Leader + 1..4   open a runner via `milliwaysctl open --agent <name>`
--- - Leader + a      same for the default agent (claude)
--- - Leader + /      slash-command palette → milliwaysctl <verb> [args...]
+-- Every new tab/pane runs `milliways`, which (since v0.6.0) drops directly
+-- into the chat REPL when launched inside milliways-term: the launcher
+-- detects WEZTERM_EXECUTABLE and routes to runChat() instead of
+-- modeCockpit (which would have recursively re-execed milliways-term).
 --
--- The legacy default_prog = milliways pattern was removed when --repl /
--- MILLIWAYS_REPL=1 was deleted. Setting default_prog to milliways with
--- the launcher's modeCockpit dispatch in place would recursively syscall
--- exec milliways-term inside every new tab.
-config.default_prog = { os.getenv('SHELL') or '/bin/zsh' }
+-- For a plain shell escape, use Leader + z (binds `os.getenv('SHELL')`).
+config.default_prog = { local_bin .. '/milliways' }
 
 -- ── State paths ──────────────────────────────────────────────────────────────
 
