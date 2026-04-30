@@ -27,6 +27,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 
 	"github.com/mwigge/milliways/internal/provider"
 	"github.com/mwigge/milliways/internal/tools"
@@ -34,7 +36,8 @@ import (
 
 // DefaultMaxTurns is the safety bound on assistant→tool→assistant turns
 // inside a single dispatch. Spec: runner-tool-execution / "Loop bound".
-const DefaultMaxTurns = 10
+// Override at runtime with the MILLIWAYS_MAX_TURNS env var.
+const DefaultMaxTurns = 20
 
 // Role values used in conversation Messages.
 const (
@@ -146,6 +149,11 @@ func RunAgenticLoop(ctx context.Context, client Client, registry *tools.Registry
 	maxTurns := opts.MaxTurns
 	if maxTurns <= 0 {
 		maxTurns = DefaultMaxTurns
+		if v := os.Getenv("MILLIWAYS_MAX_TURNS"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				maxTurns = n
+			}
+		}
 	}
 
 	var toolDefs []provider.ToolDef

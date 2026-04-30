@@ -256,10 +256,11 @@ func TestRunAgenticLoop_MalformedArgsJSONFoldedAsError(t *testing.T) {
 	}
 }
 
-func TestRunAgenticLoop_DefaultMaxTurnsIsTen(t *testing.T) {
-	t.Parallel()
+func TestRunAgenticLoop_DefaultMaxTurnsIsDefaultMaxTurns(t *testing.T) {
+	t.Setenv("MILLIWAYS_MAX_TURNS", "") // isolate from host env; can't Parallel with Setenv
 
-	turns := make([]TurnResult, 12)
+	over := DefaultMaxTurns + 5
+	turns := make([]TurnResult, over)
 	for i := range turns {
 		turns[i] = TurnResult{
 			ToolCalls:    []ToolCall{{ID: "c", Name: "echo", Args: `{"text":"x"}`}},
@@ -277,7 +278,30 @@ func TestRunAgenticLoop_DefaultMaxTurnsIsTen(t *testing.T) {
 	if result.StoppedAt != StopReasonMaxTurns {
 		t.Errorf("stopped = %q, want %q", result.StoppedAt, StopReasonMaxTurns)
 	}
-	if result.Turns != 10 {
-		t.Errorf("turns = %d, want 10 (default cap)", result.Turns)
+	if result.Turns != DefaultMaxTurns {
+		t.Errorf("turns = %d, want %d (DefaultMaxTurns)", result.Turns, DefaultMaxTurns)
+	}
+}
+
+func TestRunAgenticLoop_MaxTurnsEnvVar(t *testing.T) {
+	t.Setenv("MILLIWAYS_MAX_TURNS", "3")
+
+	turns := make([]TurnResult, 10)
+	for i := range turns {
+		turns[i] = TurnResult{
+			ToolCalls:    []ToolCall{{ID: "c", Name: "echo", Args: `{"text":"x"}`}},
+			FinishReason: FinishToolCalls,
+		}
+	}
+	client := &stubClient{turns: turns}
+	registry := newRegistryWithEcho()
+	messages := []Message{{Role: RoleUser, Content: "loop"}}
+
+	result, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if result.Turns != 3 {
+		t.Errorf("turns = %d, want 3 (from MILLIWAYS_MAX_TURNS=3)", result.Turns)
 	}
 }
