@@ -192,7 +192,7 @@ impl wc::Domain for AgentDomain {
             shared_slave,
             Arc::downgrade(&pane),
             pane_id,
-        ));
+        )?);
         self.watchers.lock().push((pane_id, watched));
 
         Ok(pane)

@@ -60,8 +60,17 @@ func (c *modelCache) Models(agentID string) []string {
 	if ok && time.Since(e.fetchedAt) < c.ttl {
 		return e.models
 	}
-	// Mark as fetching before the blocking call.
+	// Re-check inside write lock to prevent concurrent callers from
+	// both starting a fetch (TOCTOU between the RLock check above and here).
 	c.mu.Lock()
+	e2 := c.entries[agentID]
+	if e2.fetching || time.Since(e2.fetchedAt) < c.ttl {
+		c.mu.Unlock()
+		if e2.fetching {
+			return []string{"(fetching…)"}
+		}
+		return e2.models
+	}
 	c.entries[agentID] = modelCacheEntry{fetching: true}
 	c.mu.Unlock()
 
@@ -186,11 +195,14 @@ func (c *modelCache) fetchGemini(apiKey, fallbackKey string) []string {
 	if key == "" {
 		return nil
 	}
+	// Use X-Goog-Api-Key header rather than a query parameter so the key
+	// is not captured in access logs, proxy logs, or OTel URL attributes.
 	req, err := http.NewRequest(http.MethodGet,
-		"https://generativelanguage.googleapis.com/v1beta/models?key="+key, nil)
+		"https://generativelanguage.googleapis.com/v1beta/models", nil)
 	if err != nil {
 		return nil
 	}
+	req.Header.Set("X-Goog-Api-Key", key)
 	resp, err := c.client.Do(req)
 	if err != nil {
 		slog.Debug("models fetch failed", "provider", "gemini", "err", err)

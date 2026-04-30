@@ -6,6 +6,6 @@
 //! degraded mode this file compiles but no types are visible — bring back
 //! the hand-mirrored types here as a fallback if needed.
 
-#![allow(clippy::all, dead_code)]
+#![allow(clippy::all, dead_code)] // typify-generated code: lints and dead_code do not apply to codegen output
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));

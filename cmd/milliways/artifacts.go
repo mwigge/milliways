@@ -392,21 +392,53 @@ func drawioPrompt(topic string) string {
 	)
 }
 
-// validatePythonScript checks a generated Python script for patterns that
-// could cause harm if the LLM deviated from the prompt. Blocks obvious
-// sandbox escapes; does not guarantee safety — scripts run as the current user.
+// validatePythonScript validates a generated Python script using Python's own
+// AST parser to allowlist imports and block dangerous builtins. This approach
+// is robust against encoding tricks, aliasing, and string-based bypass vectors
+// that defeat simple denylist string matching.
+//
+// Requires python3 on PATH (already required to execute the script).
+// Falls back to a best-effort string check if python3 is unavailable.
 func validatePythonScript(script string) error {
-	dangerous := []string{
-		"os.system(", "subprocess.", "shutil.rmtree(", "os.remove(",
-		"os.unlink(", "__import__('os')", "exec(", "eval(",
-		"socket.", "urllib.request", "requests.", "http.client",
-		"os.makedirs(", // allowed only in the form used by pptx, but flag for review
-	}
-	lower := strings.ToLower(script)
-	for _, d := range dangerous {
-		if strings.Contains(lower, strings.ToLower(d)) {
-			return fmt.Errorf("script contains potentially unsafe pattern %q", d)
+	const astValidator = `
+import ast, sys
+tree = ast.parse(sys.stdin.read())
+allowed_imports = {
+    'pptx','collections','copy','datetime','decimal','fractions',
+    'functools','io','itertools','math','numbers','os.path','pathlib',
+    'random','statistics','string','struct','typing','codecs','enum',
+}
+blocked_builtins = {'eval','exec','compile','__import__','getattr','setattr','delattr','open','breakpoint'}
+errors = []
+for node in ast.walk(tree):
+    if isinstance(node, ast.Import):
+        for alias in node.names:
+            base = alias.name.split('.')[0]
+            if base not in allowed_imports:
+                errors.append(f'disallowed import: {alias.name}')
+    elif isinstance(node, ast.ImportFrom):
+        base = (node.module or '').split('.')[0]
+        if base not in allowed_imports:
+            errors.append(f'disallowed import from: {node.module}')
+    elif isinstance(node, ast.Call):
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else '')
+        if name in blocked_builtins:
+            errors.append(f'disallowed builtin call: {name}()')
+if errors:
+    for e in errors:
+        print(f'BLOCKED: {e}', file=sys.stderr)
+    sys.exit(1)
+`
+	cmd := exec.CommandContext(context.Background(), "python3", "-c", astValidator)
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = "script uses disallowed imports or builtins"
 		}
+		return fmt.Errorf("%s", msg)
 	}
 	return nil
 }

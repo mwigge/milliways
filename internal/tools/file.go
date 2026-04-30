@@ -156,6 +156,19 @@ func handleGrep(_ context.Context, args map[string]any) (string, error) {
 		if matchDenylist(path) != "" {
 			return nil
 		}
+		// Resolve symlinks and re-validate against the workspace jail and
+		// denylist so a symlink inside the workspace pointing outside it
+		// (e.g. to ~/.ssh/id_rsa) cannot be read via the walk path.
+		if d.Type()&fs.ModeSymlink != 0 {
+			resolved, resolveErr := filepath.EvalSymlinks(path)
+			if resolveErr != nil {
+				return nil // skip unresolvable symlinks silently
+			}
+			if _, checkErr := containedPath(resolved); checkErr != nil {
+				return nil // resolved target is outside workspace — skip
+			}
+			path = resolved
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err

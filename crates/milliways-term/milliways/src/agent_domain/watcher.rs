@@ -115,7 +115,7 @@ pub fn spawn_watcher(
     slave: SharedSlave,
     pane: Weak<dyn wc::Pane>,
     pane_id: wc::PaneId,
-) -> WatchedBridge {
+) -> anyhow::Result<WatchedBridge> {
     let fsm = Arc::new(Mutex::new(Reconnect::default()));
     let stop = Arc::new(AtomicBool::new(false));
 
@@ -142,9 +142,9 @@ pub fn spawn_watcher(
             };
             rt.block_on(watcher_loop(config, fsm, child, slave, pane, pane_id, stop));
         })
-        .expect("spawn milliways-watcher thread");
+        .map_err(|e| anyhow::anyhow!("spawn milliways-watcher thread: {e}"))?;
 
-    bridge
+    Ok(bridge)
 }
 
 /// Parse a banner byte stream into termwiz Actions and inject them into
