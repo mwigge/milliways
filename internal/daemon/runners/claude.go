@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -131,13 +132,22 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		return
 	}
 
-	cmd := exec.CommandContext(ctx, claudeBinary,
+	cwd, _ := os.Getwd()
+	args := []string{
 		"--print",
 		"--output-format", "stream-json",
 		"--verbose",
-		text,
-	)
+		"--dangerously-skip-permissions",
+	}
+	if cwd != "" {
+		args = append(args, "--add-dir", cwd)
+	}
+	args = append(args, text)
+	cmd := exec.CommandContext(ctx, claudeBinary, args...)
 	cmd.Env = safeRunnerEnv()
+	if cwd != "" {
+		cmd.Dir = cwd
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		observeError(metrics, AgentIDClaude)
