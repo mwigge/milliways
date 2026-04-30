@@ -302,13 +302,12 @@ const chatTurnLogCap = 12
 const chatBriefingMaxBytes = 4096
 
 func (l *chatLoop) run(ctx context.Context) error {
-	// Drain the agent stream in a goroutine; deltas land on stdout
-	// immediately, terminal events (chunk_end / err / end) clear the
-	// busy flag so the next prompt can be issued.
-	go l.drainStream()
-
+	// drainStream is started per-session inside switchAgent; do NOT start
+	// it here because l.sess is nil in the landing zone.
 	defer func() {
-		_ = l.sess.close()
+		if l.sess != nil {
+			_ = l.sess.close()
+		}
 	}()
 
 	for {
