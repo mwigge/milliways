@@ -51,16 +51,43 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// chatDefaultAgent is the runner the chat loop opens on first start.
-// Future work: persist the user's last choice in
-// $XDG_STATE_HOME/milliways/active.
-const chatDefaultAgent = "claude"
-
 // chatSwitchableAgents is the set of runner IDs the user can switch to
-// via the /<name> shorthand or /switch <name>. Mirrors the daemon's
-// dispatch table in internal/daemon/agents.go.
+// via the /<name> shorthand, the /N numeric shortcut, or /switch <name>.
+// The order here defines the /1..7 numeric mapping; mirrors the daemon's
+// dispatch table in internal/daemon/agents.go but ordered for the
+// landing-zone display (most-used first).
 var chatSwitchableAgents = []string{
-	"claude", "codex", "copilot", "gemini", "local", "minimax", "pool",
+	"claude",  // /1
+	"codex",   // /2
+	"copilot", // /3
+	"minimax", // /4 — matches wezterm Leader+1..4 mapping
+	"gemini",  // /5
+	"local",   // /6
+	"pool",    // /7
+}
+
+// chatCtlAliases maps user-facing slash commands to the milliwaysctl
+// argv they invoke under the hood. milliwaysctl itself is internal
+// plumbing — users see the slash command, never the ctl call.
+//
+// Adding a new ctl subcommand: also add an alias entry here so it's
+// reachable from the chat. The wezterm Leader+/ palette has the same
+// shape (cmd/milliwaysctl/milliways.lua's ctl_choices) — keep them in
+// sync until they share a generated source.
+var chatCtlAliases = map[string][]string{
+	// Local-model bootstrap
+	"install-local-server": {"local", "install-server"},
+	"install-local-swap":   {"local", "install-swap"},
+	"list-local-models":    {"local", "list-models"},
+	"switch-local-server":  {"local", "switch-server"},
+	"download-local-model": {"local", "download-model"},
+	"setup-local-model":    {"local", "setup-model"},
+	// OpenSpec wrappers
+	"opsx-list":     {"opsx", "list"},
+	"opsx-status":   {"opsx", "status"},
+	"opsx-show":     {"opsx", "show"},
+	"opsx-archive":  {"opsx", "archive"},
+	"opsx-validate": {"opsx", "validate"},
 }
 
 // runChat is the entry point invoked by the cobra `chat` subcommand AND
@@ -82,30 +109,25 @@ func runChat(ctx context.Context) error {
 	}
 	defer client.Close()
 
-	sess, err := openAgentForChat(client, chatDefaultAgent)
-	if err != nil {
-		return err
-	}
-
 	rl, err := readline.NewEx(&readline.Config{
-		Prompt:          chatPrompt(sess.agentID),
+		Prompt:          chatPrompt(""),
 		HistoryFile:     chatHistoryFile(),
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
 	})
 	if err != nil {
-		_ = sess.close()
 		return fmt.Errorf("readline init: %w", err)
 	}
 	defer rl.Close()
 
 	loop := &chatLoop{
 		client: client,
-		sess:   sess,
+		sess:   nil, // landing zone — no active agent until /<runner> picks one
 		rl:     rl,
 		out:    os.Stdout,
 		errw:   os.Stderr,
 	}
+	loop.printLanding()
 	return loop.run(ctx)
 }
 
@@ -152,7 +174,13 @@ func chatHistoryFile() string {
 }
 
 // chatPrompt renders the readline prompt header for the active agent.
-func chatPrompt(agentID string) string { return "[" + agentID + "] ▶ " }
+// The empty-string case is the landing-zone prompt (no client picked yet).
+func chatPrompt(agentID string) string {
+	if agentID == "" {
+		return "[no client — pick one with /1../7 or /<name>] ▶ "
+	}
+	return "[" + agentID + "] ▶ "
+}
 
 // chatSession owns the lifecycle of one (agent.open + agent.stream)
 // pair. Closing the session closes the daemon-side handle.
@@ -355,12 +383,24 @@ func (l *chatLoop) handleSlash(line string) {
 		verb = verb[:i]
 	}
 
+	// Numeric shortcut: /1 .. /7 → chatSwitchableAgents[N-1]
+	if n, ok := parseDigitInRange(verb, 1, len(chatSwitchableAgents)); ok {
+		l.switchAgent(chatSwitchableAgents[n-1])
+		return
+	}
+
 	// Switch shorthand: /<runner>
 	for _, name := range chatSwitchableAgents {
 		if verb == name {
 			l.switchAgent(name)
 			return
 		}
+	}
+
+	// Curated ctl alias: /<alias> → milliwaysctl <args...> [rest...]
+	if args, ok := chatCtlAliases[verb]; ok {
+		l.runCtl(append(append([]string{}, args...), splitFields(rest)...))
+		return
 	}
 
 	switch verb {
@@ -378,23 +418,84 @@ func (l *chatLoop) handleSlash(line string) {
 		l.printHelp()
 	case "exit", "quit", "bye":
 		fmt.Fprintln(l.out, "bye")
-		// Close session + force readline to return EOF on next read.
-		_ = l.sess.close()
+		if l.sess != nil {
+			_ = l.sess.close()
+		}
 		_ = l.rl.Close()
-		// Re-init the readline so the next Readline() returns EOF.
-		// Simpler: just force-close the underlying terminal.
 		os.Exit(0)
 	case "":
 		// Bare "/" — show help.
 		l.printHelp()
 	default:
-		fmt.Fprintln(l.errw, "✗ unknown slash command: /"+verb+"  (try /help)")
+		// Unknown verb — try shelling to milliwaysctl as a generic
+		// fallback (mirrors the wezterm palette's free-form escape).
+		// This makes any future ctl subcommand reachable from chat
+		// without a code change here.
+		l.runCtl(append([]string{verb}, splitFields(rest)...))
 	}
 }
 
-// switchAgent closes the current session and opens a new one for newID.
+// parseDigitInRange returns (n, true) if s is a single digit in
+// [lo, hi], else (0, false).
+func parseDigitInRange(s string, lo, hi int) (int, bool) {
+	if len(s) != 1 || s[0] < '0' || s[0] > '9' {
+		return 0, false
+	}
+	n := int(s[0] - '0')
+	if n < lo || n > hi {
+		return 0, false
+	}
+	return n, true
+}
+
+// splitFields splits on whitespace, dropping empty fields. Used for
+// chat-side argv parsing of the rest-of-line after a slash command.
+func splitFields(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return strings.Fields(s)
+}
+
+// runCtl shells to milliwaysctl with the given argv and streams its
+// stdout/stderr inline. milliwaysctl is internal plumbing — users see
+// /<alias> not the underlying ctl call. Reuses the user's PATH lookup
+// so MILLIWAYSCTL_BIN env-var override works.
+func (l *chatLoop) runCtl(args []string) {
+	if len(args) == 0 {
+		return
+	}
+	bin := lookupCtlBinary()
+	if bin == "" {
+		fmt.Fprintln(l.errw, "✗ milliwaysctl not on PATH; install with `make install` or set MILLIWAYSCTL_BIN")
+		return
+	}
+	c := exec.Command(bin, args...)
+	c.Stdin = os.Stdin
+	c.Stdout = l.out
+	c.Stderr = l.errw
+	if err := c.Run(); err != nil {
+		fmt.Fprintln(l.errw, "✗ ctl: "+err.Error())
+	}
+}
+
+// lookupCtlBinary resolves the milliwaysctl path via env override or
+// $PATH. Tested via env-injection from chat_test.go.
+func lookupCtlBinary() string {
+	if env := strings.TrimSpace(os.Getenv("MILLIWAYSCTL_BIN")); env != "" {
+		return env
+	}
+	if p, err := exec.LookPath("milliwaysctl"); err == nil {
+		return p
+	}
+	return ""
+}
+
+// switchAgent closes the current session (if any) and opens a new one
+// for newID. From the landing zone (no current session), this is the
+// "first switch" that drops the user into a client.
 func (l *chatLoop) switchAgent(newID string) {
-	if newID == l.sess.agentID {
+	if l.sess != nil && newID == l.sess.agentID {
 		fmt.Fprintln(l.errw, "(already on "+newID+")")
 		return
 	}
@@ -410,10 +511,12 @@ func (l *chatLoop) switchAgent(newID string) {
 		return
 	}
 
-	if err := l.sess.close(); err != nil {
-		fmt.Fprintln(l.errw, "warn: closing previous session: "+err.Error())
+	if l.sess != nil {
+		if err := l.sess.close(); err != nil {
+			fmt.Fprintln(l.errw, "warn: closing previous session: "+err.Error())
+		}
+		<-l.sess.done
 	}
-	<-l.sess.done
 
 	newSess, err := openAgentForChat(l.client, newID)
 	if err != nil {
@@ -447,8 +550,13 @@ func (l *chatLoop) handleBang(cmd string) {
 	}
 }
 
-// handlePrompt sends a typed line to the active runner.
+// handlePrompt sends a typed line to the active runner. From the
+// landing zone (no agent active), prints a hint instead of dispatching.
 func (l *chatLoop) handlePrompt(prompt string) {
+	if l.sess == nil {
+		fmt.Fprintln(l.errw, "✗ no client picked yet — type /1 (claude), /2 (codex), /4 (minimax), /6 (local) etc, or /help for the full list")
+		return
+	}
 	if err := l.sess.send(prompt); err != nil {
 		fmt.Fprintln(l.errw, "✗ send: "+err.Error())
 		return
@@ -458,8 +566,36 @@ func (l *chatLoop) handlePrompt(prompt string) {
 	// for the response visually before typing the next prompt.
 }
 
-// printAgents queries the daemon's agent.list and prints names + auth.
+// printAgents queries the daemon's agent.list and prints a numbered
+// table with auth marks. The leading column is /N (the chat numeric
+// shortcut) so the user can pick by number directly from the table.
 func (l *chatLoop) printAgents() {
+	statuses := l.fetchAgentStatuses()
+	for i, name := range chatSwitchableAgents {
+		s := statuses[name]
+		current := "  "
+		if l.sess != nil && l.sess.agentID == name {
+			current = "● "
+		}
+		fmt.Fprintf(l.out, "%s/%d  %-10s %s  %s\n", current, i+1, name, s.mark, s.model)
+	}
+}
+
+// agentStatus is the per-runner row for the landing zone / /agents output.
+type agentStatus struct {
+	mark  string // ✓ / ✗ / ?
+	model string
+}
+
+// fetchAgentStatuses queries agent.list and returns a map keyed by
+// runner name, falling back to "?" / "" if the call fails so the
+// landing zone always renders something rather than blocking on the
+// daemon.
+func (l *chatLoop) fetchAgentStatuses() map[string]agentStatus {
+	out := map[string]agentStatus{}
+	for _, name := range chatSwitchableAgents {
+		out[name] = agentStatus{mark: "?", model: ""}
+	}
 	var resp struct {
 		Agents []struct {
 			ID         string `json:"id"`
@@ -469,8 +605,7 @@ func (l *chatLoop) printAgents() {
 		} `json:"agents"`
 	}
 	if err := l.client.Call("agent.list", nil, &resp); err != nil {
-		fmt.Fprintln(l.errw, "✗ agent.list: "+err.Error())
-		return
+		return out
 	}
 	for _, a := range resp.Agents {
 		mark := "✗"
@@ -480,12 +615,61 @@ func (l *chatLoop) printAgents() {
 		case "unknown":
 			mark = "?"
 		}
-		current := "  "
-		if a.ID == l.sess.agentID {
-			current = "● "
-		}
-		fmt.Fprintf(l.out, "%s%-10s %s  %s\n", current, a.ID, mark, a.Model)
+		out[a.ID] = agentStatus{mark: mark, model: a.Model}
 	}
+	return out
+}
+
+// printLanding is the chat-startup banner: header + dynamic daemon /
+// agent state + a curated slash command map. Mirrors what the user
+// would have seen as the REPL welcome — but every command listed here
+// works directly in this same chat (numeric or named runner switch,
+// local-bootstrap, opsx, !cmd shell, /help, /exit).
+func (l *chatLoop) printLanding() {
+	fmt.Fprintln(l.out, "milliways "+welcomeVersion()+" — chat")
+	fmt.Fprintln(l.out)
+
+	state := probeDaemonForWelcome(700 * time.Millisecond)
+	fmt.Fprintln(l.out, "  daemon  "+state.daemonLine)
+	fmt.Fprintln(l.out)
+
+	fmt.Fprintln(l.out, "Pick a client:")
+	statuses := l.fetchAgentStatuses()
+	for i, name := range chatSwitchableAgents {
+		s := statuses[name]
+		model := s.model
+		if model == "" {
+			model = "—"
+		}
+		fmt.Fprintf(l.out, "  /%d  /%-10s %s  %s\n", i+1, name, s.mark, model)
+	}
+	fmt.Fprintln(l.out)
+
+	fmt.Fprintln(l.out, "Local-model bootstrap (no leaving chat):")
+	fmt.Fprintln(l.out, "  /install-local-server         install llama.cpp + default coder model")
+	fmt.Fprintln(l.out, "  /install-local-swap           install llama-swap (hot model swap)")
+	fmt.Fprintln(l.out, "  /list-local-models            show models the active backend serves")
+	fmt.Fprintln(l.out, "  /switch-local-server <kind>   llama-server | llama-swap | ollama | vllm | lmstudio")
+	fmt.Fprintln(l.out, "  /download-local-model <repo>  fetch a GGUF from HuggingFace")
+	fmt.Fprintln(l.out, "  /setup-local-model <repo>     download + register in llama-swap.yaml")
+	fmt.Fprintln(l.out)
+
+	fmt.Fprintln(l.out, "OpenSpec:")
+	fmt.Fprintln(l.out, "  /opsx-list                    list openspec changes")
+	fmt.Fprintln(l.out, "  /opsx-status <change>         show change progress")
+	fmt.Fprintln(l.out, "  /opsx-show <change>           show full change detail")
+	fmt.Fprintln(l.out)
+
+	fmt.Fprintln(l.out, "Other:")
+	fmt.Fprintln(l.out, "  /agents       list clients with auth status")
+	fmt.Fprintln(l.out, "  /quota        current quota snapshot")
+	fmt.Fprintln(l.out, "  /switch <n>   same as /<runner>")
+	fmt.Fprintln(l.out, "  /help         all slash commands")
+	fmt.Fprintln(l.out, "  /exit         exit chat (Ctrl+D also works)")
+	fmt.Fprintln(l.out, "  !<cmd>        run shell command (vim, less, htop work)")
+	fmt.Fprintln(l.out)
+	fmt.Fprintln(l.out, "Type a slash command to enter a client; once inside, anything you type goes to that runner.")
+	fmt.Fprintln(l.out)
 }
 
 // printQuota queries the daemon's quota.get.
@@ -500,20 +684,6 @@ func (l *chatLoop) printQuota() {
 	_ = enc.Encode(resp)
 }
 
-// printHelp lists slash commands + the ! escape.
-func (l *chatLoop) printHelp() {
-	const help = `Slash commands (chat):
-  /<runner>          switch active runner — claude / codex / copilot / gemini / local / minimax / pool
-  /switch <runner>   same
-  /agents            list runners with auth status
-  /quota             current quota snapshot
-  /help              this list
-  /exit  /quit       exit chat (Ctrl+D also works)
-
-Shell escape:
-  !<command>         run <command> via $SHELL -c "..."  (interactive tools work)
-
-Anything else you type is sent to the active runner as a prompt.
-`
-	fmt.Fprint(l.out, help)
-}
+// printHelp re-runs the landing-zone banner so /help and the startup
+// banner stay in sync. (Single source of truth = printLanding.)
+func (l *chatLoop) printHelp() { l.printLanding() }
