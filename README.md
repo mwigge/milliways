@@ -43,7 +43,7 @@ go install github.com/mwigge/milliways/cmd/milliways@latest
 MilliWays.app is a native macOS terminal built on a patched wezterm. Every new tab opens milliways instead of a plain shell. The status bar shows your active agent, working directory, and a live wake badge when the laptop resumes from sleep.
 
 ```
-[⚡ woke 3m ago] [≈≈ MW v0.9.6] [~/project] [●claude] [1:C 2:X 3:G 4:M 5:L]
+[⚡ woke 3m ago] [≈≈ MW v0.9.7] [~/project] [●claude] [1:C 2:X 3:G 4:M 5:L]
 ```
 
 ### Leader keybindings (`Ctrl+Space`)
@@ -68,7 +68,7 @@ When the laptop wakes from sleep, the status bar shows an orange **⚡ woke Xm a
 Start the AI terminal with `milliways` (default when no arguments are given). The launcher starts `milliwaysd` if needed, then execs `milliways-term`.
 
 ```text
-milliways v0.9.6
+milliways v0.9.7
   /login [client]  set up auth      /help  show all commands      /exit  quit
   /1 claude  /2 codex  /3 copilot  /4 minimax  /5 gemini  /6 local  /7 pool
 
