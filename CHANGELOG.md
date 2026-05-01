@@ -4,6 +4,31 @@ All notable changes to milliways. Follows [Keep a Changelog](https://keepachange
 
 ---
 
+## [1.0.0] — 2026-05-01
+
+### Added
+- **Certified Linux installation** on Ubuntu 24.04, Fedora 41, and Arch Linux (all verified in CI on a native linux/amd64 host — no emulation).
+- `scripts/smoke-linux-install.sh`: full install certification harness covering binary download, source-build fallback, and a deep CLI smoke (local-server bootstrap, gemini + copilot install, session `--switch-to` handoff).
+- `scripts/build-linux-amd64.sh` + `local/docker/build-linux/Dockerfile`: reproducible linux/amd64 build environment based on Debian bookworm with Go 1.25 and cross-compile toolchain.
+- CI job `install-smoke-linux` on `ubuntu-latest` (native amd64): runs the full smoke harness on every push.
+- **Human-friendly runner error messages** across all CLI runners (claude, codex, copilot, gemini, pool): exit errors now include the CLI's own last stderr line (`codex exited (code 2) — <actual error>`); start errors include the install command; Bearer tokens in stderr are automatically redacted.
+- **`/path` command** for persistent PATH override for all runner subprocesses — useful when milliways is launched from a GUI app with a minimal PATH: `/path <value>` sets, `/path reset` clears.
+- **wezterm tab title** via `format-tab-title` Lua event: tab strip shows live milliways status (`milliways · claude · $0.02 session · 1200→340 tok`) instead of the process name.
+- **Terminal title/tab lifecycle**: thinking… → streaming… → stats on every response; ring rotation flash `↻ codex` in background tabs; resets to ready on error.
+
+### Fixed
+- Release CI: `gh release create` was failing when the release already existed (manually created before CI ran) — binaries were never uploaded. Now uses `gh release upload --clobber` when the release exists.
+- Source-build fallback in `install.sh`: when installing via `curl | bash` with no local checkout, the script now clones the repo to a temp dir rather than looking for `./cmd/milliways` in the user's cwd (which is never there).
+- `install.sh`: `GOTOOLCHAIN=auto` + `GOSUMDB=sum.golang.org` so the source fallback works on Fedora, which ships Go 1.24 and sets `GOSUMDB=off` in its system `go.env`.
+- `install.sh`: architecture fallback — if the native-arch binary 404s, tries the amd64 binary (runs under Rosetta / QEMU).
+- `waitForStream` in `agents.go`: replaced CPU-burning busy-wait (`for {}` spin) with a channel notification (`streamReady chan struct{}` closed by `AttachStream`).
+- `persistLocalEnv`: empty value now fully removes the key from `local.env` instead of writing `KEY=`.
+- `config.setenv` on the daemon: empty value now calls `os.Unsetenv` rather than `os.Setenv("KEY", "")`.
+- `milliwaysctl local install-server`: fixed script-lookup path to use `os.Executable()` so the script is found regardless of working directory.
+- `internal/kitchen/generic.go`: added `copilot` to the CLI allowlist.
+
+---
+
 ## [0.9.9] — 2026-05-01
 
 ### Fixed

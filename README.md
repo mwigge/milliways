@@ -18,7 +18,11 @@ It wraps the CLIs and APIs you already have set up. It does not run models or ma
 curl -sSf https://raw.githubusercontent.com/mwigge/milliways/master/install.sh | sh
 ```
 
-This downloads pre-built binaries (`milliways`, `milliwaysd`, `milliwaysctl`) for your platform, adds `~/.local/bin` to your shell profile, and on macOS installs **MilliWays.app** to `/Applications`.
+Downloads pre-built binaries (`milliways`, `milliwaysd`, `milliwaysctl`) for your platform, adds `~/.local/bin` to your shell profile, and on macOS installs **MilliWays.app** to `/Applications`.
+
+**Certified on:** Ubuntu 24.04 · Fedora 41 · Arch Linux · macOS (arm64 + amd64)
+
+The installer has a source-build fallback: if no pre-built binary is available for your architecture, it clones the repo and compiles automatically (requires `git` and `go`).
 
 ### From source
 
@@ -27,8 +31,6 @@ git clone https://github.com/mwigge/milliways.git
 cd milliways
 ./install.sh          # builds from the checkout, no network needed
 ```
-
-Requires Go 1.26+.
 
 ### Go install (CLI only)
 
@@ -43,7 +45,7 @@ go install github.com/mwigge/milliways/cmd/milliways@latest
 MilliWays.app is a native macOS terminal built on a patched wezterm. Every new tab opens milliways instead of a plain shell. The status bar shows your active agent, working directory, and a live wake badge when the laptop resumes from sleep.
 
 ```
-[⚡ woke 3m ago] [≈≈ MW v0.9.9] [~/project] [●claude] [1:C 2:X 3:G 4:M 5:L]
+[⚡ woke 3m ago] [≈≈ MW v1.0.0] [~/project] [●claude] [1:C 2:X 3:G 4:M 5:L]
 ```
 
 ### Leader keybindings (`Ctrl+Space`)
@@ -68,7 +70,7 @@ When the laptop wakes from sleep, the status bar shows an orange **⚡ woke Xm a
 Start the AI terminal with `milliways` (default when no arguments are given). The launcher starts `milliwaysd` if needed, then execs `milliways-term`.
 
 ```text
-milliways v0.9.9
+milliways v1.0.0
   /login [client]  set up auth      /help  show all commands      /exit  quit
   /1 claude  /2 codex  /3 copilot  /4 minimax  /5 gemini  /6 local  /7 pool
 
