@@ -1,30 +1,30 @@
-# Milliways — the restaurant at the end of the universe
+# Milliways — one terminal, every AI, zero context loss
 
-*A casual write-up for my own memory. Not press-ready, not polished. Just an honest account of what I built and why it works the way it does.*
-
----
-
-## The problem it solves
-
-I was paying for Claude, Codex, Copilot, Gemini, and MiniMax simultaneously. Each one is great at something different. Claude reasons well. Codex grinds through code changes. Gemini is cheap and fast for searches and summaries. Copilot knows your GitHub repos. MiniMax doesn't care about quotas when it's 2am and Claude has told you to come back tomorrow.
-
-The problem: they're all different UX, different CLIs, different session models. You can't switch between them without losing your train of thought. When Claude hits its context limit mid-task, you don't want to start over — you want to hand off. When you've been working with one AI for an hour and it exhausts its session, the ideal outcome is that the next one *already knows what you were doing*.
-
-That's the whole premise of Milliways. One terminal. Seven runners. One continuous context.
+*The elevator pitch for why a multi-runner AI terminal with shared memory changes how you work.*
 
 ---
 
-## The big picture
+## The problem with seven great tools
 
-The core architecture is simple on paper: a daemon sits in the middle and handles all the routing. The client (your terminal) talks to the daemon over a local Unix socket. The daemon spawns the actual AI processes and streams their output back.
+Claude reasons deeply. Codex grinds through code. Copilot knows your GitHub repos. Gemini is fast and cheap for search and summarisation. MiniMax runs without quotas. Pool indexes large codebases and holds architectural context across turns. Local llama.cpp runs completely offline on your hardware.
+
+Every one of these is excellent at something. The problem is that they live in separate terminals, separate sessions, and separate contexts. When you switch from Claude to Codex, you start over. When Claude hits its session limit mid-task, you lose the thread. When you want Gemini's speed for a quick lookup but Claude's reasoning for the follow-up, you're copying and pasting between windows.
+
+**Milliways solves this by making all seven runners feel like one.**
+
+---
+
+## Architecture: one daemon, any runner
+
+The design is a local daemon that keeps all AI sessions alive simultaneously. Your terminal connects to the daemon over a Unix socket. You switch runners with a slash command — `/claude`, `/codex`, `/gemini` — and the daemon routes your prompt to the right process. No new terminal. No lost context. No re-authentication.
 
 ```mermaid
 graph TB
     subgraph "Your machine"
         T["milliways-term\n(wezterm fork)"]
-        C["milliways CLI\\nchat"]
+        C["milliways\nchat"]
         CTL["milliwaysctl\nops + install"]
-        
+
         T -->|"tab = agent pane"| D
         C -->|"Unix socket RPC"| D
         CTL -->|"Unix socket RPC"| D
@@ -47,17 +47,15 @@ graph TB
     style MP fill:#3c3836,color:#ebdbb2
 ```
 
-The client and the daemon are two separate binaries on purpose. The daemon runs as a background process and keeps all the AI sessions alive. If you close the terminal, the daemon keeps running. If you open a new tab, it connects to the same daemon and picks up the existing sessions.
-
-The CLI runners (claude, codex, copilot, gemini, pool) are just their normal CLIs — milliways doesn't reimplement them. It wraps them, captures their output over a PTY, and streams it back as structured events. MiniMax and local llama.cpp go over HTTP instead.
+The runners are their own CLIs — milliways wraps them rather than reimplementing them. Claude's tooling, Codex's sandbox, Copilot's GitHub awareness — all preserved exactly as the vendor ships them. Milliways adds the routing layer and the shared context layer on top, without touching what makes each runner good.
 
 ---
 
-## One memory for all of them
+## One memory, every runner
 
-The thing that makes the multi-runner setup actually usable is shared memory. Every runner shares the same project memory, and it gets injected before every prompt automatically.
+The reason switching runners feels seamless is shared project memory. Before milliways delivers any prompt to any runner, it queries **MemPalace** — a local MCP server — for project memories relevant to what you're asking. Those memories are injected as a `<project_memory>` block the runner sees as part of its context.
 
-The memory store is MemPalace — an MCP server I have running locally. Before milliways sends your prompt to whatever runner is active, it queries MemPalace for relevant memories about the current project, wraps them in a `<project_memory>` XML block, and prepends it to your message. The runner never knows the memory came from somewhere else. It just sees context.
+The runner doesn't know the memories came from elsewhere. It just sees context that makes it immediately useful in *your* project, not a generic codebase it has never encountered.
 
 ```mermaid
 flowchart LR
@@ -65,26 +63,34 @@ flowchart LR
     E["enrichWithPalace()"]
     MP["MemPalace\n(local MCP server)"]
     R["Active runner\nclaude / codex / etc."]
-    
+
     U --> E
-    E -->|"search: project memories"| MP
-    MP -->|"relevant memories"| E
-    E -->|"your prompt +\n&lt;project_memory&gt;\n...memories...\n&lt;/project_memory&gt;"| R
+    E -->|"semantic search"| MP
+    MP -->|"relevant project memories"| E
+    E -->|"your prompt +\n&lt;project_memory&gt;\n  architecture decisions\n  known constraints\n  recent context\n&lt;/project_memory&gt;"| R
     R -->|"response"| U
 
     style MP fill:#3c3836,color:#ebdbb2
     style E fill:#504945,color:#ebdbb2
 ```
 
-The practical effect: you can switch from Claude to Codex mid-session and Codex immediately knows the project context. You don't have to re-explain what you're building. The memory is there, it's the same memory, and both runners see the same picture.
+**The practical effect is that every runner starts informed.** Switch from Claude to Codex mid-session and Codex already knows your project structure, your architectural decisions, and the constraints you've established over months of work. You stop re-explaining yourself to every new tool.
 
-There's a turn log too — a rolling buffer of the last 12 exchanges. When you switch runners, milliways builds a structured briefing from that buffer and injects it as the new runner's first message. So Codex doesn't just know the *project* context, it knows *what you were literally doing five minutes ago*.
+Beyond project memory, milliways maintains a rolling turn log — the last twelve exchanges, regardless of which runner produced them. When you switch runners, that log is compiled into a structured briefing injected as the new runner's first message. The new runner knows not just the project, but exactly what you were doing five minutes ago.
 
 ---
 
-## The rotation ring — automatic failover that actually works
+## The rotation ring — uninterrupted flow across session limits
 
-The ring is the part I'm most pleased with. The idea: you configure a priority order, and when a runner hits its session limit, quota, or context window, milliways automatically rotates to the next one and re-dispatches your prompt. No interruption. You just see a one-line message in the terminal and the response keeps streaming.
+Every AI runner has limits: context windows, daily quotas, session timeouts. The rotation ring turns those limits from blockers into invisible transitions.
+
+Configure a priority order once:
+
+```
+/ring claude,codex,minimax
+```
+
+When the active runner exhausts — hitting a session limit, context window, or quota — milliways automatically rotates to the next runner in the ring and re-dispatches your original prompt. You see a single notification line. The response keeps streaming.
 
 ```mermaid
 sequenceDiagram
@@ -94,91 +100,72 @@ sequenceDiagram
     participant X as codex
     participant M as minimax
 
-    You->>MW: /ring claude,codex,minimax
     You->>MW: "implement the auth middleware"
-    MW->>C: [sends prompt]
-    C-->>MW: ...streaming...
-    C-->>MW: ⚑ session limit reached
+    MW->>C: [prompt + project memory]
+    C-->>MW: streaming response...
+    C-->>MW: ⚑ session limit
 
-    Note over MW: claude exhausted → rotate
-    MW->>X: [briefing from claude]\n[original prompt]
-    X-->>MW: ...streaming...
-    X-->>MW: ⚑ session limit reached
+    Note over MW: rotate → codex
+    MW->>X: [briefing: what claude did]\n[original prompt]
+    X-->>MW: streaming response...
+    X-->>MW: ⚑ session limit
 
-    Note over MW: codex exhausted → rotate
-    MW->>M: [briefing from codex]\n[original prompt]
-    M-->>MW: ...streaming...
-    M-->>You: ✓ complete
+    Note over MW: rotate → minimax
+    MW->>M: [briefing: what codex did]\n[original prompt]
+    M-->>You: ✓ task complete
 ```
 
-The "briefing" is the critical piece. When a runner exhausts, milliways doesn't just re-send your raw prompt to the next one. It builds a structured handoff:
+The handoff is structured, not raw. Milliways builds a briefing from the turn log before rotating:
 
 ```
 [briefing from claude → codex]
 Recent exchange:
   user: implement the auth middleware
-  claude: Added JWT validation in internal/auth/middleware.go...
+  claude: Added JWT validation in internal/auth/middleware.go,
+          introduced a TokenClaims struct, wired into the router...
 
 Continue from here. The user's next prompt follows.
----
-implement the auth middleware
 ```
 
-The new runner reads that briefing as its first message. It knows what the previous runner was doing. It picks up in the middle, not from scratch.
+The incoming runner picks up mid-task. A four-hour refactor that burns through three runners' session limits is indistinguishable from a single uninterrupted session.
 
 ---
 
-## The session limit cycle in practice
+## Local model behaviour steering
 
-Here's a real scenario from a couple of weeks ago. I was doing a fairly large refactor — probably four or five hours of back-and-forth. I had the ring set to `claude,codex,minimax`.
+Local models — llama.cpp, Ollama, vLLM, LMStudio — are first-class runners in milliways, not an afterthought. Beyond just routing prompts to a local endpoint, milliways exposes runtime controls that let you steer model behaviour without restarting anything:
 
-1. Claude took the first couple of hours. Hit its context limit partway through a particularly complex change to the database layer.
-2. Codex took over automatically. Got the briefing, picked up where Claude left off. Ran for about 45 minutes before it hit a session limit.
-3. MiniMax finished the job.
+| Command | Effect |
+|---|---|
+| `/local-temp 0.2` | Low temperature for deterministic code generation |
+| `/local-temp 0.8` | Higher temperature for brainstorming and drafting |
+| `/local-temp default` | Let the server decide |
+| `/local-max-tokens 2048` | Cap reply length for fast iteration |
+| `/local-max-tokens off` | Unrestricted for long-form output |
+| `/local-endpoint <url>` | Point at a different backend live |
+| `/local-hot on` | Keep all models resident (sub-second switching) |
+| `/local-hot off` | Evict models on TTL (saves VRAM when idle) |
 
-None of those transitions required me to do anything except glance at the terminal when the handoff notification appeared. Total context preserved end-to-end.
+All of these persist across daemon restarts. The `/model local` command shows the current settings at a glance, so you always know what the model is configured to do.
 
-The terminal tab showed `↻ codex` briefly when the rotation happened — that's the tab title flash I added so you can see it even if the terminal is in the background. After the rotation completes it settles back to `● codex · model-name`.
+The combination of a local runner with shared MemPalace memory is particularly powerful: a local Qwen2.5-Coder instance, steered with low temperature and your full project context injected, produces code that looks like it was written by someone who actually read the codebase.
 
 ---
 
-## What's actually installed
-
-When you install milliways, you get three binaries:
-
-- **`milliways`** — the chat and one-shot CLI dispatch. This is what you type in the terminal.
-- **`milliwaysd`** — the daemon. Starts automatically when you open a tab or run `milliways`.
-- **`milliwaysctl`** — the ops tool. Installs AI CLIs (`/install claude`), manages local models, queries metrics.
-
-On Linux, the install packages these into a proper `.deb`, `.rpm`, or `.pkg.tar.zst` depending on your distro. On macOS, the one-liner also drops **MilliWays.app** into `/Applications` — a wezterm fork where every tab opens the AI terminal by default, the status bar shows which runner is active, and there are keyboard shortcuts for switching runners and pulling up the command palette.
-
-The status bar on MilliWays.app looks like this:
+## What you get
 
 ```
 [⚡ woke 3m ago] [≈≈ MW v1.0.1] [~/project] [●claude] [1:C 2:X 3:G 4:M 5:L]
 ```
 
-Left to right: wake badge (appears for 5 minutes after sleep/wake), milliways version, current directory, active runner, runner shortcut keys.
+- **Seven runners** — claude, codex, copilot, gemini, pool, minimax, local — all available in the same terminal session
+- **Shared project memory** — MemPalace context injected before every prompt, to every runner
+- **Automatic rotation ring** — session limits and quota exhaustion become seamless handoffs, not interruptions
+- **Runtime local model steering** — temperature, token limits, and endpoint switchable live
+- **Live cost tracking** — cumulative session spend in the tab title; per-response tokens in the inline hint
+- **Native Linux packages** — `.deb`, `.rpm`, `.pkg.tar.zst` on every release, with a one-liner installer that auto-detects your distro
 
----
-
-## The things that were actually hard
-
-**Thread safety on ring rotation.** The auto-rotation fires from the stream-reading goroutine when it detects a session-limit message. But `switchAgent()` touches readline state, which must only be called from the main goroutine. First version had a data race. Fixed it with a `rotateCh` channel — the stream goroutine sends the next runner name to the channel, and the main readline loop drains it.
-
-**Fedora's Go packaging.** When you build from source on Fedora, it sets `GOSUMDB=off` in a system-level `/usr/lib/golang/go.env` file. `GOENV=off` and `unset GOSUMDB` both failed to override it because they only affect the user-level env file, not the system one. The fix: explicitly `export GOSUMDB=sum.golang.org` in the installer, which takes priority over everything.
-
-**The Python subprocess security hole.** The `/pptx` command asks the active runner to write a python-pptx script, then executes it. Original version: no timeout, full ambient environment (every API key and AWS credential accessible). The script could have done anything. Fixed: 30-second timeout, stripped environment (only PATH/HOME/TMPDIR/LANG forwarded), Python AST validator that allowlists imports before execution.
-
-**Terminal tab titles on Fedora in wezterm.** OSC 0 sets the tab title, OSC 2 sets the window title. Kitty and wezterm both understand this. But wezterm ignores OSC sequences for the tab bar unless you register a `format-tab-title` Lua event handler that reads `pane.title`. Without the handler, the tab always shows the process name. One Lua event registration fixed it.
-
----
-
-## Current state
-
-Seven runners: claude, codex, copilot, gemini, pool, minimax, local. Rotation ring works. Shared memory works. Tab/window titles live-update with cost and tokens. Linux packages ship as native `.deb`/`.rpm`/`.pkg.tar.zst` on every release.
-
-The thing I actually use every day. The runners stop feeling like separate tools and start feeling like one system with a bad memory that compensates by keeping notes.
+The goal is a single surface where the question is never "which tool do I open" but only "what do I want to build."
 
 ---
 
