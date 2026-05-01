@@ -202,6 +202,14 @@ func buildCompleter(agentID string) readline.AutoCompleter {
 		),
 		readline.PcItem("/download-local-model"),
 		readline.PcItem("/setup-local-model"),
+		// Local-runner runtime tuning
+		readline.PcItem("/local-endpoint"),
+		readline.PcItem("/local-temp"),
+		readline.PcItem("/local-max-tokens"),
+		readline.PcItem("/local-hot",
+			readline.PcItem("on"),
+			readline.PcItem("off"),
+		),
 		// OpenSpec
 		readline.PcItem("/opsx-list"),
 		readline.PcItem("/opsx-status"),
@@ -743,6 +751,14 @@ func (l *chatLoop) handleSlash(line string) {
 		l.handlePptx(rest)
 	case "drawio":
 		l.handleDrawio(rest)
+	case "local-endpoint":
+		l.handleLocalSet("MILLIWAYS_LOCAL_ENDPOINT", rest, "local endpoint", "")
+	case "local-temp":
+		l.handleLocalSet("MILLIWAYS_LOCAL_TEMP", rest, "local temperature", "default")
+	case "local-max-tokens":
+		l.handleLocalSet("MILLIWAYS_LOCAL_MAX_TOKENS", rest, "local max-tokens", "off")
+	case "local-hot":
+		l.handleLocalHot(rest)
 	case "help", "?":
 		l.printHelp()
 	case "exit", "quit", "bye":
@@ -1288,6 +1304,45 @@ func (l *chatLoop) handleRing(args string) {
 	fmt.Fprintf(l.out, "  ring: %s\n", strings.Join(ring, " → "))
 }
 
+// handleLocalSet sets a local-runner tuning env var via the daemon's
+// config.setenv RPC, then reports the new value. If value is empty and
+// sentinel is non-empty it resets to the sentinel (e.g. "default", "off").
+func (l *chatLoop) handleLocalSet(envKey, value, label, sentinel string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		if sentinel == "" {
+			fmt.Fprintf(l.errw, "usage: /%s-endpoint <url>\n", strings.ToLower(strings.TrimPrefix(envKey, "MILLIWAYS_")))
+			return
+		}
+		value = sentinel
+	}
+	if l.client == nil {
+		fmt.Fprintln(l.errw, "✗ not connected to daemon")
+		return
+	}
+	if err := l.client.Call("config.setenv", map[string]any{"key": envKey, "value": value}, nil); err != nil {
+		fmt.Fprintf(l.errw, "✗ %s: %v\n", label, err)
+		return
+	}
+	fmt.Fprintf(l.out, "  %s set to %q (takes effect on next prompt)\n", label, value)
+}
+
+// handleLocalHot toggles llama-swap hot-mode: "on" keeps all advertised
+// models resident; "off" lets llama-swap evict them after the TTL.
+// This is a milliwaysctl thin-wrapper so the install script stays the
+// single source of truth for the flag semantics.
+func (l *chatLoop) handleLocalHot(args string) {
+	args = strings.TrimSpace(args)
+	switch args {
+	case "on":
+		l.runCtl([]string{"local", "install-swap", "--hot"})
+	case "off":
+		l.runCtl([]string{"local", "install-swap"})
+	default:
+		fmt.Fprintln(l.errw, "usage: /local-hot on|off")
+	}
+}
+
 // handlePrompt sends a typed line to the active runner. From the
 // landing zone (no agent active), prints a hint instead of dispatching.
 // Records the user turn in turnLog so /switch can hand the briefing to
@@ -1483,11 +1538,19 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /download-local-model <repo>  fetch a GGUF from HuggingFace")
 	fmt.Fprintln(l.out, "  /setup-local-model <repo>     download + register in llama-swap.yaml")
 	fmt.Fprintln(l.out)
+	fmt.Fprintln(l.out, "Local-model tuning (runtime, survives daemon restart):")
+	fmt.Fprintln(l.out, "  /local-endpoint <url>         point at a different OpenAI-compatible backend")
+	fmt.Fprintln(l.out, "  /local-temp <0.0–2.0|default> sampling temperature; default lets the server choose")
+	fmt.Fprintln(l.out, "  /local-max-tokens <N|off>     cap reply length; off means unlimited")
+	fmt.Fprintln(l.out, "  /local-hot on|off             keep models resident in llama-swap (on) or TTL-evict (off)")
+	fmt.Fprintln(l.out)
 
 	fmt.Fprintln(l.out, "OpenSpec:")
 	fmt.Fprintln(l.out, "  /opsx-list                    list openspec changes")
 	fmt.Fprintln(l.out, "  /opsx-status <change>         show change progress")
 	fmt.Fprintln(l.out, "  /opsx-show <change>           show full change detail")
+	fmt.Fprintln(l.out, "  /opsx-archive <change>        archive a completed change")
+	fmt.Fprintln(l.out, "  /opsx-validate <change>       validate a change's spec")
 	fmt.Fprintln(l.out)
 
 	fmt.Fprintln(l.out, "Session:")
@@ -1495,13 +1558,14 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /model <name>                 switch model live (minimax / local only)")
 	fmt.Fprintln(l.out, "  /agents                       list clients with live auth status")
 	fmt.Fprintln(l.out, "  /quota                        current quota snapshot")
+	fmt.Fprintln(l.out, "  /metrics                      live metrics dashboard (token usage, costs, ops)")
 	fmt.Fprintln(l.out, "  /switch <runner>              same as /<runner>")
 	fmt.Fprintln(l.out, "  /login [client]               auth setup — API key prompt or CLI steps")
 	fmt.Fprintln(l.out, "  /exit                         exit (Ctrl+D also works)")
 	fmt.Fprintln(l.out, "  !<cmd>                        run a shell command inline")
 	fmt.Fprintln(l.out)
 
-	fmt.Fprintln(l.out, "Session:")
+	fmt.Fprintln(l.out, "Context management:")
 	fmt.Fprintln(l.out, "  /history                      show the current turn log (read-only)")
 	fmt.Fprintln(l.out, "  /cost                         token usage per runner (last hour)")
 	fmt.Fprintln(l.out, "  /retry                        re-send the last user prompt")
@@ -1558,10 +1622,18 @@ func runnerModelSpec(agentID string) modelSpec {
 		if ep == "" {
 			ep = "http://localhost:8765/v1"
 		}
+		temp := os.Getenv("MILLIWAYS_LOCAL_TEMP")
+		if temp == "" {
+			temp = "default"
+		}
+		maxTok := os.Getenv("MILLIWAYS_LOCAL_MAX_TOKENS")
+		if maxTok == "" {
+			maxTok = "off"
+		}
 		return modelSpec{
 			envKey:   "MILLIWAYS_LOCAL_MODEL",
 			current:  cur,
-			endpoint: ep,
+			endpoint: ep + "  temp=" + temp + "  max_tokens=" + maxTok,
 			choices:  []string{"(use /list-local-models to see what's loaded)"},
 		}
 	case "claude":

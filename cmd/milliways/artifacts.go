@@ -110,10 +110,10 @@ func (l *chatLoop) handleReview(args string) {
 	}
 	focus := ""
 	if args != "" {
-		focus = "\n\nFocus on: " + args
+		focus = "\n\nFocus on: " + xmlEscape(args)
 	}
 	prompt := "Please review the following changes and identify bugs, security issues, and improvements:" +
-		focus + "\n\n```diff\n" + string(diff) + "\n```"
+		focus + "\n\n<tool_result name=\"git_diff\">\n```diff\n" + string(diff) + "\n```\n</tool_result>"
 	l.handlePrompt(prompt)
 }
 
@@ -196,8 +196,11 @@ func (l *chatLoop) handlePptx(topic string) {
 		tmp.Close()
 
 		fmt.Fprintf(l.out, "\n%s* pptx:%s running script…\n", color, reset)
-		cmd := exec.CommandContext(context.Background(), "python3", tmpPath)
+		runCtx, runCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer runCancel()
+		cmd := exec.CommandContext(runCtx, "python3", tmpPath)
 		cmd.Dir = cwd
+		cmd.Env = safeScriptEnv()
 		out, runErr := cmd.CombinedOutput()
 		if len(out) > 0 {
 			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -430,8 +433,11 @@ if errors:
         print(f'BLOCKED: {e}', file=sys.stderr)
     sys.exit(1)
 `
-	cmd := exec.CommandContext(context.Background(), "python3", "-c", astValidator)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "python3", "-c", astValidator)
 	cmd.Stdin = strings.NewReader(script)
+	cmd.Env = safeScriptEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
@@ -449,6 +455,19 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "…"
+}
+
+// safeScriptEnv returns a minimal environment for running python3 subprocesses:
+// only PATH, HOME, TMPDIR, and LANG. All API keys and credentials from the
+// ambient environment are excluded so generated scripts cannot exfiltrate them.
+func safeScriptEnv() []string {
+	env := []string{}
+	for _, key := range []string{"PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL"} {
+		if v := os.Getenv(key); v != "" {
+			env = append(env, key+"="+v)
+		}
+	}
+	return env
 }
 
 // slugify converts a string to a lowercase hyphen-separated slug.

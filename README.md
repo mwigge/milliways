@@ -43,7 +43,7 @@ go install github.com/mwigge/milliways/cmd/milliways@latest
 MilliWays.app is a native macOS terminal built on a patched wezterm. Every new tab opens milliways instead of a plain shell. The status bar shows your active agent, working directory, and a live wake badge when the laptop resumes from sleep.
 
 ```
-[⚡ woke 3m ago] [≈≈ MW v0.4.12] [~/project] [●claude] [1:C 2:X 3:G 4:M 5:L]
+[⚡ woke 3m ago] [≈≈ MW v0.9.6] [~/project] [●claude] [1:C 2:X 3:G 4:M 5:L]
 ```
 
 ### Leader keybindings (`Ctrl+Space`)
@@ -262,7 +262,7 @@ Milliways wraps each AI CLI as a first-class runner. They all speak the same int
    │                      │                          │
    │                      │   session limit?         │
    │                      │   ──────────────         │
-   │                      │   /takeover-ring active? │
+   │                      │   /ring active?          │
    │                      │   yes → rotate to next   │
    │                      ├─────────────────────────>│ (next runner)
 ```
@@ -698,11 +698,11 @@ All standard milliways commands work with `local`. The runner-prefixed forms are
 | `/local` | switch active runner to local |
 | `/models` | list models the backend serves (contextual; same as `/list-local-models`) |
 | `/model <alias>` | switch model (contextual) |
-| `/local-endpoint <url>` | point at a different OpenAI-compatible backend |
-| `/local-temp <0.0–2.0\|default>` | sampling temperature; `default` omits the field |
+| `/local-endpoint <url>` | point at a different OpenAI-compatible backend (persists across daemon restarts) |
+| `/local-temp <0.0–2.0\|default>` | sampling temperature; `default` lets the server choose |
 | `/local-max-tokens <N\|off>` | cap reply length; `off` means unlimited |
-| `/local-hot on\|off` | warm every advertised model (`on`) or let llama-swap unload them on TTL (`off`) |
-| `/takeover-ring claude,local,gemini` | rotation works across local just like cloud runners |
+| `/local-hot on\|off` | warm every advertised model (`on`) or let llama-swap evict on TTL (`off`) |
+| `/ring claude,local,gemini` | set the auto-rotation ring — local works just like cloud runners |
 
 ### Environment variables
 
@@ -711,8 +711,8 @@ All standard milliways commands work with `local`. The runner-prefixed forms are
 | `MILLIWAYS_LOCAL_ENDPOINT` | `http://localhost:8765/v1` | Where the OpenAI-compatible API lives |
 | `MILLIWAYS_LOCAL_MODEL` | `qwen2.5-coder-1.5b` | Initial model id sent in every request |
 | `MILLIWAYS_LOCAL_API_KEY` | — | Sent as `Authorization: Bearer …` (for llama-server `--api-key`, vLLM strict mode) |
-| `MILLIWAYS_LOCAL_TEMPERATURE` | `0.2` | Sampling temperature — coding-friendly default. Set to `-1` to fall back to the server's own default |
-| `MILLIWAYS_LOCAL_MAX_TOKENS` | unlimited | Cap reply length globally |
+| `MILLIWAYS_LOCAL_TEMP` | `default` (server picks) | Sampling temperature — set via `/local-temp`; `default` omits the field |
+| `MILLIWAYS_LOCAL_MAX_TOKENS` | `off` (unlimited) | Cap reply length — set via `/local-max-tokens`; `off` omits the field |
 
 ### Temperature
 
@@ -721,7 +721,7 @@ Temperature controls how random the model's next-token pick is. The model assign
 | Temperature | Behaviour | When to use |
 |---|---|---|
 | `0.0` | Always picks the most-likely token | Deterministic test fixtures; some local models loop at exactly 0 — pick `0.1` if so |
-| `0.2` *(default)* | Almost always the top pick, with rare deviations | Coding, refactoring, anything where correctness > creativity |
+| `0.2` | Almost always the top pick, with rare deviations | Coding, refactoring, anything where correctness > creativity |
 | `0.7` | Balanced — varied but coherent | Chat, summarisation, commit messages |
 | `1.0+` | More creative, more error-prone | Brainstorming, drafting prose |
 | `1.5+` | Often incoherent | Rarely useful |

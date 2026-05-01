@@ -131,6 +131,17 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	}
 	apiKey := strings.TrimSpace(os.Getenv("MILLIWAYS_LOCAL_API_KEY"))
 
+	// Optional tuning — set via /local-temp and /local-max-tokens slash commands.
+	// A zero value means "not set" (omit from payload).
+	var temperature float64
+	if t := strings.TrimSpace(os.Getenv("MILLIWAYS_LOCAL_TEMP")); t != "" && t != "default" {
+		_, _ = fmt.Sscanf(t, "%f", &temperature)
+	}
+	var maxTokens int
+	if m := strings.TrimSpace(os.Getenv("MILLIWAYS_LOCAL_MAX_TOKENS")); m != "" && m != "off" {
+		_, _ = fmt.Sscanf(m, "%d", &maxTokens)
+	}
+
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
@@ -147,11 +158,13 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		{Role: RoleUser, Content: text},
 	}
 	client := &localClient{
-		http:     localHTTPClient,
-		endpoint: endpoint,
-		apiKey:   apiKey,
-		model:    model,
-		stream:   stream,
+		http:        localHTTPClient,
+		endpoint:    endpoint,
+		apiKey:      apiKey,
+		model:       model,
+		stream:      stream,
+		temperature: temperature,
+		maxTokens:   maxTokens,
 	}
 
 	result, err := RunAgenticLoop(ctx, client, registry, &messages, LoopOptions{
@@ -191,15 +204,23 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 // SSE parsing, content streaming to the daemon Pusher, and tool-call
 // delta reassembly.
 type localClient struct {
-	http     *http.Client
-	endpoint string
-	apiKey   string
-	model    string
-	stream   Pusher
+	http        *http.Client
+	endpoint    string
+	apiKey      string
+	model       string
+	stream      Pusher
+	temperature float64 // 0 means omit (use server default)
+	maxTokens   int     // 0 means omit (use server default)
 }
 
 func (c *localClient) Send(ctx context.Context, messages []Message, toolDefs []provider.ToolDef) (TurnResult, error) {
 	payload := buildOpenAIChatPayload(c.model, messages, toolDefs)
+	if c.temperature > 0 {
+		payload["temperature"] = c.temperature
+	}
+	if c.maxTokens > 0 {
+		payload["max_tokens"] = c.maxTokens
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return TurnResult{}, fmt.Errorf("marshal: %w", err)

@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 
 /// Resolve the default UDS path:
 /// `${XDG_RUNTIME_DIR:-$HOME/.local/state/milliways}/sock`.
+#[must_use]
 pub fn default_socket_path() -> Option<PathBuf> {
     if let Some(x) = std::env::var_os("XDG_RUNTIME_DIR") {
         return Some(PathBuf::from(x).join("milliways").join("sock"));
@@ -81,11 +82,13 @@ pub struct Subscription {
 impl Client {
     /// Path of the socket this Client is connected to. Used to dial the
     /// sidecar against the same UDS.
+    #[must_use]
     pub fn socket(&self) -> &Path {
         &self.socket
     }
 
     /// Dial the milliwaysd UDS at `socket`.
+    #[must_use = "dropping the Client closes the connection"]
     pub async fn dial(socket: impl AsRef<Path>) -> Result<Self> {
         let path = socket.as_ref().to_path_buf();
         let stream = UnixStream::connect(&path)
@@ -108,6 +111,7 @@ impl Client {
     ///   4. Spawns a tokio task that reads NDJSON lines and forwards them
     ///      via mpsc.
     /// The returned Subscription's receiver yields one Vec<u8> per event.
+    #[must_use = "dropping Subscription cancels the stream"]
     pub async fn subscribe<P>(&mut self, method: &str, params: P) -> Result<Subscription>
     where
         P: Serialize,
@@ -146,6 +150,7 @@ impl Client {
 
     /// Invoke `method` with `params` and decode the result. Use `()` for
     /// methods that take no parameters.
+    #[must_use = "call result must be checked"]
     pub async fn call<P, R>(&mut self, method: &str, params: P) -> Result<R>
     where
         P: Serialize,
