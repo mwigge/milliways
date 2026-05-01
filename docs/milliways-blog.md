@@ -56,32 +56,7 @@ The handoff is structured, not raw. Milliways builds a briefing from the turn lo
 
 **Here's what that looks like in production.** A full code review of milliways — three runners, two manual switches, zero context loss:
 
-```
-→ codex  model: o4-mini  (codex CLI)
-
-[codex] ▶  <code review in progress...>
-
-[codex] ▶ /gemini
-{"msg":"runner switch","from":"codex","to":"gemini"}
-→ gemini  model: gemini-2.5-pro  (gemini CLI)  [briefing from codex]
-
-[gemini] ▶  I've received the context. You were asking for a full code
-             review of milliways. How would you like me to proceed?
-
-[gemini] ▶  <deep review, lots of analysis...>
-
-[gemini] ▶ /pool
-{"msg":"runner switch","from":"gemini","to":"pool"}
-→ pool  model: Poolside ACP  (pool CLI (ACP))  [briefing from gemini]
-
-[pool] ▶  Thinking...
-
-I see you've handed off a conversation with gemini that was in the middle
-of a code review for the milliways project — a terminal emulator with a
-Go backend and Rust frontend.
-
-I should acknowledge the handoff and wait for the user's next prompt.
-```
+![codex → gemini → pool: three-runner handoff with briefings, zero context lost](images/handoff-session.png)
 
 The chain is codex → gemini → pool. Three runners, three completely different architectures (OpenAI CLI subprocess, Google CLI subprocess, Poolside ACP HTTP client), and the briefing carried the full review context across all of them. Gemini acknowledged the handoff from codex immediately. Pool narrated its own onboarding — it read the briefing, understood what was in progress, and correctly decided to wait for the next prompt.
 
@@ -115,11 +90,7 @@ The key insight for local models: `0.2` is the right default for coding tasks. I
 
 Set it live, without restarting anything:
 
-```
-/local-temp 0.2       # coding, refactoring
-/local-temp 0.7       # commit messages, summaries
-/local-temp default   # let the server decide
-```
+![/local-temp commands — set temperature live without restarting the daemon](images/local-temp-commands.png)
 
 ### All the runtime controls
 
@@ -145,14 +116,7 @@ Most AI tools are black boxes. Milliways instruments every interaction with Open
 
 Every dispatch to a runner produces a structured OTel span following the Gen AI semantic conventions. The parent span covers the full dispatch — model, system (anthropic / openai / google / etc.), token counts, cost in USD. Each tool call the runner makes produces a child span.
 
-```
-gen_ai.client.operation  [claude · claude-opus-4-5]
-  ├── gen_ai.execute_tool  [bash]          12ms
-  ├── gen_ai.execute_tool  [read_file]      3ms
-  ├── gen_ai.execute_tool  [write_file]     8ms
-  └── gen_ai.execute_tool  [bash]          41ms
-  input_tokens: 4821  output_tokens: 892  cost_usd: 0.0183
-```
+![Gen AI OTel span tree — dispatch parent with per-tool-call child spans and token/cost metadata](images/otel-spans.png)
 
 This means every agent action — every file read, every shell command, every web fetch a runner executes — is a traceable, queryable event. When something goes wrong, you have the full trace, not just a response string.
 
@@ -160,18 +124,7 @@ This means every agent action — every file read, every shell command, every we
 
 The `/metrics` command (or `milliwaysctl metrics --watch`) shows a rolling table of activity across all runners, updated every five seconds:
 
-```
-milliwaysctl metrics
-
-runner      1 min    1 hour    24 h      7 d       30 d
-─────────────────────────────────────────────────────────
-claude      2 ops    14 ops    89 ops    312 ops   1.2k ops
-            $0.04    $0.31     $2.14     $7.82     $29.40
-codex       0 ops    3 ops     21 ops    88 ops    340 ops
-                     $0.00     $0.08     $0.31     $1.22
-gemini      1 ops    8 ops     44 ops    180 ops   690 ops
-            $0.00    $0.01     $0.07     $0.28     $1.09
-```
+![milliwaysctl metrics — five-window rolling table across all runners](images/metrics-dashboard.png)
 
 Five time windows — 1 min, 1 hour, 24 hours, 7 days, 30 days — backed by a SQLite store with tiered rollup (raw → hourly → daily → weekly → monthly). The data is always on disk. You can query spend across any window without waiting for a billing cycle.
 
@@ -193,9 +146,7 @@ The tab shows the running session cost so you always know your spend without ope
 
 ## What you get
 
-```
-[⚡ woke 3m ago] [≈≈ MW v1.0.1] [~/project] [●claude] [1:C 2:X 3:G 4:M 5:L]
-```
+![MilliWays.app status bar — wake badge, version, directory, active runner, shortcuts](images/status-bar.png)
 
 - **Seven runners** — claude, codex, copilot, gemini, pool, minimax, local — all in the same terminal session
 - **Shared project memory** — MemPalace context injected before every prompt, to every runner
