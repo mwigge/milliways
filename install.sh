@@ -124,7 +124,12 @@ install_from_source() {
   # Go downloads the right toolchain automatically (requires internet).
   # This lets source builds succeed on distros with older packaged Go versions
   # (e.g. Fedora 41 ships Go 1.24, module requires 1.25).
+  #
+  # Some distros (Fedora) set GOSUMDB=off in their Go packaging, which breaks
+  # toolchain verification. Unset it so Go can use sum.golang.org (the default)
+  # to verify the downloaded toolchain's checksum.
   export GOTOOLCHAIN=auto
+  unset GOSUMDB 2>/dev/null || true
   for bin in $targets; do
     pkg="cmd/${bin}"
     [ -d "${root}/${pkg}" ] || { warn "  $pkg not found, skipping"; continue; }
