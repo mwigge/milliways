@@ -22,7 +22,7 @@ import (
 
 func TestWriteOSCTitle_NormalTerminal(t *testing.T) {
 	var buf bytes.Buffer
-	writeOSCTitle(&buf, "● claude", "milliways · claude · $0.0042 session")
+	writeOSCTitle(&buf, "", "● claude", "milliways · claude · $0.0042 session")
 	got := buf.String()
 
 	// OSC 0 must set the tab title
@@ -40,22 +40,22 @@ func TestWriteOSCTitle_NormalTerminal(t *testing.T) {
 }
 
 func TestWriteOSCTitle_TmuxPassthrough(t *testing.T) {
-	t.Setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
+	// Pass the tmux env value directly — no t.Setenv so this test is safe
+	// to run in parallel and does not mutate global process state.
+	const tmuxEnv = "/tmp/tmux-1000/default,12345,0"
 
 	var buf bytes.Buffer
-	writeOSCTitle(&buf, "● codex", "milliways · codex")
+	writeOSCTitle(&buf, tmuxEnv, "● codex", "milliways · codex")
 	got := buf.String()
 
-	// DCS passthrough must wrap both sequences
-	if !strings.Contains(got, "\033Ptmux;") {
-		t.Errorf("missing tmux DCS passthrough; got %q", got)
+	// Both sequences must be wrapped in DCS passthrough with doubled ESC.
+	wantTab := "\033Ptmux;\033\033]0;● codex\007\033\\"
+	wantWin := "\033Ptmux;\033\033]2;milliways · codex\007\033\\"
+	if !strings.Contains(got, wantTab) {
+		t.Errorf("malformed tmux DCS tab frame; want %q in %q", wantTab, got)
 	}
-	// The inner OSC 0 sequence must be present inside the DCS wrapper
-	if !strings.Contains(got, "● codex") {
-		t.Errorf("tab title missing from tmux output; got %q", got)
-	}
-	if !strings.Contains(got, "milliways · codex") {
-		t.Errorf("window title missing from tmux output; got %q", got)
+	if !strings.Contains(got, wantWin) {
+		t.Errorf("malformed tmux DCS window frame; want %q in %q", wantWin, got)
 	}
 }
 
@@ -70,6 +70,9 @@ func TestSanitiseOSC_StripsControlChars(t *testing.T) {
 		{"hello\033]2;injected\007world", "hello]2;injectedworld"},
 		// CR and LF could break terminal display — must be stripped
 		{"line1\r\nline2", "line1line2"},
+		// DCS string terminator (ESC + backslash) — ESC stripped, backslash preserved.
+		// Documents that the tmux DCS frame cannot be terminated via user input.
+		{"\033\\attack", "\\attack"},
 		// Normal unicode must pass through intact
 		{"● claude · sonnet-4-6", "● claude · sonnet-4-6"},
 		// Cost string must pass through intact
@@ -87,7 +90,7 @@ func TestWriteOSCTitle_SanitisesInputs(t *testing.T) {
 	var buf bytes.Buffer
 	// Inject a BEL that would terminate the OSC sequence early and an ESC
 	// that would start a new sequence inside the window title string.
-	writeOSCTitle(&buf, "tab\007early", "win\033]0;injected\007evil")
+	writeOSCTitle(&buf, "", "tab\007early", "win\033]0;injected\007evil")
 	got := buf.String()
 
 	// BEL inside the tab argument must be gone so the OSC 0 sequence

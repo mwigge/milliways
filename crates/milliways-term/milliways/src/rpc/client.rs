@@ -42,10 +42,13 @@ pub enum ClientError {
 }
 
 impl ClientError {
-    fn io(context: &'static str, source: std::io::Error) -> Self {
+    /// Construct an `Io` variant. `pub` so downstream crates and tests can
+    /// build synthetic errors without resorting to struct literal syntax.
+    pub fn io(context: &'static str, source: std::io::Error) -> Self {
         Self::Io { context, source }
     }
-    fn protocol(context: &'static str, source: serde_json::Error) -> Self {
+    /// Construct a `Protocol` variant. `pub` for the same reason as `io`.
+    pub fn protocol(context: &'static str, source: serde_json::Error) -> Self {
         Self::Protocol { context, source }
     }
 }
@@ -185,7 +188,10 @@ impl Client {
                         }
                     }
                     Err(e) => {
-                        log::warn!("rpc stream read error: {e}");
+                        // debug level: IO errors on a subscription stream are
+                        // expected on normal agent shutdown (daemon closes the
+                        // socket). warn would produce noise on every exit.
+                        log::debug!("rpc stream read error: {e}");
                         break;
                     }
                 }

@@ -617,6 +617,16 @@ func (l *chatLoop) drainStream() {
 			l.sess.busyMu.Lock()
 			l.sess.busy = false
 			l.sess.busyMu.Unlock()
+			// Reset title from "streaming…"/"thinking…" to ready state so
+			// the tab doesn't falsely advertise in-flight work after an error.
+			if l.sess != nil {
+				model, _ := runnerModelInfo(l.sess.agentID)
+				tab := "● " + l.sess.agentID
+				if model != "" {
+					tab += " · " + model
+				}
+				setTermTitle(tab, "milliways · "+l.sess.agentID)
+			}
 			// Auto-rotate on session limit if a ring is configured.
 			if agent != "" && isSessionLimitMsg(msg) {
 				go l.autoRotate(agent)
@@ -1524,17 +1534,23 @@ func setTermTitle(tab, window string) {
 	if !isTTYStderr() {
 		return
 	}
-	writeOSCTitle(os.Stderr, tab, window)
+	writeOSCTitle(os.Stderr, os.Getenv("TMUX"), tab, window)
 }
 
 // writeOSCTitle writes OSC tab/window title sequences to w. It is the
-// testable core of setTermTitle — tests pass a bytes.Buffer; production
-// code calls setTermTitle which passes os.Stderr after the TTY guard.
-func writeOSCTitle(w io.Writer, tab, window string) {
+// testable core of setTermTitle — tests pass a bytes.Buffer and control
+// the tmux parameter directly without mutating global process environment.
+//
+// tmuxEnv should be the value of $TMUX (empty string when not inside tmux).
+// Keeping it as a parameter makes the function pure and safe under t.Parallel().
+func writeOSCTitle(w io.Writer, tmuxEnv, tab, window string) {
 	tab = sanitiseOSC(tab)
 	window = sanitiseOSC(window)
-	if os.Getenv("TMUX") != "" {
+	if tmuxEnv != "" {
 		// tmux DCS passthrough: \ePtmux;\e<seq>\e\\
+		// The inner ESC is doubled (\033\033) as required by the tmux protocol.
+		// OSC terminator inside DCS must be BEL (\007), not ST, to avoid
+		// closing the outer DCS frame prematurely.
 		fmt.Fprintf(w,
 			"\033Ptmux;\033\033]0;%s\007\033\\\033Ptmux;\033\033]2;%s\007\033\\",
 			tab, window)
