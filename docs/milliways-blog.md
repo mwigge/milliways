@@ -117,12 +117,21 @@ sequenceDiagram
 
 The handoff is structured, not raw. Milliways builds a briefing from the turn log before rotating, and the incoming runner treats it as ground truth.
 
-**Here's what that actually looks like in production.** A full code review of milliways, started in Gemini 2.5 Pro, handed off mid-session to Pool (Poolside ACP) with a single `/pool`:
+**Here's what that looks like in production.** A full code review of milliways — three runners, two manual switches, zero context loss:
 
 ```
+→ codex  model: o4-mini  (codex CLI)
+
+[codex] ▶  <code review in progress...>
+
+[codex] ▶ /gemini
+{"msg":"runner switch","from":"codex","to":"gemini"}
 → gemini  model: gemini-2.5-pro  (gemini CLI)  [briefing from codex]
 
-[gemini] ▶  <deep code review, lots of working...>
+[gemini] ▶  I've received the context. You were asking for a full code
+             review of milliways. How would you like me to proceed?
+
+[gemini] ▶  <deep review, lots of analysis...>
 
 [gemini] ▶ /pool
 {"msg":"runner switch","from":"gemini","to":"pool"}
@@ -137,9 +146,9 @@ Go backend and Rust frontend.
 I should acknowledge the handoff and wait for the user's next prompt.
 ```
 
-Pool narrated its own onboarding from the briefing content — it understood what was in progress, who handed off, and what the project was, without any re-prompting. The switch happened mid-review across two runners with completely different architectures (a Google CLI subprocess and a Poolside ACP client) and the context survived intact.
+The chain is codex → gemini → pool. Three runners, three completely different architectures (OpenAI CLI subprocess, Google CLI subprocess, Poolside ACP HTTP client), and the briefing carried the full review context across all of them. Gemini acknowledged the handoff from codex immediately. Pool narrated its own onboarding — it read the briefing, understood what was in progress, and correctly decided to wait for the next prompt.
 
-That's the rotation ring working as intended: the user types `/pool`, milliways compiles the briefing, and the new runner picks up exactly where the previous one left off.
+No re-prompting. No copy-pasting. The user typed `/gemini`, then `/pool`. That was it.
 
 ---
 
@@ -164,18 +173,73 @@ The combination of a local runner with shared MemPalace memory is particularly p
 
 ---
 
+## Observability — you can see everything that's happening
+
+Most AI tools are black boxes. Milliways instruments every interaction with OpenTelemetry and exposes a live metrics dashboard, so you know exactly what is running, what it costs, and how it's behaving.
+
+### Gen AI semantic spans
+
+Every dispatch to a runner produces a structured OTel span following the Gen AI semantic conventions. The parent span covers the full dispatch — model, system (anthropic / openai / google / etc.), token counts, cost in USD. Each tool call the runner makes produces a child span.
+
+```
+gen_ai.client.operation  [claude · claude-opus-4-5]
+  ├── gen_ai.execute_tool  [bash]          12ms
+  ├── gen_ai.execute_tool  [read_file]      3ms
+  ├── gen_ai.execute_tool  [write_file]     8ms
+  └── gen_ai.execute_tool  [bash]          41ms
+  input_tokens: 4821  output_tokens: 892  cost_usd: 0.0183
+```
+
+This means every agent action — every file read, every shell command, every web fetch a runner executes — is a traceable, queryable event. When something goes wrong, you have the full trace, not just a response string.
+
+### Live metrics dashboard
+
+The `/metrics` command (or `milliwaysctl metrics --watch`) shows a rolling table of activity across all runners, updated every five seconds:
+
+```
+milliwaysctl metrics
+
+runner      1 min    1 hour    24 h      7 d       30 d
+─────────────────────────────────────────────────────────
+claude      2 ops    14 ops    89 ops    312 ops   1.2k ops
+            $0.04    $0.31     $2.14     $7.82     $29.40
+codex       0 ops    3 ops     21 ops    88 ops    340 ops
+                     $0.00     $0.08     $0.31     $1.22
+gemini      1 ops    8 ops     44 ops    180 ops   690 ops
+            $0.00    $0.01     $0.07     $0.28     $1.09
+```
+
+Five time windows — 1 min, 1 hour, 24 hours, 7 days, 30 days — backed by a SQLite store with tiered rollup (raw → hourly → daily → weekly → monthly). The data is always on disk. You can query spend across any window without waiting for a billing cycle.
+
+### Terminal title as ambient signal
+
+The terminal tab and title bar carry live session state, visible even when the terminal is in the background:
+
+| State | Tab | Window title |
+|---|---|---|
+| Switched to runner | `milliways · claude` | `● claude · opus-4-5` |
+| Prompt sent | `milliways · claude · thinking…` | `● claude · opus-4-5` |
+| Streaming | `milliways · claude · streaming…` | `● claude · opus-4-5` |
+| Response done | `milliways · claude · $0.0183 session · 4.8k→0.9k tok` | `● claude · opus-4-5` |
+| Ring rotation | `milliways · rotating → codex` | `↻ codex` |
+
+The tab shows the running session cost so you always know your spend without opening the metrics dashboard. The window title shows the compact runner+model for the OS window switcher.
+
+---
+
 ## What you get
 
 ```
 [⚡ woke 3m ago] [≈≈ MW v1.0.1] [~/project] [●claude] [1:C 2:X 3:G 4:M 5:L]
 ```
 
-- **Seven runners** — claude, codex, copilot, gemini, pool, minimax, local — all available in the same terminal session
+- **Seven runners** — claude, codex, copilot, gemini, pool, minimax, local — all in the same terminal session
 - **Shared project memory** — MemPalace context injected before every prompt, to every runner
 - **Automatic rotation ring** — session limits and quota exhaustion become seamless handoffs, not interruptions
-- **Runtime local model steering** — temperature, token limits, and endpoint switchable live
-- **Live cost tracking** — cumulative session spend in the tab title; per-response tokens in the inline hint
-- **Native Linux packages** — `.deb`, `.rpm`, `.pkg.tar.zst` on every release, with a one-liner installer that auto-detects your distro
+- **Runtime local model steering** — temperature, token limits, and endpoint switchable live without restarts
+- **Full observability** — OTel Gen AI spans per dispatch, per tool call; live `/metrics` dashboard across five time windows; cost always on disk
+- **Ambient session state** — tab title shows running cost, tokens, and live status; visible from any window
+- **Native Linux packages** — `.deb`, `.rpm`, `.pkg.tar.zst` on every release, one-liner installer that auto-detects your distro
 
 The goal is a single surface where the question is never "which tool do I open" but only "what do I want to build."
 
