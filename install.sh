@@ -84,11 +84,30 @@ install_remote() {
 install_from_source() {
   local targets="${1:-milliways milliwaysd milliwaysctl}"
   need go "Install Go 1.22+: https://go.dev/dl/"
-  local root="${REPO_ROOT:-.}"
-  local ver
-  ver="$(git -C "$root" describe --tags --always --dirty 2>/dev/null || echo dev)"
+
+  local root="$REPO_ROOT"
+  local _cloned_tmp=""
+
+  # When installed via curl (no local checkout), clone the repo so we have
+  # source to build from. Without this, install_from_source looks for
+  # ./cmd/milliways in the user's cwd and finds nothing.
+  if [ -z "$root" ] || [ ! -d "$root/cmd/milliways" ]; then
+    need curl "Install curl"
+    need git  "Install git"
+    _cloned_tmp="$(mktemp -d)"
+    info "Cloning milliways source (${VERSION})..."
+    git clone --depth 1 --branch "$VERSION" \
+        "https://github.com/${REPO}.git" "$_cloned_tmp" 2>/dev/null \
+      || git clone --depth 1 "https://github.com/${REPO}.git" "$_cloned_tmp"
+    root="$_cloned_tmp"
+  fi
+
+  local ver="$VERSION"
+  # Prefer the tag we know we're building rather than git-describe, which
+  # can return old pre-restructure tags if the repo has deep history.
+  [ "$ver" = "latest" ] && ver="$(git -C "$root" describe --tags --always 2>/dev/null || echo dev)"
   local ldflags="-X main.version=$ver"
-  echo "==> Building Go binaries (${ver})..."
+  info "Building Go binaries (${ver})..."
   for bin in $targets; do
     pkg="cmd/${bin}"
     [ -d "${root}/${pkg}" ] || { warn "  $pkg not found, skipping"; continue; }
@@ -96,6 +115,7 @@ install_from_source() {
     go build -C "$root" -ldflags "$ldflags" -o "$BIN_DIR/$bin" "./$pkg"
     ok "  installed $BIN_DIR/$bin"
   done
+  [ -n "$_cloned_tmp" ] && rm -rf "$_cloned_tmp"
 }
 
 # ── macOS: MilliWays.app ──────────────────────────────────────────────────────
