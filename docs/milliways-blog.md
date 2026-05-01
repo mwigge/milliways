@@ -273,3 +273,5 @@ The goal is a single surface where the question is never "which tool do I open" 
 ---
 
 *v1.0.1 — May 2026*
+
+**[github.com/mwigge/milliways](https://github.com/mwigge/milliways)**
