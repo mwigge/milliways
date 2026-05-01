@@ -18,34 +18,7 @@ Every one of these is excellent at something. The problem is that they live in s
 
 The design is a local daemon that keeps all AI sessions alive simultaneously. Your terminal connects to the daemon over a Unix socket. You switch runners with a slash command — `/claude`, `/codex`, `/gemini` — and the daemon routes your prompt to the right process. No new terminal. No lost context. No re-authentication.
 
-```mermaid
-graph TB
-    subgraph "Your machine"
-        T["milliways-term\n(wezterm fork)"]
-        C["milliways\nchat"]
-        CTL["milliwaysctl\nops + install"]
-
-        T -->|"tab = agent pane"| D
-        C -->|"Unix socket RPC"| D
-        CTL -->|"Unix socket RPC"| D
-
-        D["milliwaysd\ndaemon"]
-
-        D -->|"subprocess"| R1["claude CLI"]
-        D -->|"subprocess"| R2["codex CLI"]
-        D -->|"subprocess"| R3["copilot CLI"]
-        D -->|"subprocess"| R4["gemini CLI"]
-        D -->|"subprocess"| R5["pool CLI"]
-        D -->|"HTTP"| R6["MiniMax API"]
-        D -->|"HTTP"| R7["local llama.cpp"]
-    end
-
-    MP["MemPalace MCP\nproject memory"]
-    C -.->|"semantic search\nbefore each prompt"| MP
-
-    style D fill:#2d2d2d,color:#ebdbb2
-    style MP fill:#3c3836,color:#ebdbb2
-```
+![Milliways architecture — three client binaries, the daemon, seven runners, and MemPalace](images/architecture.png)
 
 The runners are their own CLIs — milliways wraps them rather than reimplementing them. Claude's tooling, Codex's sandbox, Copilot's GitHub awareness — all preserved exactly as the vendor ships them. Milliways adds the routing layer and the shared context layer on top, without touching what makes each runner good.
 
@@ -57,22 +30,7 @@ The reason switching runners feels seamless is shared project memory. Before mil
 
 The runner doesn't know the memories came from elsewhere. It just sees context that makes it immediately useful in *your* project, not a generic codebase it has never encountered.
 
-```mermaid
-flowchart LR
-    U["You type a prompt"]
-    E["enrichWithPalace()"]
-    MP["MemPalace\n(local MCP server)"]
-    R["Active runner\nclaude / codex / etc."]
-
-    U --> E
-    E -->|"semantic search"| MP
-    MP -->|"relevant project memories"| E
-    E -->|"your prompt +\n&lt;project_memory&gt;\n  architecture decisions\n  known constraints\n  recent context\n&lt;/project_memory&gt;"| R
-    R -->|"response"| U
-
-    style MP fill:#3c3836,color:#ebdbb2
-    style E fill:#504945,color:#ebdbb2
-```
+![Shared memory flow — enrichWithPalace queries MemPalace and injects project context before every prompt](images/memory-flow.png)
 
 **The practical effect is that every runner starts informed.** Switch from Claude to Codex mid-session and Codex already knows your project structure, your architectural decisions, and the constraints you've established over months of work. You stop re-explaining yourself to every new tool.
 
@@ -92,28 +50,7 @@ Configure a priority order once:
 
 When the active runner exhausts — hitting a session limit, context window, or quota — milliways automatically rotates to the next runner in the ring and re-dispatches your original prompt. You see a single notification line. The response keeps streaming.
 
-```mermaid
-sequenceDiagram
-    participant You
-    participant MW as milliways
-    participant C as claude
-    participant X as codex
-    participant M as minimax
-
-    You->>MW: "implement the auth middleware"
-    MW->>C: [prompt + project memory]
-    C-->>MW: streaming response...
-    C-->>MW: ⚑ session limit
-
-    Note over MW: rotate → codex
-    MW->>X: [briefing: what claude did]\n[original prompt]
-    X-->>MW: streaming response...
-    X-->>MW: ⚑ session limit
-
-    Note over MW: rotate → minimax
-    MW->>M: [briefing: what codex did]\n[original prompt]
-    M-->>You: ✓ task complete
-```
+![Rotation ring — structured handoff from claude to codex to minimax with briefings](images/rotation-ring.png)
 
 The handoff is structured, not raw. Milliways builds a briefing from the turn log before rotating, and the incoming runner treats it as ground truth.
 
