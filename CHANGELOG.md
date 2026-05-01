@@ -1,161 +1,153 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to milliways. Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+---
 
-## [Unreleased]
-
-## [0.5.0] - 2026-04-30
-
-This release decommissions the legacy `internal/repl/` line-reader and consolidates all runners into `internal/daemon/runners/`. Tool execution becomes a core capability of every HTTP-based runner. Multi-review pass added security guardrails around the agentic tool loop (workspace containment, SSRF blocking, prompt-injection mitigation) before merge.
-
-### Added
-- `internal/tools/safety.go` — workspace-root containment + dotfile credential denylist for file Read/Write/Edit/Grep/Glob; SSRF blocking for WebFetch (loopback / RFC1918 / link-local / cloud-metadata IPs rejected pre-resolve and on every redirect). Defaults: workspace = process cwd; loopback blocked. `MILLIWAYS_WORKSPACE_ROOT` and `MILLIWAYS_TOOLS_ALLOW_LOOPBACK=1` opt-overrides.
-- `internal/daemon/runners/openai_stream.go` — shared OpenAI-compatible chat-completions streaming helper used by minimax + local. Reassembles tool-call argument fragments by index, surfaces stream truncation as `ErrIncompleteStream`, surfaces oversized SSE lines as `ErrSSELineTooLarge`, folds empty-tool-name calls back to the model as recoverable errors, synthesises tool_call_id when missing.
-- `internal/daemon/runners/subprocess_env.go` — `safeRunnerEnv()` filters the env passed to claude/codex/copilot/gemini/pool subprocesses to a safelist (PATH/HOME/USER/SHELL/TERM/LANG/LC_*/TMPDIR/XDG_* + per-CLI auth keys). Closes the codex env-leak path that exposed MINIMAX_API_KEY / MILLIWAYS_LOCAL_API_KEY / AWS_* / GH_TOKEN to a prompt-injected codex session.
-- Tool result wrapping: `<tool_result tool="...">...</tool_result>` markers around all tool output (32KB cap), system prompts in HTTP runners declare them untrusted data — mitigates prompt-injection via tool fold-back.
-- `classifyDispatchError` differentiates user cancel (-32008), timeout (-32009), incomplete stream (-32011), oversized SSE (-32012), and generic backend errors (-32010).
-- `scrubBearer` redacts `Bearer xxx` tokens from upstream proxy error bodies before they reach the user-facing stream / logs.
-- Local runner agentic tool loop: `internal/daemon/runners/local.go` now wires `RunAgenticLoop` + `tools.NewBuiltInRegistry()` by default. System prompt prepended. `MILLIWAYS_LOCAL_TOOLS=off` opts out (chat-only mode for debugging / model comparison). Per-runner `http.Client` (no `http.DefaultClient` leak).
-- `milliwaysctl local` subcommand tree — install-server, install-swap, list-models, switch-server, download-model, setup-model. Wraps the existing `scripts/install_local.sh` and `scripts/install_local_swap.sh` and adds new logic for HuggingFace GGUF download and llama-swap config registration. Lets users complete the full local-model bootstrap without leaving the milliways terminal.
-- `milliwaysctl opsx` subcommand tree — list, status, show, archive, validate. Thin wrapper around the openspec CLI; surfaces as `/opsx-list`, `/opsx-status`, etc. via the milliways-term palette. (apply / explore deferred — they need orchestration with daemon agent.send.)
-- `Leader + /` palette in milliways-term — opens a `wezterm` `InputSelector` (fuzzy filter) populated with curated `milliwaysctl` invocations. Picking a complete verb dispatches in a new tab; verbs that take args fall through to a prefilled `PromptInputLine`; a free-form escape hatch covers any ctl call. Adding a new ctl subcommand keeps it callable via the free-form path; the curated list is edited to surface it in the picker.
-- `internal/daemon/runners/tooling.go` — shared agentic tool-loop helper (`RunAgenticLoop`) for HTTP-based runners. Drives assistant→tool→assistant cycles with `internal/tools/` Registry, a 10-turn safety cap, and `error: …` fold-back for tool failures, unknown tools, and malformed args.
-- Daemon `gemini` runner — CLI shell-out (`gemini -p <prompt> -y`), stderr session-limit detection.
-- Daemon `pool` runner — Poolside AI CLI shell-out (`pool exec --unsafe-auto-allow`), stderr session-limit detection.
-- Daemon `minimax` agentic tool loop — first user of `RunAgenticLoop`. System prompt, multi-turn tool execution, `MINIMAX_TOOLS=off` env var to disable.
-- Daemon `claude` `rate_limit_event` surfacing — claude CLI's in-band rate-limit signals now flow through the daemon stream as structured events.
-- Daemon `claude` / `codex` / `local` / `copilot` stderr session-limit detection — surfaces as structured err events before chunk_end so takeover-ring can react.
-- Daemon `codex` Zscaler / corporate-proxy block detection — guides the user to open ChatGPT in a browser to approve the security prompt.
-- Daemon `claude` cache_read_tokens / cache_write_tokens — now surfaced in chunk_end (parsed previously but never emitted).
-
-### Changed
-- Daemon `local` runner pivoted from Ollama-native (`/api/chat` at port 11434, `OLLAMA_BASE_URL`/`OLLAMA_MODEL`) to OpenAI-compatible (`/chat/completions` at port 8765, `MILLIWAYS_LOCAL_ENDPOINT`/`MILLIWAYS_LOCAL_MODEL`). The daemon was the outlier — every other piece of the local-model stack (REPL runner, milliwaysctl local, install scripts) targets the OpenAI-compatible path. Bearer auth via `MILLIWAYS_LOCAL_API_KEY`.
+## [0.9.9] — 2026-05-01
 
 ### Fixed
-- **SECURITY** Bash tool no longer logs the raw command string at INFO (only length + sha256 prefix); cwd pinned to workspace root. Closes a credential-leak vector where model-generated commands containing env-var-interpolated secrets would land in the daemon log.
-- **SECURITY** File `read`/`write`/`edit` refuse paths outside `MILLIWAYS_WORKSPACE_ROOT` (default = process cwd) and refuse credential-bearing paths even inside the workspace (`~/.ssh/`, `~/.aws/`, `~/.gnupg/`, `~/.kube/`, `~/.netrc`, `~/.docker/config.json`, `~/.config/milliways/local.env`, `~/.config/anthropic/auth.json`, `~/.config/gh/hosts.yml`).
-- **SECURITY** WebFetch refuses non-`http(s)` schemes, loopback / RFC1918 / link-local hosts, and cloud-metadata endpoints (`169.254.169.254`, `metadata.google.internal`); CheckRedirect re-validates every redirect target so `200 → 302 → IMDS` escapes are closed. Cloud-metadata blocking is unconditional even when `MILLIWAYS_TOOLS_ALLOW_LOOPBACK=1`.
-- Daemon `gemini` and `pool` runners now actually register in `internal/daemon/agents.go` (they shipped with full test suites in earlier commits but the dispatch table missed them).
-- `probe.go` now probes all 7 chat runners (was 4); `probeCopilot` fixed to test the actual `copilot` binary `RunCopilot` invokes (was testing `gh copilot` — probe/runtime mismatch).
-- `cmd/milliwaysctl/milliways.lua`: removed `MILLIWAYS_REPL=1` env var and `default_prog = milliways` (would have recursively syscall-execed milliways-term inside every new wezterm tab once `--repl` removal landed). `default_prog` now `$SHELL`; agent panes open via `milliwaysctl open --agent <name>`.
-- `version` bumped 0.4.13 → 0.5.0 to reflect the BREAKING `--repl` removal. Migration interceptor catches `milliways --repl` and `MILLIWAYS_REPL=1` with a curated migration message before cobra emits a raw `unknown flag`.
-- All HTTP runner err paths now push `chunk_end` before returning so clients waiting on a terminal frame per `agent.send` do not hang.
-- Codex `sawProxyBlock` `sync.Mutex` + `bool` → `sync/atomic.Bool` (single field; no need for separate mutex).
-- `withMinimaxToolRegistry` moved out of production code into `minimax_export_test.go` (was a textbook `testing` import in prod anti-pattern).
-- `internal/kitchen/adapter/codex.go` defaults `--sandbox workspace-write --ask-for-approval never` when the user hasn't set them via `cfg.Args`. Recent codex defaults to `read-only`/`on-request` in `exec --json` mode and silently refused tool execution; this restores tool execution by default while preserving user overrides.
-- Daemon `codex` runner gets the same `--sandbox workspace-write --ask-for-approval never` defaults via a new `buildCodexCmdArgs` helper.
+- `writeOSCTitle` read `$TMUX` directly from the process environment, making it impure and unsafe under `t.Parallel()`. Now accepts `tmuxEnv string` as a parameter; `setTermTitle` passes the value at the call site.
+- Terminal tab/window title was not reset after a runner error event — tab could show "streaming…" indefinitely. Now resets to the ready state on every `err` event.
+- `rpc/client.rs`: `ClientError::io` and `ClientError::protocol` constructors were private, preventing downstream crates from building synthetic errors. Now `pub`.
+- Subscription reader task log level downgraded `warn` → `debug` — disconnect errors are expected on normal agent shutdown.
 
-### Removed
-- **BREAKING**: `internal/repl/` package deleted (~30 files: legacy line-reader UI, shell, pane, status bar, commands, plus 8 runner files now living in `internal/daemon/runners/`).
-- **BREAKING**: `--repl` CLI flag removed; `MILLIWAYS_REPL` env var no longer recognised. `milliways` (no flags) launches milliways-term/wezterm; for one-shot prompts use `milliways "<prompt>"`. The legacy line-reader was already labelled deprecated for removal in v0.6.0.
-- The launcher's "Fallback: run `milliways --repl`" startup error messages have been replaced with pointers to `milliwaysd` log troubleshooting.
+### Tests
+- tmux DCS passthrough test uses direct parameter instead of `t.Setenv` (safe for `t.Parallel()`).
+- tmux DCS frame structure now fully asserted (doubled ESC, correct BEL/ST terminator placement).
+- Added `"\033\\"` (DCS string terminator) case to `TestSanitiseOSC_StripsControlChars` — documents that the DCS terminator injection vector is neutralised.
 
-## [0.4.14] - 2026-04-28
+---
+
+## [0.9.8] — 2026-05-01
 
 ### Added
-- `pool` runner — Poolside AI CLI (`pool exec`) integrated as a first-class milliways runner; supports `--model` and `--mode` flags, session-limit detection, and `pool login` / `pool logout`
-- `gemini` runner — Google Gemini CLI (`gemini -p`) integrated as a first-class milliways runner; supports `--model` flag and session-limit detection via `resource_exhausted` / quota patterns
-- `/pool`, `/gemini` shorthands — equivalent to `/switch pool` and `/switch gemini`
-- `/pool-model <m>`, `/pool-mode <m>` — set pool model/mode
-- `/gemini-model <m>` — set Gemini model
-- `?` shortcut — typing `?` at the milliways prompt shows the milliways shortcuts reference (runners, key commands, takeover, shell)
+- **Live terminal tab and window titles.** The tab and title bar update as you work:
 
-## [0.4.13] - 2026-04-28
+  | State | Tab | Window |
+  |---|---|---|
+  | Switch to runner | `● claude · sonnet-4-6` | `milliways · claude` |
+  | Prompt sent | unchanged | `milliways · claude · thinking…` |
+  | First token | unchanged | `milliways · claude · streaming…` |
+  | Response done | unchanged | `milliways · claude · $0.0218 session · 1200→340 tok` |
+  | Ring rotation | `↻ codex` | `milliways · rotating → codex` |
+  | Exit | `milliways` | `milliways` |
 
-### Added
-- `/takeover [runner]` command — generates a structured handoff briefing from the current session and switches runners; the new runner receives current task, progress summary, files changed, key decisions, and next step
-- `/takeover-ring <r1,r2,...>` command — configures a priority rotation ring that persists across session saves; milliways auto-rotates to the next runner when any runner signals a session limit
-- TTY transcript sidecar — every session now writes a full ANSI-stripped plain-text log (`.log` alongside `.json`); briefing generator reads the complete session history, not just the 20-turn ring buffer
-- Session limit detection — all four runners (claude, codex, minimax, copilot) emit a sentinel signal when they hit a context window, quota, or rate-limit; the REPL intercepts and auto-rotates when a ring is configured
-- Status bar ring indicator — shows runner position in ring (`●claude 1/3`) when rotation ring is active
-- MemPalace snapshot on takeover — when MemPalace is configured, the handoff briefing is written asynchronously to `handoff/<timestamp>` in the active palace
-- Rotation cap — auto-rotation halts when all ring members hit their limits on the same turn, surfacing a clear error instead of looping
-
-## [0.4.12] - 2026-04-28
-
-### Added
-- Rich `● ToolName  detail` display for Codex tool events, matching Claude's format (`● Shell  cmd`, `● Edit  ~/path`, `● Thinking  summary`)
-- Home dir paths abbreviated to `~/...` in Codex tool output
-
-### Changed
-- Banner labels ("no session", "runners:") now render in pearl white instead of dim grey
-
-## [0.4.11] - 2026-04-28
+- Window title shows **cumulative session cost** so total spend is visible at a glance without adding up per-response amounts.
+- Model name in tab title (`● claude · sonnet-4-6`) so adjacent tabs are visually distinct at different model tiers.
+- `sanitiseOSC()` strips `\033`, `\007`, `\r`, `\n` before any title interpolation — defence-in-depth against control character injection.
+- tmux DCS passthrough wrapping when `$TMUX` is set.
 
 ### Fixed
-- Double status bar / cursor corruption: removed scroll-region status bar that was fighting with readline; status now renders inline only
-- Runner shorthands (`/claude`, `/codex`, `/minimax`, `/copilot`, `/local`) now switch immediately
+- `rpc/client.rs subscribe()`: `sidecar.flush().await.ok()` silently discarded flush errors, causing subscriptions to produce zero events with no error surfaced. Now propagated with `?`.
 
-### Changed
-- MiniMax accent color → purple
-- Codex accent color → amber/orange
-- Codex and Copilot print a settings summary when switched to
-- Removed all REPL/TUI language from docs, comments, and user-visible strings
+---
 
-## [0.4.10] - 2026-04-28
+## [0.9.7] — 2026-05-01
 
 ### Added
-- Interactive arrow-key model picker: `/model` with no args opens an inline picker
-- Tab completion for model IDs
+- **`/local-endpoint <url>`** — point the local runner at any OpenAI-compatible backend at runtime; persists across daemon restarts.
+- **`/local-temp <0.0–2.0|default>`** — sampling temperature for the local runner, injected into the OpenAI payload per-request.
+- **`/local-max-tokens <N|off>`** — cap reply length for the local runner.
+- **`/local-hot on|off`** — toggle llama-swap hot mode (models always resident) vs standby (TTL eviction).
+- All four commands shown in `/help` under "Local-model tuning" and wired into tab completion.
+- Current temp and max_tokens values shown in `/model local` settings dump.
+- `MILLIWAYS_LOCAL_TEMP` and `MILLIWAYS_LOCAL_MAX_TOKENS` added to the daemon `allowedSetenvKeys`.
 
 ### Fixed
-- MiniMax image API JSON decode error (`failed_count` / `success_count` are strings, not ints)
-- Status bar version was hardcoded as `0.1.0`
+- `artifacts.go` python3 subprocess: added 30-second execution timeout and 10-second AST validation timeout (was unbounded — goroutine leak on hang).
+- `artifacts.go` python3 subprocess: stripped ambient environment — API keys and cloud credentials no longer accessible to generated scripts.
+- `handleReview`: git diff wrapped in `<tool_result>` tags to prevent prompt injection via committed content.
+- `/help`: fixed duplicate "Session:" heading; added `/metrics`, `/opsx-archive`, `/opsx-validate`.
+- README: fixed `/takeover-ring` → `/ring`; corrected `MILLIWAYS_LOCAL_TEMPERATURE` → `MILLIWAYS_LOCAL_TEMP`.
+- Rust `rpc/client.rs`: added `#[must_use]` to all public `Result`-returning functions.
+- Archived completed OpenSpec changes: `milliways-http-kitchen`, `milliways-kitchen-parity`, `milliways-nvim-context`, `decommission-repl-into-daemon`.
 
-### Changed
-- Phosphor green color scheme (`#4db51f` on black) replacing Gruvbox
+---
 
-## [0.4.9] - 2026-04-27
+## [0.9.6] — 2026-04-30
 
 ### Added
-- MilliWays.app: native macOS terminal on a patched wezterm
-- Sleep/wake badge (⚡) in status bar; resume modal via `Ctrl+Space r`
-- `/help` lists all runner shorthand aliases
-- curl one-liner install with remote binary download and local source fallback
-- `wezterm-milliways` patch repo with macOS 26 crash fix (`catch_unwind` in `SpawnQueue`)
+- **Dynamic model lists** — `/model` fetches live model lists from provider APIs where an API key is available; falls back to a curated `knownModels` list for OAuth-authenticated CLIs where the token is scoped for the CLI, not the developer API.
+- `modelCache` with 1-hour TTL and background refresh on startup (`RefreshAsync`).
+- Per-provider fetchers: Anthropic, OpenAI, Gemini (`X-Goog-Api-Key` header), MiniMax, GitHub Copilot (OAuth token from `~/.copilot/` or `~/.config/github-copilot/`).
+- TOCTOU fix in `modelCache.Models`: re-checks inside write lock before setting `fetching: true`.
+
+---
+
+## [0.9.4] — 2026-04-30
+
+### Added
+- **Gen AI OpenTelemetry spans** following semantic conventions: `gen_ai.client.operation` parent spans and `gen_ai.execute_tool` child spans for all tool calls across all runners.
+- **Live metrics dashboard** — `/metrics` or `milliwaysctl metrics --watch`: 5-column table showing token usage and cost across 1 min / 1 hour / 24 h / 7 d / 30 d windows, auto-refreshes every 5 seconds.
+- `/ring` command: configure auto-rotation ring, show current ring and exhausted runners.
 
 ### Fixed
-- Window closing immediately when set as `default_prog` — fixed via `MILLIWAYS_REPL=1` env var
-- Missing title bar / resize buttons — `window_decorations = 'TITLE | RESIZE'`
+- `renderTurnsWithBudget`: last user turn identified by position (`lastUserIdx`) not content comparison.
+- `switchAgent` data race on `ring`/`exhausted` — protected by `ringMu` mutex.
+- `autoRotate` called `switchAgent` from drainStream's goroutine — moved to main goroutine via `rotateCh` channel.
 
-## [0.4.8] - 2026-04-26
+---
 
-### Added
-- Wezterm terminal integration (`cmd/milliwaysctl/milliways.lua`)
-- Status bar with runner name, quota bars, session cost, wake badge
-- Leader keybindings (`Ctrl+Space`): open pane, switch runner, resume, context overlay
+## [0.9.3] — 2026-04-30
 
 ### Added
+- **Artifact commands** available in all runners: `/pptx`, `/drawio`, `/review`, `/compact`, `/clear`.
+- `/pptx <topic>`: asks the active runner to write a python-pptx script, AST-validates it against an import allowlist, executes it, saves `.pptx` in cwd.
+- `/drawio <topic>`: generates draw.io XML, saves `.drawio` in cwd.
+- `/review [focus]`: sends `git diff HEAD` to the active runner for code review.
+- `/compact` / `/clear`: summarise or wipe the session turn log.
+- Python AST validator via subprocess — blocks `eval`, `exec`, `open`, `__import__` and all non-allowlisted imports.
 
-- **Two-Active-Memory architecture**: orchestrator is aware of project context (git repo, CodeGraph symbols, MemPalace palace) while maintaining conversation memory. Project context is detected automatically from cwd on startup.
-  - `internal/project/` package: `ProjectContext` detection for git repo root, CodeGraph index, MemPalace palace
-  - `internal/bridge/` package: project memory bridge with topic extraction, palace search, citation creation, and cross-palace resolution
-  - Terminal status bar: shows project name, palace drawer/room/wing counts, CodeGraph symbol count
-  - Terminal commands: `/project` (project info), `/repos` (accessed repos), `/palace` (palace status/search), `/codegraph` (codegraph status/search)
-  - Repo context tracking: segments and turns record `repo_context`, `repos_accessed`, and `project_refs` fields
-  - Cross-palace citations: `palace://<palace_id>[/<wing>]/<room>/<drawer_id>` citation syntax with read-only enforcement
+### Fixed
+- `enrichWithPalace`: palace content XML-escaped before injection into `<project_memory>` tags.
+- Workspace jail in `handleGrep`/`handleGlob`: symlink traversal blocked via `EvalSymlinks` + re-validate.
 
-- Kitchen switching commands: `/switch <kitchen>`, `/back`, `/stick`, and `/kitchens`.
-- Headless kitchen switching with the `--switch-to <kitchen>` CLI flag.
-- Continuous routing with sommelier re-evaluation at user-turn boundaries.
-- Auto-switch visibility in the process map, including trigger, tier, and reversal hints.
-- Block telemetry summaries with session metadata visibility.
-- Smoke test coverage for user-switch and exhaustion scenarios.
+---
 
-### Changed
+## [0.9.2] — 2026-04-30
 
-- Conversation state now uses the MemPalace substrate by default.
-- Legacy SQLite conversation storage remains available with `--use-legacy-conversation`.
+### Added
+- **API key persistence** via `~/.config/milliways/local.env` (mode `0600`). Keys set via `/login` survive daemon restarts.
+- `/login <runner>` prompts interactively for API keys or prints CLI auth steps.
 
-### Migration
+---
 
-- Existing conversations auto-migrate on first run when the new substrate is enabled.
-- Set `MILLIWAYS_MEMPALACE_MCP_CMD` to enable the MemPalace substrate.
-- Use `--use-legacy-conversation` to opt out of migration and stay on legacy storage.
+## [0.9.0] — 2026-04-30
 
-### Dependencies
+### Added
+- **Tab completion** for all slash commands and runner names.
+- Client-native slash command pass-through: runner-specific commands (copilot `/diff`, pool `/mode`, etc.) forwarded directly to the CLI.
+- `chatCtlAliases` map connecting `/opsx-*`, `/install-*`, `/local-*` to `milliwaysctl` subcommands.
 
-- Requires the `mempalace-milliways` fork with conversation primitives.
-- See `mempalace-milliways/FORK.md` for fork-specific documentation.
+---
+
+## [0.8.x] — 2026-04-30
+
+### Added
+- **Project memory (MemPalace)**: `enrichWithPalace` injects relevant memories as a `<project_memory>` XML block before each user prompt.
+- **Session takeover**: structured briefing carried across runner switches, 4096-byte budget, last user turn always included.
+- Shared `turnLog` across all runners — `/switch` passes context to the new runner automatically.
+
+---
+
+## [0.6.x – 0.7.x] — 2026-04-19 – 2026-04-26
+
+### Added
+- Interactive chat loop replacing the removed internal REPL, backed by daemon RPC over Unix domain socket.
+- Landing zone with numbered runner shortcuts (`/1`–`/7`), auth status marks, daemon connectivity probe.
+- `milliwaysctl` ops verbs: `metrics`, `local`, `opsx`, `install`, `bridge`, `context-render`, `observe-render`.
+- wezterm `AgentDomain` with per-pane reconnect watcher (FSM: Connected → Disconnected → Reconnecting → GaveUp), banner injection via `Pane::perform_actions`.
+- `milliways-term` wezterm fork: `Leader+/` palette, status bar, sleep/wake badge, per-runner colour coding.
+
+---
+
+## [0.4.x] — 2026-04-26 – 2026-04-28
+
+### Added
+- Initial public releases: Go daemon (`milliwaysd`), CLI client (`milliways`), ops tool (`milliwaysctl`).
+- Runners: claude, codex, copilot, gemini, local (llama.cpp), minimax, pool (Poolside ACP).
+- Agentic tool loop (`RunAgenticLoop`) with Bash, Read/Write/Edit, Grep/Glob, WebFetch for HTTP runners.
+- SQLite metrics store with raw/hourly/daily/weekly/monthly rollup tiers.
+- `install.sh` one-liner for macOS and Linux; `scripts/install_local.sh` and `scripts/install_local_swap.sh` for local model setup.
+- CI: build, test, release matrix for `linux_amd64`, `linux_arm64`, `darwin_amd64`, `darwin_arm64`.

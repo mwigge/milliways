@@ -43,7 +43,7 @@ go install github.com/mwigge/milliways/cmd/milliways@latest
 MilliWays.app is a native macOS terminal built on a patched wezterm. Every new tab opens milliways instead of a plain shell. The status bar shows your active agent, working directory, and a live wake badge when the laptop resumes from sleep.
 
 ```
-[⚡ woke 3m ago] [≈≈ MW v0.9.7] [~/project] [●claude] [1:C 2:X 3:G 4:M 5:L]
+[⚡ woke 3m ago] [≈≈ MW v0.9.9] [~/project] [●claude] [1:C 2:X 3:G 4:M 5:L]
 ```
 
 ### Leader keybindings (`Ctrl+Space`)
@@ -68,7 +68,7 @@ When the laptop wakes from sleep, the status bar shows an orange **⚡ woke Xm a
 Start the AI terminal with `milliways` (default when no arguments are given). The launcher starts `milliwaysd` if needed, then execs `milliways-term`.
 
 ```text
-milliways v0.9.7
+milliways v0.9.9
   /login [client]  set up auth      /help  show all commands      /exit  quit
   /1 claude  /2 codex  /3 copilot  /4 minimax  /5 gemini  /6 local  /7 pool
 
@@ -475,6 +475,22 @@ For minimax and local (HTTP runners with a 100-turn agentic loop), hitting the l
 ▶ /compact               # summarise + shrink the turn log first
 ▶ /clear                 # wipe log for a clean start
 ```
+
+### Terminal tab and window title
+
+milliways keeps the terminal tab and title bar in sync with what it's doing.
+
+| State | Tab | Window title bar |
+|---|---|---|
+| Switch to runner | `● claude · sonnet-4-6` | `milliways · claude` |
+| Prompt sent | unchanged | `milliways · claude · thinking…` |
+| First token | unchanged | `milliways · claude · streaming…` |
+| Response done | unchanged | `milliways · claude · $0.0218 session · 1200→340 tok` |
+| Ring rotation | `↻ codex` | `milliways · rotating → codex` |
+| Runner error | unchanged | `milliways · claude` (resets to ready) |
+| Exit | `milliways` | `milliways` |
+
+The window title shows **cumulative session cost** rather than per-response cost, so a glance at the title bar answers "how much have I spent this session?" The inline hint line `($0.0041 · 1200→340 tok)` under each response still shows the per-turn breakdown.
 
 ---
 
