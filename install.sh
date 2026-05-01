@@ -64,6 +64,18 @@ download_binary() {
     ok "Installed $(basename "$dest")"
     return 0
   fi
+  # Architecture fallback: if the native arch binary is missing (e.g. arm64
+  # build wasn't included in a release), try the amd64 binary — it runs under
+  # Rosetta 2 on macOS and QEMU on Linux arm64 systems.
+  if [ "$GOARCH" != "amd64" ]; then
+    local fallback_url="https://github.com/${REPO}/releases/download/${VERSION}/${name}_${PLATFORM}_amd64"
+    warn "$name ${GOARCH} not in release — trying amd64 fallback..."
+    if curl -sSfL "$fallback_url" -o "$dest"; then
+      chmod +x "$dest"
+      ok "Installed $(basename "$dest") (amd64 — runs under emulation)"
+      return 0
+    fi
+  fi
   warn "$name not found in release ($url) — will try building from source"
   return 1
 }
@@ -108,6 +120,11 @@ install_from_source() {
   [ "$ver" = "latest" ] && ver="$(git -C "$root" describe --tags --always 2>/dev/null || echo dev)"
   local ldflags="-X main.version=$ver"
   info "Building Go binaries (${ver})..."
+  # GOTOOLCHAIN=auto: if the local Go is older than the module's go directive,
+  # Go downloads the right toolchain automatically (requires internet).
+  # This lets source builds succeed on distros with older packaged Go versions
+  # (e.g. Fedora 41 ships Go 1.24, module requires 1.25).
+  export GOTOOLCHAIN=auto
   for bin in $targets; do
     pkg="cmd/${bin}"
     [ -d "${root}/${pkg}" ] || { warn "  $pkg not found, skipping"; continue; }
