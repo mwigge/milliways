@@ -10,8 +10,8 @@ out_dir="${OUT_DIR:-$repo_root/dist}"
 
 docker build \
   -t "$image" \
-  -f "$repo_root/local/docker/build-linux/Dockerfile" \
-  "$repo_root/local/docker/build-linux"
+  -f "$repo_root/build/docker/build-linux/Dockerfile" \
+  "$repo_root/build/docker/build-linux"
 
 mkdir -p "$out_dir"
 
