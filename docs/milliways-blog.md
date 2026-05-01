@@ -42,11 +42,7 @@ Beyond project memory, milliways maintains a rolling turn log — the last twelv
 
 Every AI runner has limits: context windows, daily quotas, session timeouts. The rotation ring turns those limits from blockers into invisible transitions.
 
-Configure a priority order once:
-
-```
-/ring claude,codex,minimax
-```
+Configure a priority order once — `/ring claude,codex,minimax` — and milliways handles the rest.
 
 When the active runner exhausts — hitting a session limit, context window, or quota — milliways automatically rotates to the next runner in the ring and re-dispatches your original prompt. You see a single notification line. The response keeps streaming.
 
@@ -94,15 +90,9 @@ Set it live, without restarting anything:
 
 ### All the runtime controls
 
-| Command | Effect |
-|---|---|
-| `/local-temp <value\|default>` | Sampling temperature — persists across restarts |
-| `/local-max-tokens <N\|off>` | Cap reply length; `off` for unrestricted output |
-| `/local-endpoint <url>` | Point at a different backend live |
-| `/local-hot on\|off` | Keep all models resident vs evict on TTL |
-| `/model local <name>` | Switch model without restarting the server |
+![Local runner runtime controls — all commands persist across daemon restarts](images/local-runtime-controls.png)
 
-All of these write to `~/.config/milliways/local.env` and survive daemon restarts. The `/model local` command shows the current settings — endpoint, model, temperature, max tokens — so you always know the exact state.
+The `/model local` command shows the current settings — endpoint, model, temperature, max tokens — so you always know the exact state.
 
 The combination of a local runner with shared MemPalace memory is particularly powerful: a Qwen2.5-Coder instance at `temp=0.2` with your full project context injected produces code that looks like it was written by someone who actually read the codebase — because from its perspective, it has.
 
@@ -132,13 +122,7 @@ Five time windows — 1 min, 1 hour, 24 hours, 7 days, 30 days — backed by a S
 
 The terminal tab and title bar carry live session state, visible even when the terminal is in the background:
 
-| State | Tab | Window title |
-|---|---|---|
-| Switched to runner | `milliways · claude` | `● claude · opus-4-5` |
-| Prompt sent | `milliways · claude · thinking…` | `● claude · opus-4-5` |
-| Streaming | `milliways · claude · streaming…` | `● claude · opus-4-5` |
-| Response done | `milliways · claude · $0.0183 session · 4.8k→0.9k tok` | `● claude · opus-4-5` |
-| Ring rotation | `milliways · rotating → codex` | `↻ codex` |
+![Tab and window title lifecycle — thinking, streaming, cost, rotation states](images/title-lifecycle.png)
 
 The tab shows the running session cost so you always know your spend without opening the metrics dashboard. The window title shows the compact runner+model for the OS window switcher.
 
