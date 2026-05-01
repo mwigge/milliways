@@ -1,7 +1,6 @@
 //! Newline-delimited JSON-RPC 2.0 client. One in-flight call at a time per
 //! `Client` — concurrent callers should dial more clients.
 
-use anyhow::{anyhow, Context, Result};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -9,6 +8,47 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
+
+/// All errors produced by the RPC client. Using `thiserror` (not `anyhow`) so
+/// callers can match on specific variants — e.g. distinguish `RpcError` (a
+/// daemon-level rejection) from `Io` (connection problem) from `Protocol`
+/// (unexpected wire shape). Callers that use `anyhow::Result` can still use
+/// `?` because `anyhow` implements `From<E: Error>` automatically.
+#[derive(Debug, thiserror::Error)]
+pub enum ClientError {
+    /// The daemon returned a JSON-RPC error object.
+    #[error("rpc: {0}")]
+    Rpc(#[from] RpcError),
+    /// Low-level I/O failure (connect, read, write, flush).
+    #[error("rpc io: {context}: {source}")]
+    Io {
+        context: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
+    /// Wire-level protocol violation (serialisation / deserialisation).
+    #[error("rpc protocol: {context}: {source}")]
+    Protocol {
+        context: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
+    /// Peer closed the connection before sending a response.
+    #[error("rpc: connection closed by peer")]
+    ConnectionClosed,
+    /// Response contained neither a result nor an error field.
+    #[error("rpc: response missing both result and error")]
+    MissingResult,
+}
+
+impl ClientError {
+    fn io(context: &'static str, source: std::io::Error) -> Self {
+        Self::Io { context, source }
+    }
+    fn protocol(context: &'static str, source: serde_json::Error) -> Self {
+        Self::Protocol { context, source }
+    }
+}
 
 /// Resolve the default UDS path:
 /// `${XDG_RUNTIME_DIR:-$HOME/.local/state/milliways}/sock`.
@@ -89,11 +129,11 @@ impl Client {
 
     /// Dial the milliwaysd UDS at `socket`.
     #[must_use = "dropping the Client closes the connection"]
-    pub async fn dial(socket: impl AsRef<Path>) -> Result<Self> {
+    pub async fn dial(socket: impl AsRef<Path>) -> Result<Self, ClientError> {
         let path = socket.as_ref().to_path_buf();
         let stream = UnixStream::connect(&path)
             .await
-            .with_context(|| format!("dial {}", path.display()))?;
+            .map_err(|e| ClientError::io("dial", e))?;
         let (rd, wr) = stream.into_split();
         Ok(Self {
             socket: path,
@@ -112,20 +152,23 @@ impl Client {
     ///      via mpsc.
     /// The returned Subscription's receiver yields one Vec<u8> per event.
     #[must_use = "dropping Subscription cancels the stream"]
-    pub async fn subscribe<P>(&mut self, method: &str, params: P) -> Result<Subscription>
+    pub async fn subscribe<P>(&mut self, method: &str, params: P) -> Result<Subscription, ClientError>
     where
         P: Serialize,
     {
         let resp: SubscribeResp = self.call(method, params).await?;
         let mut sidecar = UnixStream::connect(&self.socket)
             .await
-            .with_context(|| format!("dial sidecar {}", self.socket.display()))?;
+            .map_err(|e| ClientError::io("dial sidecar", e))?;
         let preamble = format!("STREAM {} {}\n", resp.stream_id, resp.output_offset);
         sidecar
             .write_all(preamble.as_bytes())
             .await
-            .context("write STREAM preamble")?;
-        sidecar.flush().await.context("flush STREAM preamble")?;
+            .map_err(|e| ClientError::io("write STREAM preamble", e))?;
+        sidecar
+            .flush()
+            .await
+            .map_err(|e| ClientError::io("flush STREAM preamble", e))?;
 
         let (tx, rx) = mpsc::channel::<Vec<u8>>(16);
         tokio::spawn(async move {
@@ -141,7 +184,10 @@ impl Client {
                             break;
                         }
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        log::warn!("rpc stream read error: {e}");
+                        break;
+                    }
                 }
             }
         });
@@ -150,8 +196,7 @@ impl Client {
 
     /// Invoke `method` with `params` and decode the result. Use `()` for
     /// methods that take no parameters.
-    #[must_use = "call result must be checked"]
-    pub async fn call<P, R>(&mut self, method: &str, params: P) -> Result<R>
+    pub async fn call<P, R>(&mut self, method: &str, params: P) -> Result<R, ClientError>
     where
         P: Serialize,
         R: DeserializeOwned,
@@ -163,29 +208,32 @@ impl Client {
             params: Some(params),
             id,
         };
-        let mut line = serde_json::to_vec(&req).context("encode request")?;
+        let mut line =
+            serde_json::to_vec(&req).map_err(|e| ClientError::protocol("encode request", e))?;
         line.push(b'\n');
         self.writer
             .write_all(&line)
             .await
-            .context("write request")?;
-        self.writer.flush().await.context("flush request")?;
+            .map_err(|e| ClientError::io("write request", e))?;
+        self.writer
+            .flush()
+            .await
+            .map_err(|e| ClientError::io("flush request", e))?;
 
         self.line_buf.clear();
         let n = self
             .reader
             .read_line(&mut self.line_buf)
             .await
-            .context("read response")?;
+            .map_err(|e| ClientError::io("read response", e))?;
         if n == 0 {
-            return Err(anyhow!("connection closed by peer"));
+            return Err(ClientError::ConnectionClosed);
         }
-        let resp: WireResponse<R> =
-            serde_json::from_str(self.line_buf.trim_end()).context("decode response")?;
+        let resp: WireResponse<R> = serde_json::from_str(self.line_buf.trim_end())
+            .map_err(|e| ClientError::protocol("decode response", e))?;
         if let Some(e) = resp.error {
-            return Err(anyhow::Error::from(e));
+            return Err(ClientError::Rpc(e));
         }
-        resp.result
-            .ok_or_else(|| anyhow!("response missing both result and error"))
+        resp.result.ok_or(ClientError::MissingResult)
     }
 }

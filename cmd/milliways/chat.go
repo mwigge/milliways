@@ -1513,44 +1513,47 @@ func (l *chatLoop) fetchAgentStatuses() map[string]agentStatus {
 // stdout) avoids races with readline, which holds an internal lock on stdout
 // during prompt redraws; terminals process OSC sequences from either fd.
 //
-//   - tab:    terminal tab strip — e.g. "● claude · sonnet-4-6"
-//   - window: OS title bar — e.g. "milliways · claude · $0.0218 session"
-//
 // Sequence strategy (widest compatibility):
-//   - OSC 0  sets both tab and window title (xterm, GNOME Terminal, most terminals)
-//   - OSC 2  overrides window title after OSC 0 for terminals that distinguish the two
-//   Kitty and wezterm honour OSC 0 for the tab; OSC 2 is then the window override.
+//   - OSC 0  sets both tab and window (xterm, GNOME Terminal, most terminals)
+//   - OSC 2  overrides window title for terminals that distinguish the two
+//     (Kitty, wezterm honour OSC 0 for tab; OSC 2 is the window override)
 //
-// Inside tmux/screen the sequences are wrapped in the DCS passthrough so they
-// reach the outer terminal. Without passthrough enabled they silently no-op.
+// Inside tmux the sequences are wrapped in DCS passthrough so they reach the
+// outer terminal. Without passthrough enabled they silently no-op.
 func setTermTitle(tab, window string) {
 	if !isTTYStderr() {
 		return
 	}
+	writeOSCTitle(os.Stderr, tab, window)
+}
+
+// writeOSCTitle writes OSC tab/window title sequences to w. It is the
+// testable core of setTermTitle — tests pass a bytes.Buffer; production
+// code calls setTermTitle which passes os.Stderr after the TTY guard.
+func writeOSCTitle(w io.Writer, tab, window string) {
 	tab = sanitiseOSC(tab)
 	window = sanitiseOSC(window)
 	if os.Getenv("TMUX") != "" {
 		// tmux DCS passthrough: \ePtmux;\e<seq>\e\\
-		fmt.Fprintf(os.Stderr,
+		fmt.Fprintf(w,
 			"\033Ptmux;\033\033]0;%s\007\033\\\033Ptmux;\033\033]2;%s\007\033\\",
 			tab, window)
 	} else {
 		// OSC 0 sets tab (and window as fallback); OSC 2 overrides window.
-		fmt.Fprintf(os.Stderr, "\033]0;%s\007\033]2;%s\007", tab, window)
+		fmt.Fprintf(w, "\033]0;%s\007\033]2;%s\007", tab, window)
 	}
 }
 
 // sanitiseOSC strips characters that could terminate an OSC sequence early and
-// inject arbitrary escape sequences into the terminal. Defence-in-depth: all
-// current call sites use controlled strings, but this protects future callers.
+// inject arbitrary escape sequences. Defence-in-depth for future callers.
 func sanitiseOSC(s string) string {
 	return strings.NewReplacer("\033", "", "\007", "", "\r", "", "\n", "").Replace(s)
 }
 
 // isTTYStderr returns true when os.Stderr is a real terminal. Cached once
 // for the process lifetime — stderr's TTY state is stable after startup.
-// Note: tests that redirect stderr will see isTTYStderr() == false, which
-// means setTermTitle becomes a no-op in test contexts (desired behaviour).
+// Tests redirect stderr (or use writeOSCTitle directly), so the cached
+// false result in test contexts is the correct and desired behaviour.
 var (
 	ttyOnce   sync.Once
 	ttyResult bool
