@@ -15,21 +15,36 @@ It wraps the CLIs and APIs you already have set up. It does not run models or ma
 ### One-liner (macOS / Linux)
 
 ```bash
-curl -sSf https://raw.githubusercontent.com/mwigge/milliways/master/install.sh | sh
+curl -sSf https://raw.githubusercontent.com/mwigge/milliways/master/install.sh | bash
 ```
 
-Downloads pre-built binaries (`milliways`, `milliwaysd`, `milliwaysctl`) for your platform, adds `~/.local/bin` to your shell profile, and on macOS installs **MilliWays.app** to `/Applications`.
+Auto-detects your distro and installs the right package. On macOS also installs **MilliWays.app** to `/Applications`.
 
 **Installation binaries tested for:** Ubuntu 24.04 · Fedora 41 · Arch Linux · macOS (arm64 + amd64)
 
-The installer has a source-build fallback: if no pre-built binary is available for your architecture, it clones the repo and compiles automatically (requires `git` and `go`).
+### Linux — native packages (amd64)
+
+Each release ships `.deb`, `.rpm`, and `.pkg.tar.zst` packages containing all three binaries (`milliways`, `milliwaysd`, `milliwaysctl`) installed to `/usr/bin`. The one-liner picks the right one automatically, or install directly:
+
+| Distro | Command |
+|---|---|
+| Ubuntu / Debian | `dpkg -i milliways_VERSION_amd64.deb` |
+| Fedora / RHEL | `rpm -i milliways-VERSION-1.x86_64.rpm` |
+| Arch Linux | `pacman -U milliways-VERSION-1-x86_64.pkg.tar.zst` |
+
+Download from [Releases](https://github.com/mwigge/milliways/releases/latest).
+
+**Install priority** (one-liner):
+1. Native package — detected via `dpkg` / `rpm` / `pacman`
+2. Raw binary — fallback for unknown distros
+3. Source build — last resort (requires `git`, `go`, `gcc`)
 
 ### From source
 
 ```bash
 git clone https://github.com/mwigge/milliways.git
 cd milliways
-./install.sh          # builds from the checkout, no network needed
+./install.sh
 ```
 
 ### Go install (CLI only)
