@@ -18,7 +18,7 @@ Every one of these is excellent at something. The problem is that they live in s
 
 The design is a local daemon that keeps all AI sessions alive simultaneously. Your terminal connects to the daemon over a Unix socket. You switch runners with a slash command — `/claude`, `/codex`, `/gemini` — and the daemon routes your prompt to the right process. No new terminal. No lost context. No re-authentication.
 
-![Milliways architecture — three client binaries, the daemon, seven runners, and MemPalace](images/architecture.png)
+![Milliways architecture — three client binaries, the daemon, seven runners, and MemPalace](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/architecture.png)
 
 The runners are their own CLIs — milliways wraps them rather than reimplementing them. Claude's tooling, Codex's sandbox, Copilot's GitHub awareness — all preserved exactly as the vendor ships them. Milliways adds the routing layer and the shared context layer on top, without touching what makes each runner good.
 
@@ -30,7 +30,7 @@ The reason switching runners feels seamless is shared project memory. Before mil
 
 The runner doesn't know the memories came from elsewhere. It just sees context that makes it immediately useful in *your* project, not a generic codebase it has never encountered.
 
-![Shared memory flow — enrichWithPalace queries MemPalace and injects project context before every prompt](images/memory-flow.png)
+![Shared memory flow — enrichWithPalace queries MemPalace and injects project context before every prompt](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/memory-flow.png)
 
 **The practical effect is that every runner starts informed.** Switch from Claude to Codex mid-session and Codex already knows your project structure, your architectural decisions, and the constraints you've established over months of work. You stop re-explaining yourself to every new tool.
 
@@ -46,13 +46,13 @@ Configure a priority order once — `/ring claude,codex,minimax` — and milliwa
 
 When the active runner exhausts — hitting a session limit, context window, or quota — milliways automatically rotates to the next runner in the ring and re-dispatches your original prompt. You see a single notification line. The response keeps streaming.
 
-![Rotation ring — structured handoff from claude to codex to minimax with briefings](images/rotation-ring.png)
+![Rotation ring — structured handoff from claude to codex to minimax with briefings](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/rotation-ring.png)
 
 The handoff is structured, not raw. Milliways builds a briefing from the turn log before rotating, and the incoming runner treats it as ground truth.
 
 **Here's what that looks like in production.** A full code review of milliways — three runners, two manual switches, zero context loss:
 
-![codex → gemini → pool: three-runner handoff with briefings, zero context lost](images/handoff-session.png)
+![codex → gemini → pool: three-runner handoff with briefings, zero context lost](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/handoff-session.png)
 
 The chain is codex → gemini → pool. Three runners, three completely different architectures (OpenAI CLI subprocess, Google CLI subprocess, Poolside ACP HTTP client), and the briefing carried the full review context across all of them. Gemini acknowledged the handoff from codex immediately. Pool narrated its own onboarding — it read the briefing, understood what was in progress, and correctly decided to wait for the next prompt.
 
@@ -66,7 +66,7 @@ Local models — llama.cpp, Ollama, vLLM, LMStudio — are first-class runners i
 
 ### Two deployment modes
 
-![Local runner architecture — single-server vs swap](images/local-architecture.png)
+![Local runner architecture — single-server vs swap](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/local-architecture.png)
 
 There are two ways to run local models:
 
@@ -78,7 +78,7 @@ The swap mode is what makes the local runner genuinely useful as part of the rot
 
 ### Temperature — the most useful control
 
-![Temperature reference — behaviour and when to use each value](images/local-temperature.png)
+![Temperature reference — behaviour and when to use each value](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/local-temperature.png)
 
 Temperature is the one parameter that matters most for code work. Too high and the model invents APIs. Too low and it loops or refuses to paraphrase. The defaults are tuned for a developer workflow:
 
@@ -86,11 +86,11 @@ The key insight for local models: `0.2` is the right default for coding tasks. I
 
 Set it live, without restarting anything:
 
-![/local-temp commands — set temperature live without restarting the daemon](images/local-temp-commands.png)
+![/local-temp commands — set temperature live without restarting the daemon](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/local-temp-commands.png)
 
 ### All the runtime controls
 
-![Local runner runtime controls — all commands persist across daemon restarts](images/local-runtime-controls.png)
+![Local runner runtime controls — all commands persist across daemon restarts](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/local-runtime-controls.png)
 
 The `/model local` command shows the current settings — endpoint, model, temperature, max tokens — so you always know the exact state.
 
@@ -106,7 +106,7 @@ Most AI tools are black boxes. Milliways instruments every interaction with Open
 
 Every dispatch to a runner produces a structured OTel span following the Gen AI semantic conventions. The parent span covers the full dispatch — model, system (anthropic / openai / google / etc.), token counts, cost in USD. Each tool call the runner makes produces a child span.
 
-![Gen AI OTel span tree — dispatch parent with per-tool-call child spans and token/cost metadata](images/otel-spans.png)
+![Gen AI OTel span tree — dispatch parent with per-tool-call child spans and token/cost metadata](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/otel-spans.png)
 
 This means every agent action — every file read, every shell command, every web fetch a runner executes — is a traceable, queryable event. When something goes wrong, you have the full trace, not just a response string.
 
@@ -114,7 +114,7 @@ This means every agent action — every file read, every shell command, every we
 
 The `/metrics` command (or `milliwaysctl metrics --watch`) shows a rolling table of activity across all runners, updated every five seconds:
 
-![milliwaysctl metrics — five-window rolling table across all runners](images/metrics-dashboard.png)
+![milliwaysctl metrics — five-window rolling table across all runners](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/metrics-dashboard.png)
 
 Five time windows — 1 min, 1 hour, 24 hours, 7 days, 30 days — backed by a SQLite store with tiered rollup (raw → hourly → daily → weekly → monthly). The data is always on disk. You can query spend across any window without waiting for a billing cycle.
 
@@ -122,7 +122,7 @@ Five time windows — 1 min, 1 hour, 24 hours, 7 days, 30 days — backed by a S
 
 The terminal tab and title bar carry live session state, visible even when the terminal is in the background:
 
-![Tab and window title lifecycle — thinking, streaming, cost, rotation states](images/title-lifecycle.png)
+![Tab and window title lifecycle — thinking, streaming, cost, rotation states](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/title-lifecycle.png)
 
 The tab shows the running session cost so you always know your spend without opening the metrics dashboard. The window title shows the compact runner+model for the OS window switcher.
 
@@ -130,7 +130,7 @@ The tab shows the running session cost so you always know your spend without ope
 
 ## What you get
 
-![MilliWays.app status bar — wake badge, version, directory, active runner, shortcuts](images/status-bar.png)
+![MilliWays.app status bar — wake badge, version, directory, active runner, shortcuts](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/status-bar.png)
 
 - **Seven runners** — claude, codex, copilot, gemini, pool, minimax, local — all in the same terminal session
 - **Shared project memory** — MemPalace context injected before every prompt, to every runner
