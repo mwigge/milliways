@@ -4,6 +4,18 @@ All notable changes to milliways. Follows [Keep a Changelog](https://keepachange
 
 ---
 
+## [1.0.1] — 2026-05-01
+
+### Added
+- Native Linux packages: `.deb` (Debian/Ubuntu), `.rpm` (Fedora/RHEL), `.pkg.tar.zst` (Arch) built via fpm and attached to every release. All three binaries (`milliways`, `milliwaysd`, `milliwaysctl`) plus support scripts are in each package; installs to `/usr/bin`.
+- `install.sh` now tries the native package first, falls back to raw binary, then source build.
+- CI `package-smoke-linux` job verifies each package format installs cleanly on its target distro on every push.
+
+### Fixed
+- Node.js 20 deprecation warning in CI — opted into Node.js 24 runtime via `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24`.
+
+---
+
 ## [1.0.0] — 2026-05-01
 
 ### Added
