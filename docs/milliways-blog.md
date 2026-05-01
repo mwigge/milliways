@@ -154,22 +154,49 @@ No re-prompting. No copy-pasting. The user typed `/gemini`, then `/pool`. That w
 
 ## Local model behaviour steering
 
-Local models — llama.cpp, Ollama, vLLM, LMStudio — are first-class runners in milliways, not an afterthought. Beyond just routing prompts to a local endpoint, milliways exposes runtime controls that let you steer model behaviour without restarting anything:
+Local models — llama.cpp, Ollama, vLLM, LMStudio — are first-class runners in milliways, not an afterthought. The local runner speaks the OpenAI-compatible `/v1/chat/completions` API, which means any backend that implements it works out of the box.
+
+### Two deployment modes
+
+![Local runner architecture — single-server vs swap](images/local-architecture.png)
+
+There are two ways to run local models:
+
+**Single-server** (`/install-local-server`) — one `llama-server` instance, one model loaded, port 8765. Simple, low overhead. Switching models means restarting the server.
+
+**Swap** (`/install-local-swap`) — a `llama-swap` proxy sits at port 8765 and routes requests by model id to individual `llama-server` instances on different ports. Multiple models can be registered; the proxy loads and evicts them on demand. Switch models live with `/model local <name>` — no restart, no reconfiguration.
+
+The swap mode is what makes the local runner genuinely useful as part of the rotation ring. You can have a fast small model (Qwen-1.5b) for quick iterations and a larger reasoning model (DeepSeek-Coder-lite) for deeper analysis, both accessible in the same session.
+
+### Temperature — the most useful control
+
+![Temperature reference — behaviour and when to use each value](images/local-temperature.png)
+
+Temperature is the one parameter that matters most for code work. Too high and the model invents APIs. Too low and it loops or refuses to paraphrase. The defaults are tuned for a developer workflow:
+
+The key insight for local models: `0.2` is the right default for coding tasks. It keeps output deterministic enough to be reliable but avoids the edge cases some models exhibit at exactly `0.0`. Switch to `0.7` when you want the model to draft prose, write commit messages, or brainstorm — anything where variation is a feature rather than a bug.
+
+Set it live, without restarting anything:
+
+```
+/local-temp 0.2       # coding, refactoring
+/local-temp 0.7       # commit messages, summaries
+/local-temp default   # let the server decide
+```
+
+### All the runtime controls
 
 | Command | Effect |
 |---|---|
-| `/local-temp 0.2` | Low temperature for deterministic code generation |
-| `/local-temp 0.8` | Higher temperature for brainstorming and drafting |
-| `/local-temp default` | Let the server decide |
-| `/local-max-tokens 2048` | Cap reply length for fast iteration |
-| `/local-max-tokens off` | Unrestricted for long-form output |
+| `/local-temp <value\|default>` | Sampling temperature — persists across restarts |
+| `/local-max-tokens <N\|off>` | Cap reply length; `off` for unrestricted output |
 | `/local-endpoint <url>` | Point at a different backend live |
-| `/local-hot on` | Keep all models resident (sub-second switching) |
-| `/local-hot off` | Evict models on TTL (saves VRAM when idle) |
+| `/local-hot on\|off` | Keep all models resident vs evict on TTL |
+| `/model local <name>` | Switch model without restarting the server |
 
-All of these persist across daemon restarts. The `/model local` command shows the current settings at a glance, so you always know what the model is configured to do.
+All of these write to `~/.config/milliways/local.env` and survive daemon restarts. The `/model local` command shows the current settings — endpoint, model, temperature, max tokens — so you always know the exact state.
 
-The combination of a local runner with shared MemPalace memory is particularly powerful: a local Qwen2.5-Coder instance, steered with low temperature and your full project context injected, produces code that looks like it was written by someone who actually read the codebase.
+The combination of a local runner with shared MemPalace memory is particularly powerful: a Qwen2.5-Coder instance at `temp=0.2` with your full project context injected produces code that looks like it was written by someone who actually read the codebase — because from its perspective, it has.
 
 ---
 
