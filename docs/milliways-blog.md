@@ -115,19 +115,31 @@ sequenceDiagram
     M-->>You: ✓ task complete
 ```
 
-The handoff is structured, not raw. Milliways builds a briefing from the turn log before rotating:
+The handoff is structured, not raw. Milliways builds a briefing from the turn log before rotating, and the incoming runner treats it as ground truth.
+
+**Here's what that actually looks like in production.** A full code review of milliways, started in Gemini 2.5 Pro, handed off mid-session to Pool (Poolside ACP) with a single `/pool`:
 
 ```
-[briefing from claude → codex]
-Recent exchange:
-  user: implement the auth middleware
-  claude: Added JWT validation in internal/auth/middleware.go,
-          introduced a TokenClaims struct, wired into the router...
+→ gemini  model: gemini-2.5-pro  (gemini CLI)  [briefing from codex]
 
-Continue from here. The user's next prompt follows.
+[gemini] ▶  <deep code review, lots of working...>
+
+[gemini] ▶ /pool
+{"msg":"runner switch","from":"gemini","to":"pool"}
+→ pool  model: Poolside ACP  (pool CLI (ACP))  [briefing from gemini]
+
+[pool] ▶  Thinking...
+
+I see you've handed off a conversation with gemini that was in the middle
+of a code review for the milliways project — a terminal emulator with a
+Go backend and Rust frontend.
+
+I should acknowledge the handoff and wait for the user's next prompt.
 ```
 
-The incoming runner picks up mid-task. A four-hour refactor that burns through three runners' session limits is indistinguishable from a single uninterrupted session.
+Pool narrated its own onboarding from the briefing content — it understood what was in progress, who handed off, and what the project was, without any re-prompting. The switch happened mid-review across two runners with completely different architectures (a Google CLI subprocess and a Poolside ACP client) and the context survived intact.
+
+That's the rotation ring working as intended: the user types `/pool`, milliways compiles the briefing, and the new runner picks up exactly where the previous one left off.
 
 ---
 
