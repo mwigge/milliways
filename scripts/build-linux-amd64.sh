@@ -34,7 +34,7 @@ docker run --rm \
   bash -lc '
     set -euo pipefail
     cd /src/milliways
-    mkdir -p dist /tmp/mw-gocache /tmp/mw-gomodcache
+    mkdir -p dist /tmp/mw-gocache /tmp/mw-gomodcache /tmp/mw-pkg
     export PATH=/usr/local/go/bin:$PATH
     export CGO_ENABLED=1
     export GOOS=linux
@@ -47,11 +47,81 @@ docker run --rm \
     export GOSUMDB=sum.golang.org
     export GOCACHE=/tmp/mw-gocache
     export GOMODCACHE=/tmp/mw-gomodcache
+
+    # ── 1. Compile binaries ──────────────────────────────────────────────────
     for bin in milliways milliwaysd milliwaysctl; do
       echo "building ${bin}_linux_amd64 (${VERSION})"
       go build -ldflags "-X main.version=${VERSION}" -o "dist/${bin}_linux_amd64" "./cmd/${bin}"
       file "dist/${bin}_linux_amd64"
     done
+
+    # ── 2. Stage the package tree ────────────────────────────────────────────
+    # Binaries go to /usr/bin (system-wide, always on PATH).
+    # Support scripts go to /usr/share/milliways (found by milliwaysctl local).
+    pkg_root=/tmp/mw-pkg/root
+    rm -rf "$pkg_root"
+    install -Dm755 dist/milliways_linux_amd64       "$pkg_root/usr/bin/milliways"
+    install -Dm755 dist/milliwaysd_linux_amd64      "$pkg_root/usr/bin/milliwaysd"
+    install -Dm755 dist/milliwaysctl_linux_amd64    "$pkg_root/usr/bin/milliwaysctl"
+    install -Dm755 scripts/install_local.sh         "$pkg_root/usr/share/milliways/install_local.sh"
+    install -Dm755 scripts/install_local_swap.sh    "$pkg_root/usr/share/milliways/install_local_swap.sh"
+
+    # Normalise version for package managers: strip leading "v" and any dirty
+    # suffix. RPM/DEB versions must be purely numeric + dots.
+    pkg_ver="${VERSION#v}"
+    pkg_ver="${pkg_ver%%-dirty}"
+    # Replace any remaining non-numeric/dot chars (e.g. git hash suffix) with ~
+    pkg_ver="$(echo "$pkg_ver" | sed "s/-/~/g")"
+
+    # fpm requires all flags before the positional input argument.
+    # fpm_meta holds the common metadata flags; each package type appends its
+    # own flags then the input-type / chdir / source at the end.
+    fpm_meta=(
+      --name         milliways
+      --version      "$pkg_ver"
+      --architecture amd64
+      --maintainer   "milliways authors <noreply@github.com>"
+      --description  "AI terminal — routes prompts to claude, codex, gemini, copilot, and more"
+      --url          "https://github.com/mwigge/milliways"
+      --license      "Apache-2.0"
+      --category     utils
+    )
+    # Input spec — must come last on every fpm invocation.
+    fpm_input=(--input-type dir --chdir "$pkg_root" .)
+
+    # ── 3. Build .deb (Debian / Ubuntu) ─────────────────────────────────────
+    echo "packaging milliways_${pkg_ver}_amd64.deb"
+    fpm "${fpm_meta[@]}" \
+      --output-type deb \
+      --package "dist/milliways_${pkg_ver}_amd64.deb" \
+      "${fpm_input[@]}"
+
+    # ── 4. Build .rpm (Fedora / RHEL / openSUSE) ────────────────────────────
+    echo "packaging milliways-${pkg_ver}-1.x86_64.rpm"
+    fpm "${fpm_meta[@]}" \
+      --output-type rpm \
+      --rpm-summary "AI terminal" \
+      --package "dist/milliways-${pkg_ver}-1.x86_64.rpm" \
+      "${fpm_input[@]}"
+
+    # ── 5. Build .pkg.tar.zst (Arch Linux) ──────────────────────────────────
+    # fpm -t pacman produces a .pkg.tar.gz; repack as .zst so pacman -U
+    # accepts it on modern Arch without extra flags.
+    echo "packaging milliways-${pkg_ver}-1-x86_64.pkg.tar.zst"
+    fpm "${fpm_meta[@]}" \
+      --output-type pacman \
+      --pacman-compression gz \
+      --package "/tmp/mw-pkg/milliways-${pkg_ver}-1-x86_64.pkg.tar.gz" \
+      "${fpm_input[@]}"
+    # Repack gz → zst (Arch default since 2020)
+    cd /tmp/mw-pkg
+    gunzip -c "milliways-${pkg_ver}-1-x86_64.pkg.tar.gz" \
+      | zstd -q -o "/src/milliways/dist/milliways-${pkg_ver}-1-x86_64.pkg.tar.zst"
+    cd /src/milliways
+
+    echo ""
+    echo "Packages built:"
+    ls -lh dist/milliways*.deb dist/milliways*.rpm dist/milliways*.zst 2>/dev/null || true
   '
 
 printf 'Built Linux amd64 artifacts in %s\n' "$out_dir"

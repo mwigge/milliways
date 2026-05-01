@@ -70,6 +70,62 @@ jobs:
           /tmp/milliwaysctl status --socket /tmp/state/sock
           kill %1
 
+  # Build native packages and verify each installs cleanly on its target distro.
+  package-smoke-linux:
+    runs-on: ubuntu-latest
+    needs: go-build
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Build packages
+        run: |
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo ci) \
+          OUT_DIR=$GITHUB_WORKSPACE/dist \
+            bash scripts/build-linux-amd64.sh
+
+      - name: Test .deb on Ubuntu
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$GITHUB_WORKSPACE/dist:/dist:ro" \
+            ubuntu:24.04 \
+            bash -c '
+              set -e
+              dpkg -i /dist/milliways_*.deb
+              milliways --version
+              milliwaysctl --help >/dev/null
+              test -f /usr/share/milliways/install_local.sh
+              echo "PASS deb"
+            '
+
+      - name: Test .rpm on Fedora
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$GITHUB_WORKSPACE/dist:/dist:ro" \
+            fedora:41 \
+            bash -c '
+              set -e
+              rpm -i /dist/milliways-*.rpm
+              milliways --version
+              milliwaysctl --help >/dev/null
+              test -f /usr/share/milliways/install_local.sh
+              echo "PASS rpm"
+            '
+
+      - name: Test .pkg.tar.zst on Arch
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$GITHUB_WORKSPACE/dist:/dist:ro" \
+            archlinux:latest \
+            bash -c '
+              set -e
+              pacman -U --noconfirm /dist/milliways-*.pkg.tar.zst
+              milliways --version
+              milliwaysctl --help >/dev/null
+              test -f /usr/share/milliways/install_local.sh
+              echo "PASS pacman"
+            '
+
   # Full install-smoke on a native linux/amd64 host. This is the certification
   # run: binary downloads from a local file:// release dir, source fallback
   # (no emulation — Docker host IS amd64), and the deep CLI + session-switch

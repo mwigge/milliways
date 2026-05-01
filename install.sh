@@ -56,7 +56,84 @@ if [ "$VERSION" = "latest" ] && [ -z "$REPO_ROOT" ]; then
   [ -z "$VERSION" ] && fatal "Could not resolve latest release"
 fi
 
-# ── Install mode: remote download ─────────────────────────────────────────────
+# ── Detect Linux package manager ─────────────────────────────────────────────
+# Returns: "deb", "rpm", "pacman", or "" (unknown / macOS).
+detect_pkg_mgr() {
+  [ "$PLATFORM" = "linux" ] || return 0
+  command -v dpkg   &>/dev/null && echo "deb"    && return
+  command -v rpm    &>/dev/null && echo "rpm"    && return
+  command -v pacman &>/dev/null && echo "pacman" && return
+}
+
+# ── Install mode: native Linux package (tier 1) ───────────────────────────────
+# Tries to download and install the distro-native package (.deb / .rpm / .zst).
+# Returns 0 on success, 1 if the package is unavailable or install fails.
+install_native_pkg() {
+  [ "$PLATFORM" = "linux" ] || return 1
+  [ "$GOARCH" = "amd64" ]   || return 1   # packages are amd64-only today
+
+  local base_url="${RELEASE_BASE_URL:-https://github.com/${REPO}/releases/download/${VERSION}}"
+  local pkg_ver="${VERSION#v}"
+  local mgr; mgr="$(detect_pkg_mgr)"
+  local url pkg tmp
+
+  case "$mgr" in
+    deb)
+      pkg="milliways_${pkg_ver}_amd64.deb"
+      url="${base_url}/${pkg}"
+      tmp="$(mktemp -d)"
+      info "Downloading $pkg..."
+      if curl -sSfL "$url" -o "$tmp/$pkg"; then
+        if dpkg -i "$tmp/$pkg" 2>/dev/null || sudo dpkg -i "$tmp/$pkg"; then
+          ok "Installed via dpkg — binaries at /usr/bin"
+          rm -rf "$tmp"
+          return 0
+        fi
+      fi
+      rm -rf "$tmp"
+      warn ".deb not available or dpkg failed — trying binary download"
+      return 1
+      ;;
+    rpm)
+      pkg="milliways-${pkg_ver}-1.x86_64.rpm"
+      url="${base_url}/${pkg}"
+      tmp="$(mktemp -d)"
+      info "Downloading $pkg..."
+      if curl -sSfL "$url" -o "$tmp/$pkg"; then
+        if rpm -i "$tmp/$pkg" 2>/dev/null || sudo rpm -i "$tmp/$pkg"; then
+          ok "Installed via rpm — binaries at /usr/bin"
+          rm -rf "$tmp"
+          return 0
+        fi
+      fi
+      rm -rf "$tmp"
+      warn ".rpm not available or rpm failed — trying binary download"
+      return 1
+      ;;
+    pacman)
+      pkg="milliways-${pkg_ver}-1-x86_64.pkg.tar.zst"
+      url="${base_url}/${pkg}"
+      tmp="$(mktemp -d)"
+      info "Downloading $pkg..."
+      if curl -sSfL "$url" -o "$tmp/$pkg"; then
+        if pacman -U --noconfirm "$tmp/$pkg" 2>/dev/null \
+           || sudo pacman -U --noconfirm "$tmp/$pkg"; then
+          ok "Installed via pacman — binaries at /usr/bin"
+          rm -rf "$tmp"
+          return 0
+        fi
+      fi
+      rm -rf "$tmp"
+      warn ".pkg.tar.zst not available or pacman failed — trying binary download"
+      return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# ── Install mode: raw binary download (tier 2) ────────────────────────────────
 download_binary() {
   local name="$1" dest="$2"
   local base_url="${RELEASE_BASE_URL:-https://github.com/${REPO}/releases/download/${VERSION}}"
@@ -84,12 +161,20 @@ download_binary() {
 }
 
 install_remote() {
+  # Tier 1: native package (.deb / .rpm / .pkg.tar.zst) — integrates with the
+  # distro package manager, installs to /usr/bin, no PATH setup needed.
+  if install_native_pkg; then
+    return 0
+  fi
+
+  # Tier 2: raw binary download — works on any Linux/macOS with curl.
   local missing=""
   for bin in milliways milliwaysd milliwaysctl; do
     download_binary "$bin" "$BIN_DIR/$bin" || missing="$missing $bin"
   done
 
   if [ -n "$missing" ]; then
+    # Tier 3: build from source — last resort, requires git + go + gcc.
     warn "Some binaries missing from release; falling back to source build for:$missing"
     install_from_source "$missing"
   fi

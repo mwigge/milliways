@@ -20,7 +20,21 @@ RUN apt-get update \
         make \
         pkg-config \
         zip \
+        # fpm dependencies: Ruby + gem toolchain
+        ruby \
+        ruby-dev \
+        rubygems \
+        build-essential \
+        # rpm build tools (fpm -t rpm needs rpm)
+        rpm \
+        # pacman build tools (fpm -t pacman needs bsdtar + zstd)
+        libarchive-tools \
+        zstd \
     && rm -rf /var/lib/apt/lists/*
+
+# fpm: one tool builds .deb, .rpm, and .pacman packages from a staged dir.
+# Pin version for reproducibility; update deliberately when needed.
+RUN gem install fpm --version 1.15.1 --no-document
 
 RUN set -eux; \
     arch="${TARGETARCH:-amd64}"; \
