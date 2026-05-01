@@ -129,13 +129,13 @@ install_from_source() {
   # toolchain verification. Unset it so Go can use sum.golang.org (the default)
   # to verify the downloaded toolchain's checksum.
   export GOTOOLCHAIN=auto
-  # Fedora's Go package writes GOSUMDB=off into the Go env file (~/.config/go/env
-  # or the system file), which blocks GOTOOLCHAIN=auto from verifying the
-  # downloaded toolchain against sum.golang.org. GOENV=off tells Go to ignore
-  # its own env file entirely and use built-in defaults (GOSUMDB=sum.golang.org).
-  # GONOSUMDB=* is a belt-and-suspenders skip for any remaining sum DB issues.
-  export GOENV=off
-  export GONOSUMDB="*"
+  # Fedora (and some other distros) ship a system-level /usr/lib/golang/go.env
+  # that sets GOSUMDB=off and GOTOOLCHAIN=local. GOENV=off only suppresses the
+  # *user* env file (~/.config/go/env), not the system one. The only way to
+  # override a system go.env setting is to explicitly set the variable in the
+  # shell environment (Go's rule: "environment overrides everything else").
+  export GOSUMDB=sum.golang.org   # re-enable the checksum DB so toolchain download can be verified
+  export GONOSUMDB=""             # clear any per-module exceptions
   for bin in $targets; do
     pkg="cmd/${bin}"
     [ -d "${root}/${pkg}" ] || { warn "  $pkg not found, skipping"; continue; }
