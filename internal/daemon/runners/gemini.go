@@ -96,18 +96,18 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		observeError(metrics, AgentIDGemini)
-		stream.Push(map[string]any{"t": "err", "msg": "gemini stdout pipe: " + err.Error()})
+		stream.Push(map[string]any{"t": "err", "msg": "gemini: failed to start — try again"})
 		return
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		observeError(metrics, AgentIDGemini)
-		stream.Push(map[string]any{"t": "err", "msg": "gemini stderr pipe: " + err.Error()})
+		stream.Push(map[string]any{"t": "err", "msg": "gemini: failed to start — try again"})
 		return
 	}
 	if err := cmd.Start(); err != nil {
 		observeError(metrics, AgentIDGemini)
-		stream.Push(map[string]any{"t": "err", "msg": "gemini start: " + err.Error()})
+		stream.Push(map[string]any{"t": "err", "msg": "gemini: could not start — " + installHint("gemini")})
 		return
 	}
 
@@ -154,7 +154,7 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	if waitErr != nil {
 		observeError(metrics, AgentIDGemini)
 		spanErr = waitErr.Error()
-		stream.Push(map[string]any{"t": "err", "msg": "gemini exited: " + waitErr.Error()})
+		stream.Push(map[string]any{"t": "err", "agent": AgentIDGemini, "msg": exitMsg("gemini", waitErr, lines)})
 	}
 }
 

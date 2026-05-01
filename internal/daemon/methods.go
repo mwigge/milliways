@@ -374,8 +374,15 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 			writeError(enc, req.ID, ErrInvalidParams, "key not in allowed set: "+p.Key)
 			return
 		}
-		if err := os.Setenv(p.Key, p.Value); err != nil {
-			writeError(enc, req.ID, ErrInvalidParams, "setenv: "+err.Error())
+		// Empty value means "unset the variable" (e.g. /path reset).
+		var setErr error
+		if p.Value == "" {
+			setErr = os.Unsetenv(p.Key)
+		} else {
+			setErr = os.Setenv(p.Key, p.Value)
+		}
+		if setErr != nil {
+			writeError(enc, req.ID, ErrInvalidParams, "setenv: "+setErr.Error())
 			return
 		}
 		if err := persistLocalEnv(localEnvDefaultPath(), p.Key, p.Value); err != nil {

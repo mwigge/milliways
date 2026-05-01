@@ -202,6 +202,8 @@ func buildCompleter(agentID string) readline.AutoCompleter {
 		),
 		readline.PcItem("/download-local-model"),
 		readline.PcItem("/setup-local-model"),
+		// PATH override for runner subprocesses
+		readline.PcItem("/path"),
 		// Local-runner runtime tuning
 		readline.PcItem("/local-endpoint"),
 		readline.PcItem("/local-temp"),
@@ -572,11 +574,11 @@ func (l *chatLoop) drainStream() {
 						// active so the user sees the runner is responding.
 						if l.sess != nil {
 							model, _ := runnerModelInfo(l.sess.agentID)
-							tab := "● " + l.sess.agentID
+							win := "● " + l.sess.agentID
 							if model != "" {
-								tab += " · " + model
+								win += " · " + model
 							}
-							setTermTitle(tab, "milliways · "+l.sess.agentID+" · streaming…")
+							setTermTitle("milliways · "+l.sess.agentID+" · streaming…", win)
 						}
 						firstData = false
 					}
@@ -621,11 +623,11 @@ func (l *chatLoop) drainStream() {
 			// the tab doesn't falsely advertise in-flight work after an error.
 			if l.sess != nil {
 				model, _ := runnerModelInfo(l.sess.agentID)
-				tab := "● " + l.sess.agentID
+				win := "● " + l.sess.agentID
 				if model != "" {
-					tab += " · " + model
+					win += " · " + model
 				}
-				setTermTitle(tab, "milliways · "+l.sess.agentID)
+				setTermTitle("milliways · "+l.sess.agentID, win)
 			}
 			// Auto-rotate on session limit if a ring is configured.
 			if agent != "" && isSessionLimitMsg(msg) {
@@ -680,18 +682,18 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any) {
 	// inline hint line printed to stderr below.
 	if l.sess != nil {
 		model, _ := runnerModelInfo(l.sess.agentID)
-		tab := "● " + l.sess.agentID
+		win := "● " + l.sess.agentID
 		if model != "" {
-			tab += " · " + model
+			win += " · " + model
 		}
-		winTitle := "milliways · " + l.sess.agentID
+		tabTitle := "milliways · " + l.sess.agentID
 		if l.sessionCost > 0 {
-			winTitle += fmt.Sprintf(" · $%.4f session", l.sessionCost)
+			tabTitle += fmt.Sprintf(" · $%.4f session", l.sessionCost)
 		}
 		if inTok > 0 && outTok > 0 {
-			winTitle += fmt.Sprintf(" · %d→%d tok", int(inTok), int(outTok))
+			tabTitle += fmt.Sprintf(" · %d→%d tok", int(inTok), int(outTok))
 		}
-		setTermTitle(tab, winTitle)
+		setTermTitle(tabTitle, win)
 	}
 
 	if mh, _ := chunkEnd["max_turns_hit"].(bool); mh {
@@ -814,6 +816,8 @@ func (l *chatLoop) handleSlash(line string) {
 		l.handleLocalSet("MILLIWAYS_LOCAL_MAX_TOKENS", rest, "local max-tokens", "off")
 	case "local-hot":
 		l.handleLocalHot(rest)
+	case "path":
+		l.handlePath(rest)
 	case "help", "?":
 		l.printHelp()
 	case "exit", "quit", "bye":
@@ -948,14 +952,15 @@ func (l *chatLoop) switchAgent(newID string) {
 	slog.Info("runner switch", "from", fromID, "to", newID)
 	go l.drainStream()
 	l.rl.SetPrompt(chatPrompt(newID))
-	// Tab shows runner + model so adjacent tabs are visually distinct even
-	// when the same runner is open at different model tiers.
+	// Window title: compact runner+model so OS window switcher / Mission
+	// Control shows which runner is in this window.
+	// Tab title: "milliways · <runner>" — updated with cost/tokens on chunk_end.
 	model, _ := runnerModelInfo(newID)
-	tabTitle := "● " + newID
+	winTitle := "● " + newID
 	if model != "" {
-		tabTitle += " · " + model
+		winTitle += " · " + model
 	}
-	setTermTitle(tabTitle, "milliways · "+newID)
+	setTermTitle("milliways · "+newID, winTitle)
 	if l.completer != nil {
 		l.completer.set(buildCompleter(newID))
 	}
@@ -1298,7 +1303,7 @@ func (l *chatLoop) autoRotate(exhaustedAgent string) {
 	fmt.Fprintf(l.out, "\n⚑ %s session limit — rotating to %s\n\n", exhaustedAgent, next)
 	// Flash "↻ <next>" in the tab title so the rotation is visible even in
 	// a background tab. switchAgent will immediately replace it with "● <next>".
-	setTermTitle("↻ "+next, "milliways · rotating → "+next)
+	setTermTitle("milliways · rotating → "+next, "↻ "+next)
 	// Non-blocking send: if the channel is full the rotation is dropped
 	// (rare — only happens if two limits fire simultaneously).
 	select {
@@ -1393,6 +1398,50 @@ func (l *chatLoop) handleLocalSet(envKey, value, label, sentinel string) {
 	fmt.Fprintf(l.out, "  %s set to %q (takes effect on next prompt)\n", label, value)
 }
 
+// handlePath shows or sets MILLIWAYS_PATH — the PATH used by all runner
+// subprocesses. Useful when milliways is launched from a GUI app bundle
+// whose PATH is minimal and does not include CLIs installed by brew/npm/nvm.
+//
+//	/path              show current effective PATH for runner subprocesses
+//	/path <new:path>   set a persistent PATH override
+//	/path reset        remove the override (fall back to inherited PATH)
+func (l *chatLoop) handlePath(args string) {
+	args = strings.TrimSpace(args)
+	switch args {
+	case "":
+		cur := os.Getenv("MILLIWAYS_PATH")
+		if cur == "" {
+			cur = os.Getenv("PATH")
+			fmt.Fprintf(l.out, "  PATH (inherited): %s\n", cur)
+			fmt.Fprintln(l.out, "  Use /path <value> to set a persistent override for all runner subprocesses.")
+		} else {
+			fmt.Fprintf(l.out, "  PATH (override): %s\n", cur)
+			fmt.Fprintln(l.out, "  Use /path reset to remove the override.")
+		}
+	case "reset":
+		if l.client == nil {
+			fmt.Fprintln(l.errw, "✗ not connected to daemon")
+			return
+		}
+		if err := l.client.Call("config.setenv", map[string]any{"key": "MILLIWAYS_PATH", "value": ""}, nil); err != nil {
+			fmt.Fprintf(l.errw, "✗ path reset: %v\n", err)
+			return
+		}
+		fmt.Fprintln(l.out, "  PATH override removed — runners will use the inherited PATH")
+	default:
+		if l.client == nil {
+			fmt.Fprintln(l.errw, "✗ not connected to daemon")
+			return
+		}
+		if err := l.client.Call("config.setenv", map[string]any{"key": "MILLIWAYS_PATH", "value": args}, nil); err != nil {
+			fmt.Fprintf(l.errw, "✗ path: %v\n", err)
+			return
+		}
+		fmt.Fprintf(l.out, "  PATH set to %q (takes effect on next runner invocation)\n", args)
+		fmt.Fprintln(l.out, "  Tip: include your shell's full PATH — e.g. /path $PATH:/opt/homebrew/bin")
+	}
+}
+
 // handleLocalHot toggles llama-swap hot-mode: "on" keeps all advertised
 // models resident; "off" lets llama-swap evict them after the TTL.
 // This is a milliwaysctl thin-wrapper so the install script stays the
@@ -1427,11 +1476,11 @@ func (l *chatLoop) handlePrompt(prompt string) {
 	// drainStream will update to "streaming…" on the first data event, then
 	// refreshPromptHint will replace it with real stats on chunk_end.
 	model, _ := runnerModelInfo(l.sess.agentID)
-	tab := "● " + l.sess.agentID
+	win := "● " + l.sess.agentID
 	if model != "" {
-		tab += " · " + model
+		win += " · " + model
 	}
-	setTermTitle(tab, "milliways · "+l.sess.agentID+" · thinking…")
+	setTermTitle("milliways · "+l.sess.agentID+" · thinking…", win)
 	if err := l.sess.send(enriched); err != nil {
 		fmt.Fprintln(l.errw, "✗ send: "+err.Error())
 		return
@@ -1683,6 +1732,11 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /local-temp <0.0–2.0|default> sampling temperature; default lets the server choose")
 	fmt.Fprintln(l.out, "  /local-max-tokens <N|off>     cap reply length; off means unlimited")
 	fmt.Fprintln(l.out, "  /local-hot on|off             keep models resident in llama-swap (on) or TTL-evict (off)")
+	fmt.Fprintln(l.out)
+	fmt.Fprintln(l.out, "Runner PATH:")
+	fmt.Fprintln(l.out, "  /path                         show the PATH used by all runner subprocesses")
+	fmt.Fprintln(l.out, "  /path <value>                 set a persistent PATH override (useful when launched from GUI)")
+	fmt.Fprintln(l.out, "  /path reset                   remove the override, fall back to inherited PATH")
 	fmt.Fprintln(l.out)
 
 	fmt.Fprintln(l.out, "OpenSpec:")

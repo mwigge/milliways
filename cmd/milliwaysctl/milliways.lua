@@ -381,6 +381,35 @@ function open_ctl_prompt(initial)
   }
 end
 
+-- ── Tab title: show milliways status from OSC 0 set by the Go chat loop ──────
+-- Tab shows the rich status string set via OSC 0 by the milliways process:
+--   ready:     "milliways · claude"
+--   thinking:  "milliways · claude · thinking…"
+--   streaming: "milliways · claude · streaming…"
+--   done:      "milliways · claude · $0.02 session · 1200→340 tok"
+-- Window title (OSC 2) carries the compact runner+model: "● claude · sonnet-4-6"
+-- pane.title reflects the last OSC 0/1 value; fall back to tab index when unset.
+wezterm.on('format-tab-title', function(tab, _tabs, _panes, _cfg, _hover, max_width)
+  local pane  = tab.active_pane
+  local title = pane.title  -- set by OSC 0/1 from the Go process
+  if title == nil or title == '' or title == 'milliways' then
+    -- Landing zone or no OSC title yet — show a compact index.
+    title = ' ' .. (tab.tab_index + 1) .. ' '
+  else
+    -- Trim to max_width so wide titles don't overflow the tab bar.
+    if #title > max_width - 2 then
+      title = wezterm.truncate_right(title, max_width - 3) .. '…'
+    end
+    title = ' ' .. title .. ' '
+  end
+  local is_active = tab.is_active
+  return {
+    { Background = { Color = is_active and '#504945' or '#1d2021' } },
+    { Foreground = { Color = is_active and '#ebdbb2' or '#a89984' } },
+    { Text = title },
+  }
+end)
+
 -- ── Auto-start milliwaysd when wezterm opens ─────────────────────────────────
 -- Spawns the daemon once; subsequent windows reuse the existing socket.
 

@@ -40,6 +40,9 @@ var allowedSetenvKeys = map[string]bool{
 	"GEMINI_MODEL":          true,
 	"GOOGLE_MODEL":          true,
 	"COPILOT_MODEL":         true,
+	// PATH override — set via /path so CLIs in non-standard locations
+	// (e.g. ~/.local/bin, /opt/homebrew/bin) are found by all runners.
+	"MILLIWAYS_PATH": true,
 	// Endpoint overrides
 	"MINIMAX_API_URL":          true,
 	"MINIMAX_ENDPOINT":         true,
@@ -109,6 +112,8 @@ func persistLocalEnv(path, key, value string) error {
 		return err
 	}
 
+	// Strip any existing entry for key regardless of whether we're
+	// setting or clearing it.
 	var lines []string
 	if data, err := os.ReadFile(path); err == nil {
 		scanner := bufio.NewScanner(strings.NewReader(string(data)))
@@ -121,6 +126,10 @@ func persistLocalEnv(path, key, value string) error {
 			lines = append(lines, line)
 		}
 	}
-	lines = append(lines, key+"="+value)
+	// Empty value means "remove the key" — don't write a KEY= line that
+	// looks active but is silently ignored by the empty-string guard.
+	if value != "" {
+		lines = append(lines, key+"="+value)
+	}
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
 }

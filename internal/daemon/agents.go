@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/mwigge/milliways/internal/daemon/runners"
 	"github.com/mwigge/milliways/internal/history"
@@ -51,9 +52,10 @@ type AgentSession struct {
 	stream  *Stream // nil until agent.stream is called
 	server  *Server
 
-	mu     sync.Mutex
-	input  chan []byte
-	closed atomic.Bool
+	mu          sync.Mutex
+	input       chan []byte
+	closed      atomic.Bool
+	streamReady chan struct{} // closed by AttachStream when stream is set
 
 	// responseBuf is a rolling buffer of the runner's most recent
 	// emitted text (decoded from `{"t":"data","b64":...}` events).
@@ -190,9 +192,10 @@ func (r *AgentRegistry) metricsObserver() runners.MetricsObserver {
 func (r *AgentRegistry) Open(agentID string) (*AgentSession, error) {
 	handle := AgentHandle(r.next.Add(1))
 	sess := &AgentSession{
-		Handle:  handle,
-		AgentID: agentID,
-		input:   make(chan []byte, 16),
+		Handle:      handle,
+		AgentID:     agentID,
+		input:       make(chan []byte, 16),
+		streamReady: make(chan struct{}),
 	}
 	r.mu.Lock()
 	r.sessions[handle] = sess
@@ -327,20 +330,45 @@ func runPool(sess *AgentSession, metrics runners.MetricsObserver) {
 	slog.Debug("pool session ended", "handle", sess.Handle)
 }
 
-// waitForStream blocks until sess.stream is non-nil or the session is
-// closed. Returns nil if the session closed before a stream attached.
+// waitForStream blocks until a stream is attached (AttachStream closes
+// streamReady) or the session is closed. Returns nil when the session
+// closes before a stream attaches. Replaces the previous busy-wait loop.
 func waitForStream(sess *AgentSession) *Stream {
-	for {
+	select {
+	case <-sess.streamReady:
 		sess.mu.Lock()
 		s := sess.stream
 		sess.mu.Unlock()
-		if s != nil {
-			return s
-		}
-		if sess.closed.Load() {
-			return nil
-		}
+		return s
+	case <-closedWhenDone(sess):
+		return nil
 	}
+}
+
+// closedWhenDone returns a channel that is readable once sess.closed is true.
+// We cannot block directly on an atomic.Bool, so we poll with a small ticker
+// only as a fallback — the common path exits via streamReady.
+func closedWhenDone(sess *AgentSession) <-chan struct{} {
+	ch := make(chan struct{})
+	go func() {
+		for !sess.closed.Load() {
+			// 1 ms sleep is negligible; this path only fires when the
+			// session closes before the client ever calls agent.stream.
+			select {
+			case <-sess.streamReady:
+				// Stream arrived — the select in waitForStream will
+				// handle it; nothing to do here.
+				return
+			default:
+			}
+			// Brief yield so we don't spin at 100% in the rare gap.
+			select {
+			case <-time.After(time.Millisecond):
+			}
+		}
+		close(ch)
+	}()
+	return ch
 }
 
 // Get returns the session for handle.
@@ -365,13 +393,14 @@ func (r *AgentRegistry) Close(handle AgentHandle) {
 
 // AttachStream allocates a Stream for the session if it does not have one,
 // or returns the existing one. Idempotent. The Server must be set on the
-// registry before calling.
+// registry before calling. Closing streamReady unblocks waitForStream.
 func (s *AgentSession) AttachStream(srv *Server) *Stream {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stream == nil {
 		s.stream = srv.streams.Allocate()
 		s.server = srv
+		close(s.streamReady)
 	}
 	return s.stream
 }

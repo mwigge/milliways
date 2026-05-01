@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -136,7 +137,7 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		stream.Push(map[string]any{
 			"t":    "err",
 			"code": -32005,
-			"msg":  "MINIMAX_API_KEY not set",
+			"msg":  "MiniMax API key not set — run /login minimax to set it (get a key at platform.minimax.io)",
 		})
 		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
 		return
@@ -306,6 +307,52 @@ func classifyDispatchError(agentID string, err error) map[string]any {
 			"code":  -32010,
 			"msg":   agentID + ": " + err.Error(),
 		}
+	}
+}
+
+// exitMsg builds a human-readable error message when a CLI subprocess exits
+// with a non-zero status. It includes the exit code and the last non-empty
+// line from stderr so the user sees the CLI's own error text rather than the
+// raw Go "exit status N" string.
+//
+// Used by all CLI runners (claude, codex, copilot, gemini, pool). Lives here
+// alongside classifyDispatchError as the shared error-formatting home.
+func exitMsg(binary string, waitErr error, stderrLines []string) string {
+	code := "?"
+	var ee *exec.ExitError
+	if errors.As(waitErr, &ee) {
+		code = fmt.Sprintf("%d", ee.ExitCode())
+	}
+	msg := binary + " exited (code " + code + ")"
+	// Walk from the end to find the last non-empty stderr line — the CLI
+	// typically writes the most relevant error there. scrubBearer strips
+	// any token values the CLI may have echoed in its own error output.
+	for i := len(stderrLines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(stderrLines[i]); line != "" {
+			msg += " — " + scrubBearer(line)
+			break
+		}
+	}
+	return msg
+}
+
+// installHint returns the install command for a CLI binary, shown when the
+// subprocess fails to start (exec: not found). Keeps the start-error messages
+// actionable without duplicating install logic from installSpecs.
+func installHint(binary string) string {
+	switch binary {
+	case "claude":
+		return "run: npm install -g @anthropic-ai/claude-code"
+	case "codex":
+		return "run: npm install -g @openai/codex"
+	case "gh": // copilot uses gh
+		return "run: brew install gh  (then: gh extension install github/gh-copilot)"
+	case "gemini":
+		return "run: npm install -g @google/gemini-cli"
+	case "pool":
+		return "check https://poolside.ai for the Poolside CLI install instructions"
+	default:
+		return "check that " + binary + " is installed and on PATH"
 	}
 }
 

@@ -60,6 +60,11 @@ var safeRunnerEnvKeys = map[string]bool{
 // safeRunnerEnv returns a filtered environment for runner subprocess
 // execution. Uses os.Environ() as the source and keeps only entries
 // whose key appears in safeRunnerEnvKeys.
+//
+// PATH override: if MILLIWAYS_PATH is set (via /path or local.env), it
+// replaces the inherited PATH so CLIs installed in non-standard locations
+// (e.g. ~/.local/bin, /opt/homebrew/bin) are found when milliways is
+// launched from a GUI app bundle whose PATH is minimal.
 func safeRunnerEnv() []string {
 	var env []string
 	for _, e := range os.Environ() {
@@ -70,6 +75,18 @@ func safeRunnerEnv() []string {
 		if safeRunnerEnvKeys[key] {
 			env = append(env, e)
 		}
+	}
+	// Allow an explicit PATH override so users can extend the search path
+	// without restarting the daemon. MILLIWAYS_PATH replaces PATH entirely
+	// when set; it is not appended to avoid duplicates.
+	if p := os.Getenv("MILLIWAYS_PATH"); p != "" {
+		filtered := make([]string, 0, len(env))
+		for _, e := range env {
+			if !strings.HasPrefix(e, "PATH=") {
+				filtered = append(filtered, e)
+			}
+		}
+		env = append(filtered, "PATH="+p)
 	}
 	return env
 }

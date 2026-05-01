@@ -97,18 +97,18 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		observeError(metrics, AgentIDCopilot)
-		stream.Push(map[string]any{"t": "err", "msg": "copilot stdout pipe: " + err.Error()})
+		stream.Push(map[string]any{"t": "err", "msg": "copilot: failed to start — try again"})
 		return
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		observeError(metrics, AgentIDCopilot)
-		stream.Push(map[string]any{"t": "err", "msg": "copilot stderr pipe: " + err.Error()})
+		stream.Push(map[string]any{"t": "err", "msg": "copilot: failed to start — try again"})
 		return
 	}
 	if err := cmd.Start(); err != nil {
 		observeError(metrics, AgentIDCopilot)
-		stream.Push(map[string]any{"t": "err", "msg": "copilot start: " + err.Error()})
+		stream.Push(map[string]any{"t": "err", "msg": "copilot: could not start — " + installHint("gh")})
 		return
 	}
 
@@ -155,7 +155,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	} else if waitErr != nil {
 		observeError(metrics, AgentIDCopilot)
 		spanErr = waitErr.Error()
-		stream.Push(map[string]any{"t": "err", "msg": "copilot exited: " + waitErr.Error()})
+		stream.Push(map[string]any{"t": "err", "agent": AgentIDCopilot, "msg": exitMsg("copilot", waitErr, lines)})
 	}
 }
 

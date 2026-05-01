@@ -156,18 +156,18 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		observeError(metrics, AgentIDClaude)
-		stream.Push(map[string]any{"t": "err", "msg": "claude stdout pipe: " + err.Error()})
+		stream.Push(map[string]any{"t": "err", "msg": "claude: failed to start — try again"})
 		return
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		observeError(metrics, AgentIDClaude)
-		stream.Push(map[string]any{"t": "err", "msg": "claude stderr pipe: " + err.Error()})
+		stream.Push(map[string]any{"t": "err", "msg": "claude: failed to start — try again"})
 		return
 	}
 	if err := cmd.Start(); err != nil {
 		observeError(metrics, AgentIDClaude)
-		stream.Push(map[string]any{"t": "err", "msg": "claude start: " + err.Error()})
+		stream.Push(map[string]any{"t": "err", "msg": "claude: could not start — " + installHint("claude")})
 		return
 	}
 
@@ -241,7 +241,7 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		})
 	} else if waitErr != nil {
 		observeError(metrics, AgentIDClaude)
-		stream.Push(map[string]any{"t": "err", "msg": "claude exited: " + waitErr.Error()})
+		stream.Push(map[string]any{"t": "err", "agent": AgentIDClaude, "msg": exitMsg("claude", waitErr, lines)})
 	}
 	observeTokens(metrics, AgentIDClaude, lastResult.inputTokens, lastResult.outputTokens, lastResult.costUSD)
 	endDispatchSpan(span, lastResult.inputTokens, lastResult.outputTokens, lastResult.costUSD, "")

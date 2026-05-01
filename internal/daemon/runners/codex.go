@@ -106,18 +106,19 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		observeError(metrics, AgentIDCodex)
-		stream.Push(map[string]any{"t": "err", "msg": "codex stdout pipe: " + err.Error()})
+		stream.Push(map[string]any{"t": "err", "msg": "codex: failed to start — try again"})
 		return
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		observeError(metrics, AgentIDCodex)
-		stream.Push(map[string]any{"t": "err", "msg": "codex stderr pipe: " + err.Error()})
+		stream.Push(map[string]any{"t": "err", "msg": "codex: failed to start — try again"})
 		return
 	}
 	if err := cmd.Start(); err != nil {
 		observeError(metrics, AgentIDCodex)
-		stream.Push(map[string]any{"t": "err", "msg": "codex start: " + err.Error()})
+		hint := installHint("codex")
+		stream.Push(map[string]any{"t": "err", "msg": "codex: could not start — " + hint})
 		return
 	}
 
@@ -173,6 +174,9 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 
 	waitErr := cmd.Wait()
 	stderrWg.Wait()
+	stderrMu.Lock()
+	lines := append([]string(nil), stderrLines...)
+	stderrMu.Unlock()
 
 	if sawProxyBlock.Load() {
 		observeError(metrics, AgentIDCodex)
@@ -193,7 +197,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	} else if waitErr != nil {
 		observeError(metrics, AgentIDCodex)
 		spanErr = waitErr.Error()
-		stream.Push(map[string]any{"t": "err", "msg": "codex exited: " + waitErr.Error()})
+		stream.Push(map[string]any{"t": "err", "agent": AgentIDCodex, "msg": exitMsg("codex", waitErr, lines)})
 	}
 }
 

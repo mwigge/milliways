@@ -101,18 +101,18 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		observeError(metrics, AgentIDPool)
-		stream.Push(map[string]any{"t": "err", "msg": "pool stdout pipe: " + err.Error()})
+		stream.Push(map[string]any{"t": "err", "msg": "pool: failed to start — try again"})
 		return
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		observeError(metrics, AgentIDPool)
-		stream.Push(map[string]any{"t": "err", "msg": "pool stderr pipe: " + err.Error()})
+		stream.Push(map[string]any{"t": "err", "msg": "pool: failed to start — try again"})
 		return
 	}
 	if err := cmd.Start(); err != nil {
 		observeError(metrics, AgentIDPool)
-		stream.Push(map[string]any{"t": "err", "msg": "pool start: " + err.Error()})
+		stream.Push(map[string]any{"t": "err", "msg": "pool: could not start — " + installHint("pool")})
 		return
 	}
 
@@ -157,7 +157,7 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 	if waitErr != nil {
 		observeError(metrics, AgentIDPool)
 		spanErr = waitErr.Error()
-		stream.Push(map[string]any{"t": "err", "msg": "pool exited: " + waitErr.Error()})
+		stream.Push(map[string]any{"t": "err", "agent": AgentIDPool, "msg": exitMsg("pool", waitErr, lines)})
 	}
 }
 
