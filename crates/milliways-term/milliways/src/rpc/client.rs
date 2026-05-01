@@ -125,7 +125,7 @@ impl Client {
             .write_all(preamble.as_bytes())
             .await
             .context("write STREAM preamble")?;
-        sidecar.flush().await.ok();
+        sidecar.flush().await.context("flush STREAM preamble")?;
 
         let (tx, rx) = mpsc::channel::<Vec<u8>>(16);
         tokio::spawn(async move {

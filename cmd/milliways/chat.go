@@ -467,6 +467,12 @@ type chatLoop struct {
 	// pendingAssistant accumulates streamed deltas for the in-flight
 	// assistant response. Drained into turnLog on chunk_end.
 	pendingAssistant strings.Builder
+
+	// sessionCost accumulates cost_usd across all chunk_end events for the
+	// lifetime of this chat session. Shown as a running total in the window
+	// title so the user can track spend at a glance without doing mental
+	// per-response addition.
+	sessionCost float64
 }
 
 // chatTurn is one exchange entry across runners. Role is "user" or
@@ -493,7 +499,9 @@ const chatBriefingMaxBytes = 4096
 func (l *chatLoop) run(ctx context.Context) error {
 	// drainStream is started per-session inside switchAgent; do NOT start
 	// it here because l.sess is nil in the landing zone.
+	setTermTitle("milliways", "milliways")
 	defer func() {
+		setTermTitle("milliways", "milliways")
 		if l.sess != nil {
 			_ = l.sess.close()
 		}
@@ -548,6 +556,7 @@ func (l *chatLoop) run(ctx context.Context) error {
 //   - end        — agent session closed
 func (l *chatLoop) drainStream() {
 	defer close(l.sess.done)
+	firstData := true
 	for line := range l.sess.streamCh {
 		var ev map[string]any
 		if err := json.Unmarshal(line, &ev); err != nil {
@@ -558,6 +567,19 @@ func (l *chatLoop) drainStream() {
 		case "data":
 			if b64, ok := ev["b64"].(string); ok {
 				if raw, err := base64.StdEncoding.DecodeString(b64); err == nil {
+					if firstData {
+						// First token arrived — update title from "thinking…" to
+						// active so the user sees the runner is responding.
+						if l.sess != nil {
+							model, _ := runnerModelInfo(l.sess.agentID)
+							tab := "● " + l.sess.agentID
+							if model != "" {
+								tab += " · " + model
+							}
+							setTermTitle(tab, "milliways · "+l.sess.agentID+" · streaming…")
+						}
+						firstData = false
+					}
 					_, _ = l.out.Write(raw)
 					// Accumulate for the in-flight assistant turn so /switch
 					// can carry the response forward as part of the briefing.
@@ -631,14 +653,37 @@ If you cannot produce a markdown table for step 3, use the dash-list format show
 // separator and an automatic summarization turn that streams back to the user.
 func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any) {
 	var parts []string
-	if cost, ok := chunkEnd["cost_usd"].(float64); ok && cost > 0 {
+	cost, _ := chunkEnd["cost_usd"].(float64)
+	inTok, _ := chunkEnd["input_tokens"].(float64)
+	outTok, _ := chunkEnd["output_tokens"].(float64)
+	if cost > 0 {
+		l.sessionCost += cost
 		parts = append(parts, fmt.Sprintf("$%.4f", cost))
 	}
-	if in, ok := chunkEnd["input_tokens"].(float64); ok && in > 0 {
-		if outT, _ := chunkEnd["output_tokens"].(float64); outT > 0 {
-			parts = append(parts, fmt.Sprintf("%d→%d tok", int(in), int(outT)))
-		}
+	if inTok > 0 && outTok > 0 {
+		parts = append(parts, fmt.Sprintf("%d→%d tok", int(inTok), int(outTok)))
 	}
+
+	// Update the window title after each response. Show the running session
+	// total (not per-response) so the title bar answers "how much have I
+	// spent this session?" at a glance. Per-response stats stay in the
+	// inline hint line printed to stderr below.
+	if l.sess != nil {
+		model, _ := runnerModelInfo(l.sess.agentID)
+		tab := "● " + l.sess.agentID
+		if model != "" {
+			tab += " · " + model
+		}
+		winTitle := "milliways · " + l.sess.agentID
+		if l.sessionCost > 0 {
+			winTitle += fmt.Sprintf(" · $%.4f session", l.sessionCost)
+		}
+		if inTok > 0 && outTok > 0 {
+			winTitle += fmt.Sprintf(" · %d→%d tok", int(inTok), int(outTok))
+		}
+		setTermTitle(tab, winTitle)
+	}
+
 	if mh, _ := chunkEnd["max_turns_hit"].(bool); mh {
 		fmt.Fprintln(l.out, "\n────────────────────────────────────────")
 		fmt.Fprintln(l.out, " ⚑  Reached the 100-turn agentic limit.")
@@ -893,6 +938,14 @@ func (l *chatLoop) switchAgent(newID string) {
 	slog.Info("runner switch", "from", fromID, "to", newID)
 	go l.drainStream()
 	l.rl.SetPrompt(chatPrompt(newID))
+	// Tab shows runner + model so adjacent tabs are visually distinct even
+	// when the same runner is open at different model tiers.
+	model, _ := runnerModelInfo(newID)
+	tabTitle := "● " + newID
+	if model != "" {
+		tabTitle += " · " + model
+	}
+	setTermTitle(tabTitle, "milliways · "+newID)
 	if l.completer != nil {
 		l.completer.set(buildCompleter(newID))
 	}
@@ -1233,6 +1286,9 @@ func (l *chatLoop) autoRotate(exhaustedAgent string) {
 		return
 	}
 	fmt.Fprintf(l.out, "\n⚑ %s session limit — rotating to %s\n\n", exhaustedAgent, next)
+	// Flash "↻ <next>" in the tab title so the rotation is visible even in
+	// a background tab. switchAgent will immediately replace it with "● <next>".
+	setTermTitle("↻ "+next, "milliways · rotating → "+next)
 	// Non-blocking send: if the channel is full the rotation is dropped
 	// (rare — only happens if two limits fire simultaneously).
 	select {
@@ -1357,6 +1413,15 @@ func (l *chatLoop) handlePrompt(prompt string) {
 	l.ringMu.Unlock()
 	l.appendTurn(chatTurn{Role: "user", Text: prompt})
 	enriched := l.enrichWithPalace(context.Background(), prompt)
+	// Show "thinking…" in the window title while the runner is generating.
+	// drainStream will update to "streaming…" on the first data event, then
+	// refreshPromptHint will replace it with real stats on chunk_end.
+	model, _ := runnerModelInfo(l.sess.agentID)
+	tab := "● " + l.sess.agentID
+	if model != "" {
+		tab += " · " + model
+	}
+	setTermTitle(tab, "milliways · "+l.sess.agentID+" · thinking…")
 	if err := l.sess.send(enriched); err != nil {
 		fmt.Fprintln(l.errw, "✗ send: "+err.Error())
 		return
@@ -1441,6 +1506,62 @@ func (l *chatLoop) fetchAgentStatuses() map[string]agentStatus {
 		out[a.ID] = agentStatus{mark: mark, model: a.Model}
 	}
 	return out
+}
+
+// setTermTitle updates the terminal tab title and window title using OSC escape
+// sequences. Only emits when stderr is a real TTY. Writing to stderr (not
+// stdout) avoids races with readline, which holds an internal lock on stdout
+// during prompt redraws; terminals process OSC sequences from either fd.
+//
+//   - tab:    terminal tab strip — e.g. "● claude · sonnet-4-6"
+//   - window: OS title bar — e.g. "milliways · claude · $0.0218 session"
+//
+// Sequence strategy (widest compatibility):
+//   - OSC 0  sets both tab and window title (xterm, GNOME Terminal, most terminals)
+//   - OSC 2  overrides window title after OSC 0 for terminals that distinguish the two
+//   Kitty and wezterm honour OSC 0 for the tab; OSC 2 is then the window override.
+//
+// Inside tmux/screen the sequences are wrapped in the DCS passthrough so they
+// reach the outer terminal. Without passthrough enabled they silently no-op.
+func setTermTitle(tab, window string) {
+	if !isTTYStderr() {
+		return
+	}
+	tab = sanitiseOSC(tab)
+	window = sanitiseOSC(window)
+	if os.Getenv("TMUX") != "" {
+		// tmux DCS passthrough: \ePtmux;\e<seq>\e\\
+		fmt.Fprintf(os.Stderr,
+			"\033Ptmux;\033\033]0;%s\007\033\\\033Ptmux;\033\033]2;%s\007\033\\",
+			tab, window)
+	} else {
+		// OSC 0 sets tab (and window as fallback); OSC 2 overrides window.
+		fmt.Fprintf(os.Stderr, "\033]0;%s\007\033]2;%s\007", tab, window)
+	}
+}
+
+// sanitiseOSC strips characters that could terminate an OSC sequence early and
+// inject arbitrary escape sequences into the terminal. Defence-in-depth: all
+// current call sites use controlled strings, but this protects future callers.
+func sanitiseOSC(s string) string {
+	return strings.NewReplacer("\033", "", "\007", "", "\r", "", "\n", "").Replace(s)
+}
+
+// isTTYStderr returns true when os.Stderr is a real terminal. Cached once
+// for the process lifetime — stderr's TTY state is stable after startup.
+// Note: tests that redirect stderr will see isTTYStderr() == false, which
+// means setTermTitle becomes a no-op in test contexts (desired behaviour).
+var (
+	ttyOnce   sync.Once
+	ttyResult bool
+)
+
+func isTTYStderr() bool {
+	ttyOnce.Do(func() {
+		fi, err := os.Stderr.Stat()
+		ttyResult = err == nil && (fi.Mode()&os.ModeCharDevice) != 0
+	})
+	return ttyResult
 }
 
 // agentColor returns a 256-colour ANSI escape for a runner name.
