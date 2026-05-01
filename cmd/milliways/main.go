@@ -577,6 +577,12 @@ func dispatch(opts dispatchOpts) error {
 		recordConversationDispatch(cfg, pdb, opts.prompt, lastKitchen, duration, exitCode, conv)
 	}
 
+	if strings.TrimSpace(opts.sessionName) != "" {
+		if err := saveHeadlessSwitchSessionKitchen(opts.sessionName, lastKitchen); err != nil {
+			return err
+		}
+	}
+
 	if opts.jsonOutput {
 		out := map[string]any{
 			"kitchen":    lastKitchen,
@@ -654,6 +660,46 @@ func loadHeadlessSwitchSessionKitchen(name string) (string, error) {
 		}
 	}
 	return "unknown", nil
+}
+
+func saveHeadlessSwitchSessionKitchen(name string, kitchenName string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("session name is required")
+	}
+	if filepath.Base(name) != name {
+		return fmt.Errorf("invalid session name %q", name)
+	}
+
+	dir, err := headlessSessionDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("creating session directory: %w", err)
+	}
+
+	data, err := json.MarshalIndent(headlessSwitchSession{RunnerName: kitchenName}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encoding session %q: %w", name, err)
+	}
+
+	path := filepath.Join(dir, name+".json")
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		return fmt.Errorf("writing session %q: %w", name, err)
+	}
+	return nil
+}
+
+func headlessSessionDir() (string, error) {
+	if xdgData := os.Getenv("XDG_DATA_HOME"); xdgData != "" {
+		return filepath.Join(xdgData, "milliways", "sessions"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolving home directory: %w", err)
+	}
+	return filepath.Join(home, ".local", "share", "milliways", "sessions"), nil
 }
 
 func findNamedSessionFile(name string) (string, error) {
@@ -1528,4 +1574,3 @@ func pantryCmd() *cobra.Command {
 	cmd.AddCommand(depSyncCmd)
 	return cmd
 }
-

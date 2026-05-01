@@ -8,7 +8,7 @@ BIN := $(PREFIX)/bin
 
 .PHONY: smoke plugin-test install mempalace-dev mempalace-test \
         all term daemon ctl repl gen-rpc clean-rpc \
-        bundle-macos release
+        bundle-macos build-linux-amd64 smoke-linux-install release
 
 # ---------------------------------------------------------------------------
 # milliways-emulator-fork build targets
@@ -78,6 +78,12 @@ mempalace-test:
 smoke:
 	go build -ldflags "$(LDFLAGS)" -o $(TMPDIR)/milliways ./cmd/milliways
 	VERSION=$(VERSION) scripts/smoke.sh
+
+build-linux-amd64:
+	VERSION=$(VERSION) scripts/build-linux-amd64.sh
+
+smoke-linux-install:
+	MILLIWAYS_VERSION=$(VERSION) scripts/smoke-linux-install.sh
 
 # CI note: add `make plugin-test` after the Go smoke step.
 plugin-test:

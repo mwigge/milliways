@@ -128,7 +128,12 @@ func runInstallScript(relPath string, stdout, stderr io.Writer) int {
 	if _, err := os.Stat(candidate); err != nil {
 		// Fall back to the install location used when milliways is installed
 		// via install.sh; we keep a copy of the scripts alongside the binary.
-		alt := filepath.Join(filepath.Dir(wd), "share", "milliways", relPath)
+		exe, exeErr := os.Executable()
+		if exeErr != nil {
+			fmt.Fprintf(stderr, "local: cannot determine executable path: %v\n", exeErr)
+			return 1
+		}
+		alt := filepath.Join(filepath.Dir(filepath.Dir(exe)), "share", "milliways", relPath)
 		if _, err2 := os.Stat(alt); err2 == nil {
 			candidate = alt
 		} else {

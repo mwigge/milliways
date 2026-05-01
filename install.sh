@@ -13,11 +13,13 @@
 #   SKIP_TERM=1         skip the wezterm / MilliWays.app install
 set -euo pipefail
 
-REPO="mwigge/milliways"
+REPO="${MILLIWAYS_REPO:-mwigge/milliways}"
 PREFIX="${PREFIX:-$HOME/.local}"
 BIN_DIR="$PREFIX/bin"
 SHARE_DIR="$PREFIX/share/milliways"
 VERSION="${MILLIWAYS_VERSION:-latest}"
+RELEASE_BASE_URL="${MILLIWAYS_RELEASE_BASE_URL:-}"
+SUPPORT_BASE_URL="${MILLIWAYS_SUPPORT_BASE_URL:-}"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 if [ -t 1 ]; then
@@ -57,7 +59,8 @@ fi
 # ── Install mode: remote download ─────────────────────────────────────────────
 download_binary() {
   local name="$1" dest="$2"
-  local url="https://github.com/${REPO}/releases/download/${VERSION}/${name}_${PLATFORM}_${GOARCH}"
+  local base_url="${RELEASE_BASE_URL:-https://github.com/${REPO}/releases/download/${VERSION}}"
+  local url="${base_url}/${name}_${PLATFORM}_${GOARCH}"
   info "Downloading $name ${VERSION}..."
   if curl -sSfL "$url" -o "$dest"; then
     chmod +x "$dest"
@@ -68,7 +71,7 @@ download_binary() {
   # build wasn't included in a release), try the amd64 binary — it runs under
   # Rosetta 2 on macOS and QEMU on Linux arm64 systems.
   if [ "$GOARCH" != "amd64" ]; then
-    local fallback_url="https://github.com/${REPO}/releases/download/${VERSION}/${name}_${PLATFORM}_amd64"
+    local fallback_url="${base_url}/${name}_${PLATFORM}_amd64"
     warn "$name ${GOARCH} not in release — trying amd64 fallback..."
     if curl -sSfL "$fallback_url" -o "$dest"; then
       chmod +x "$dest"
@@ -96,6 +99,7 @@ install_remote() {
 install_from_source() {
   local targets="${1:-milliways milliwaysd milliwaysctl}"
   need go "Install Go 1.22+: https://go.dev/dl/"
+  need cc "Install a C compiler for SQLite support (Debian/Ubuntu: build-essential; Fedora: gcc; Arch: base-devel)"
 
   local root="$REPO_ROOT"
   local _cloned_tmp=""
@@ -129,6 +133,7 @@ install_from_source() {
   # toolchain verification. Unset it so Go can use sum.golang.org (the default)
   # to verify the downloaded toolchain's checksum.
   export GOTOOLCHAIN=auto
+  export CGO_ENABLED=1
   # Fedora (and some other distros) ship a system-level /usr/lib/golang/go.env
   # that sets GOSUMDB=off and GOTOOLCHAIN=local. GOENV=off only suppresses the
   # *user* env file (~/.config/go/env), not the system one. The only way to
@@ -143,7 +148,9 @@ install_from_source() {
     go build -C "$root" -ldflags "$ldflags" -o "$BIN_DIR/$bin" "./$pkg"
     ok "  installed $BIN_DIR/$bin"
   done
-  [ -n "$_cloned_tmp" ] && rm -rf "$_cloned_tmp"
+  if [ -n "$_cloned_tmp" ]; then
+    rm -rf "$_cloned_tmp"
+  fi
 }
 
 # ── macOS: MilliWays.app ──────────────────────────────────────────────────────
@@ -195,6 +202,27 @@ install_wezterm_lua() {
   ok "Installed wezterm config → $SHARE_DIR/wezterm.lua"
 }
 
+install_support_scripts() {
+  mkdir -p "$SHARE_DIR/scripts"
+  for script in install_local.sh install_local_swap.sh; do
+    if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/scripts/$script" ]; then
+      cp "$REPO_ROOT/scripts/$script" "$SHARE_DIR/scripts/$script"
+      chmod +x "$SHARE_DIR/scripts/$script"
+      ok "Installed support script → $SHARE_DIR/scripts/$script"
+      continue
+    fi
+
+    need curl "Install curl"
+    local base_url="${SUPPORT_BASE_URL:-https://raw.githubusercontent.com/${REPO}/${VERSION}/scripts}"
+    local url="${base_url}/${script}"
+    info "Downloading support script $script..."
+    curl -sSfL "$url" -o "$SHARE_DIR/scripts/$script" \
+      || fatal "Could not download support script: $url"
+    chmod +x "$SHARE_DIR/scripts/$script"
+    ok "Installed support script → $SHARE_DIR/scripts/$script"
+  done
+}
+
 # ── PATH setup ────────────────────────────────────────────────────────────────
 add_to_path() {
   local profile="$1"
@@ -229,6 +257,7 @@ else
 fi
 
 install_wezterm_lua
+install_support_scripts
 
 if [ "$PLATFORM" = "darwin" ]; then
   install_macos_app
@@ -238,6 +267,18 @@ fi
 setup_path
 
 # ── Verify ────────────────────────────────────────────────────────────────────
+verify_install() {
+  local missing=""
+  for bin in milliways milliwaysd milliwaysctl; do
+    if [ ! -x "$BIN_DIR/$bin" ]; then
+      missing="$missing $bin"
+    fi
+  done
+  [ -z "$missing" ] || fatal "Install incomplete; missing executable(s):$missing"
+}
+
+verify_install
+
 printf '\n'
 if "$BIN_DIR/milliways" --version &>/dev/null; then
   ver="$("$BIN_DIR/milliways" --version 2>/dev/null | head -1)"

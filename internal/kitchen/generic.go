@@ -47,6 +47,7 @@ var allowedCmds = map[string]bool{
 	"gpt":                    true,
 	"opencode":               true,
 	"gemini":                 true,
+	"copilot":                true,
 	"aider":                  true,
 	"goose":                  true,
 	"cline":                  true,

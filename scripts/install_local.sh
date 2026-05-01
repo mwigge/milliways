@@ -240,8 +240,63 @@ smoke_test() {
   return 1
 }
 
+smoke_mode() {
+  info "milliways local-model installer smoke mode"
+  mkdir -p "$HOME/.local/bin" "$LOG_DIR" "$MODEL_DIR"
+  MODEL_PATH="$MODEL_DIR/smoke-model.gguf"
+  : > "$MODEL_PATH"
+  cat > "$HOME/.local/bin/llama-server" <<'EOF'
+#!/usr/bin/env bash
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --host) host="$2"; shift 2 ;;
+    --port) port="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+host="${host:-127.0.0.1}"
+port="${port:-8765}"
+python3 - "$host" "$port" <<'PY'
+import json
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+host = sys.argv[1]
+port = int(sys.argv[2])
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/v1/models":
+            data = json.dumps({"data": [{"id": "smoke-local"}]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def log_message(self, *_):
+        return
+
+HTTPServer((host, port), Handler).serve_forever()
+PY
+EOF
+  chmod +x "$HOME/.local/bin/llama-server"
+  PATH="$HOME/.local/bin:$PATH"
+  write_launcher
+  smoke_test || fail "smoke local server did not respond"
+  ok "smoke local server installed"
+}
+
 # ---------------------------------------------------------------------------
 main() {
+  if [ "${MILLIWAYS_LOCAL_INSTALL_SMOKE:-0}" = "1" ]; then
+    smoke_mode
+    return
+  fi
+
   info "milliways local-model installer"
   info "OS:         $OS"
   info "Model:      $MODEL_REPO ($MODEL_QUANT) → alias '$MODEL_ALIAS'"
