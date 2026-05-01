@@ -69,3 +69,34 @@ jobs:
           /tmp/milliwaysctl agents --socket /tmp/state/sock
           /tmp/milliwaysctl status --socket /tmp/state/sock
           kill %1
+
+  # Full install-smoke on a native linux/amd64 host. This is the certification
+  # run: binary downloads from a local file:// release dir, source fallback
+  # (no emulation — Docker host IS amd64), and the deep CLI + session-switch
+  # smoke. Requires docker-in-docker (available on ubuntu-latest runners).
+  install-smoke-linux:
+    runs-on: ubuntu-latest
+    needs: go-build
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.26' }
+
+      # Build native linux/amd64 binaries directly — no cross-compilation
+      # needed because the runner IS amd64. CGO_ENABLED=1 for SQLite.
+      - name: Build linux/amd64 binaries
+        run: |
+          mkdir -p dist
+          for bin in milliways milliwaysd milliwaysctl; do
+            CGO_ENABLED=1 go build \
+              -ldflags "-X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo ci)" \
+              -o "dist/${bin}_linux_amd64" \
+              "./cmd/${bin}"
+          done
+
+      - name: Run install smoke (Ubuntu · Fedora · source-fallback · deep CLI)
+        run: |
+          export DIST_DIR="$GITHUB_WORKSPACE/dist"
+          bash scripts/smoke-linux-install.sh
