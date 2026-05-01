@@ -22,7 +22,7 @@ The core architecture is simple on paper: a daemon sits in the middle and handle
 graph TB
     subgraph "Your machine"
         T["milliways-term\n(wezterm fork)"]
-        C["milliways CLI\nchat REPL"]
+        C["milliways CLI\\nchat"]
         CTL["milliwaysctl\nops + install"]
         
         T -->|"tab = agent pane"| D
@@ -146,7 +146,7 @@ The terminal tab showed `↻ codex` briefly when the rotation happened — that'
 
 When you install milliways, you get three binaries:
 
-- **`milliways`** — the chat REPL and one-shot CLI dispatch. This is what you type in the terminal.
+- **`milliways`** — the chat and one-shot CLI dispatch. This is what you type in the terminal.
 - **`milliwaysd`** — the daemon. Starts automatically when you open a tab or run `milliways`.
 - **`milliwaysctl`** — the ops tool. Installs AI CLIs (`/install claude`), manages local models, queries metrics.
 
