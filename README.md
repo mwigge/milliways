@@ -20,7 +20,7 @@ curl -sSf https://raw.githubusercontent.com/mwigge/milliways/master/install.sh |
 
 Downloads pre-built binaries (`milliways`, `milliwaysd`, `milliwaysctl`) for your platform, adds `~/.local/bin` to your shell profile, and on macOS installs **MilliWays.app** to `/Applications`.
 
-**Certified on:** Ubuntu 24.04 · Fedora 41 · Arch Linux · macOS (arm64 + amd64)
+**Installation binaries tested for:** Ubuntu 24.04 · Fedora 41 · Arch Linux · macOS (arm64 + amd64)
 
 The installer has a source-build fallback: if no pre-built binary is available for your architecture, it clones the repo and compiles automatically (requires `git` and `go`).
 
