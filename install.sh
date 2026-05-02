@@ -289,7 +289,7 @@ install_wezterm_lua() {
 
 install_support_scripts() {
   mkdir -p "$SHARE_DIR/scripts"
-  for script in install_local.sh install_local_swap.sh install_feature_deps.sh; do
+  for script in install_local.sh install_local_swap.sh install_feature_deps.sh upgrade.sh; do
     if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/scripts/$script" ]; then
       cp "$REPO_ROOT/scripts/$script" "$SHARE_DIR/scripts/$script"
       chmod +x "$SHARE_DIR/scripts/$script"
