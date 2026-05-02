@@ -68,6 +68,13 @@ go install github.com/mwigge/milliways/cmd/milliways@latest
 /usr/share/milliways/scripts/
   install_local.sh        # local model server installer
   install_local_swap.sh   # llama-swap installer (hot swap)
+  install_feature_deps.sh # MemPalace, CodeGraph, python-pptx installer
+
+/usr/share/milliways/python/
+  bin/python              # app-managed Python venv for MemPalace + /pptx
+
+/usr/share/milliways/node/
+  bin/codegraph           # app-managed CodeGraph when not already installed
 ```
 
 ### Path 2: Binary install (curl one-liner fallback)
@@ -81,6 +88,13 @@ go install github.com/mwigge/milliways/cmd/milliways@latest
 ~/.local/share/milliways/scripts/
   install_local.sh
   install_local_swap.sh
+  install_feature_deps.sh
+
+~/.local/share/milliways/python/
+  bin/python
+
+~/.local/share/milliways/node/
+  bin/codegraph
 ```
 
 ### Created on first use (both paths)
@@ -95,14 +109,8 @@ go install github.com/mwigge/milliways/cmd/milliways@latest
 
 ~/.local/share/milliways/models/   # (after /install-local-server)
   *.gguf                  # downloaded model files
-```
 
-### Python packages (installed by the one-liner, required for full feature set)
-
-```
-~/.local/lib/python3.x/site-packages/
-  mempalace/              # project memory MCP server
-  pptx/                   # python-pptx (for /pptx command)
+~/.mempalace/             # user-writable MemPalace data store
 ```
 
 ---
@@ -661,14 +669,17 @@ Available metrics: `tokens_in`, `tokens_out`, `cost_usd`, `error_count`, `dispat
 
 ## Project memory (MemPalace + CodeGraph)
 
+The installer provisions fixed tool locations under the install share directory:
+`/usr/share/milliways` for native packages, or `~/.local/share/milliways` for the fallback one-liner install. MemPalace data stays in the user-writable `~/.mempalace` directory.
+
 ```bash
-export MILLIWAYS_MEMPALACE_MCP_CMD="python3"
-export MILLIWAYS_MEMPALACE_MCP_ARGS="-m mempalace.mcp_server --palace /path/to/.mempalace"
-export MILLIWAYS_CODEGRAPH_MCP_CMD="codegraph"
+export MILLIWAYS_MEMPALACE_MCP_CMD="/usr/share/milliways/python/bin/python"
+export MILLIWAYS_MEMPALACE_MCP_ARGS="-m mempalace.mcp_server --palace ~/.mempalace"
+export MILLIWAYS_CODEGRAPH_MCP_CMD="/usr/share/milliways/node/bin/codegraph"
 export MILLIWAYS_CODEGRAPH_MCP_ARGS="serve"
 ```
 
-Milliways injects relevant memories and code context before each dispatch when these are set.
+Those env vars are written automatically for one-liner installs. Native package installs can also be auto-detected from `/usr/share/milliways` without user config.
 
 ---
 

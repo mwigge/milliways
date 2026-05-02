@@ -198,7 +198,7 @@ func (l *chatLoop) handlePptx(topic string) {
 		fmt.Fprintf(l.out, "\n%s* pptx:%s running script…\n", color, reset)
 		runCtx, runCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer runCancel()
-			cmd := exec.CommandContext(runCtx, pythonForArtifacts(), tmpPath)
+		cmd := exec.CommandContext(runCtx, pythonForArtifacts(), tmpPath)
 		cmd.Dir = cwd
 		cmd.Env = safeScriptEnv()
 		out, runErr := cmd.CombinedOutput()

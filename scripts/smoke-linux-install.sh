@@ -41,6 +41,7 @@ run_case() {
   printf '\n==> %s: %s\n' "$label" "$image"
   docker run "${docker_args[@]}" \
     -v "$install_script:/tmp/install.sh:ro" \
+    -v "$repo_root/scripts/smoke-features.sh:/tmp/smoke-features.sh:ro" \
     -v "$release_dir:/release:ro" \
     -v "$support_release:/support:ro" \
     "$image" \
@@ -99,6 +100,7 @@ run_case() {
       test -S /tmp/mw-state/sock
       "$PREFIX/bin/milliwaysctl" ping --socket /tmp/mw-state/sock >/tmp/ping.json
       "$PREFIX/bin/milliwaysctl" status --socket /tmp/mw-state/sock >/tmp/status.json
+      MILLIWAYS_BIN="$PREFIX/bin" MILLIWAYS_STATE_DIR=/tmp/mw-feature-state bash /tmp/smoke-features.sh
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
       printf "PASS %s\n" "'"$label"'"
@@ -263,7 +265,7 @@ support_release="$tmp_root/support-release"
 mkdir -p "$full_release" "$empty_release" "$partial_release" "$support_release"
 cp "$dist_dir"/milliways*_linux_amd64 "$full_release"/
 cp "$dist_dir/milliways_linux_amd64" "$partial_release"/
-cp "$repo_root/scripts/install_local.sh" "$repo_root/scripts/install_local_swap.sh" "$support_release"/
+cp "$repo_root/scripts/install_local.sh" "$repo_root/scripts/install_local_swap.sh" "$repo_root/scripts/install_feature_deps.sh" "$support_release"/
 
 images=(
   "ubuntu:24.04|Ubuntu binary install"
