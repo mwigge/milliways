@@ -16,6 +16,10 @@ BIN_DIR="${MILLIWAYS_BIN:-}"
 STATE_DIR="${MILLIWAYS_STATE_DIR:-/tmp/mw-smoke-$$}"
 PASS=0; FAIL=0; SKIP=0
 
+# Ensure ~/.local/bin is on PATH — install.sh adds it to .bashrc but Docker
+# non-interactive shells don't source .bashrc.
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 pass() { printf '  \033[32m✓\033[0m %s\n' "$*"; PASS=$((PASS+1)); }
 fail() { printf '  \033[31m✗\033[0m %s\n' "$*"; FAIL=$((FAIL+1)); }
