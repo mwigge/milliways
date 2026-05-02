@@ -384,7 +384,11 @@ install_python_packages() {
     ok "MemPalace already installed"
   else
     info "Installing MemPalace (project memory)..."
-    $pip_cmd install --user --quiet mempalace \
+    # --break-system-packages required on distros with PEP 668 (Ubuntu 24.04+,
+    # Fedora 38+) that block pip --user without it.
+    $pip_cmd install --user --quiet --break-system-packages mempalace 2>/dev/null \
+      || $pip_cmd install --user --quiet mempalace
+    python3 -c "import mempalace" 2>/dev/null \
       && ok "MemPalace installed" \
       || warn "MemPalace install failed — run: pip3 install --user mempalace"
   fi
@@ -394,7 +398,9 @@ install_python_packages() {
     ok "python-pptx already installed"
   else
     info "Installing python-pptx (for /pptx command)..."
-    $pip_cmd install --user --quiet python-pptx \
+    $pip_cmd install --user --quiet --break-system-packages python-pptx 2>/dev/null \
+      || $pip_cmd install --user --quiet python-pptx
+    python3 -c "import pptx" 2>/dev/null \
       && ok "python-pptx installed" \
       || warn "python-pptx install failed — run: pip3 install --user python-pptx"
   fi

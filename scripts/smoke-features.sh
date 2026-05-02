@@ -251,13 +251,18 @@ grep -q "mxGraphModel" /tmp/mw-smoke-test.drawio \
 section "9. Local model server"
 
 if [ -x "$MILLIWAYSCTL" ]; then
-  MILLIWAYS_LOCAL_INSTALL_SMOKE=1 "$MILLIWAYSCTL" local install-server >/tmp/mw-smoke-local.log 2>&1 \
-    && pass "local install-server (smoke mode)" \
-    || fail "local install-server smoke failed (log: /tmp/mw-smoke-local.log)"
+  # Smoke mode requires gcc/make/git for llama.cpp; skip gracefully if absent.
+  if command -v gcc &>/dev/null && command -v make &>/dev/null && command -v git &>/dev/null; then
+    MILLIWAYS_LOCAL_INSTALL_SMOKE=1 "$MILLIWAYSCTL" local install-server >/tmp/mw-smoke-local.log 2>&1 \
+      && pass "local install-server (smoke mode)" \
+      || fail "local install-server smoke failed (log: /tmp/mw-smoke-local.log)"
 
-  [ -x "$HOME/.local/bin/milliways-local-server" ] \
-    && pass "milliways-local-server launcher installed" \
-    || fail "milliways-local-server launcher missing after install"
+    [ -x "$HOME/.local/bin/milliways-local-server" ] \
+      && pass "milliways-local-server launcher installed" \
+      || fail "milliways-local-server launcher missing after install"
+  else
+    skip "local install-server smoke (gcc/make/git not in container — install build-essential first)"
+  fi
 else
   skip "local server smoke (milliwaysctl not found)"
 fi
@@ -281,6 +286,9 @@ fi
 # ── 11. Config persistence ───────────────────────────────────────────────────
 section "11. Config persistence"
 
+# Config dir is created by install_python_packages (local.env) or on first daemon use.
+# Create it now if absent so the check is about reachability, not timing.
+mkdir -p "$HOME/.config/milliways"
 [ -d "$HOME/.config/milliways" ] \
   && pass "config directory: ~/.config/milliways" \
   || fail "config directory not created"

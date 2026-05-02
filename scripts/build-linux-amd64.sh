@@ -63,8 +63,8 @@ docker run --rm \
     install -Dm755 dist/milliways_linux_amd64       "$pkg_root/usr/bin/milliways"
     install -Dm755 dist/milliwaysd_linux_amd64      "$pkg_root/usr/bin/milliwaysd"
     install -Dm755 dist/milliwaysctl_linux_amd64    "$pkg_root/usr/bin/milliwaysctl"
-    install -Dm755 scripts/install_local.sh         "$pkg_root/usr/share/milliways/install_local.sh"
-    install -Dm755 scripts/install_local_swap.sh    "$pkg_root/usr/share/milliways/install_local_swap.sh"
+    install -Dm755 scripts/install_local.sh         "$pkg_root/usr/share/milliways/scripts/install_local.sh"
+    install -Dm755 scripts/install_local_swap.sh    "$pkg_root/usr/share/milliways/scripts/install_local_swap.sh"
 
     # Post-install script: runs after the package is placed on disk.
     # Uses printf to avoid heredoc quoting issues inside single-quoted docker exec.
