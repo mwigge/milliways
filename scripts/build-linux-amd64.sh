@@ -67,12 +67,18 @@ docker run --rm \
     install -Dm755 scripts/install_local_swap.sh    "$pkg_root/usr/share/milliways/scripts/install_local_swap.sh"
     install -Dm755 scripts/install_feature_deps.sh  "$pkg_root/usr/share/milliways/scripts/install_feature_deps.sh"
 
+    # Agent toolkit bundle (if the sibling directory was mounted by the caller)
+    if [ -d /src/agent-toolkit-bundle ] && [ -f /src/agent-toolkit-bundle/skill-rules.json ]; then
+      mkdir -p "$pkg_root/usr/share/milliways/agent-toolkit"
+      cp -r /src/agent-toolkit-bundle/. "$pkg_root/usr/share/milliways/agent-toolkit/"
+    fi
+
     # Post-install script: runs after the package is placed on disk.
     # Uses printf to avoid heredoc quoting issues inside single-quoted docker exec.
-    printf '%s\n' \
-      '#!/bin/sh' \
-      'SHARE_DIR=/usr/share/milliways MILLIWAYS_WRITE_LOCAL_ENV=0 /usr/share/milliways/scripts/install_feature_deps.sh \' \
-      '  || echo "warning: Milliways feature dependency install failed; run /usr/share/milliways/scripts/install_feature_deps.sh"' \
+    printf "%s\n" \
+      "#!/bin/sh" \
+      "SHARE_DIR=/usr/share/milliways MILLIWAYS_WRITE_LOCAL_ENV=0 /usr/share/milliways/scripts/install_feature_deps.sh \\" \
+      "  || echo \"warning: Milliways feature dependency install failed; run /usr/share/milliways/scripts/install_feature_deps.sh\"" \
       > /tmp/mw-pkg/postinstall.sh
     chmod +x /tmp/mw-pkg/postinstall.sh
 
