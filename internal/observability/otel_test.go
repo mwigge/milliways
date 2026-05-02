@@ -135,6 +135,51 @@ func TestOTelSinkFallsBackWhenInitFails(t *testing.T) {
 	sink.Emit(Event{Kind: "segment_end", SegmentID: "segment-1", At: time.Now()})
 }
 
+func TestDefaultOTelInitUsesOTLPWhenEndpointSet(t *testing.T) {
+	// t.Setenv requires no t.Parallel — env mutation is process-wide.
+
+	// Use an unreachable endpoint to exercise the OTLP code path.
+	// OTLP HTTP exporters connect lazily (on flush), so init must succeed.
+	t.Setenv("MILLIWAYS_OTEL_ENDPOINT", "http://127.0.0.1:14318")
+
+	state, err := defaultOTelInit()
+	if err != nil {
+		t.Fatalf("defaultOTelInit with OTLP endpoint: %v", err)
+	}
+	if state.tracerProvider == nil {
+		t.Fatal("expected non-nil tracerProvider when OTLP endpoint is set")
+	}
+	if state.meterProvider == nil {
+		t.Fatal("expected non-nil meterProvider when OTLP endpoint is set")
+	}
+	if state.dispatchTotal == nil {
+		t.Fatal("expected non-nil dispatchTotal counter")
+	}
+	// Verify the OTLP code path was taken by inspecting the exported kind.
+	if got := state.exporterKind; got != "otlp" {
+		t.Errorf("exporterKind = %q, want %q", got, "otlp")
+	}
+}
+
+func TestDefaultOTelInitUsesStdoutWhenNoEndpoint(t *testing.T) {
+	// Ensure the env var is absent for this test.
+	t.Setenv("MILLIWAYS_OTEL_ENDPOINT", "")
+
+	state, err := defaultOTelInit()
+	if err != nil {
+		t.Fatalf("defaultOTelInit without endpoint: %v", err)
+	}
+	if state.tracerProvider == nil {
+		t.Fatal("expected non-nil tracerProvider for stdout path")
+	}
+	if state.meterProvider == nil {
+		t.Fatal("expected non-nil meterProvider for stdout path")
+	}
+	if got := state.exporterKind; got != "stdout" {
+		t.Errorf("exporterKind = %q, want %q", got, "stdout")
+	}
+}
+
 func resetOTelForTest(t *testing.T) {
 	t.Helper()
 

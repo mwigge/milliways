@@ -57,6 +57,12 @@ func main() {
 	if sub == "install" {
 		os.Exit(runInstall(rest, os.Stdout, os.Stderr))
 	}
+	if sub == "upgrade" {
+		os.Exit(runUpgrade(rest, os.Stdout, os.Stderr))
+	}
+	if sub == "codegraph" {
+		os.Exit(runCodegraph(rest, os.Stdout, os.Stderr))
+	}
 
 	fs := flag.NewFlagSet(sub, flag.ExitOnError)
 	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
@@ -379,7 +385,8 @@ var observeAgents = []string{"claude", "codex", "copilot", "minimax", "local"}
 // Format: {"v":"<version>","p":"<cwd>","c":"<current_agent>","a":["claude","codex","copilot","minimax"]}
 //
 // This file is read by the wezterm Lua sidecar to render the full status bar:
-//   [≈≈ MW v0.x] [path] [●claude] [1:C 2:X 3:G 4:M 5:L]
+//
+//	[≈≈ MW v0.x] [path] [●claude] [1:C 2:X 3:G 4:M 5:L]
 //
 // Also writes a heartbeat file every 30s. On startup, if the heartbeat is
 // stale by more than 60s, the system was asleep — a "woke_ago" field is
@@ -518,7 +525,7 @@ func runObserve(socket, stateDir string, debounceMs int) {
 		var frame struct {
 			T        string `json:"t"`
 			Snapshot struct {
-				Proto       any    `json:"proto"`
+				Proto       any     `json:"proto"`
 				ActiveAgent *string `json:"active_agent"`
 			} `json:"snapshot"`
 		}
@@ -738,6 +745,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  local <verb> [args...]                     — local-model bootstrap (try `milliwaysctl local --help`)")
 	fmt.Fprintln(os.Stderr, "  opsx <verb> [args...]                      — openspec wrapper (try `milliwaysctl opsx --help`)")
 	fmt.Fprintln(os.Stderr, "  install <client>                           — install upstream CLI (claude|codex|copilot|gemini|local)")
+	fmt.Fprintln(os.Stderr, "  upgrade [--check] [--yes] [--version <tag>] — upgrade milliways to the latest release")
+	fmt.Fprintln(os.Stderr, "  codegraph <verb> [args...]                 — CodeGraph index management (try `milliwaysctl codegraph --help`)")
 }
 
 func die(f string, a ...any) {
