@@ -63,6 +63,9 @@ func main() {
 	if sub == "codegraph" {
 		os.Exit(runCodegraph(rest, os.Stdout, os.Stderr))
 	}
+	if sub == "check" {
+		os.Exit(runCheck(rest, os.Stdout, os.Stderr))
+	}
 
 	fs := flag.NewFlagSet(sub, flag.ExitOnError)
 	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
@@ -747,6 +750,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  install <client>                           — install upstream CLI (claude|codex|copilot|gemini|local)")
 	fmt.Fprintln(os.Stderr, "  upgrade [--check] [--yes] [--version <tag>] — upgrade milliways to the latest release")
 	fmt.Fprintln(os.Stderr, "  codegraph <verb> [args...]                 — CodeGraph index management (try `milliwaysctl codegraph --help`)")
+	fmt.Fprintln(os.Stderr, "  check                                      — health check — verify all features are installed")
 }
 
 func die(f string, a ...any) {

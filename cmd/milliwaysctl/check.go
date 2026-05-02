@@ -37,7 +37,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -155,22 +154,15 @@ func checkBinary(label, name string) checkItem {
 	}
 }
 
-// checkDaemon runs milliwaysd --version and reports the result.
+// checkDaemon verifies milliwaysd is present and executable.
+// milliwaysd has no --version flag; we just check the binary exists.
 func checkDaemon() checkItem {
 	const label = "Daemon (milliwaysd)"
 	path, err := exec.LookPath("milliwaysd")
 	if err != nil {
-		return checkItem{label: label, status: statusWarn, detail: "milliwaysd not on PATH — skip version probe"}
+		return checkItem{label: label, status: statusWarn, detail: "milliwaysd not on PATH"}
 	}
-	out, err := exec.Command(path, "--version").CombinedOutput() //nolint:gosec // path comes from LookPath
-	if err != nil {
-		return checkItem{label: label, status: statusFail, detail: fmt.Sprintf("--version failed: %v", err)}
-	}
-	detail := strings.TrimSpace(string(out))
-	if detail == "" {
-		detail = "exit 0"
-	}
-	return checkItem{label: label, status: statusPass, detail: detail}
+	return checkItem{label: label, status: statusPass, detail: path}
 }
 
 // venvCandidates returns the list of Python venv paths to probe, in
