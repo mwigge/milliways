@@ -16,12 +16,15 @@ package observability
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/metric"
@@ -100,6 +103,8 @@ type otelState struct {
 	dispatchTotal    metric.Int64Counter
 	dispatchDuration metric.Float64Histogram
 	failoverTotal    metric.Int64Counter
+	// exporterKind records which exporter backend was selected: "otlp" or "stdout".
+	exporterKind string
 }
 
 type segmentState struct {
@@ -155,6 +160,67 @@ func (s *OTelSink) Emit(evt Event) {
 }
 
 func defaultOTelInit() (otelState, error) {
+	endpoint := os.Getenv("MILLIWAYS_OTEL_ENDPOINT")
+	if endpoint != "" {
+		return defaultOTelInitOTLP(endpoint)
+	}
+	return defaultOTelInitStdout()
+}
+
+// defaultOTelInitOTLP configures OTLP HTTP exporters targeting endpoint.
+// The OTLP HTTP exporter appends /v1/traces and /v1/metrics automatically.
+// Connections are established lazily on the first flush, so init succeeds
+// even when the collector is not yet reachable.
+func defaultOTelInitOTLP(endpoint string) (otelState, error) {
+	ctx := context.Background()
+
+	traceExporter, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(endpoint))
+	if err != nil {
+		return otelState{}, fmt.Errorf("otlp trace exporter: %w", err)
+	}
+	metricExporter, err := otlpmetrichttp.New(ctx, otlpmetrichttp.WithEndpointURL(endpoint))
+	if err != nil {
+		return otelState{}, fmt.Errorf("otlp metric exporter: %w", err)
+	}
+
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(traceExporter))
+	reader := sdkmetric.NewPeriodicReader(metricExporter)
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	otel.SetTracerProvider(tracerProvider)
+	otel.SetMeterProvider(meterProvider)
+
+	meter := otel.GetMeterProvider().Meter(instrumentationName)
+	dispatchTotal, err := meter.Int64Counter("milliways.dispatch.total")
+	if err != nil {
+		return otelState{}, err
+	}
+	dispatchDuration, err := meter.Float64Histogram(
+		"milliways.dispatch.duration_seconds",
+		metric.WithUnit("s"),
+	)
+	if err != nil {
+		return otelState{}, err
+	}
+	failoverTotal, err := meter.Int64Counter("milliways.failover.total")
+	if err != nil {
+		return otelState{}, err
+	}
+
+	return otelState{
+		tracerProvider:   tracerProvider,
+		meterProvider:    meterProvider,
+		tracer:           otel.GetTracerProvider().Tracer(instrumentationName),
+		meter:            meter,
+		dispatchTotal:    dispatchTotal,
+		dispatchDuration: dispatchDuration,
+		failoverTotal:    failoverTotal,
+		exporterKind:     "otlp",
+	}, nil
+}
+
+// defaultOTelInitStdout configures stdout exporters (the original behaviour).
+func defaultOTelInitStdout() (otelState, error) {
 	traceExporter, err := stdouttrace.New(stdouttrace.WithWriter(os.Stdout))
 	if err != nil {
 		return otelState{}, err
@@ -196,8 +262,8 @@ func defaultOTelInit() (otelState, error) {
 		dispatchTotal:    dispatchTotal,
 		dispatchDuration: dispatchDuration,
 		failoverTotal:    failoverTotal,
+		exporterKind:     "stdout",
 	}, nil
-
 }
 
 func newNoopOTelState() otelState {

@@ -94,6 +94,8 @@ var chatCtlAliases = map[string][]string{
 	// The dispatcher appends the rest of the line (the client name) so a
 	// single alias entry covers /install claude, /install codex, etc.
 	"install": {"install"},
+	// Upgrade milliways itself
+	"upgrade": {"upgrade"},
 	// Local-model bootstrap
 	"install-local-server": {"local", "install-server"},
 	"install-local-swap":   {"local", "install-swap"},
@@ -109,6 +111,8 @@ var chatCtlAliases = map[string][]string{
 	"opsx-show":     {"opsx", "show"},
 	"opsx-archive":  {"opsx", "archive"},
 	"opsx-validate": {"opsx", "validate"},
+	// CodeGraph index
+	"repoindex": {"codegraph", "index"},
 }
 
 // clientSlashCommands lists the native slash commands each underlying CLI
@@ -120,10 +124,10 @@ var clientSlashCommands = map[string][]string{
 		"/diff", "/pr", "/review", "/plan",
 		"/delegate", "/research", "/resume", "/compact", "/share",
 	},
-	"pool":   {"/mode"},
-	"claude": {"/compact", "/clear"},
-	"codex":  {"/compact"},
-	"gemini": {"/clear", "/chat"},
+	"pool":    {"/mode"},
+	"claude":  {"/compact", "/clear"},
+	"codex":   {"/compact"},
+	"gemini":  {"/clear", "/chat"},
 	"local":   {},
 	"minimax": {},
 }
@@ -188,10 +192,15 @@ func buildCompleter(agentID string) readline.AutoCompleter {
 		readline.PcItem("/quota"),
 		readline.PcItem("/help"),
 		readline.PcItem("/exit"),
-		// Install
+		// Install / Upgrade
 		readline.PcItem("/install", installClients...),
 		readline.PcItem("/install-local-server"),
 		readline.PcItem("/install-local-swap"),
+		readline.PcItem("/upgrade",
+			readline.PcItem("--check"),
+			readline.PcItem("--yes"),
+			readline.PcItem("--version"),
+		),
 		readline.PcItem("/list-local-models"),
 		readline.PcItem("/switch-local-server",
 			readline.PcItem("llama-server"),
@@ -218,6 +227,8 @@ func buildCompleter(agentID string) readline.AutoCompleter {
 		readline.PcItem("/opsx-show"),
 		readline.PcItem("/opsx-archive"),
 		readline.PcItem("/opsx-validate"),
+		// CodeGraph
+		readline.PcItem("/repoindex"),
 		// Artifact + context commands (milliways-level, work for all runners).
 		readline.PcItem("/ring"),
 		readline.PcItem("/history"),
@@ -272,14 +283,14 @@ func runChat(ctx context.Context) error {
 	defer rl.Close()
 
 	loop := &chatLoop{
-		client:   client,
-		sess:     nil, // landing zone — no active agent until /<runner> picks one
-		rl:       rl,
+		client:    client,
+		sess:      nil, // landing zone — no active agent until /<runner> picks one
+		rl:        rl,
 		completer: sc,
-		out:      os.Stdout,
-		errw:     os.Stderr,
-		ring:     append([]string(nil), chatSwitchableAgents...), // default ring
-		rotateCh: make(chan string, 1),
+		out:       os.Stdout,
+		errw:      os.Stderr,
+		ring:      append([]string(nil), chatSwitchableAgents...), // default ring
+		rotateCh:  make(chan string, 1),
 	}
 
 	// Wire palace recall for daemon runner sessions. Resolve the project from
@@ -445,7 +456,7 @@ type chatLoop struct {
 	errw      io.Writer
 	// palace, when non-nil, is queried on each user prompt to inject
 	// relevant project memory as a context prefix before the runner sees it.
-	palace   *mempalace.Client
+	palace *mempalace.Client
 	// artifact collects the assistant response text for /pptx, /drawio, /compact.
 	artifact artifactChState
 
@@ -454,8 +465,8 @@ type chatLoop struct {
 	// reconfigured with /ring <r1,r2,...>. Empty = auto-rotation disabled.
 	// ringMu protects ring and exhausted which are read by drainStream's
 	// goroutine and written by the main readline goroutine.
-	ringMu   sync.Mutex
-	ring     []string
+	ringMu    sync.Mutex
+	ring      []string
 	exhausted map[string]bool // runners that hit session limit this session
 	// rotateCh carries auto-rotation requests from drainStream to the main
 	// readline goroutine so switchAgent is always called from one goroutine.
@@ -552,7 +563,7 @@ func (l *chatLoop) run(ctx context.Context) error {
 // content deltas to stdout. Recognised event types:
 //   - data       — base64-encoded content; write decoded bytes to stdout
 //   - chunk_end  — end of one prompt response; print a trailing newline
-//                  if the runner didn't, clear busy
+//     if the runner didn't, clear busy
 //   - err        — runner error; print and clear busy
 //   - rate_limit — surface as inline notice
 //   - end        — agent session closed
@@ -1714,9 +1725,13 @@ func (l *chatLoop) printQuota() {
 func (l *chatLoop) printHelp() {
 	l.printLanding() // client list + daemon status
 
-	fmt.Fprintln(l.out, "Client install:")
+	fmt.Fprintln(l.out, "Client install / upgrade:")
 	fmt.Fprintln(l.out, "  /install <client>             claude | codex | copilot | gemini | local")
 	fmt.Fprintln(l.out, "  /install                      list supported install routes")
+	fmt.Fprintln(l.out, "  /upgrade                      upgrade milliways to the latest release")
+	fmt.Fprintln(l.out, "  /upgrade --check              check if a newer version is available (no install)")
+	fmt.Fprintln(l.out, "  /upgrade --yes                upgrade without confirmation prompt")
+	fmt.Fprintln(l.out, "  /upgrade --version <tag>      upgrade to a specific version (e.g. v1.3.0)")
 	fmt.Fprintln(l.out)
 
 	fmt.Fprintln(l.out, "Local-model bootstrap:")
@@ -1745,6 +1760,10 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /opsx-show <change>           show full change detail")
 	fmt.Fprintln(l.out, "  /opsx-archive <change>        archive a completed change")
 	fmt.Fprintln(l.out, "  /opsx-validate <change>       validate a change's spec")
+	fmt.Fprintln(l.out)
+
+	fmt.Fprintln(l.out, "CodeGraph:")
+	fmt.Fprintln(l.out, "  /repoindex [path]             index the current repo with CodeGraph (default: cwd)")
 	fmt.Fprintln(l.out)
 
 	fmt.Fprintln(l.out, "Session:")
