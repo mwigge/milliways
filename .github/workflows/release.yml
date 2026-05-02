@@ -32,6 +32,17 @@ jobs:
           OUT_DIR=$GITHUB_WORKSPACE/dist \
             bash scripts/build-linux-amd64.sh
 
+      # ── Package agent toolkit bundle (if sibling repo is present) ────────
+      - name: Package agent toolkit bundle
+        continue-on-error: true
+        run: |
+          if [ -d "../agent-toolkit-bundle" ] && [ -f "../agent-toolkit-bundle/skill-rules.json" ]; then
+            tar -czf dist/milliways-agent-toolkit.tar.gz -C ../agent-toolkit-bundle .
+            echo "Packaged agent toolkit bundle"
+          else
+            echo "agent-toolkit-bundle sibling not found — skipping toolkit asset"
+          fi
+
       # ── Upload linux/amd64 assets to the release ──────────────────────────
       - name: Upload release assets
         env:
@@ -50,6 +61,9 @@ jobs:
           for pkg in dist/milliways_*.deb dist/milliways-*.rpm dist/milliways-*.pkg.tar.zst; do
             [ -f "$pkg" ] && ASSETS+=("$pkg")
           done
+
+          # Agent toolkit bundle
+          [ -f dist/milliways-agent-toolkit.tar.gz ] && ASSETS+=(dist/milliways-agent-toolkit.tar.gz)
 
           if gh release view "$TAG" --json tagName &>/dev/null; then
             echo "Release $TAG already exists — uploading assets only"

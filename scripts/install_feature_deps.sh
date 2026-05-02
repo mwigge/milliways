@@ -121,10 +121,60 @@ write_local_env() {
   set_local_env "MILLIWAYS_CODEGRAPH_MCP_CMD" "$codegraph_cmd" "$env_file"
   set_local_env "MILLIWAYS_CODEGRAPH_MCP_ARGS" "serve" "$env_file"
   set_local_env "MILLIWAYS_PATH" "$NODE_PREFIX/bin:$PY_VENV/bin" "$env_file"
+  if [ -f "$SHARE_DIR/agent-toolkit/skill-rules.json" ]; then
+    set_local_env "MILLIWAYS_AGENTS_DIR" "$SHARE_DIR/agent-toolkit" "$env_file"
+  fi
   ok "Feature config written -> $env_file"
+}
+
+ensure_agent_toolkit() {
+  local toolkit_dir="$SHARE_DIR/agent-toolkit"
+
+  if [ -f "$toolkit_dir/skill-rules.json" ]; then
+    ok "Agent toolkit already installed in $toolkit_dir"
+    return 0
+  fi
+
+  mkdir -p "$toolkit_dir"
+
+  # Strategy 1: sibling directory (dev / CI with sibling mounted)
+  local script_dir sibling_dir
+  script_dir="$(CDPATH= cd -- "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+  sibling_dir="$(CDPATH= cd -- "$script_dir/../.." 2>/dev/null && pwd)/agent-toolkit-bundle"
+  if [ -f "$sibling_dir/skill-rules.json" ]; then
+    cp -r "$sibling_dir/." "$toolkit_dir/"
+    ok "Agent toolkit installed from sibling: $toolkit_dir"
+    return 0
+  fi
+
+  # Strategy 2: download from GitHub release
+  if command -v gh >/dev/null 2>&1; then
+    info "Downloading agent toolkit from GitHub..."
+    gh release download latest \
+      --repo mwigge/milliways \
+      --pattern "milliways-agent-toolkit.tar.gz" \
+      --dir /tmp/mw-toolkit \
+      --clobber 2>/dev/null \
+    && tar -xzf /tmp/mw-toolkit/milliways-agent-toolkit.tar.gz -C "$toolkit_dir" --strip-components=1 \
+    && rm -rf /tmp/mw-toolkit \
+    && ok "Agent toolkit downloaded: $toolkit_dir" \
+    && return 0
+  fi
+
+  # Strategy 3: git clone
+  if command -v git >/dev/null 2>&1; then
+    info "Cloning agent toolkit..."
+    git clone --depth=1 https://github.com/mwigge/agent-toolkit-bundle.git "$toolkit_dir" 2>/dev/null \
+      && ok "Agent toolkit cloned: $toolkit_dir" \
+      && return 0
+  fi
+
+  warn "Agent toolkit not installed — skills and agents will not be available"
+  warn "  Run: git clone https://github.com/mwigge/agent-toolkit-bundle $toolkit_dir"
 }
 
 install_system_deps
 ensure_python_features
 ensure_codegraph
+ensure_agent_toolkit
 write_local_env

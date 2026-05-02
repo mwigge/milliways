@@ -49,6 +49,12 @@ var allowedSetenvKeys = map[string]bool{
 	"MILLIWAYS_CODEGRAPH_MCP_CMD":   true,
 	"MILLIWAYS_CODEGRAPH_MCP_ARGS":  true,
 	"MILLIWAYS_CODEGRAPH_WORKSPACE": true,
+	// Agent toolkit — skill routing and agent definitions.
+	"MILLIWAYS_AGENTS_DIR": true,
+	"MILLIWAYS_RULES_DIR":  true,
+	// Observability export.
+	"MILLIWAYS_OTEL_ENDPOINT": true,
+	"MILLIWAYS_OTEL_PROTOCOL": true,
 	// Endpoint overrides
 	"MINIMAX_API_URL":          true,
 	"MINIMAX_ENDPOINT":         true,
