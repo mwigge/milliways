@@ -343,6 +343,7 @@ fi
 
 install_wezterm_lua
 install_support_scripts
+install_python_packages
 
 if [ "$PLATFORM" = "darwin" ]; then
   install_macos_app
@@ -351,11 +352,71 @@ fi
 
 setup_path
 
+# ── MemPalace — shared project memory ────────────────────────────────────────
+# MemPalace is the MCP server that gives every runner the same project memory.
+# Without it, context is not shared across runner switches. It is a Python
+# package; we install it with pip3 --user so it works without root and does
+# not touch the system Python. SKIP_MEMPALACE=1 to opt out.
+# install_python_packages installs the Python packages milliways features
+# depend on. Soft-failure throughout: if Python or pip is absent the install
+# still completes; each missing package is warned but not fatal.
+install_python_packages() {
+  [ "${SKIP_PYTHON_PKGS:-0}" = "1" ] && return 0
+  if ! command -v python3 &>/dev/null; then
+    warn "python3 not found — skipping Python packages (MemPalace + /pptx will not work)"
+    warn "  Install python3 then run: pip3 install --user mempalace python-pptx"
+    return 0
+  fi
+
+  local pip_cmd=""
+  if command -v pip3 &>/dev/null; then
+    pip_cmd="pip3"
+  elif python3 -m pip --version &>/dev/null 2>&1; then
+    pip_cmd="python3 -m pip"
+  else
+    warn "pip not found — skipping Python packages"
+    warn "  Install pip3 then run: pip3 install --user mempalace python-pptx"
+    return 0
+  fi
+
+  # ── MemPalace: shared project memory MCP server ───────────────────────────
+  if python3 -c "import mempalace" 2>/dev/null; then
+    ok "MemPalace already installed"
+  else
+    info "Installing MemPalace (project memory)..."
+    $pip_cmd install --user --quiet mempalace \
+      && ok "MemPalace installed" \
+      || warn "MemPalace install failed — run: pip3 install --user mempalace"
+  fi
+
+  # ── python-pptx: required by /pptx artifact command ──────────────────────
+  if python3 -c "import pptx" 2>/dev/null; then
+    ok "python-pptx already installed"
+  else
+    info "Installing python-pptx (for /pptx command)..."
+    $pip_cmd install --user --quiet python-pptx \
+      && ok "python-pptx installed" \
+      || warn "python-pptx install failed — run: pip3 install --user python-pptx"
+  fi
+
+  # Write MemPalace config entry into local.env so milliwaysd auto-connects.
+  local cfg_dir="$HOME/.config/milliways"
+  local env_file="$cfg_dir/local.env"
+  mkdir -p "$cfg_dir"
+  if ! grep -q "MILLIWAYS_MEMPALACE_MCP_CMD" "$env_file" 2>/dev/null; then
+    printf '\n# MemPalace — project memory (injected before every prompt)\n' >> "$env_file"
+    printf 'MILLIWAYS_MEMPALACE_MCP_CMD=python3 -m mempalace.mcp_server\n'  >> "$env_file"
+    printf 'MILLIWAYS_MEMPALACE_MCP_ARGS=--palace %s/.mempalace\n' "$HOME"  >> "$env_file"
+    ok "MemPalace config written → $env_file"
+  fi
+}
+
 # ── Verify ────────────────────────────────────────────────────────────────────
 verify_install() {
   local missing=""
   for bin in milliways milliwaysd milliwaysctl; do
-    if [ ! -x "$BIN_DIR/$bin" ]; then
+    # Native package installs to /usr/bin; binary/source install to $BIN_DIR.
+    if ! command -v "$bin" &>/dev/null && [ ! -x "$BIN_DIR/$bin" ]; then
       missing="$missing $bin"
     fi
   done
@@ -365,8 +426,9 @@ verify_install() {
 verify_install
 
 printf '\n'
-if "$BIN_DIR/milliways" --version &>/dev/null; then
-  ver="$("$BIN_DIR/milliways" --version 2>/dev/null | head -1)"
+mw_bin="$(command -v milliways 2>/dev/null || echo "$BIN_DIR/milliways")"
+if "$mw_bin" --version &>/dev/null; then
+  ver="$("$mw_bin" --version 2>/dev/null | head -1)"
   ok "milliways ready: $ver"
 else
   warn "Installed to $BIN_DIR — restart your shell or run:"
