@@ -20,6 +20,12 @@ curl -sSf https://raw.githubusercontent.com/mwigge/milliways/master/install.sh |
 
 Auto-detects your distro and installs the right package. On macOS also installs **MilliWays.app** to `/Applications`.
 
+The installer also sets up all optional features in one shot: MemPalace (project memory), python-pptx (`/pptx`), CodeGraph (code intelligence), and the agent toolkit (20+ agents + 50+ skills). Verify everything installed correctly with:
+
+```bash
+milliwaysctl check
+```
+
 **Installation binaries tested for:** Ubuntu 24.04 · Fedora 41 · Arch Linux · macOS (arm64 + amd64)
 
 ### Linux — native packages (amd64)
@@ -51,6 +57,19 @@ cd milliways
 
 ```bash
 go install github.com/mwigge/milliways/cmd/milliways@latest
+```
+
+### Upgrade
+
+```bash
+milliwaysctl upgrade          # upgrade to latest release
+milliwaysctl upgrade --check  # check if a newer version is available without installing
+```
+
+Or use the slash command inside the REPL:
+
+```
+/upgrade
 ```
 
 ---
@@ -641,17 +660,13 @@ CLI runners (claude, codex, copilot, gemini, pool) emit one span per subprocess 
 **Configure the OTel export:**
 
 ```bash
-# Jaeger / Honeycomb / any OTLP collector
-export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
-
-# Stdout (default when no endpoint is set)
-export OTEL_TRACES_EXPORTER=console
-
-# Service name shown in traces
-export OTEL_SERVICE_NAME=milliways
+# Export to Jaeger, Tempo, Honeycomb, or any OTLP-compatible collector
+export MILLIWAYS_OTEL_ENDPOINT=http://localhost:4318
 ```
 
-Without `OTEL_EXPORTER_OTLP_ENDPOINT` set, traces are written to stdout in JSON — useful for local debugging with `milliways 2>&1 | jq 'select(.Name)'`.
+Set it once with `/login MILLIWAYS_OTEL_ENDPOINT http://localhost:4318` and it persists across restarts in `~/.config/milliways/local.env`.
+
+Without `MILLIWAYS_OTEL_ENDPOINT` set, spans are written to stdout in JSON — useful for local debugging with `milliways 2>&1 | jq 'select(.Name)'`.
 
 ### Metrics store
 
@@ -680,6 +695,23 @@ export MILLIWAYS_CODEGRAPH_MCP_ARGS="serve"
 ```
 
 Those env vars are written automatically for one-liner installs. Native package installs can also be auto-detected from `/usr/share/milliways` without user config.
+
+### Index your repo with CodeGraph
+
+CodeGraph provides live symbol search and call-graph context. After installing, index your workspace:
+
+```bash
+milliwaysctl codegraph index          # index current directory
+milliwaysctl codegraph index /path    # index a specific path
+```
+
+Or use the slash command inside the REPL:
+
+```
+/repoindex
+```
+
+The indexed path is written to `MILLIWAYS_CODEGRAPH_WORKSPACE` in `~/.config/milliways/local.env` and picked up automatically on the next prompt.
 
 ---
 
@@ -860,27 +892,25 @@ CLI-based runners (claude/codex/copilot/gemini/pool) inherit tool execution from
 
 ## Agent toolkit
 
-milliways can load agent role definitions and skill modules from a directory you control:
+milliways bundles [agent-toolkit-bundle](https://github.com/mwigge/agent-toolkit-bundle) — 20+ agent role definitions and 50+ keyword-routed skills for Claude Code, OpenCode, and Codex. The one-liner installer installs it automatically alongside the binaries.
+
+Verify it's active:
 
 ```bash
-export MILLIWAYS_AGENTS_DIR=~/path/to/your/agents
+milliwaysctl check   # Agent toolkit row should show [PASS]
 ```
 
-[agent-toolkit-bundle](https://github.com/mwigge/agent-toolkit-bundle) is a ready-made toolkit with 20 agents and 50+ skills for Claude Code, OpenCode, and Codex.
-
-### Install
+If it shows `[WARN] not installed`, run:
 
 ```bash
-git clone https://github.com/mwigge/agent-toolkit-bundle ~/agent-toolkit-bundle
+bash "$(command -v milliwaysctl | xargs dirname | xargs dirname)/share/milliways/scripts/install_feature_deps.sh"
 ```
 
-Add to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.):
+Or point milliways at any directory of your own agents:
 
 ```bash
-export MILLIWAYS_AGENTS_DIR=~/agent-toolkit-bundle
+export MILLIWAYS_AGENTS_DIR=~/my-agents
 ```
-
-Restart your shell or `source ~/.zshrc`. milliways will pick up agents and skills on the next launch.
 
 ### How it works
 
