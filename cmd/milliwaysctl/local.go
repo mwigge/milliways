@@ -124,22 +124,47 @@ func runInstallScript(relPath string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "local: cannot determine working dir: %v\n", err)
 		return 1
 	}
-	candidate := filepath.Join(wd, relPath)
-	if _, err := os.Stat(candidate); err != nil {
-		// Fall back to the install location used when milliways is installed
-		// via install.sh; we keep a copy of the scripts alongside the binary.
-		exe, exeErr := os.Executable()
-		if exeErr != nil {
-			fmt.Fprintf(stderr, "local: cannot determine executable path: %v\n", exeErr)
-			return 1
+
+	// Build a priority list of candidate paths so the script is found
+	// regardless of whether milliways was installed via:
+	//   - a git checkout (relPath relative to cwd)
+	//   - a native package (.deb/.rpm/.pkg) with scripts/ subdir
+	//   - a native package (v1.0.1 and earlier) without scripts/ subdir
+	//   - install.sh binary install (scripts in ~/.local/share/milliways/scripts/)
+	scriptName := filepath.Base(relPath)
+	home, _ := os.UserHomeDir()
+	exe, _ := os.Executable()
+	exeShare := ""
+	if exe != "" {
+		exeShare = filepath.Join(filepath.Dir(filepath.Dir(exe)), "share", "milliways")
+	}
+
+	candidates := []string{
+		filepath.Join(wd, relPath),                                           // checkout: ./scripts/install_local.sh
+		filepath.Join(exeShare, relPath),                                     // pkg new: /usr/share/milliways/scripts/install_local.sh
+		filepath.Join(exeShare, scriptName),                                  // pkg old: /usr/share/milliways/install_local.sh
+		filepath.Join(home, ".local", "share", "milliways", "scripts", scriptName), // binary install
+		filepath.Join(home, ".local", "share", "milliways", scriptName),      // legacy
+	}
+
+	candidate := ""
+	for _, p := range candidates {
+		if p == "" {
+			continue
 		}
-		alt := filepath.Join(filepath.Dir(filepath.Dir(exe)), "share", "milliways", relPath)
-		if _, err2 := os.Stat(alt); err2 == nil {
-			candidate = alt
-		} else {
-			fmt.Fprintf(stderr, "local: script %s not found (looked in %s and %s)\n", relPath, candidate, alt)
-			return 1
+		if _, err2 := os.Stat(p); err2 == nil {
+			candidate = p
+			break
 		}
+	}
+	if candidate == "" {
+		fmt.Fprintf(stderr, "local: script %s not found; searched:\n", scriptName)
+		for _, p := range candidates {
+			if p != "" {
+				fmt.Fprintf(stderr, "  %s\n", p)
+			}
+		}
+		return 1
 	}
 	cmd := execCommand("bash", candidate)
 	cmd.Stdout = stdout

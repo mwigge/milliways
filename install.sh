@@ -330,36 +330,12 @@ setup_path() {
   esac
 }
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-printf '\n%bmilliways installer%b\n\n' "$BOLD" "$NC"
-
-if [ -n "$REPO_ROOT" ]; then
-  info "Local checkout detected — building from source"
-  install_from_source "milliways milliwaysd milliwaysctl"
-else
-  info "Remote install — version ${VERSION}"
-  install_remote
-fi
-
-install_wezterm_lua
-install_support_scripts
-install_python_packages
-
-if [ "$PLATFORM" = "darwin" ]; then
-  install_macos_app
-  setup_wezterm_config
-fi
-
-setup_path
-
-# ── MemPalace — shared project memory ────────────────────────────────────────
-# MemPalace is the MCP server that gives every runner the same project memory.
-# Without it, context is not shared across runner switches. It is a Python
-# package; we install it with pip3 --user so it works without root and does
-# not touch the system Python. SKIP_MEMPALACE=1 to opt out.
-# install_python_packages installs the Python packages milliways features
-# depend on. Soft-failure throughout: if Python or pip is absent the install
-# still completes; each missing package is warned but not fatal.
+# ── Python packages: MemPalace + python-pptx ─────────────────────────────────
+# MemPalace provides shared project memory across every runner — without it
+# context is not preserved across runner switches. python-pptx enables the
+# /pptx artifact command. Both are pip packages; installed --user so no root
+# is required and the system Python is not modified.
+# SKIP_PYTHON_PKGS=1 to opt out entirely.
 install_python_packages() {
   [ "${SKIP_PYTHON_PKGS:-0}" = "1" ] && return 0
   if ! command -v python3 &>/dev/null; then
@@ -384,8 +360,8 @@ install_python_packages() {
     ok "MemPalace already installed"
   else
     info "Installing MemPalace (project memory)..."
-    # --break-system-packages required on distros with PEP 668 (Ubuntu 24.04+,
-    # Fedora 38+) that block pip --user without it.
+    # --break-system-packages is required on distros with PEP 668
+    # (Ubuntu 24.04+, Fedora 38+) that block pip --user without it.
     $pip_cmd install --user --quiet --break-system-packages mempalace 2>/dev/null \
       || $pip_cmd install --user --quiet mempalace
     python3 -c "import mempalace" 2>/dev/null \
@@ -393,7 +369,7 @@ install_python_packages() {
       || warn "MemPalace install failed — run: pip3 install --user mempalace"
   fi
 
-  # ── python-pptx: required by /pptx artifact command ──────────────────────
+  # ── python-pptx: required by the /pptx artifact command ──────────────────
   if python3 -c "import pptx" 2>/dev/null; then
     ok "python-pptx already installed"
   else
@@ -405,7 +381,8 @@ install_python_packages() {
       || warn "python-pptx install failed — run: pip3 install --user python-pptx"
   fi
 
-  # Write MemPalace config entry into local.env so milliwaysd auto-connects.
+  # Write MemPalace config entry into local.env so milliwaysd auto-connects
+  # on the next daemon start.
   local cfg_dir="$HOME/.config/milliways"
   local env_file="$cfg_dir/local.env"
   mkdir -p "$cfg_dir"
@@ -416,6 +393,28 @@ install_python_packages() {
     ok "MemPalace config written → $env_file"
   fi
 }
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+printf '\n%bmilliways installer%b\n\n' "$BOLD" "$NC"
+
+if [ -n "$REPO_ROOT" ]; then
+  info "Local checkout detected — building from source"
+  install_from_source "milliways milliwaysd milliwaysctl"
+else
+  info "Remote install — version ${VERSION}"
+  install_remote
+fi
+
+install_wezterm_lua
+install_support_scripts
+install_python_packages
+
+if [ "$PLATFORM" = "darwin" ]; then
+  install_macos_app
+  setup_wezterm_config
+fi
+
+setup_path
 
 # ── Verify ────────────────────────────────────────────────────────────────────
 verify_install() {
