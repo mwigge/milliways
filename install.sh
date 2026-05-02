@@ -289,7 +289,7 @@ install_wezterm_lua() {
 
 install_support_scripts() {
   mkdir -p "$SHARE_DIR/scripts"
-  for script in install_local.sh install_local_swap.sh; do
+  for script in install_local.sh install_local_swap.sh install_feature_deps.sh; do
     if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/scripts/$script" ]; then
       cp "$REPO_ROOT/scripts/$script" "$SHARE_DIR/scripts/$script"
       chmod +x "$SHARE_DIR/scripts/$script"
@@ -330,68 +330,14 @@ setup_path() {
   esac
 }
 
-# ── Python packages: MemPalace + python-pptx ─────────────────────────────────
-# MemPalace provides shared project memory across every runner — without it
-# context is not preserved across runner switches. python-pptx enables the
-# /pptx artifact command. Both are pip packages; installed --user so no root
-# is required and the system Python is not modified.
-# SKIP_PYTHON_PKGS=1 to opt out entirely.
-install_python_packages() {
-  [ "${SKIP_PYTHON_PKGS:-0}" = "1" ] && return 0
-  if ! command -v python3 &>/dev/null; then
-    warn "python3 not found — skipping Python packages (MemPalace + /pptx will not work)"
-    warn "  Install python3 then run: pip3 install --user mempalace python-pptx"
-    return 0
-  fi
-
-  local pip_cmd=""
-  if command -v pip3 &>/dev/null; then
-    pip_cmd="pip3"
-  elif python3 -m pip --version &>/dev/null 2>&1; then
-    pip_cmd="python3 -m pip"
-  else
-    warn "pip not found — skipping Python packages"
-    warn "  Install pip3 then run: pip3 install --user mempalace python-pptx"
-    return 0
-  fi
-
-  # ── MemPalace: shared project memory MCP server ───────────────────────────
-  if python3 -c "import mempalace" 2>/dev/null; then
-    ok "MemPalace already installed"
-  else
-    info "Installing MemPalace (project memory)..."
-    # --break-system-packages is required on distros with PEP 668
-    # (Ubuntu 24.04+, Fedora 38+) that block pip --user without it.
-    $pip_cmd install --user --quiet --break-system-packages mempalace 2>/dev/null \
-      || $pip_cmd install --user --quiet mempalace
-    python3 -c "import mempalace" 2>/dev/null \
-      && ok "MemPalace installed" \
-      || warn "MemPalace install failed — run: pip3 install --user mempalace"
-  fi
-
-  # ── python-pptx: required by the /pptx artifact command ──────────────────
-  if python3 -c "import pptx" 2>/dev/null; then
-    ok "python-pptx already installed"
-  else
-    info "Installing python-pptx (for /pptx command)..."
-    $pip_cmd install --user --quiet --break-system-packages python-pptx 2>/dev/null \
-      || $pip_cmd install --user --quiet python-pptx
-    python3 -c "import pptx" 2>/dev/null \
-      && ok "python-pptx installed" \
-      || warn "python-pptx install failed — run: pip3 install --user python-pptx"
-  fi
-
-  # Write MemPalace config entry into local.env so milliwaysd auto-connects
-  # on the next daemon start.
-  local cfg_dir="$HOME/.config/milliways"
-  local env_file="$cfg_dir/local.env"
-  mkdir -p "$cfg_dir"
-  if ! grep -q "MILLIWAYS_MEMPALACE_MCP_CMD" "$env_file" 2>/dev/null; then
-    printf '\n# MemPalace — project memory (injected before every prompt)\n' >> "$env_file"
-    printf 'MILLIWAYS_MEMPALACE_MCP_CMD=python3 -m mempalace.mcp_server\n'  >> "$env_file"
-    printf 'MILLIWAYS_MEMPALACE_MCP_ARGS=--palace %s/.mempalace\n' "$HOME"  >> "$env_file"
-    ok "MemPalace config written → $env_file"
-  fi
+# ── Feature dependencies: MemPalace, CodeGraph, python-pptx, git ─────────────
+# SKIP_FEATURE_DEPS=1 opts out. The support script creates Milliways-owned
+# Python/npm prefixes instead of relying on user-site packages.
+install_feature_dependencies() {
+  [ "${SKIP_FEATURE_DEPS:-0}" = "1" ] && return 0
+  local installer="$SHARE_DIR/scripts/install_feature_deps.sh"
+  [ -x "$installer" ] || fatal "feature dependency installer missing: $installer"
+  PREFIX="$PREFIX" SHARE_DIR="$SHARE_DIR" "$installer"
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -407,7 +353,7 @@ fi
 
 install_wezterm_lua
 install_support_scripts
-install_python_packages
+install_feature_dependencies
 
 if [ "$PLATFORM" = "darwin" ]; then
   install_macos_app

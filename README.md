@@ -55,6 +55,58 @@ go install github.com/mwigge/milliways/cmd/milliways@latest
 
 ---
 
+## Where files are installed
+
+### Path 1: Native package (`.deb` / `.rpm` / `.pkg.tar.zst`)
+
+```
+/usr/bin/
+  milliways               # chat and one-shot CLI
+  milliwaysd              # background daemon
+  milliwaysctl            # ops and install tool
+
+/usr/share/milliways/scripts/
+  install_local.sh        # local model server installer
+  install_local_swap.sh   # llama-swap installer (hot swap)
+```
+
+### Path 2: Binary install (curl one-liner fallback)
+
+```
+~/.local/bin/
+  milliways
+  milliwaysd
+  milliwaysctl
+
+~/.local/share/milliways/scripts/
+  install_local.sh
+  install_local_swap.sh
+```
+
+### Created on first use (both paths)
+
+```
+~/.config/milliways/
+  local.env               # persisted settings (/login, /path, /model etc.)
+
+~/.local/state/milliways/
+  sock                    # daemon Unix socket (milliwaysd creates this)
+  metrics.db              # SQLite metrics store (OTel + cost tracking)
+
+~/.local/share/milliways/models/   # (after /install-local-server)
+  *.gguf                  # downloaded model files
+```
+
+### Python packages (installed by the one-liner, required for full feature set)
+
+```
+~/.local/lib/python3.x/site-packages/
+  mempalace/              # project memory MCP server
+  pptx/                   # python-pptx (for /pptx command)
+```
+
+---
+
 ## MilliWays.app — Native Terminal (macOS)
 
 MilliWays.app is a native macOS terminal built on a patched wezterm. Every new tab opens milliways instead of a plain shell. The status bar shows your active agent, working directory, and a live wake badge when the laptop resumes from sleep.
@@ -610,10 +662,10 @@ Available metrics: `tokens_in`, `tokens_out`, `cost_usd`, `error_count`, `dispat
 ## Project memory (MemPalace + CodeGraph)
 
 ```bash
-export MILLIWAYS_MEMPALACE_MCP_CMD="python3 -m mempalace.mcp_server"
-export MILLIWAYS_MEMPALACE_MCP_ARGS="--palace /path/to/.mempalace"
+export MILLIWAYS_MEMPALACE_MCP_CMD="python3"
+export MILLIWAYS_MEMPALACE_MCP_ARGS="-m mempalace.mcp_server --palace /path/to/.mempalace"
 export MILLIWAYS_CODEGRAPH_MCP_CMD="codegraph"
-export MILLIWAYS_CODEGRAPH_MCP_ARGS="mcp"
+export MILLIWAYS_CODEGRAPH_MCP_ARGS="serve"
 ```
 
 Milliways injects relevant memories and code context before each dispatch when these are set.

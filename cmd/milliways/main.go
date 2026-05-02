@@ -928,11 +928,10 @@ func invalidateExpiredMemory(pdb *pantry.DB) (int64, error) {
 }
 
 func fetchCodeGraphContext(ctx context.Context, task string) string {
-	cmd := os.Getenv("MILLIWAYS_CODEGRAPH_MCP_CMD")
+	cmd, args := detectCodeGraphMCP()
 	if cmd == "" {
-		return "CodeGraph unavailable: set MILLIWAYS_CODEGRAPH_MCP_CMD to enable live context hydration."
+		return "CodeGraph unavailable: install codegraph or set MILLIWAYS_CODEGRAPH_MCP_CMD to enable live context hydration."
 	}
-	args := splitEnvArgs(os.Getenv("MILLIWAYS_CODEGRAPH_MCP_ARGS"))
 	client, err := pantry.NewCodeGraphClient(cmd, args...)
 	if err != nil {
 		return fmt.Sprintf("CodeGraph unavailable: %v", err)
@@ -949,11 +948,10 @@ func fetchCodeGraphContext(ctx context.Context, task string) string {
 }
 
 func fetchMemPalaceContext(ctx context.Context, task string) string {
-	cmd := os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD")
+	cmd, args := detectMempalaceMCP(defaultPalacePath())
 	if cmd == "" {
-		return "MemPalace unavailable: set MILLIWAYS_MEMPALACE_MCP_CMD to enable live memory hydration."
+		return "MemPalace unavailable: install MemPalace or set MILLIWAYS_MEMPALACE_MCP_CMD to enable live memory hydration."
 	}
-	args := splitEnvArgs(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS"))
 	client, err := pantry.NewMemPalaceClient(cmd, args...)
 	if err != nil {
 		return fmt.Sprintf("MemPalace unavailable: %v", err)
@@ -1004,19 +1002,28 @@ func readMMXAPIKey() string {
 }
 
 // detectMempalaceMCP tries to find the mempalace MCP server command and args.
-// It checks in order:
-//  1. MILLIWAYS_MEMPALACE_MCP_CMD env var (if set)
-//  2. python3 -m mempalace.mcp_server (system Python with mempalace installed)
-//
-// Returns (cmd, args). If not found, returns ("", nil).
+// It prefers explicit env config, then the app-managed venv installed by
+// install.sh/native packages, then a system Python with mempalace importable.
 func detectMempalaceMCP(palacePath string) (string, []string) {
 	// 1. Env var override.
 	if cmd := os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD"); cmd != "" {
 		return cmd, splitEnvArgs(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS"))
 	}
 
-	// 2. System python3 with mempalace package.
-	if cmdPath, err := exec.LookPath("python3"); err == nil {
+	for _, share := range installedShareDirs() {
+		for _, name := range []string{"python", "python3"} {
+			cmdPath := filepath.Join(share, "python", "bin", name)
+			if isExecutable(cmdPath) {
+				args := []string{"-m", "mempalace.mcp_server"}
+				if palacePath != "" {
+					args = append(args, "--palace", palacePath)
+				}
+				return cmdPath, args
+			}
+		}
+	}
+
+	if cmdPath, err := exec.LookPath("python3"); err == nil && pythonImports(cmdPath, "mempalace") {
 		args := []string{"-m", "mempalace.mcp_server"}
 		if palacePath != "" {
 			args = append(args, "--palace", palacePath)
@@ -1025,6 +1032,52 @@ func detectMempalaceMCP(palacePath string) (string, []string) {
 	}
 
 	return "", nil
+}
+
+func detectCodeGraphMCP() (string, []string) {
+	if cmd := os.Getenv("MILLIWAYS_CODEGRAPH_MCP_CMD"); cmd != "" {
+		return cmd, splitEnvArgs(os.Getenv("MILLIWAYS_CODEGRAPH_MCP_ARGS"))
+	}
+	for _, share := range installedShareDirs() {
+		cmdPath := filepath.Join(share, "node", "bin", "codegraph")
+		if isExecutable(cmdPath) {
+			return cmdPath, []string{"serve"}
+		}
+	}
+	if cmdPath, err := exec.LookPath("codegraph"); err == nil {
+		return cmdPath, []string{"serve"}
+	}
+	return "", nil
+}
+
+func defaultPalacePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".mempalace")
+}
+
+func installedShareDirs() []string {
+	var dirs []string
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		dirs = append(dirs, filepath.Join(filepath.Dir(filepath.Dir(exe)), "share", "milliways"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(home, ".local", "share", "milliways"))
+	}
+	dirs = append(dirs, "/usr/local/share/milliways", "/usr/share/milliways")
+	return dirs
+}
+
+func isExecutable(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
+}
+
+func pythonImports(pythonPath, module string) bool {
+	cmd := exec.Command(pythonPath, "-c", "import "+module)
+	return cmd.Run() == nil
 }
 
 func printJSON(v any, asJSON bool) error {
@@ -1146,11 +1199,11 @@ func openPantryDB() (*pantry.DB, error) {
 }
 
 func openSubstrateClient() (*substrate.Client, error) {
-	cmd := os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD")
+	cmd, args := detectMempalaceMCP(defaultPalacePath())
 	if cmd == "" {
 		return nil, errors.New("opening substrate client: MILLIWAYS_MEMPALACE_MCP_CMD is not set")
 	}
-	client, err := substrate.New(cmd, splitEnvArgs(os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS"))...)
+	client, err := substrate.New(cmd, args...)
 	if err != nil {
 		return nil, fmt.Errorf("opening substrate client: %w", err)
 	}

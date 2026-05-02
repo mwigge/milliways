@@ -65,25 +65,14 @@ docker run --rm \
     install -Dm755 dist/milliwaysctl_linux_amd64    "$pkg_root/usr/bin/milliwaysctl"
     install -Dm755 scripts/install_local.sh         "$pkg_root/usr/share/milliways/scripts/install_local.sh"
     install -Dm755 scripts/install_local_swap.sh    "$pkg_root/usr/share/milliways/scripts/install_local_swap.sh"
+    install -Dm755 scripts/install_feature_deps.sh  "$pkg_root/usr/share/milliways/scripts/install_feature_deps.sh"
 
     # Post-install script: runs after the package is placed on disk.
     # Uses printf to avoid heredoc quoting issues inside single-quoted docker exec.
     printf '%s\n' \
       '#!/bin/sh' \
-      'if command -v python3 >/dev/null 2>&1; then' \
-      '  if ! python3 -c "import mempalace" 2>/dev/null; then' \
-      '    pip3 install --user --quiet mempalace 2>/dev/null \' \
-      '      || python3 -m pip install --user --quiet mempalace 2>/dev/null \' \
-      '      || echo "warning: MemPalace install failed — run: pip3 install mempalace"' \
-      '  fi' \
-      '  mkdir -p "$HOME/.config/milliways"' \
-      '  env_file="$HOME/.config/milliways/local.env"' \
-      '  if ! grep -q "MILLIWAYS_MEMPALACE_MCP_CMD" "$env_file" 2>/dev/null; then' \
-      '    printf "\n# MemPalace\n" >> "$env_file"' \
-      '    printf "MILLIWAYS_MEMPALACE_MCP_CMD=python3 -m mempalace.mcp_server\n" >> "$env_file"' \
-      '    printf "MILLIWAYS_MEMPALACE_MCP_ARGS=--palace %s/.mempalace\n" "$HOME" >> "$env_file"' \
-      '  fi' \
-      'fi' \
+      'SHARE_DIR=/usr/share/milliways MILLIWAYS_WRITE_LOCAL_ENV=0 /usr/share/milliways/scripts/install_feature_deps.sh \' \
+      '  || echo "warning: Milliways feature dependency install failed; run /usr/share/milliways/scripts/install_feature_deps.sh"' \
       > /tmp/mw-pkg/postinstall.sh
     chmod +x /tmp/mw-pkg/postinstall.sh
 

