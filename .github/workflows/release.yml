@@ -32,34 +32,58 @@ jobs:
           OUT_DIR=$GITHUB_WORKSPACE/dist \
             bash scripts/build-linux-amd64.sh
 
+      # ── Upload linux/amd64 assets to the release ──────────────────────────
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
+
+          # Raw linux/amd64 binaries
+          ASSETS=(
+            dist/milliways_linux_amd64
+            dist/milliwaysd_linux_amd64
+            dist/milliwaysctl_linux_amd64
+          )
+
+          # Native Linux packages — glob so version suffix doesn't need hardcoding
+          for pkg in dist/milliways_*.deb dist/milliways-*.rpm dist/milliways-*.pkg.tar.zst; do
+            [ -f "$pkg" ] && ASSETS+=("$pkg")
+          done
+
+          if gh release view "$TAG" --json tagName &>/dev/null; then
+            echo "Release $TAG already exists — uploading assets only"
+            gh release upload "$TAG" --clobber "${ASSETS[@]}"
+          else
+            gh release create "$TAG" \
+              --title "milliways $TAG" \
+              --generate-notes \
+              "${ASSETS[@]}"
+          fi
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
       # ── macOS binaries (darwin/arm64 + darwin/amd64) ─────────────────────
-      # CGO_ENABLED=0 is intentional: the macOS runner has no guaranteed
-      # cross-compile toolchain for CGO. SQLite falls back to the pure-Go
-      # modernc.org/sqlite driver when CGO is off.
+      # CGO_ENABLED=1 is required for SQLite (mattn/go-sqlite3).
       - name: Build macOS binaries
         run: |
           mkdir -p dist
           for GOARCH in arm64 amd64; do
             for bin in milliways milliwaysd milliwaysctl; do
-              CGO_ENABLED=0 GOOS=darwin GOARCH=$GOARCH go build \
+              CGO_ENABLED=1 GOOS=darwin GOARCH=$GOARCH go build \
                 -ldflags "-X main.version=${{ github.ref_name }}" \
                 -o "dist/${bin}_darwin_${GOARCH}" \
                 "./cmd/${bin}"
             done
-          done
-
-      # ── Linux arm64 binaries (cross-compiled from the ubuntu runner) ──────
-      - name: Build linux/arm64 binaries
-        run: |
-          sudo apt-get install -y --no-install-recommends \
-            gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-          for bin in milliways milliwaysd milliwaysctl; do
-            CGO_ENABLED=1 CC=aarch64-linux-gnu-gcc \
-              GOOS=linux GOARCH=arm64 \
-              go build \
-              -ldflags "-X main.version=${{ github.ref_name }}" \
-              -o "dist/${bin}_linux_arm64" \
-              "./cmd/${bin}"
           done
 
       # ── macOS app bundle (optional — needs wezterm-milliways fork) ────────
@@ -86,33 +110,22 @@ jobs:
         env:
           PREFIX: /tmp/milliways-install
 
-      # ── Upload everything to the release ──────────────────────────────────
-      - name: Upload release assets
+      # ── Upload macOS assets to the release ────────────────────────────────
+      - name: Upload macOS release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.ref_name }}"
 
-          # Raw binaries
+          # Raw darwin binaries
           ASSETS=(
             dist/milliways_darwin_arm64
             dist/milliways_darwin_amd64
-            dist/milliways_linux_amd64
-            dist/milliways_linux_arm64
             dist/milliwaysd_darwin_arm64
             dist/milliwaysd_darwin_amd64
-            dist/milliwaysd_linux_amd64
-            dist/milliwaysd_linux_arm64
             dist/milliwaysctl_darwin_arm64
             dist/milliwaysctl_darwin_amd64
-            dist/milliwaysctl_linux_amd64
-            dist/milliwaysctl_linux_arm64
           )
-
-          # Native Linux packages — glob so version suffix doesn't need hardcoding
-          for pkg in dist/milliways_*.deb dist/milliways-*.rpm dist/milliways-*.pkg.tar.zst; do
-            [ -f "$pkg" ] && ASSETS+=("$pkg")
-          done
 
           if [ -f "dist/MilliWays.app.zip" ]; then
             ASSETS+=(dist/MilliWays.app.zip)

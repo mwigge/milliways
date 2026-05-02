@@ -43,12 +43,17 @@ var allowedSetenvKeys = map[string]bool{
 	// PATH override — set via /path so CLIs in non-standard locations
 	// (e.g. ~/.local/bin, /opt/homebrew/bin) are found by all runners.
 	"MILLIWAYS_PATH": true,
+	// Project context providers installed/configured by install.sh.
+	"MILLIWAYS_MEMPALACE_MCP_CMD":  true,
+	"MILLIWAYS_MEMPALACE_MCP_ARGS": true,
+	"MILLIWAYS_CODEGRAPH_MCP_CMD":  true,
+	"MILLIWAYS_CODEGRAPH_MCP_ARGS": true,
 	// Endpoint overrides
 	"MINIMAX_API_URL":          true,
 	"MINIMAX_ENDPOINT":         true,
 	"MILLIWAYS_LOCAL_ENDPOINT": true,
 	// Local-runner tuning (set via /local-temp, /local-max-tokens)
-	"MILLIWAYS_LOCAL_TEMP":      true,
+	"MILLIWAYS_LOCAL_TEMP":       true,
 	"MILLIWAYS_LOCAL_MAX_TOKENS": true,
 	// Tuning
 	"MILLIWAYS_MAX_TURNS": true,

@@ -198,7 +198,7 @@ func (l *chatLoop) handlePptx(topic string) {
 		fmt.Fprintf(l.out, "\n%s* pptx:%s running script…\n", color, reset)
 		runCtx, runCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer runCancel()
-		cmd := exec.CommandContext(runCtx, "python3", tmpPath)
+		cmd := exec.CommandContext(runCtx, pythonForArtifacts(), tmpPath)
 		cmd.Dir = cwd
 		cmd.Env = safeScriptEnv()
 		out, runErr := cmd.CombinedOutput()
@@ -435,7 +435,7 @@ if errors:
 `
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "python3", "-c", astValidator)
+	cmd := exec.CommandContext(ctx, pythonForArtifacts(), "-c", astValidator)
 	cmd.Stdin = strings.NewReader(script)
 	cmd.Env = safeScriptEnv()
 	out, err := cmd.CombinedOutput()
@@ -468,6 +468,21 @@ func safeScriptEnv() []string {
 		}
 	}
 	return env
+}
+
+func pythonForArtifacts() string {
+	for _, share := range installedShareDirs() {
+		for _, name := range []string{"python", "python3"} {
+			cmdPath := filepath.Join(share, "python", "bin", name)
+			if isExecutable(cmdPath) && pythonImports(cmdPath, "pptx") {
+				return cmdPath
+			}
+		}
+	}
+	if cmdPath, err := exec.LookPath("python3"); err == nil && pythonImports(cmdPath, "pptx") {
+		return cmdPath
+	}
+	return "python3"
 }
 
 // slugify converts a string to a lowercase hyphen-separated slug.

@@ -96,7 +96,7 @@ jobs:
               dpkg -i /dist/milliways_*.deb
               milliways --version
               milliwaysctl --help >/dev/null
-              test -f /usr/share/milliways/install_local.sh
+              test -f /usr/share/milliways/scripts/install_local.sh
               echo "PASS deb"
             '
 
@@ -110,7 +110,7 @@ jobs:
               rpm -i /dist/milliways-*.rpm
               milliways --version
               milliwaysctl --help >/dev/null
-              test -f /usr/share/milliways/install_local.sh
+              test -f /usr/share/milliways/scripts/install_local.sh
               echo "PASS rpm"
             '
 
@@ -124,7 +124,7 @@ jobs:
               pacman -U --noconfirm /dist/milliways-*.pkg.tar.zst
               milliways --version
               milliwaysctl --help >/dev/null
-              test -f /usr/share/milliways/install_local.sh
+              test -f /usr/share/milliways/scripts/install_local.sh
               echo "PASS pacman"
             '
 
@@ -158,3 +158,15 @@ jobs:
         run: |
           export DIST_DIR="$GITHUB_WORKSPACE/dist"
           bash scripts/smoke-linux-install.sh
+
+      - name: Build binaries for feature smoke
+        run: |
+          mkdir -p /tmp/smoke-bin
+          go build -o /tmp/smoke-bin/milliways    ./cmd/milliways
+          go build -o /tmp/smoke-bin/milliwaysd   ./cmd/milliwaysd
+          go build -o /tmp/smoke-bin/milliwaysctl ./cmd/milliwaysctl
+
+      - name: Run feature smoke
+        run: |
+          pip3 install mempalace python-pptx
+          MILLIWAYS_BIN=/tmp/smoke-bin bash scripts/smoke-features.sh
