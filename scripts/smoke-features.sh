@@ -12,6 +12,8 @@
 # Exit: 0 = all pass, 1 = one or more failures.
 set -uo pipefail
 
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 BIN_DIR="${MILLIWAYS_BIN:-}"
 STATE_DIR="${MILLIWAYS_STATE_DIR:-/tmp/mw-smoke-$$}"
 PASS=0; FAIL=0; SKIP=0
@@ -38,6 +40,40 @@ env_value() {
   awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$file"
 }
 
+has_support_scripts() {
+  local dir="$1"
+  [ -n "$dir" ] || return 1
+  [ -f "$dir/install_local.sh" ] || [ -f "$dir/scripts/install_local.sh" ]
+}
+
+support_scripts_dir() {
+  local dir="$1"
+  [ -n "$dir" ] || return 1
+  if [ -f "$dir/install_local.sh" ]; then
+    echo "$dir"
+  elif [ -f "$dir/scripts/install_local.sh" ]; then
+    echo "$dir/scripts"
+  else
+    return 1
+  fi
+}
+
+is_share_dir() {
+  local dir="$1"
+  [ -n "$dir" ] || return 1
+  local resolved
+  resolved="$(CDPATH= cd -- "$dir" 2>/dev/null && pwd)" || return 1
+  [ "$resolved" = "$repo_root" ] && return 1
+  [ "$resolved" = "$repo_root/scripts" ] && return 1
+  [ -d "$dir/python" ] || [ -d "$dir/node" ] || [ -d "$dir/scripts" ]
+}
+
+has_feature_python() {
+  local dir="$1"
+  [ -n "$dir" ] || return 1
+  [ -x "$dir/python/bin/python" ] || [ -x "$dir/python/bin/python3" ]
+}
+
 MILLIWAYS=$(find_bin milliways)
 MILLIWAYSD=$(find_bin milliwaysd)
 MILLIWAYSCTL=$(find_bin milliwaysctl)
@@ -60,31 +96,49 @@ if [ -x "$MILLIWAYS" ]; then
   [ -n "$ver" ] && pass "version reported: $ver" || fail "milliways --version returned nothing"
 fi
 
-# Support scripts (installed by install.sh alongside binaries)
-SCRIPTS_DIR="${MILLIWAYS_SHARE_DIR:-}"
+# Support scripts can come from the installed share tree or from the checkout
+# when smoke-testing manually with a binary-only MILLIWAYS_BIN directory.
+SUPPORT_SCRIPTS_DIR=""
 for candidate in \
+  "${MILLIWAYS_SHARE_DIR:-}" \
+  "${MILLIWAYS_SHARE_DIR:+$MILLIWAYS_SHARE_DIR/scripts}" \
+  "$repo_root" \
+  "$repo_root/scripts" \
   "$HOME/.local/share/milliways/scripts" \
   "/usr/share/milliways" \
   "$(dirname "$MILLIWAYSCTL" 2>/dev/null)/../share/milliways" \
   "$(dirname "$MILLIWAYSCTL" 2>/dev/null)/../share/milliways/scripts"
 do
-  if [ -f "$candidate/install_local.sh" ] || [ -f "$candidate/scripts/install_local.sh" ]; then
-    SCRIPTS_DIR="$candidate"; break
+  if has_support_scripts "$candidate"; then
+    SUPPORT_SCRIPTS_DIR="$(support_scripts_dir "$candidate")"; break
   fi
 done
-[ -n "$SCRIPTS_DIR" ] \
-  && pass "support scripts found: $SCRIPTS_DIR" \
+[ -n "$SUPPORT_SCRIPTS_DIR" ] \
+  && pass "support scripts found: $SUPPORT_SCRIPTS_DIR" \
   || fail "install_local.sh not found (milliwaysctl local install-server will fail)"
 
-if [ -n "$SCRIPTS_DIR" ]; then
-  case "$SCRIPTS_DIR" in
-    */scripts) SHARE_DIR="$(dirname "$SCRIPTS_DIR")" ;;
-    *) SHARE_DIR="$SCRIPTS_DIR" ;;
-  esac
-fi
-[ -n "${SHARE_DIR:-}" ] && [ -x "$SHARE_DIR/scripts/install_feature_deps.sh" ] \
+# The installed share tree is where managed Python/Node feature dependencies
+# live. A source checkout has scripts, but is not itself an install share.
+SHARE_DIR=""
+for candidate in \
+  "${MILLIWAYS_SHARE_DIR:-}" \
+  "$HOME/.local/share/milliways" \
+  "/usr/local/share/milliways" \
+  "/usr/share/milliways" \
+  "$(dirname "$MILLIWAYSCTL" 2>/dev/null)/../share/milliways"
+do
+  if is_share_dir "$candidate"; then
+    SHARE_DIR="$candidate"; break
+  fi
+done
+
+[ -n "$SUPPORT_SCRIPTS_DIR" ] && [ -x "$SUPPORT_SCRIPTS_DIR/install_feature_deps.sh" ] \
   && pass "feature dependency installer found" \
   || fail "install_feature_deps.sh not found"
+
+[ -n "$SHARE_DIR" ] \
+  && pass "installed share tree found: $SHARE_DIR" \
+  || fail "installed share tree not found (run install.sh or set MILLIWAYS_SHARE_DIR)"
 
 # ── 2. Daemon ─────────────────────────────────────────────────────────────────
 section "2. Daemon (milliwaysd)"
@@ -156,13 +210,12 @@ fi
 section "5. Feature dependencies"
 
 FEATURE_PY=""
-if [ -n "${SHARE_DIR:-}" ]; then
+if has_feature_python "${SHARE_DIR:-}"; then
   for py in "$SHARE_DIR/python/bin/python" "$SHARE_DIR/python/bin/python3"; do
     [ -x "$py" ] && FEATURE_PY="$py" && break
   done
 fi
 [ -n "$FEATURE_PY" ] || FEATURE_PY="$(env_value MILLIWAYS_MEMPALACE_MCP_CMD 2>/dev/null || true)"
-[ -n "$FEATURE_PY" ] || FEATURE_PY="$(command -v python3 2>/dev/null || true)"
 
 if [ -n "$FEATURE_PY" ] && [ -x "$FEATURE_PY" ]; then
   pass "feature python available: $($FEATURE_PY --version 2>&1)"
@@ -324,7 +377,7 @@ fi
 # ── 11. Config persistence ───────────────────────────────────────────────────
 section "11. Config persistence"
 
-# Config dir is created by install_python_packages (local.env) or on first daemon use.
+# Config dir is created by install_feature_deps.sh (local.env) or on first daemon use.
 # Create it now if absent so the check is about reachability, not timing.
 mkdir -p "$HOME/.config/milliways"
 [ -d "$HOME/.config/milliways" ] \
