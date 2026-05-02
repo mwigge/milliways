@@ -44,10 +44,11 @@ var allowedSetenvKeys = map[string]bool{
 	// (e.g. ~/.local/bin, /opt/homebrew/bin) are found by all runners.
 	"MILLIWAYS_PATH": true,
 	// Project context providers installed/configured by install.sh.
-	"MILLIWAYS_MEMPALACE_MCP_CMD":  true,
-	"MILLIWAYS_MEMPALACE_MCP_ARGS": true,
-	"MILLIWAYS_CODEGRAPH_MCP_CMD":  true,
-	"MILLIWAYS_CODEGRAPH_MCP_ARGS": true,
+	"MILLIWAYS_MEMPALACE_MCP_CMD":   true,
+	"MILLIWAYS_MEMPALACE_MCP_ARGS":  true,
+	"MILLIWAYS_CODEGRAPH_MCP_CMD":   true,
+	"MILLIWAYS_CODEGRAPH_MCP_ARGS":  true,
+	"MILLIWAYS_CODEGRAPH_WORKSPACE": true,
 	// Endpoint overrides
 	"MINIMAX_API_URL":          true,
 	"MINIMAX_ENDPOINT":         true,

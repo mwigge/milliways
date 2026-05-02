@@ -4,6 +4,18 @@ All notable changes to milliways. Follows [Keep a Changelog](https://keepachange
 
 ---
 
+## [1.0.3] — 2026-05-02
+
+### Added
+- **`/upgrade` command** — upgrade milliways to the latest release from inside the chat REPL or via `milliwaysctl upgrade`.  Detects the original install tier (deb/rpm/pacman/binary/macOS) and performs the appropriate upgrade.  Flags: `--check` (print current vs latest, no install), `--yes` (skip prompt), `--version <tag>` (pin a specific version).  Support scripts (`upgrade.sh`) are refreshed as part of the upgrade.
+- **`scripts/upgrade.sh`** — shell-level upgrade orchestrator covering all tiers: native packages (apt/dnf/pacman), raw binary replacement (atomic `.upgrade.tmp` dance), MilliWays.app via `open`, and support-script refresh.
+- **`scripts/smoke-upgrade.sh`** — 11-scenario smoke test suite for the upgrade path.  Linux package-manager scenarios (UG-5/6/7) run inside Docker containers on amd64 hosts, matching the existing `smoke-linux-install.sh` pattern.
+- **`install.sh`** now bundles `upgrade.sh` alongside the other support scripts so it is available for all fresh installs.
+- **OTLP HTTP exporter support** — when `MILLIWAYS_OTEL_ENDPOINT` is set (e.g. `http://localhost:4318`), spans and metrics are forwarded to any OTLP-compatible backend (Jaeger, Tempo, Grafana Cloud) via `otlptracehttp`/`otlpmetrichttp`.  Stdout exporters remain the fallback when the env var is absent.
+- **`MILLIWAYS_OTEL_ENDPOINT`** and **`MILLIWAYS_OTEL_PROTOCOL`** added to the daemon `localenv` allowlist so users can persist the observability target via `/login`.
+
+---
+
 ## [1.0.1] — 2026-05-01
 
 ### Added
