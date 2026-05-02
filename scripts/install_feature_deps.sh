@@ -89,10 +89,6 @@ ensure_codegraph() {
     ok "CodeGraph already installed in $NODE_PREFIX"
     return 0
   fi
-  if command -v codegraph >/dev/null 2>&1; then
-    ok "CodeGraph already available: $(command -v codegraph)"
-    return 0
-  fi
   command -v npm >/dev/null 2>&1 || fatal "npm not found; cannot install CodeGraph"
 
   info "Installing CodeGraph..."
@@ -118,7 +114,6 @@ write_local_env() {
   local env_file="$cfg_dir/local.env"
   local py="$PY_VENV/bin/python"
   local codegraph_cmd="$NODE_PREFIX/bin/codegraph"
-  command -v codegraph >/dev/null 2>&1 && codegraph_cmd="$(command -v codegraph)"
   [ -x "$codegraph_cmd" ] || codegraph_cmd="$NODE_PREFIX/bin/codegraph"
 
   set_local_env "MILLIWAYS_MEMPALACE_MCP_CMD" "$py" "$env_file"

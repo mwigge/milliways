@@ -8,6 +8,7 @@
 # Usage:
 #   bash scripts/smoke-features.sh               # uses PATH (post-install)
 #   MILLIWAYS_BIN=/tmp/mw bash scripts/smoke-features.sh  # explicit binary dir
+#   MILLIWAYS_BIN=/tmp/mw MILLIWAYS_SHARE_DIR=/tmp/mw-share bash scripts/smoke-features.sh
 #
 # Exit: 0 = all pass, 1 = one or more failures.
 set -uo pipefail
