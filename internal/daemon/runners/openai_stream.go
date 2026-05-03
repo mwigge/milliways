@@ -286,7 +286,15 @@ func assembleOpenAITurn(content, reasoning string, frags map[int]*openaiToolFrag
 	// content rather than as proper tool_calls JSON objects. Parse them here
 	// so the agentic loop can execute them regardless of the model's format.
 	if len(order) == 0 {
-		if xmlCalls := parseQwenXMLToolCalls(content); len(xmlCalls) > 0 {
+		// Try Hermes/Nous <tool_call> format first (emitted when --jinja absent),
+		// then fall back to Qwen <function_call>/<function> XML format.
+		var xmlCalls map[int]*openaiToolFrag
+		if calls := parseHermesToolCalls(content); len(calls) > 0 {
+			xmlCalls = calls
+		} else {
+			xmlCalls = parseQwenXMLToolCalls(content)
+		}
+		if len(xmlCalls) > 0 {
 			for i, tc := range xmlCalls {
 				frags[i] = tc
 				order = append(order, i)
@@ -477,8 +485,56 @@ func buildOpenAIChatPayload(model string, messages []Message, toolDefs []provide
 			})
 		}
 		payload["tools"] = t
+		payload["tool_choice"] = "auto" // explicit — some backends require this
 	}
 	return payload
+}
+
+// parseHermesToolCalls extracts tool calls from the Hermes/Nous ChatML format:
+//
+//	<tool_call>{"name":"bash","arguments":{"command":"ls /tmp"}}</tool_call>
+//
+// This is emitted when llama-server is started without --jinja, causing the
+// model to write tool calls as text instead of structured tool_calls JSON.
+// It is distinct from the Qwen XML format which uses <function_call> tags.
+func parseHermesToolCalls(content string) map[int]*openaiToolFrag {
+	stripped := strings.TrimSpace(content)
+	stripped = strings.TrimPrefix(stripped, "```xml")
+	stripped = strings.TrimSuffix(stripped, "```")
+	stripped = strings.TrimSpace(stripped)
+
+	const openTag = "<tool_call>"
+	const closeTag = "</tool_call>"
+	var calls map[int]*openaiToolFrag
+	idx := 0
+	for {
+		start := strings.Index(stripped, openTag)
+		if start < 0 {
+			break
+		}
+		end := strings.Index(stripped[start:], closeTag)
+		if end < 0 {
+			break
+		}
+		jsonBody := strings.TrimSpace(stripped[start+len(openTag) : start+end])
+		stripped = stripped[start+end+len(closeTag):]
+		var parsed struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if err := json.Unmarshal([]byte(jsonBody), &parsed); err == nil && parsed.Name != "" {
+			if calls == nil {
+				calls = make(map[int]*openaiToolFrag)
+			}
+			f := &openaiToolFrag{}
+			f.name.WriteString(parsed.Name)
+			f.id.WriteString(fmt.Sprintf("call_%d", idx))
+			f.args.Write(parsed.Arguments)
+			calls[idx] = f
+			idx++
+		}
+	}
+	return calls
 }
 
 // parseQwenXMLToolCalls extracts tool calls from Qwen-style XML content:

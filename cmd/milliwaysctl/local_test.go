@@ -535,13 +535,13 @@ func TestRunLocal_SetupModelList(t *testing.T) {
 }
 
 func TestRunLocal_SetupModelListShowsToolUseFlag(t *testing.T) {
-	t.Parallel()
+	// Use a temp HOME so loadCatalog() reads builtinCatalog (no cache file).
+	t.Setenv("HOME", t.TempDir())
 	var stdout bytes.Buffer
-	runLocal([]string{"setup-model", "list"}, &stdout, io.Discard)
-	out := stdout.String()
-	// At least one ✓ for tool use
-	if !strings.Contains(out, "✓") {
-		t.Errorf("expected ✓ for tool-use capable models: %q", out)
+	_ = runModelCatalogList(&stdout)
+	s := stdout.String()
+	if !strings.Contains(s, "✓") {
+		t.Errorf("expected ✓ for tool-use capable models in builtin catalog: %q", s)
 	}
 }
 

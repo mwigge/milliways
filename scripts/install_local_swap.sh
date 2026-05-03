@@ -21,7 +21,7 @@ MODEL_DIR="${MODEL_DIR:-$HOME/.local/share/milliways/models}"
 LOG_DIR="${LOG_DIR:-$HOME/.local/share/milliways/local}"
 CONFIG_DIR="${CONFIG_DIR:-$HOME/.config/milliways}"
 SWAP_CONFIG="${SWAP_CONFIG:-$CONFIG_DIR/llama-swap.yaml}"
-CTX_SIZE="${CTX_SIZE:-16384}"
+CTX_SIZE="${CTX_SIZE:-32768}"
 # HOT_MODE=1 → never unload, warm every model on startup. Memory-heavy
 # (each model stays resident in RAM/VRAM) but switches are sub-second.
 # HOT_MODE=0 (default) → unload after TTL_SECONDS of inactivity. Memory-safe
