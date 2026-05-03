@@ -100,6 +100,8 @@ func printLocalUsage(w io.Writer) {
 	fmt.Fprintln(w, "  list-models                        list models exposed by the configured backend")
 	fmt.Fprintln(w, "  switch-server <kind>               kind = llama-server | llama-swap | ollama | vllm | lmstudio")
 	fmt.Fprintln(w, "  download-model <repo> [--quant Q] [--alias A]   curl a GGUF from HuggingFace")
+	fmt.Fprintln(w, "  setup-model list                                list curated top-10 models")
+	fmt.Fprintln(w, "  setup-model refresh                             refresh list from HuggingFace API")
 	fmt.Fprintln(w, "  setup-model    <repo> [--quant Q] [--alias A]   download + register in llama-swap")
 	fmt.Fprintln(w, "  swap-mode hot|cold [--ttl N]                    set llama-swap to hot (always-loaded) or cold (unload after TTL seconds, default 600)")
 	fmt.Fprintln(w, "")
@@ -409,6 +411,14 @@ func parseDownloadFlags(args []string, stderr io.Writer) (repo, quant, alias str
 // setup-model composes download-model + register-in-llama-swap + verify.
 
 func runLocalSetupModel(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "list":
+			return runModelCatalogList(stdout)
+		case "refresh":
+			return runModelCatalogRefresh(stdout, stderr)
+		}
+	}
 	repo, quant, alias, _, code := parseDownloadFlags(args, stderr)
 	if code != 0 {
 		return code
@@ -540,6 +550,203 @@ func swapModePatchTTL(data []byte, ttl int) []byte {
 		}
 	}
 	return bytes.Join(lines, []byte("\n"))
+}
+
+// ── Model catalog ─────────────────────────────────────────────────────────────
+
+type catalogEntry struct {
+	Name    string `json:"name"`
+	Repo    string `json:"repo"`
+	Quant   string `json:"quant"`
+	SizeGB  string `json:"size_gb"`
+	MinRAM  string `json:"min_ram_gb"`
+	Tools   bool   `json:"tool_use"`
+	Think   bool   `json:"reasoning"`
+	Note    string `json:"note"`
+}
+
+// builtinCatalog is the hardcoded curated list of top developer-laptop models.
+// Ordered by quality-per-byte for code and reasoning tasks.
+// Run `/setup-model refresh` to fetch a live updated list from HuggingFace.
+var builtinCatalog = []catalogEntry{
+	{
+		Name: "Qwen2.5-Coder-7B", Repo: "unsloth/Qwen2.5-Coder-7B-Instruct-GGUF",
+		Quant: "Q4_K_M", SizeGB: "4.7", MinRAM: "6",
+		Tools: true, Note: "Best 7B coder. Reliable tool use. Recommended default.",
+	},
+	{
+		Name: "Qwen2.5-Coder-14B", Repo: "unsloth/Qwen2.5-Coder-14B-Instruct-GGUF",
+		Quant: "Q4_K_M", SizeGB: "8.9", MinRAM: "12",
+		Tools: true, Note: "Best code quality under 15B. Requires 16GB RAM.",
+	},
+	{
+		Name: "Qwen3-8B", Repo: "unsloth/Qwen3-8B-GGUF",
+		Quant: "Q4_K_M", SizeGB: "5.2", MinRAM: "8",
+		Tools: true, Think: true, Note: "Hybrid think/chat mode. Strong reasoning + tool use.",
+	},
+	{
+		Name: "Qwen3-14B", Repo: "unsloth/Qwen3-14B-GGUF",
+		Quant: "Q4_K_M", SizeGB: "9.3", MinRAM: "12",
+		Tools: true, Think: true, Note: "Best all-round model under 20B for Apple Silicon.",
+	},
+	{
+		Name: "DeepSeek-R1-7B", Repo: "unsloth/DeepSeek-R1-Distill-Qwen-7B-GGUF",
+		Quant: "Q4_K_M", SizeGB: "4.7", MinRAM: "6",
+		Think: true, Note: "R1 distill — strong chain-of-thought reasoning.",
+	},
+	{
+		Name: "DeepSeek-Coder-V2-Lite", Repo: "unsloth/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
+		Quant: "Q4_K_M", SizeGB: "9.0", MinRAM: "12",
+		Tools: true, Note: "Excellent for complex code refactors. MoE architecture.",
+	},
+	{
+		Name: "Llama-3.1-8B", Repo: "unsloth/Meta-Llama-3.1-8B-Instruct-GGUF",
+		Quant: "Q4_K_M", SizeGB: "4.9", MinRAM: "8",
+		Tools: true, Note: "Good general-purpose. Solid tool use. Well-tested.",
+	},
+	{
+		Name: "Mistral-7B-v0.3", Repo: "unsloth/mistral-7b-instruct-v0.3-GGUF",
+		Quant: "Q4_K_M", SizeGB: "4.1", MinRAM: "6",
+		Tools: true, Note: "Fast and light. Good for quick edits and completions.",
+	},
+	{
+		Name: "Phi-3.5-mini", Repo: "unsloth/Phi-3.5-mini-instruct-GGUF",
+		Quant: "Q4_K_M", SizeGB: "2.2", MinRAM: "4",
+		Tools: true, Note: "Smallest capable model. Good on 8GB machines.",
+	},
+	{
+		Name: "CodeLlama-13B", Repo: "TheBloke/CodeLlama-13B-Instruct-GGUF",
+		Quant: "Q4_K_M", SizeGB: "7.9", MinRAM: "10",
+		Note: "Specialised code completion. No structured tool use.",
+	},
+}
+
+func catalogCachePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".local", "share", "milliways", "model-catalog.json"), nil
+}
+
+func loadCatalog() []catalogEntry {
+	p, err := catalogCachePath()
+	if err != nil {
+		return builtinCatalog
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return builtinCatalog
+	}
+	var entries []catalogEntry
+	if json.Unmarshal(data, &entries) == nil && len(entries) > 0 {
+		return entries
+	}
+	return builtinCatalog
+}
+
+func runModelCatalogList(stdout io.Writer) int {
+	entries := loadCatalog()
+	fmt.Fprintln(stdout, "Top models for developer laptops (run /setup-model refresh to update from HuggingFace):")
+	fmt.Fprintln(stdout)
+	fmt.Fprintf(stdout, "  %-24s  %-6s  %-6s  %-5s  %-5s  %s\n", "Model", "Size", "RAM", "Tools", "Think", "Notes")
+	fmt.Fprintf(stdout, "  %-24s  %-6s  %-6s  %-5s  %-5s  %s\n",
+		strings.Repeat("─", 24), "──────", "──────", "─────", "─────", strings.Repeat("─", 30))
+	for _, e := range entries {
+		tools := " "
+		if e.Tools {
+			tools = "✓"
+		}
+		think := " "
+		if e.Think {
+			think = "✓"
+		}
+		fmt.Fprintf(stdout, "  %-24s  %5sGB  %5sGB  %-5s  %-5s  %s\n",
+			e.Name, e.SizeGB, e.MinRAM, tools, think, e.Note)
+	}
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "Install: /setup-model <Repo> --quant Q4_K_M --alias <name>")
+	fmt.Fprintln(stdout, "Example: /setup-model unsloth/Qwen3-8B-GGUF --quant Q4_K_M --alias qwen3-8b")
+	return 0
+}
+
+func runModelCatalogRefresh(stdout, stderr io.Writer) int {
+	fmt.Fprintln(stdout, "Fetching top GGUF models from HuggingFace...")
+	url := "https://huggingface.co/api/models?filter=gguf&sort=downloads&direction=-1&limit=100&full=false"
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url) //nolint:noctx
+	if err != nil {
+		fmt.Fprintf(stderr, "refresh: fetch failed: %v\n", err)
+		fmt.Fprintf(stderr, "  Showing built-in catalog instead (may be behind a proxy).\n")
+		return runModelCatalogList(stdout)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		fmt.Fprintf(stderr, "refresh: HuggingFace API returned HTTP %d\n", resp.StatusCode)
+		fmt.Fprintf(stderr, "  Showing built-in catalog instead.\n")
+		return runModelCatalogList(stdout)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	var hfModels []struct {
+		ID        string `json:"id"`
+		Downloads int    `json:"downloads"`
+	}
+	if err := json.Unmarshal(body, &hfModels); err != nil {
+		fmt.Fprintf(stderr, "refresh: parse error: %v\n", err)
+		return runModelCatalogList(stdout)
+	}
+
+	// Build a refreshed catalog from the HF response, keeping only models
+	// that look like GGUF instruction-tuned models with known quants.
+	seen := map[string]bool{}
+	var refreshed []catalogEntry
+	for _, m := range hfModels {
+		if len(refreshed) >= 10 {
+			break
+		}
+		name := m.ID
+		if seen[name] {
+			continue
+		}
+		// Only include -Instruct or -Chat models (not base weights).
+		lower := strings.ToLower(name)
+		if !strings.Contains(lower, "instruct") && !strings.Contains(lower, "chat") &&
+			!strings.Contains(lower, "coder") && !strings.Contains(lower, "r1") {
+			continue
+		}
+		seen[name] = true
+		refreshed = append(refreshed, catalogEntry{
+			Name:  filepath.Base(strings.TrimSuffix(name, "-GGUF")),
+			Repo:  name,
+			Quant: "Q4_K_M",
+			Note:  fmt.Sprintf("HuggingFace top download #%d", len(refreshed)+1),
+		})
+	}
+
+	if len(refreshed) == 0 {
+		fmt.Fprintln(stderr, "refresh: no suitable models found in API response — using built-in catalog")
+		return runModelCatalogList(stdout)
+	}
+
+	// Save to cache.
+	if p, err := catalogCachePath(); err == nil {
+		_ = os.MkdirAll(filepath.Dir(p), 0o755)
+		if data, err := json.Marshal(refreshed); err == nil {
+			_ = os.WriteFile(p, data, 0o644)
+			fmt.Fprintf(stdout, "Catalog updated: %s\n\n", p)
+		}
+	}
+
+	// Print the refreshed catalog.
+	fmt.Fprintf(stdout, "  %-40s  %s\n", "Model (HuggingFace ID)", "Downloads")
+	fmt.Fprintf(stdout, "  %-40s  %s\n", strings.Repeat("─", 40), strings.Repeat("─", 10))
+	for i, e := range refreshed {
+		fmt.Fprintf(stdout, "  %-40s  #%d\n", e.Repo, i+1)
+	}
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "Install: /setup-model <Repo> --quant Q4_K_M --alias <name>")
+	return 0
 }
 
 // insertSwapModelEntry adds (or refreshes) one model entry in a llama-swap

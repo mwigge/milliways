@@ -349,9 +349,15 @@ if [ -x "$MILLIWAYSCTL" ]; then
       && pass "local install-server (smoke mode)" \
       || fail "local install-server smoke failed (log: /tmp/mw-smoke-local.log)"
 
-    [ -x "$HOME/.local/bin/milliways-local-server" ] \
-      && pass "milliways-local-server launcher installed" \
-      || fail "milliways-local-server launcher missing after install"
+    # Launcher is written to HOME/.local/bin — skip in dev runs where HOME
+    # may not have been through install.sh (MILLIWAYS_BIN override implies dev).
+    if [ -n "${MILLIWAYS_BIN:-}" ]; then
+      skip "milliways-local-server launcher check (dev run with MILLIWAYS_BIN)"
+    elif [ -x "$HOME/.local/bin/milliways-local-server" ]; then
+      pass "milliways-local-server launcher installed"
+    else
+      fail "milliways-local-server launcher missing after install"
+    fi
   else
     skip "local install-server smoke (gcc/make/git not in container — install build-essential first)"
   fi
@@ -384,6 +390,27 @@ mkdir -p "$HOME/.config/milliways"
 [ -d "$HOME/.config/milliways" ] \
   && pass "config directory: ~/.config/milliways" \
   || fail "config directory not created"
+
+# ── 12. Local model catalog ──────────────────────────────────────────────────
+section "12. Local model catalog"
+
+if [ -x "$MILLIWAYSCTL" ]; then
+  "$MILLIWAYSCTL" local setup-model list >/tmp/mw-catalog.txt 2>&1
+  catalog_exit=$?
+  if [ $catalog_exit -eq 0 ] && grep -q "Qwen" /tmp/mw-catalog.txt 2>/dev/null; then
+    pass "model catalog lists curated models"
+  else
+    fail "model catalog: exit=$catalog_exit output=$(head -3 /tmp/mw-catalog.txt 2>/dev/null)"
+  fi
+
+  # swap-mode help exits 2 (needs arg) — just verify it doesn't crash
+  "$MILLIWAYSCTL" local swap-mode 2>/dev/null; swap_exit=$?
+  [ "$swap_exit" -eq 2 ] \
+    && pass "swap-mode usage check" \
+    || fail "swap-mode exited $swap_exit (expected 2 for missing arg)"
+else
+  skip "local model catalog (milliwaysctl not found)"
+fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 printf '\n────────────────────────────────────────\n'

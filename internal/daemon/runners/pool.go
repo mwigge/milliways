@@ -40,9 +40,6 @@ var poolArgsBuilder = func(prompt, dir string) []string {
 	return args
 }
 
-// poolTimeout caps a single agent.send call's subprocess lifetime.
-const poolTimeout = 5 * time.Minute
-
 // poolChunkSize is the raw stdout buffer size; each Read up to this size
 // becomes one {"t":"data","b64":...} event.
 const poolChunkSize = 4 * 1024
@@ -52,43 +49,61 @@ const poolChunkSize = 4 * 1024
 // streams as {"t":"data","b64":...} events; stderr is consumed in parallel
 // and inspected for session-limit signals (quota / rate-limit /
 // context-window exhaustion). On subprocess exit a {"t":"chunk_end",
-// "cost_usd":0} event marks end-of-response. Closing the input channel
-// pushes a final {"t":"end"}.
+// "cost_usd":0} event marks end-of-response. Closing the input channel or
+// cancelling ctx pushes a final {"t":"end"}.
 //
 // Pool's plain-text headless output does not surface token usage, so only
 // error_count is observed; tokens / cost will land when a future pool CLI
 // release exposes them.
+//
+// Timeout override: pool has no milliways-imposed subprocess timeout by
+// default. Set POOL_TIMEOUT to a Go duration ("10m") or seconds ("600") to
+// cap each prompt dispatch. "off", "none", "0", empty, and invalid values
+// mean no timeout. MILLIWAYS_POOL_TIMEOUT is also accepted as a namespaced
+// alias for process-level configuration.
 //
 // Lifecycle:
 //   - One subprocess per prompt; the session stays alive across prompts.
 //   - When `input` is closed, RunPool pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
 func RunPool(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
-	for prompt := range input {
-		if stream == nil {
-			continue
+	for {
+		select {
+		case <-ctx.Done():
+			if stream != nil {
+				stream.Push(map[string]any{"t": "end"})
+			}
+			return
+		case prompt, ok := <-input:
+			if !ok {
+				if stream != nil {
+					stream.Push(map[string]any{"t": "end"})
+				}
+				return
+			}
+			if stream == nil {
+				continue
+			}
+			runPoolOnce(ctx, prompt, stream, metrics)
 		}
-		runPoolOnce(ctx, prompt, stream, metrics)
-	}
-	if stream != nil {
-		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
 func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
-	ctx, cancel := context.WithTimeout(parent, poolTimeout)
-	defer cancel()
-
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
+		stream.Push(poolChunkEndEvent())
 		return
 	}
 
-	_, span := startDispatchSpan(parent, AgentIDPool, "")
+	spanCtx, span := startDispatchSpan(parent, AgentIDPool, "")
+	ctx, cancel := contextWithOptionalTimeout(spanCtx, poolRequestTimeout())
+	defer cancel()
+
 	spanErr := ""
 	defer func() {
 		endDispatchSpan(span, 0, 0, 0, spanErr)
-		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+		stream.Push(poolChunkEndEvent())
 	}()
 
 	cwd, _ := os.Getwd()
@@ -101,18 +116,25 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		observeError(metrics, AgentIDPool)
-		stream.Push(map[string]any{"t": "err", "msg": "pool: failed to start — try again"})
+		spanErr = err.Error()
+		stream.Push(poolStartErrorEvent("pool: failed to start — try again"))
 		return
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		observeError(metrics, AgentIDPool)
-		stream.Push(map[string]any{"t": "err", "msg": "pool: failed to start — try again"})
+		spanErr = err.Error()
+		stream.Push(poolStartErrorEvent("pool: failed to start — try again"))
 		return
 	}
 	if err := cmd.Start(); err != nil {
 		observeError(metrics, AgentIDPool)
-		stream.Push(map[string]any{"t": "err", "msg": "pool: could not start — " + installHint("pool")})
+		spanErr = err.Error()
+		if ctx.Err() != nil {
+			stream.Push(classifyDispatchError(AgentIDPool, ctx.Err()))
+		} else {
+			stream.Push(poolStartErrorEvent("pool: could not start — " + installHint("pool")))
+		}
 		return
 	}
 
@@ -147,17 +169,61 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 	lines := append([]string(nil), stderrLines...)
 	stderrMu.Unlock()
 
-	if poolStderrSignalsLimit(lines) {
+	if kind, ok := poolStderrLimitKind(lines); ok {
 		observeError(metrics, AgentIDPool)
-		spanErr = "session_limit"
-		stream.Push(map[string]any{"t": "err", "agent": AgentIDPool, "msg": "pool: session limit reached"})
+		spanErr = kind
+		stream.Push(poolLimitErrorEvent(kind))
 		return
 	}
 
 	if waitErr != nil {
 		observeError(metrics, AgentIDPool)
+		if ctx.Err() != nil {
+			spanErr = ctx.Err().Error()
+			stream.Push(classifyDispatchError(AgentIDPool, ctx.Err()))
+			return
+		}
 		spanErr = waitErr.Error()
-		stream.Push(map[string]any{"t": "err", "agent": AgentIDPool, "msg": exitMsg("pool", waitErr, lines)})
+		stream.Push(map[string]any{
+			"t":     "err",
+			"agent": AgentIDPool,
+			"code":  -32010,
+			"msg":   exitMsg("pool", waitErr, lines),
+		})
+	}
+}
+
+func poolChunkEndEvent() map[string]any {
+	return map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+}
+
+func poolRequestTimeout() time.Duration {
+	return runnerRequestTimeoutAny("POOL_TIMEOUT", "MILLIWAYS_POOL_TIMEOUT")
+}
+
+func poolStartErrorEvent(msg string) map[string]any {
+	return map[string]any{
+		"t":     "err",
+		"agent": AgentIDPool,
+		"code":  -32015,
+		"msg":   msg,
+	}
+}
+
+func poolLimitErrorEvent(kind string) map[string]any {
+	if kind == "quota" {
+		return map[string]any{
+			"t":     "err",
+			"agent": AgentIDPool,
+			"code":  -32013,
+			"msg":   "pool: quota or rate limit reached",
+		}
+	}
+	return map[string]any{
+		"t":     "err",
+		"agent": AgentIDPool,
+		"code":  -32014,
+		"msg":   "pool: session limit reached",
 	}
 }
 
@@ -181,24 +247,37 @@ func streamPoolStdout(r io.Reader, stream Pusher) {
 // indicates a quota / context-window / rate-limit exhaustion. Mirrors the
 // comprehensive set used by REPL's runner_pool.go.
 func poolStderrSignalsLimit(lines []string) bool {
+	_, ok := poolStderrLimitKind(lines)
+	return ok
+}
+
+func poolStderrLimitKind(lines []string) (string, bool) {
 	for _, l := range lines {
 		lower := strings.ToLower(l)
+		if strings.Contains(lower, "quota") ||
+			strings.Contains(lower, "rate limit") ||
+			strings.Contains(lower, "rate_limit") ||
+			strings.Contains(lower, "resource_exhausted") ||
+			strings.Contains(lower, "too many requests") ||
+			strings.Contains(lower, "insufficient balance") ||
+			strings.Contains(lower, "daily limit") {
+			return "quota", true
+		}
 		if strings.Contains(lower, "context window") ||
 			strings.Contains(lower, "context_length") ||
 			strings.Contains(lower, "context_length_exceeded") ||
-			strings.Contains(lower, "quota") ||
-			strings.Contains(lower, "rate limit") ||
-			strings.Contains(lower, "resource_exhausted") ||
+			strings.Contains(lower, "context limit") ||
 			strings.Contains(lower, "token limit") ||
 			strings.Contains(lower, "session limit") ||
 			strings.Contains(lower, "max turns") ||
 			strings.Contains(lower, "turn limit") ||
 			strings.Contains(lower, "too long") ||
-			strings.Contains(lower, "exceeded") ||
-			strings.Contains(lower, "daily limit") ||
-			strings.Contains(lower, "limit reached") {
-			return true
+			strings.Contains(lower, "exceeded") {
+			return "session", true
+		}
+		if strings.Contains(lower, "limit reached") {
+			return "quota", true
 		}
 	}
-	return false
+	return "", false
 }

@@ -18,26 +18,30 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
+	"sync/atomic"
 )
 
 // codexJSONEvent mirrors the subset of the `codex exec --json` event
 // stream we care about for the daemon-side bridge. Cribbed (without
 // lifting wholesale) from the legacy REPL runner.
 type codexJSONEvent struct {
-	Type    string          `json:"type"`
-	Content string          `json:"content,omitempty"`
-	Message string          `json:"message,omitempty"`
-	Text    string          `json:"text,omitempty"`
-	Delta   string          `json:"delta,omitempty"`
-	Item    json.RawMessage `json:"item,omitempty"`
-	Error   json.RawMessage `json:"error,omitempty"`
+	Type           string          `json:"type"`
+	Content        string          `json:"content,omitempty"`
+	Message        string          `json:"message,omitempty"`
+	Text           string          `json:"text,omitempty"`
+	Delta          string          `json:"delta,omitempty"`
+	ThreadID       string          `json:"thread_id,omitempty"`
+	SessionID      string          `json:"session_id,omitempty"`
+	ConversationID string          `json:"conversation_id,omitempty"`
+	Item           json.RawMessage `json:"item,omitempty"`
+	Error          json.RawMessage `json:"error,omitempty"`
 }
 
 type codexJSONItem struct {
@@ -51,14 +55,16 @@ type codexJSONItem struct {
 // codexBinary is the executable name; var (not const) so tests can swap it.
 var codexBinary = "codex"
 
-// codexTimeout caps a single agent.send call's subprocess lifetime.
-const codexTimeout = 5 * time.Minute
+type codexSessionState struct {
+	sessionID string
+}
 
 // RunCodex is the daemon-side codex session loop. It reads prompts from
 // `input`, spawns one `codex exec --json --color never --skip-git-repo-check`
-// per prompt, decodes the assistant text from each NDJSON line, and pushes
-// {"t":"data","b64":...} events to the stream. After the subprocess
-// exits a final {"t":"chunk_end","cost_usd":0} marks end-of-response.
+// subprocess per prompt, decodes the assistant text from each NDJSON line,
+// and pushes {"t":"data","b64":...} events to the stream. After the
+// subprocess exits a final {"t":"chunk_end","cost_usd":0} marks
+// end-of-response.
 //
 // Codex's JSON event stream does not currently expose token usage, so
 // only error_count is observed via `metrics` (non-nil); tokens_in /
@@ -66,31 +72,37 @@ const codexTimeout = 5 * time.Minute
 // surfaces them.
 //
 // Lifecycle:
-//   - One subprocess per prompt; the session stays alive across prompts.
+//   - One subprocess per prompt; if Codex emits a thread/session id, later
+//     prompts use `codex exec resume <id>` to preserve native continuity.
 //   - When `input` is closed, RunCodex pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
 func RunCodex(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
+	state := &codexSessionState{}
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runCodexOnce(ctx, prompt, stream, metrics)
+		runCodexOnce(ctx, prompt, stream, metrics, state)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
-func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
-	ctx, cancel := context.WithTimeout(parent, codexTimeout)
-	defer cancel()
-
+func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *codexSessionState) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
+		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
 		return
 	}
+	if state == nil {
+		state = &codexSessionState{}
+	}
 
-	_, span := startDispatchSpan(parent, AgentIDCodex, "")
+	spanCtx, span := startDispatchSpan(parent, AgentIDCodex, "")
+	ctx, cancel := contextWithOptionalTimeout(spanCtx, codexRequestTimeout())
+	defer cancel()
+
 	spanErr := ""
 	defer func() {
 		endDispatchSpan(span, 0, 0, 0, spanErr)
@@ -98,7 +110,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	}()
 
 	cwd, _ := os.Getwd()
-	cmd := exec.CommandContext(ctx, codexBinary, buildCodexCmdArgs(text, cwd, nil)...)
+	cmd := exec.CommandContext(ctx, codexBinary, buildCodexCmdArgsWithSession(text, cwd, nil, state.sessionID)...)
 	cmd.Env = safeRunnerEnv()
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -106,19 +118,25 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		observeError(metrics, AgentIDCodex)
-		stream.Push(map[string]any{"t": "err", "msg": "codex: failed to start — try again"})
+		spanErr = err.Error()
+		stream.Push(classifyCodexStartError(err))
 		return
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		observeError(metrics, AgentIDCodex)
-		stream.Push(map[string]any{"t": "err", "msg": "codex: failed to start — try again"})
+		spanErr = err.Error()
+		stream.Push(classifyCodexStartError(err))
 		return
 	}
 	if err := cmd.Start(); err != nil {
 		observeError(metrics, AgentIDCodex)
-		hint := installHint("codex")
-		stream.Push(map[string]any{"t": "err", "msg": "codex: could not start — " + hint})
+		spanErr = err.Error()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			stream.Push(classifyDispatchError(AgentIDCodex, ctxErr))
+		} else {
+			stream.Push(classifyCodexStartError(err))
+		}
 		return
 	}
 
@@ -130,6 +148,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		stderrMu      sync.Mutex
 		stderrWg      sync.WaitGroup
 		sawProxyBlock atomic.Bool
+		sawSessionErr atomic.Bool
 	)
 	stderrWg.Add(1)
 	go func() {
@@ -143,6 +162,9 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 			}
 			if codexLineLooksProxyBlocked(line) {
 				sawProxyBlock.Store(true)
+			}
+			if codexLineSignalsSessionFailure(line) {
+				sawSessionErr.Store(true)
 			}
 			stderrMu.Lock()
 			stderrLines = append(stderrLines, line)
@@ -160,6 +182,9 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		if line == "" {
 			continue
 		}
+		if sessionID := extractCodexSessionID(line); sessionID != "" {
+			state.sessionID = sessionID
+		}
 		if codexLineLooksProxyBlocked(line) {
 			sawProxyBlock.Store(true)
 			continue
@@ -167,10 +192,14 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		if codexLineSignalsSessionLimit(line) {
 			sawSessionLimit = true
 		}
+		if codexLineSignalsSessionFailure(line) {
+			sawSessionErr.Store(true)
+		}
 		if text, ok := extractCodexAssistantText(line); ok {
 			stream.Push(encodeData(text))
 		}
 	}
+	scanErr := scanner.Err()
 
 	waitErr := cmd.Wait()
 	stderrWg.Wait()
@@ -184,57 +213,142 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		stream.Push(map[string]any{
 			"t":     "err",
 			"agent": AgentIDCodex,
+			"code":  -32014,
 			"msg":   "codex: blocked by Zscaler/proxy — open ChatGPT in a browser, approve the security prompt, then retry",
 		})
-	} else if sawSessionLimit {
+	} else if sawSessionLimit || sawSessionErr.Load() {
 		observeError(metrics, AgentIDCodex)
 		spanErr = "session_limit"
 		stream.Push(map[string]any{
 			"t":     "err",
 			"agent": AgentIDCodex,
-			"msg":   "codex: session limit reached",
+			"code":  -32015,
+			"msg":   "codex: session failure or limit reached",
+		})
+	} else if ctxErr := ctx.Err(); ctxErr != nil {
+		observeError(metrics, AgentIDCodex)
+		spanErr = ctxErr.Error()
+		stream.Push(classifyDispatchError(AgentIDCodex, ctxErr))
+	} else if scanErr != nil {
+		observeError(metrics, AgentIDCodex)
+		spanErr = scanErr.Error()
+		stream.Push(map[string]any{
+			"t":     "err",
+			"agent": AgentIDCodex,
+			"code":  -32012,
+			"msg":   "codex: stream read failed — " + scrubBearer(scanErr.Error()),
 		})
 	} else if waitErr != nil {
 		observeError(metrics, AgentIDCodex)
 		spanErr = waitErr.Error()
-		stream.Push(map[string]any{"t": "err", "agent": AgentIDCodex, "msg": exitMsg("codex", waitErr, lines)})
+		stream.Push(map[string]any{"t": "err", "agent": AgentIDCodex, "code": -32010, "msg": exitMsg("codex", waitErr, lines)})
 	}
 }
 
-// buildCodexCmdArgs assembles the codex CLI argv. Always begins with
-// `exec --json --color never --skip-git-repo-check -C <cwd>`, then merges
-// any caller-supplied extra flags, then injects safe agentic defaults
-// (--sandbox workspace-write --ask-for-approval never) only when the
-// caller has not already set them, and finally appends `-- <prompt>`.
+func codexRequestTimeout() time.Duration {
+	return runnerRequestTimeout("CODEX_TIMEOUT")
+}
+
+// buildCodexCmdArgs assembles the codex CLI argv for a fresh exec turn.
+func buildCodexCmdArgs(prompt, cwd string, extra []string) []string {
+	return buildCodexCmdArgsWithSession(prompt, cwd, extra, "")
+}
+
+// buildCodexCmdArgsWithSession assembles the codex CLI argv. Root-level
+// defaults (`--sandbox workspace-write --ask-for-approval never`) are placed
+// before `exec`, because recent Codex CLIs reject --ask-for-approval when it
+// appears after `codex exec`.
 //
 // -C sets the working root so codex sees the project directory regardless
 // of what directory the daemon was launched from.
 //
 // Without --sandbox/--ask-for-approval, recent codex CLI versions run in
 // read-only / on-request mode and silently refuse tool execution.
-func buildCodexCmdArgs(prompt, cwd string, extra []string) []string {
-	args := []string{"exec", "--json", "--color", "never", "--skip-git-repo-check"}
-	if cwd != "" && !codexHasFlag(extra, "-C") {
+func buildCodexCmdArgsWithSession(prompt, cwd string, extra []string, sessionID string) []string {
+	rootArgs, execExtra := codexSplitRootArgs(extra)
+	if !codexHasAnyFlag(extra, "--sandbox", "-s", "--full-auto", "--dangerously-bypass-approvals-and-sandbox") {
+		rootArgs = append(rootArgs, "--sandbox", "workspace-write")
+	}
+	if !codexHasAnyFlag(extra, "--ask-for-approval", "-a", "--full-auto", "--dangerously-bypass-approvals-and-sandbox") {
+		rootArgs = append(rootArgs, "--ask-for-approval", "never")
+	}
+
+	args := append([]string(nil), rootArgs...)
+	if sessionID != "" {
+		args = append(args, "exec", "resume", "--json", "--skip-git-repo-check")
+		args = append(args, execExtra...)
+		args = append(args, sessionID, "--", prompt)
+		return args
+	}
+
+	args = append(args, "exec", "--json", "--color", "never", "--skip-git-repo-check")
+	if cwd != "" && !codexHasAnyFlag(extra, "-C", "--cd") {
 		args = append(args, "-C", cwd)
 	}
-	args = append(args, extra...)
-	if !codexHasFlag(extra, "--sandbox") {
-		args = append(args, "--sandbox", "workspace-write")
-	}
-	if !codexHasFlag(extra, "--ask-for-approval") {
-		args = append(args, "--ask-for-approval", "never")
-	}
+	args = append(args, execExtra...)
 	args = append(args, "--", prompt)
 	return args
 }
 
-func codexHasFlag(args []string, flag string) bool {
-	for _, a := range args {
-		if a == flag {
+func codexSplitRootArgs(args []string) ([]string, []string) {
+	var rootArgs, execArgs []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if codexIsRootFlag(arg) {
+			rootArgs = append(rootArgs, arg)
+			if codexFlagTakesValue(arg) && i+1 < len(args) {
+				i++
+				rootArgs = append(rootArgs, args[i])
+			}
+			continue
+		}
+		execArgs = append(execArgs, arg)
+	}
+	return rootArgs, execArgs
+}
+
+func codexIsRootFlag(arg string) bool {
+	return arg == "--sandbox" || strings.HasPrefix(arg, "--sandbox=") ||
+		arg == "-s" ||
+		arg == "--ask-for-approval" || strings.HasPrefix(arg, "--ask-for-approval=") ||
+		arg == "-a"
+}
+
+func codexFlagTakesValue(arg string) bool {
+	return arg == "--sandbox" || arg == "-s" || arg == "--ask-for-approval" || arg == "-a"
+}
+
+func codexHasAnyFlag(args []string, flags ...string) bool {
+	for _, flag := range flags {
+		if codexHasFlag(args, flag) {
 			return true
 		}
 	}
 	return false
+}
+
+func codexHasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag || strings.HasPrefix(a, flag+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func classifyCodexStartError(err error) map[string]any {
+	msg := "codex: failed to start — try again"
+	if errors.Is(err, exec.ErrNotFound) {
+		msg = "codex: could not start — " + installHint("codex")
+	} else if err != nil {
+		msg = "codex: failed to start — " + scrubBearer(err.Error())
+	}
+	return map[string]any{
+		"t":     "err",
+		"agent": AgentIDCodex,
+		"code":  -32016,
+		"msg":   msg,
+	}
 }
 
 // codexLineLooksProxyBlocked returns true when a stdout/stderr line carries
@@ -265,6 +379,28 @@ func codexLineSignalsSessionLimit(line string) bool {
 		return strings.Contains(lower, "context") || strings.Contains(lower, "limit")
 	}
 	return false
+}
+
+func codexLineSignalsSessionFailure(line string) bool {
+	if codexLineSignalsSessionLimit(line) {
+		return true
+	}
+	lower := strings.ToLower(line)
+	return strings.Contains(lower, "thread/start failed") ||
+		strings.Contains(lower, "thread/resume failed") ||
+		strings.Contains(lower, "cannot access session files") ||
+		strings.Contains(lower, "session not found") ||
+		strings.Contains(lower, "cannot resume") ||
+		strings.Contains(lower, "context_window_exceeded") ||
+		strings.Contains(lower, "usage_limit_exceeded")
+}
+
+func extractCodexSessionID(line string) string {
+	var evt codexJSONEvent
+	if err := json.Unmarshal([]byte(line), &evt); err != nil {
+		return ""
+	}
+	return codexFirstNonEmpty(evt.ThreadID, evt.SessionID, evt.ConversationID)
 }
 
 // extractCodexAssistantText returns the assistant text from a codex

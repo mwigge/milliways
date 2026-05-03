@@ -17,6 +17,7 @@ package runners
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -36,9 +37,6 @@ var geminiArgsBuilder = func(prompt string) []string {
 	return []string{"-p", prompt, "-y"}
 }
 
-// geminiTimeout caps a single agent.send call's subprocess lifetime.
-const geminiTimeout = 5 * time.Minute
-
 // geminiChunkSize is the raw stdout buffer size; each Read up to this size
 // becomes one {"t":"data","b64":...} event.
 const geminiChunkSize = 4 * 1024
@@ -54,36 +52,54 @@ const geminiChunkSize = 4 * 1024
 // only error_count is observed (token / cost metrics will land when a
 // future gemini CLI release exposes them).
 //
+// Timeout override: Gemini has no milliways-imposed subprocess timeout by
+// default. Set GEMINI_TIMEOUT to a Go duration ("10m") or seconds ("600")
+// to cap each prompt dispatch. "off", "none", "0", empty, and invalid
+// values mean no timeout. MILLIWAYS_GEMINI_TIMEOUT is also accepted as a
+// namespaced alias for process-level configuration.
+//
 // Lifecycle:
 //   - One subprocess per prompt; the session stays alive across prompts.
 //   - When `input` is closed, RunGemini pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
 func RunGemini(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
-	for prompt := range input {
-		if stream == nil {
-			continue
+	for {
+		select {
+		case <-ctx.Done():
+			if stream != nil {
+				stream.Push(map[string]any{"t": "end"})
+			}
+			return
+		case prompt, ok := <-input:
+			if !ok {
+				if stream != nil {
+					stream.Push(map[string]any{"t": "end"})
+				}
+				return
+			}
+			if stream == nil {
+				continue
+			}
+			runGeminiOnce(ctx, prompt, stream, metrics)
 		}
-		runGeminiOnce(ctx, prompt, stream, metrics)
-	}
-	if stream != nil {
-		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
 func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
-	ctx, cancel := context.WithTimeout(parent, geminiTimeout)
-	defer cancel()
-
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
+		stream.Push(geminiChunkEndEvent())
 		return
 	}
 
-	_, span := startDispatchSpan(parent, AgentIDGemini, "")
+	spanCtx, span := startDispatchSpan(parent, AgentIDGemini, "")
+	ctx, cancel := contextWithOptionalTimeout(spanCtx, geminiRequestTimeout())
+	defer cancel()
+
 	spanErr := ""
 	defer func() {
 		endDispatchSpan(span, 0, 0, 0, spanErr)
-		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+		stream.Push(geminiChunkEndEvent())
 	}()
 
 	cwd, _ := os.Getwd()
@@ -96,18 +112,26 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		observeError(metrics, AgentIDGemini)
-		stream.Push(map[string]any{"t": "err", "msg": "gemini: failed to start — try again"})
+		spanErr = err.Error()
+		stream.Push(geminiStartErrorEvent(err))
 		return
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		observeError(metrics, AgentIDGemini)
-		stream.Push(map[string]any{"t": "err", "msg": "gemini: failed to start — try again"})
+		spanErr = err.Error()
+		stream.Push(geminiStartErrorEvent(err))
 		return
 	}
 	if err := cmd.Start(); err != nil {
 		observeError(metrics, AgentIDGemini)
-		stream.Push(map[string]any{"t": "err", "msg": "gemini: could not start — " + installHint("gemini")})
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			spanErr = ctxErr.Error()
+			stream.Push(geminiContextErrorEvent(ctxErr))
+			return
+		}
+		spanErr = err.Error()
+		stream.Push(geminiStartErrorEvent(err))
 		return
 	}
 
@@ -144,17 +168,97 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	lines := append([]string(nil), stderrLines...)
 	stderrMu.Unlock()
 
-	if geminiStderrSignalsLimit(lines) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
 		observeError(metrics, AgentIDGemini)
-		spanErr = "session_limit"
-		stream.Push(map[string]any{"t": "err", "agent": AgentIDGemini, "msg": "gemini: session limit reached"})
+		spanErr = ctxErr.Error()
+		stream.Push(geminiContextErrorEvent(ctxErr))
+		return
+	}
+
+	if kind, ok := geminiStderrLimitKind(lines); ok {
+		observeError(metrics, AgentIDGemini)
+		spanErr = kind
+		stream.Push(geminiLimitErrorEvent(kind))
 		return
 	}
 
 	if waitErr != nil {
 		observeError(metrics, AgentIDGemini)
 		spanErr = waitErr.Error()
-		stream.Push(map[string]any{"t": "err", "agent": AgentIDGemini, "msg": exitMsg("gemini", waitErr, lines)})
+		stream.Push(geminiExitErrorEvent(waitErr, lines))
+	}
+}
+
+func geminiChunkEndEvent() map[string]any {
+	return map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+}
+
+func geminiRequestTimeout() time.Duration {
+	return runnerRequestTimeoutAny("GEMINI_TIMEOUT", "MILLIWAYS_GEMINI_TIMEOUT")
+}
+
+func geminiContextErrorEvent(err error) map[string]any {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return map[string]any{
+			"t":     "err",
+			"agent": AgentIDGemini,
+			"code":  -32008,
+			"msg":   "gemini: dispatch cancelled",
+		}
+	case errors.Is(err, context.DeadlineExceeded):
+		return map[string]any{
+			"t":     "err",
+			"agent": AgentIDGemini,
+			"code":  -32009,
+			"msg":   "gemini: dispatch timeout",
+		}
+	default:
+		return map[string]any{
+			"t":     "err",
+			"agent": AgentIDGemini,
+			"code":  -32010,
+			"msg":   "gemini: " + err.Error(),
+		}
+	}
+}
+
+func geminiStartErrorEvent(err error) map[string]any {
+	msg := "gemini: could not start — " + installHint("gemini")
+	if err != nil {
+		msg += " (" + scrubBearer(err.Error()) + ")"
+	}
+	return map[string]any{
+		"t":     "err",
+		"agent": AgentIDGemini,
+		"code":  -32015,
+		"msg":   msg,
+	}
+}
+
+func geminiLimitErrorEvent(kind string) map[string]any {
+	if kind == "quota" {
+		return map[string]any{
+			"t":     "err",
+			"agent": AgentIDGemini,
+			"code":  -32013,
+			"msg":   "gemini: quota or rate limit reached",
+		}
+	}
+	return map[string]any{
+		"t":     "err",
+		"agent": AgentIDGemini,
+		"code":  -32014,
+		"msg":   "gemini: session limit reached",
+	}
+}
+
+func geminiExitErrorEvent(waitErr error, stderrLines []string) map[string]any {
+	return map[string]any{
+		"t":     "err",
+		"agent": AgentIDGemini,
+		"code":  -32010,
+		"msg":   exitMsg("gemini", waitErr, stderrLines),
 	}
 }
 
@@ -179,24 +283,34 @@ func streamGeminiStdout(r io.Reader, stream Pusher) {
 // the comprehensive set used by REPL's runner_gemini.go so the daemon
 // surfaces the same set of conditions.
 func geminiStderrSignalsLimit(lines []string) bool {
+	_, ok := geminiStderrLimitKind(lines)
+	return ok
+}
+
+func geminiStderrLimitKind(lines []string) (string, bool) {
 	for _, l := range lines {
 		lower := strings.ToLower(l)
+		if strings.Contains(lower, "quota") ||
+			strings.Contains(lower, "rate limit") ||
+			strings.Contains(lower, "rate_limit") ||
+			strings.Contains(lower, "resource_exhausted") ||
+			strings.Contains(lower, "too many requests") ||
+			strings.Contains(lower, "insufficient balance") ||
+			strings.Contains(lower, "daily limit") ||
+			strings.Contains(lower, "limit reached") {
+			return "quota", true
+		}
 		if strings.Contains(lower, "context window") ||
 			strings.Contains(lower, "context_length") ||
 			strings.Contains(lower, "context_length_exceeded") ||
-			strings.Contains(lower, "quota") ||
-			strings.Contains(lower, "rate limit") ||
-			strings.Contains(lower, "resource_exhausted") ||
 			strings.Contains(lower, "token limit") ||
 			strings.Contains(lower, "session limit") ||
 			strings.Contains(lower, "max turns") ||
 			strings.Contains(lower, "turn limit") ||
 			strings.Contains(lower, "too long") ||
-			strings.Contains(lower, "exceeded") ||
-			strings.Contains(lower, "daily limit") ||
-			strings.Contains(lower, "limit reached") {
-			return true
+			strings.Contains(lower, "exceeded") {
+			return "session", true
 		}
 	}
-	return false
+	return "", false
 }

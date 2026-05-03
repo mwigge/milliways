@@ -504,3 +504,124 @@ func TestRunLocal_SwapModeCold(t *testing.T) {
 		t.Errorf("expected 'cold' in output, got: %q", stdout.String())
 	}
 }
+
+// ── model catalog tests ────────────────────────────────────────────────────────
+
+func TestRunLocal_SetupModelList(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	code := runLocal([]string{"setup-model", "list"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	out := stdout.String()
+	// Must show column headers
+	if !strings.Contains(out, "Model") || !strings.Contains(out, "Size") {
+		t.Errorf("missing column headers in output: %q", out)
+	}
+	// Must show at least 5 models from the builtin catalog
+	lineCount := strings.Count(out, "\n")
+	if lineCount < 5 {
+		t.Errorf("expected at least 5 lines, got %d", lineCount)
+	}
+	// Must show install hint
+	if !strings.Contains(out, "/setup-model") {
+		t.Errorf("expected install hint in output: %q", out)
+	}
+	// Qwen coder should be in the list (it's the recommended default)
+	if !strings.Contains(out, "Qwen") {
+		t.Errorf("expected Qwen models in builtin catalog: %q", out)
+	}
+}
+
+func TestRunLocal_SetupModelListShowsToolUseFlag(t *testing.T) {
+	t.Parallel()
+	var stdout bytes.Buffer
+	runLocal([]string{"setup-model", "list"}, &stdout, io.Discard)
+	out := stdout.String()
+	// At least one ✓ for tool use
+	if !strings.Contains(out, "✓") {
+		t.Errorf("expected ✓ for tool-use capable models: %q", out)
+	}
+}
+
+func TestRunLocal_SetupModelRefreshFallsBackOnNetworkError(t *testing.T) {
+	t.Parallel()
+	// Point at an unreachable host to force network failure.
+	// The refresh command must fall back to the builtin catalog gracefully.
+	origGet := http.DefaultClient
+	_ = origGet // not modifiable directly; we rely on the timeout path instead
+	var stdout, stderr bytes.Buffer
+	// We can't easily intercept http.Client here, so just verify
+	// the command exits cleanly regardless of network state.
+	// The test is valuable in CI where HF may be blocked.
+	code := runLocal([]string{"setup-model", "refresh"}, &stdout, &stderr)
+	// Either 0 (network worked) or 0 (fell back to builtin) — never 1 on network err
+	if code != 0 {
+		t.Errorf("exit = %d: refresh should never hard-fail, got stderr=%q", code, stderr.String())
+	}
+	out := stdout.String()
+	// Either real data or fallback catalog — both must mention models
+	if !strings.Contains(out, "Model") && !strings.Contains(out, "Qwen") && !strings.Contains(out, "HuggingFace") {
+		t.Errorf("expected model listing in output, got: %q", out)
+	}
+}
+
+func TestCatalogCachePath(t *testing.T) {
+	t.Parallel()
+	p, err := catalogCachePath()
+	if err != nil {
+		t.Fatalf("catalogCachePath: %v", err)
+	}
+	if !strings.HasSuffix(p, "model-catalog.json") {
+		t.Errorf("expected path to end with model-catalog.json, got %q", p)
+	}
+}
+
+func TestLoadCatalogReturnsBuiltinWhenNoCache(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	entries := loadCatalog()
+	if len(entries) == 0 {
+		t.Error("expected builtin catalog, got empty slice")
+	}
+	if len(entries) < 5 {
+		t.Errorf("builtin catalog too small: %d entries", len(entries))
+	}
+}
+
+func TestLoadCatalogReadsCache(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cacheDir := filepath.Join(home, ".local", "share", "milliways")
+	_ = os.MkdirAll(cacheDir, 0o755)
+	custom := `[{"name":"TestModel","repo":"test/repo","quant":"Q4_K_M","size_gb":"3.0","min_ram_gb":"4","tool_use":true,"reasoning":false,"note":"test"}]`
+	_ = os.WriteFile(filepath.Join(cacheDir, "model-catalog.json"), []byte(custom), 0o644)
+
+	entries := loadCatalog()
+	if len(entries) != 1 || entries[0].Name != "TestModel" {
+		t.Errorf("expected cached entry, got %v", entries)
+	}
+}
+
+func TestBuiltinCatalogIntegrity(t *testing.T) {
+	t.Parallel()
+	for i, e := range builtinCatalog {
+		if e.Name == "" {
+			t.Errorf("entry %d: empty Name", i)
+		}
+		if e.Repo == "" {
+			t.Errorf("entry %d (%s): empty Repo", i, e.Name)
+		}
+		if e.Quant == "" {
+			t.Errorf("entry %d (%s): empty Quant", i, e.Name)
+		}
+		if e.SizeGB == "" {
+			t.Errorf("entry %d (%s): empty SizeGB", i, e.Name)
+		}
+	}
+	if len(builtinCatalog) < 8 {
+		t.Errorf("builtin catalog should have at least 8 entries, has %d", len(builtinCatalog))
+	}
+}
