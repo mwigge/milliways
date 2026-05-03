@@ -60,7 +60,7 @@ if port_in_use "$PORT"; then
     # Write the endpoint to local.env and exit successfully.
     env_file="${XDG_CONFIG_HOME:-$HOME/.config}/milliways/local.env"
     mkdir -p "$(dirname "$env_file")"
-    local tmp; tmp="$(mktemp)"
+    tmp="$(mktemp)"
     grep -v "^MILLIWAYS_LOCAL_ENDPOINT=" "$env_file" 2>/dev/null > "$tmp" || true
     printf 'MILLIWAYS_LOCAL_ENDPOINT=http://%s:%s/v1\n' "$BIND_HOST" "$PORT" >> "$tmp"
     mv "$tmp" "$env_file" && chmod 0600 "$env_file"
