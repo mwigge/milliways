@@ -317,13 +317,20 @@ main() {
   info "  /local"
   info "  hello, can you write a fizzbuzz in Go?"
   info ""
+  local endpoint="http://${BIND_HOST}:${PORT}/v1"
+  local env_file="${XDG_CONFIG_HOME:-$HOME/.config}/milliways/local.env"
+  mkdir -p "$(dirname "$env_file")"
+  # Write endpoint to local.env so milliways picks it up without shell profile changes.
+  local tmp
+  tmp="$(mktemp)"
+  grep -v "^MILLIWAYS_LOCAL_ENDPOINT=" "$env_file" 2>/dev/null > "$tmp" || true
+  printf 'MILLIWAYS_LOCAL_ENDPOINT=%s\n' "$endpoint" >> "$tmp"
+  mv "$tmp" "$env_file"
+  chmod 0600 "$env_file" 2>/dev/null || true
+  ok "Endpoint written to $env_file — milliways will pick it up automatically."
+
   if [ "$PORT" != "8765" ]; then
-    warn "milliways defaults to port 8765 — yours runs on $PORT"
-    info "Add this to your shell profile so milliways finds it:"
-    info "  export MILLIWAYS_LOCAL_ENDPOINT=http://${BIND_HOST}:${PORT}/v1"
-  else
-    info "Default endpoint http://${BIND_HOST}:${PORT}/v1 — milliways picks this up automatically."
-    info "Override with MILLIWAYS_LOCAL_ENDPOINT if you need a different backend."
+    info "Note: port 8765 was in use, using $PORT instead."
   fi
 }
 
