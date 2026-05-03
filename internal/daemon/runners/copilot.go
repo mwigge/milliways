@@ -17,6 +17,7 @@ package runners
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -29,8 +30,9 @@ import (
 // copilotBinary is the executable name; var (not const) so tests can swap it.
 var copilotBinary = "copilot"
 
-// copilotTimeout caps a single agent.send call's subprocess lifetime.
-const copilotTimeout = 5 * time.Minute
+// copilotArgsBuilder constructs the argv passed to the CLI for a given prompt
+// and working directory. Tests can swap it to point at a shell fixture.
+var copilotArgsBuilder = buildCopilotCmdArgs
 
 // copilotChunkSize is the buffer size for streaming raw stdout/stderr.
 // Each Read up to this size becomes one {"t":"data","b64":...} event.
@@ -51,27 +53,39 @@ const copilotChunkSize = 4 * 1024
 //   - When `input` is closed, RunCopilot pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
 func RunCopilot(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
-	for prompt := range input {
-		if stream == nil {
-			continue
+	for {
+		select {
+		case <-ctx.Done():
+			if stream != nil {
+				stream.Push(map[string]any{"t": "end"})
+			}
+			return
+		case prompt, ok := <-input:
+			if !ok {
+				if stream != nil {
+					stream.Push(map[string]any{"t": "end"})
+				}
+				return
+			}
+			if stream == nil {
+				continue
+			}
+			runCopilotOnce(ctx, prompt, stream, metrics)
 		}
-		runCopilotOnce(ctx, prompt, stream, metrics)
-	}
-	if stream != nil {
-		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
 func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
-	ctx, cancel := context.WithTimeout(parent, copilotTimeout)
-	defer cancel()
-
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
+		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
 		return
 	}
 
-	_, span := startDispatchSpan(parent, AgentIDCopilot, "")
+	spanCtx, span := startDispatchSpan(parent, AgentIDCopilot, "")
+	ctx, cancel := contextWithOptionalTimeout(spanCtx, copilotRequestTimeout())
+	defer cancel()
+
 	spanErr := ""
 	defer func() {
 		endDispatchSpan(span, 0, 0, 0, spanErr)
@@ -79,16 +93,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	}()
 
 	cwd, _ := os.Getwd()
-	// --add-dir scopes file search to the project directory, avoiding macOS
-	// system paths that produce permission errors when copilot searches broadly.
-	args := []string{"-p", text, "--allow-all-tools", "--allow-all-paths"}
-	if model := os.Getenv("COPILOT_MODEL"); model != "" {
-		args = append(args, "--model", model)
-	}
-	if cwd != "" {
-		args = append(args, "--add-dir", cwd)
-	}
-	cmd := exec.CommandContext(ctx, copilotBinary, args...)
+	cmd := exec.CommandContext(ctx, copilotBinary, copilotArgsBuilder(text, cwd)...)
 	cmd.Env = safeRunnerEnv()
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -97,18 +102,25 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		observeError(metrics, AgentIDCopilot)
-		stream.Push(map[string]any{"t": "err", "msg": "copilot: failed to start — try again"})
+		spanErr = err.Error()
+		stream.Push(copilotStartError("stdout pipe", err))
 		return
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		observeError(metrics, AgentIDCopilot)
-		stream.Push(map[string]any{"t": "err", "msg": "copilot: failed to start — try again"})
+		spanErr = err.Error()
+		stream.Push(copilotStartError("stderr pipe", err))
 		return
 	}
 	if err := cmd.Start(); err != nil {
 		observeError(metrics, AgentIDCopilot)
-		stream.Push(map[string]any{"t": "err", "msg": "copilot: could not start — " + installHint("gh")})
+		spanErr = err.Error()
+		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			stream.Push(classifyDispatchError(AgentIDCopilot, ctx.Err()))
+			return
+		}
+		stream.Push(copilotStartError("start", err))
 		return
 	}
 
@@ -144,35 +156,111 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	lines := append([]string(nil), stderrLines...)
 	stderrMu.Unlock()
 
-	if copilotStderrSignalsLimit(lines) {
+	if ctxErr := ctx.Err(); ctxErr != nil {
 		observeError(metrics, AgentIDCopilot)
-		spanErr = "session_limit"
-		stream.Push(map[string]any{
-			"t":     "err",
-			"agent": AgentIDCopilot,
-			"msg":   "copilot: session limit reached",
-		})
-	} else if waitErr != nil {
+		spanErr = ctxErr.Error()
+		stream.Push(classifyDispatchError(AgentIDCopilot, ctxErr))
+		return
+	}
+
+	if errEvent, ok := classifyCopilotStderr(lines); ok {
+		observeError(metrics, AgentIDCopilot)
+		spanErr = errEvent["msg"].(string)
+		stream.Push(errEvent)
+		return
+	}
+
+	if waitErr != nil {
 		observeError(metrics, AgentIDCopilot)
 		spanErr = waitErr.Error()
-		stream.Push(map[string]any{"t": "err", "agent": AgentIDCopilot, "msg": exitMsg("copilot", waitErr, lines)})
+		stream.Push(map[string]any{"t": "err", "agent": AgentIDCopilot, "code": -32010, "msg": exitMsg("copilot", waitErr, lines)})
 	}
 }
 
-// copilotStderrSignalsLimit returns true when any captured stderr line
-// indicates a rate-limit or context-window exhaustion. Mirrors REPL's
-// runner_copilot.go check.
-func copilotStderrSignalsLimit(lines []string) bool {
+func buildCopilotCmdArgs(prompt, cwd string) []string {
+	// --add-dir scopes file search to the project directory, avoiding system
+	// paths that produce permission errors when file search expands broadly.
+	args := []string{"-p", prompt, "--allow-all-tools", "--allow-all-paths"}
+	if model := strings.TrimSpace(os.Getenv("COPILOT_MODEL")); model != "" {
+		args = append(args, "--model", model)
+	}
+	if cwd != "" {
+		args = append(args, "--add-dir", cwd)
+	}
+	return args
+}
+
+func copilotRequestTimeout() time.Duration {
+	return runnerRequestTimeout("COPILOT_TIMEOUT")
+}
+
+func classifyCopilotStderr(lines []string) (map[string]any, bool) {
 	for _, l := range lines {
 		lower := strings.ToLower(l)
-		if strings.Contains(lower, "rate limit") ||
+		switch {
+		case strings.Contains(lower, "quota") ||
+			strings.Contains(lower, "rate limit") ||
+			strings.Contains(lower, "rate_limit") ||
+			strings.Contains(lower, "too many requests") ||
+			strings.Contains(lower, "insufficient balance") ||
+			strings.Contains(lower, "daily limit"):
+			return map[string]any{
+				"t":     "err",
+				"agent": AgentIDCopilot,
+				"code":  -32013,
+				"msg":   "copilot: quota or rate limit reached",
+			}, true
+		case strings.Contains(lower, "session limit") ||
 			strings.Contains(lower, "context window") ||
 			strings.Contains(lower, "context_length") ||
-			strings.Contains(lower, "token limit") {
-			return true
+			strings.Contains(lower, "context_length_exceeded") ||
+			strings.Contains(lower, "token limit") ||
+			strings.Contains(lower, "max turns") ||
+			strings.Contains(lower, "turn limit") ||
+			strings.Contains(lower, "limit reached"):
+			return map[string]any{
+				"t":     "err",
+				"agent": AgentIDCopilot,
+				"code":  -32013,
+				"msg":   "copilot: session limit reached",
+			}, true
+		case strings.Contains(lower, "timed out") ||
+			strings.Contains(lower, "timeout") ||
+			strings.Contains(lower, "deadline exceeded"):
+			return map[string]any{
+				"t":     "err",
+				"agent": AgentIDCopilot,
+				"code":  -32009,
+				"msg":   "copilot: dispatch timeout",
+			}, true
 		}
 	}
-	return false
+	return nil, false
+}
+
+// copilotStderrSignalsLimit returns true when any captured stderr line
+// indicates a quota, session, or context-window exhaustion.
+func copilotStderrSignalsLimit(lines []string) bool {
+	event, ok := classifyCopilotStderr(lines)
+	if !ok {
+		return false
+	}
+	code, _ := event["code"].(int)
+	return code == -32013
+}
+
+func copilotStartError(stage string, err error) map[string]any {
+	msg := "copilot: could not start — " + installHint("gh")
+	if stage != "start" {
+		msg = "copilot: failed to start — try again"
+	}
+	return map[string]any{
+		"t":      "err",
+		"agent":  AgentIDCopilot,
+		"code":   -32010,
+		"msg":    msg,
+		"detail": scrubBearer(err.Error()),
+	}
 }
 
 // streamCopilotStdout reads from r in copilotChunkSize chunks and pushes

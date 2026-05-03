@@ -108,6 +108,8 @@ var chatCtlAliases = map[string][]string{
 	"download-model":       {"local", "download-model"},
 	"setup-local-model":    {"local", "setup-model"},
 	"setup-model":          {"local", "setup-model"},
+	"list-models-catalog":  {"local", "setup-model", "list"},
+	"refresh-model-catalog": {"local", "setup-model", "refresh"},
 	"swap":                 {"local", "swap-mode"}, // /swap hot | /swap cold
 	// Metrics dashboard
 	"metrics": {"metrics"},
@@ -270,7 +272,12 @@ func buildCompleter(agentID string) readline.AutoCompleter {
 		readline.PcItem("/download-local-model"),
 		readline.PcItem("/download-model"),
 		readline.PcItem("/setup-local-model"),
-		readline.PcItem("/setup-model"),
+		readline.PcItem("/setup-model",
+			readline.PcItem("list"),
+			readline.PcItem("refresh"),
+		),
+		readline.PcItem("/list-models-catalog"),
+		readline.PcItem("/refresh-model-catalog"),
 		readline.PcItem("/swap",
 			readline.PcItem("hot"),
 			readline.PcItem("cold"),
@@ -632,6 +639,7 @@ func (l *chatLoop) run(ctx context.Context) error {
 // drainStream reads NDJSON events from the daemon stream and writes
 // content deltas to stdout. Recognised event types:
 //   - data       — base64-encoded content; write decoded bytes to stdout
+//   - thinking   — base64-encoded runner reasoning/progress; dim status line
 //   - chunk_end  — end of one prompt response; print a trailing newline
 //     if the runner didn't, clear busy
 //   - err        — runner error; print and clear busy
@@ -647,6 +655,14 @@ func (l *chatLoop) drainStream() {
 		}
 		t, _ := ev["t"].(string)
 		switch t {
+		case "thinking":
+			if b64, ok := ev["b64"].(string); ok {
+				if raw, err := base64.StdEncoding.DecodeString(b64); err == nil {
+					if msg := formatThinkingFragment(string(raw)); msg != "" {
+						fmt.Fprintln(l.errw, "\033[2m… "+msg+"\033[0m")
+					}
+				}
+			}
 		case "data":
 			if b64, ok := ev["b64"].(string); ok {
 				if raw, err := base64.StdEncoding.DecodeString(b64); err == nil {
@@ -726,6 +742,18 @@ func (l *chatLoop) drainStream() {
 			return
 		}
 	}
+}
+
+func formatThinkingFragment(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if text == "" {
+		return ""
+	}
+	const max = 240
+	if len(text) <= max {
+		return text
+	}
+	return text[:max-1] + "…"
 }
 
 // maxTurnsSummaryPrompt is sent automatically when the agentic loop hits
