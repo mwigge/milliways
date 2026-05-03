@@ -110,10 +110,13 @@ func collectCheckItems() []checkItem {
 	// 5. python-pptx import
 	items = append(items, checkPythonImport(venvPython, "python-pptx importable", "pptx"))
 
-	// 6. CodeGraph binary
+	// 6. Support scripts (install_local.sh etc.)
+	items = append(items, checkSupportScripts())
+
+	// 7. CodeGraph binary
 	items = append(items, checkCodeGraph())
 
-	// 7. Agent toolkit
+	// 8. Agent toolkit
 	items = append(items, checkAgentToolkit())
 
 	// 8. API keys
@@ -163,6 +166,27 @@ func checkDaemon() checkItem {
 		return checkItem{label: label, status: statusWarn, detail: "milliwaysd not on PATH"}
 	}
 	return checkItem{label: label, status: statusPass, detail: path}
+}
+
+// checkSupportScripts verifies that install_local.sh is installed in the share
+// dir — required by milliwaysctl local install-server / install-swap.
+func checkSupportScripts() checkItem {
+	const label = "Support scripts (install_local.sh)"
+	candidates := []string{
+		filepath.Join(xdgDataHome(), "milliways", "scripts", "install_local.sh"),
+		"/usr/share/milliways/scripts/install_local.sh",
+		"/usr/local/share/milliways/scripts/install_local.sh",
+	}
+	for _, p := range candidates {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			return checkItem{label: label, status: statusPass, detail: filepath.Dir(p)}
+		}
+	}
+	return checkItem{
+		label:  label,
+		status: statusFail,
+		detail: "not found — run: bash scripts/install.sh  or  milliwaysctl upgrade",
+	}
 }
 
 // venvCandidates returns the list of Python venv paths to probe, in
