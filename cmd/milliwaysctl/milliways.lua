@@ -60,18 +60,16 @@ config.tab_bar_at_bottom  = true
 -- wezterm detects these patterns and makes them Ctrl+Click (macOS: Cmd+Click)
 -- openable. The first matching rule wins, so most-specific rules go first.
 config.hyperlink_rules = {
-  -- Standard https / http URLs (wezterm default — keep first)
-  { regex = '\\b(https?://[\\w\\-@:%.+~#=/?&]+)', highlight = 1 },
-  -- File paths: absolute (/path/to/file.go) and home-relative (~/path)
-  { regex = '(~/[\\w\\-./]+|/[\\w\\-./]+\\.[a-zA-Z0-9]+)', highlight = 1 },
+  -- Standard https / http URLs
+  { regex = '\\b(https?://[\\w\\-@:%.+~#=/?&]+)', highlight = 1, format = '$1' },
+  -- File paths: absolute and home-relative
+  { regex = '(~/[\\w\\-./]+|/[\\w\\-./]+\\.[a-zA-Z0-9]+)', highlight = 1, format = 'file://$1' },
   -- GitHub short refs: owner/repo#123  owner/repo@sha
   { regex = '\\b([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+[#@][a-zA-Z0-9]+)\\b',
-    highlight = 1,
-    format  = 'https://github.com/$1' },
+    highlight = 1, format = 'https://github.com/$1' },
   -- Go package paths: github.com/owner/repo/pkg
-  { regex = '\\b(github\\.com/[\\w\\-./]+)\\b', highlight = 1,
-    format = 'https://$1' },
-  -- Bare issue / PR numbers when inside a known repo context (#123)
+  { regex = '\\b(github\\.com/[\\w\\-./]+)\\b', highlight = 1, format = 'https://$1' },
+  -- Bare issue / PR numbers (#123)
   { regex = '#(\\d+)\\b', highlight = 0,
     format = 'https://github.com/mwigge/milliways/issues/$1' },
 }
