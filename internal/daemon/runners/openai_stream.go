@@ -197,10 +197,19 @@ func streamOpenAITurn(ctx context.Context, r io.Reader, stream Pusher) (TurnResu
 				finishReason = choice.FinishReason
 			}
 			delta := choice.Delta
-			if choice.Message != nil && delta.Content == "" && len(delta.ToolCalls) == 0 {
+			// Only fall back to choice.Message when the entire response was
+			// non-streaming (no content received yet). Never use it mid-stream:
+			// MiniMax sometimes echoes the full accumulated text in
+			// choice.Message on the final chunk, which would duplicate output.
+			if choice.Message != nil && delta.Content == "" &&
+				len(delta.ToolCalls) == 0 && contentBuf.Len() == 0 && reasoningBuf.Len() == 0 {
 				delta = *choice.Message
 			}
-			if reasoning := delta.reasoningText(); reasoning != "" {
+			// Emit structured reasoning (reasoning_content / reasoning fields)
+			// only if delta.Content is empty or does not also contain the same
+			// reasoning wrapped in <think> tags — prevents double-emit when the
+			// provider sends reasoning in both the structured field and inline.
+			if reasoning := delta.reasoningText(); reasoning != "" && delta.Content == "" {
 				reasoningBuf.WriteString(reasoning)
 				stream.Push(encodeThinking(reasoning))
 			}
