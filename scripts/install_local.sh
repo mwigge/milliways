@@ -59,8 +59,17 @@ fi
 # ---------------------------------------------------------------------------
 install_llamacpp() {
   if command -v llama-server >/dev/null 2>&1; then
-    ok "llama-server already installed: $(command -v llama-server)"
-    return
+    local found
+    found="$(command -v llama-server)"
+    # Reject the smoke-mode Python stub — it's a bash script wrapping python3,
+    # not a real llama.cpp binary. Check for the stub marker in the first line.
+    if head -1 "$found" 2>/dev/null | grep -q "bash" && grep -q "python3" "$found" 2>/dev/null; then
+      warn "Found stub llama-server at $found — replacing with real binary"
+      rm -f "$found"
+    else
+      ok "llama-server already installed: $found"
+      return
+    fi
   fi
 
   case "$OS" in
@@ -142,9 +151,13 @@ fetch_model() {
 # ---------------------------------------------------------------------------
 write_launcher() {
   mkdir -p "$LOG_DIR" "$HOME/.local/bin"
+  # Resolve the full path to llama-server so the launcher works under launchd
+  # and systemd, which do not inherit the user's shell PATH.
+  local llama_bin
+  llama_bin="$(command -v llama-server 2>/dev/null)" || llama_bin="llama-server"
   cat > "$HOME/.local/bin/milliways-local-server" <<EOF
 #!/usr/bin/env bash
-exec llama-server \\
+exec "$llama_bin" \\
   -m "$MODEL_PATH" \\
   --alias "$MODEL_ALIAS" \\
   --host "$BIND_HOST" \\
@@ -242,10 +255,19 @@ smoke_test() {
 
 smoke_mode() {
   info "milliways local-model installer smoke mode"
-  mkdir -p "$HOME/.local/bin" "$LOG_DIR" "$MODEL_DIR"
+
+  # Use an isolated temp dir — never write the stub to ~/.local/bin where it
+  # would persist after the smoke and fool install_llamacpp into thinking the
+  # real server is already installed.
+  local smoke_tmp
+  smoke_tmp="$(mktemp -d)"
+  trap 'rm -rf "$smoke_tmp"' EXIT
+
+  mkdir -p "$LOG_DIR" "$MODEL_DIR"
   MODEL_PATH="$MODEL_DIR/smoke-model.gguf"
   : > "$MODEL_PATH"
-  cat > "$HOME/.local/bin/llama-server" <<'EOF'
+
+  cat > "$smoke_tmp/llama-server" <<'EOF'
 #!/usr/bin/env bash
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -257,12 +279,8 @@ done
 host="${host:-127.0.0.1}"
 port="${port:-8765}"
 python3 - "$host" "$port" <<'PY'
-import json
-import sys
+import json, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
-
-host = sys.argv[1]
-port = int(sys.argv[2])
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -274,19 +292,26 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
-        self.send_response(404)
-        self.end_headers()
+        self.send_response(404); self.end_headers()
+    def log_message(self, *_): return
 
-    def log_message(self, *_):
-        return
-
-HTTPServer((host, port), Handler).serve_forever()
+HTTPServer((sys.argv[1], int(sys.argv[2])), Handler).serve_forever()
 PY
 EOF
-  chmod +x "$HOME/.local/bin/llama-server"
-  PATH="$HOME/.local/bin:$PATH"
+  chmod +x "$smoke_tmp/llama-server"
+
+  # Prepend the temp dir so write_launcher and smoke_test use the stub,
+  # but the stub never touches ~/.local/bin.
+  PATH="$smoke_tmp:$PATH"
+  mkdir -p "$HOME/.local/bin"
   write_launcher
   smoke_test || fail "smoke local server did not respond"
+
+  # Clean up: remove the stub launcher — it used the temp stub, not the real binary.
+  rm -f "$HOME/.local/bin/milliways-local-server"
+  trap - EXIT
+  rm -rf "$smoke_tmp"
+
   ok "smoke local server installed"
 }
 
