@@ -48,7 +48,25 @@ pick_free_port() {
   fail "could not find a free port near $1 — set PORT=NNNN and re-run"
 }
 
+# Ensure Homebrew and ~/.local/bin are on PATH when launched from a GUI app.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+
+# If a milliways llama-server is already running and reachable, reuse its port
+# rather than starting a new instance. This handles the case where the user
+# runs /install-local-server again after the server is already up.
 if port_in_use "$PORT"; then
+  if curl -sf "http://${BIND_HOST}:${PORT}/v1/models" >/dev/null 2>&1; then
+    ok "llama-server already running on port $PORT — reusing"
+    # Write the endpoint to local.env and exit successfully.
+    env_file="${XDG_CONFIG_HOME:-$HOME/.config}/milliways/local.env"
+    mkdir -p "$(dirname "$env_file")"
+    local tmp; tmp="$(mktemp)"
+    grep -v "^MILLIWAYS_LOCAL_ENDPOINT=" "$env_file" 2>/dev/null > "$tmp" || true
+    printf 'MILLIWAYS_LOCAL_ENDPOINT=http://%s:%s/v1\n' "$BIND_HOST" "$PORT" >> "$tmp"
+    mv "$tmp" "$env_file" && chmod 0600 "$env_file"
+    ok "Endpoint already active: http://${BIND_HOST}:${PORT}/v1"
+    exit 0
+  fi
   warn "port $PORT is already in use (likely an SSH tunnel or another dev service)"
   PORT="$(pick_free_port $((PORT + 1)))"
   ok "using port $PORT instead"
