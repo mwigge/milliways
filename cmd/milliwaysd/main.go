@@ -25,6 +25,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/mwigge/milliways/internal/daemon"
 )
@@ -46,7 +47,14 @@ func main() {
 	}
 
 	setupLogger(*logLevel)
-	daemon.LoadLocalEnv(daemon.LocalEnvPath())
+
+	localEnvPath := daemon.LocalEnvPath()
+	daemon.LoadLocalEnv(localEnvPath)
+
+	// Watch local.env for changes and reload it automatically.
+	// This lets scripts and installers write new env vars without requiring
+	// a daemon restart.
+	go watchLocalEnv(localEnvPath)
 
 	pidPath := filepath.Join(state, "pid")
 	lock, err := daemon.AcquireLock(pidPath)
@@ -109,4 +117,24 @@ func setupLogger(level string) {
 func die(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "milliwaysd: "+format+"\n", args...)
 	os.Exit(1)
+}
+
+// watchLocalEnv polls local.env every 5 seconds and reloads it when the
+// file's modification time changes. This lets install scripts, milliwaysctl
+// upgrade, and /install-local-server write new env vars (e.g.
+// MILLIWAYS_LOCAL_ENDPOINT) without requiring a daemon restart.
+func watchLocalEnv(path string) {
+	var lastMod time.Time
+	for {
+		time.Sleep(5 * time.Second)
+		info, err := os.Stat(path)
+		if err != nil {
+			continue // file may not exist yet
+		}
+		if info.ModTime().After(lastMod) {
+			lastMod = info.ModTime()
+			daemon.LoadLocalEnv(path)
+			slog.Debug("local.env reloaded", "path", path)
+		}
+	}
 }
