@@ -105,7 +105,9 @@ var chatCtlAliases = map[string][]string{
 	"list-local-models":    {"local", "list-models"},
 	"switch-local-server":  {"local", "switch-server"},
 	"download-local-model": {"local", "download-model"},
+	"download-model":       {"local", "download-model"}, // short form
 	"setup-local-model":    {"local", "setup-model"},
+	"setup-model":          {"local", "setup-model"}, // short form
 	// Metrics dashboard
 	"metrics": {"metrics"},
 	// OpenSpec wrappers
@@ -265,7 +267,9 @@ func buildCompleter(agentID string) readline.AutoCompleter {
 			readline.PcItem("lmstudio"),
 		),
 		readline.PcItem("/download-local-model"),
+		readline.PcItem("/download-model"),
 		readline.PcItem("/setup-local-model"),
+		readline.PcItem("/setup-model"),
 		// PATH override for runner subprocesses
 		readline.PcItem("/path"),
 		// Local-runner runtime tuning

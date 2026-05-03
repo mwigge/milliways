@@ -16,9 +16,11 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -298,5 +300,135 @@ func TestRunLocal_HelpExitsZero(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "install-server") {
 		t.Errorf("help output = %q, want it to list install-server", stdout.String())
+	}
+}
+
+// ── setup-model tests ─────────────────────────────────────────────────────────
+
+func TestRunLocal_SetupModelMissingRepo(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	code := runLocal([]string{"setup-model"}, &stdout, &stderr)
+	if code != 2 {
+		t.Errorf("exit = %d, want 2 (missing repo)", code)
+	}
+}
+
+func TestRunLocal_SetupModelBadQuant(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	code := runLocal([]string{"setup-model", "owner/repo", "--quant"}, &stdout, &stderr)
+	if code == 0 {
+		t.Errorf("exit = 0, want non-zero when --quant has no value")
+	}
+}
+
+func TestRunLocal_SetupModelDownloadAndRegister(t *testing.T) {
+	modelDir := t.TempDir()
+	cfgDir := t.TempDir()
+	t.Setenv("MODEL_DIR", modelDir)
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+
+	// defaultGGUFDest("owner/repo-GGUF", "Q4_K_M") = filepath.Join(modelDir, "repo-GGUF-Q4_K_M.gguf")
+	ggufPath := filepath.Join(modelDir, "repo-GGUF-Q4_K_M.gguf")
+	if err := os.WriteFile(ggufPath, []byte("fake-gguf"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runLocal(
+		[]string{"setup-model", "owner/repo-GGUF", "--quant", "Q4_K_M", "--alias", "my-model"},
+		&stdout, &stderr,
+	)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "registered") {
+		t.Errorf("expected 'registered' in output, got: %q", stdout.String())
+	}
+	// llama-swap.yaml should exist somewhere under cfgDir.
+	var yamlBytes []byte
+	_ = filepath.WalkDir(cfgDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() { return err }
+		if strings.HasSuffix(path, "llama-swap.yaml") { yamlBytes, _ = os.ReadFile(path) }
+		return nil
+	})
+	if len(yamlBytes) == 0 {
+		t.Fatalf("llama-swap.yaml not written under %s", cfgDir)
+	}
+	if !strings.Contains(string(yamlBytes), "my-model") {
+		t.Errorf("llama-swap.yaml missing alias 'my-model': %s", yamlBytes)
+	}
+}
+
+func TestRunLocal_SetupModelIdempotent(t *testing.T) {
+	modelDir := t.TempDir()
+	cfgDir := t.TempDir()
+	t.Setenv("MODEL_DIR", modelDir)
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+
+	ggufPath := filepath.Join(modelDir, "repo-GGUF-Q4_K_M.gguf")
+	_ = os.WriteFile(ggufPath, []byte("fake"), 0o644)
+
+	args := []string{"setup-model", "owner/repo-GGUF", "--quant", "Q4_K_M", "--alias", "my-model"}
+
+	var out1 bytes.Buffer
+	if code := runLocal(args, &out1, io.Discard); code != 0 {
+		t.Fatalf("first call failed (stdout=%q)", out1.String())
+	}
+	var out2 bytes.Buffer
+	if code := runLocal(args, &out2, io.Discard); code != 0 {
+		t.Fatalf("second call failed (stdout=%q)", out2.String())
+	}
+	if !strings.Contains(out2.String(), "already registered") {
+		t.Errorf("expected 'already registered' on second call, got: %q", out2.String())
+	}
+}
+
+// ── download-model tests ───────────────────────────────────────────────────────
+
+func TestRunLocal_DownloadModelUsesCache(t *testing.T) {
+	modelDir := t.TempDir()
+	t.Setenv("MODEL_DIR", modelDir)
+
+	dest := filepath.Join(modelDir, "repo-GGUF-Q4_K_M.gguf")
+	_ = os.WriteFile(dest, []byte("fake-gguf"), 0o644)
+
+	called := false
+	origExec := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		called = true
+		return origExec(name, args...)
+	}
+	defer func() { execCommand = origExec }()
+
+	var stdout, stderr bytes.Buffer
+	code := runLocal([]string{"download-model", "owner/repo-GGUF", "--quant", "Q4_K_M"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if called {
+		t.Error("curl invoked for cached model — should have skipped")
+	}
+	if !strings.Contains(stdout.String(), "cached") {
+		t.Errorf("expected 'cached' in output, got: %q", stdout.String())
+	}
+}
+
+func TestRunLocal_DownloadModelForceBypassesCache(t *testing.T) {
+	modelDir := t.TempDir()
+	t.Setenv("MODEL_DIR", modelDir)
+
+	dest := filepath.Join(modelDir, "repo-GGUF-Q4_K_M.gguf")
+	_ = os.WriteFile(dest, []byte("old"), 0o644)
+
+	origExec := execCommand
+	execCommand = func(_ string, _ ...string) *exec.Cmd { return exec.Command("false") }
+	defer func() { execCommand = origExec }()
+
+	var stdout, stderr bytes.Buffer
+	code := runLocal([]string{"download-model", "owner/repo-GGUF", "--quant", "Q4_K_M", "--force"}, &stdout, &stderr)
+	if code == 0 {
+		t.Error("expected non-zero exit when curl fails with --force")
 	}
 }
