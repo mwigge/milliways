@@ -11,7 +11,12 @@ set -euo pipefail
 
 BIND_HOST="${BIND_HOST:-127.0.0.1}"
 PORT="${PORT:-8765}"
-SWAP_VERSION="${SWAP_VERSION:-v177}"
+# Resolve latest llama-swap release if version not pinned by caller.
+if [ -z "${SWAP_VERSION:-}" ]; then
+  SWAP_VERSION="$(curl -sSf https://api.github.com/repos/mostlygeek/llama-swap/releases/latest \
+    | grep '"tag_name"' | cut -d'"' -f4 2>/dev/null)" || SWAP_VERSION="v211"
+  [ -z "$SWAP_VERSION" ] && SWAP_VERSION="v211"
+fi
 MODEL_DIR="${MODEL_DIR:-$HOME/.local/share/milliways/models}"
 LOG_DIR="${LOG_DIR:-$HOME/.local/share/milliways/local}"
 CONFIG_DIR="${CONFIG_DIR:-$HOME/.config/milliways}"
