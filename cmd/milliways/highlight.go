@@ -133,13 +133,39 @@ func (h *codeHighlighter) Flush() error {
 	return nil
 }
 
+// langAliases maps common markdown fence tags to their canonical chroma names.
+// Chroma's own alias registry covers most cases; this map handles the shorthands
+// that LLMs frequently emit but chroma doesn't register.
+var langAliases = map[string]string{
+	"ts":         "typescript",
+	"tsx":        "tsx",
+	"js":         "javascript",
+	"jsx":        "jsx",
+	"rs":         "rust",
+	"py":         "python",
+	"rb":         "ruby",
+	"sh":         "bash",
+	"shell":      "bash",
+	"zsh":        "bash",
+	"yml":        "yaml",
+	"vue":        "vue",
+	"dockerfile": "docker",
+	"tf":         "hcl",
+	"toml":       "toml",
+	"toon":       "toml",
+}
+
 // syntaxHighlight applies chroma terminal256 highlighting to code using the
 // monokai style. If lang is empty or unrecognised, chroma attempts auto-
 // detection; if that also fails the source is returned unchanged. Errors
 // during formatting fall back to the raw source so highlighting never breaks
 // the stream.
 func syntaxHighlight(code, lang string) string {
-	lexer := lexers.Get(lang)
+	canonical := strings.ToLower(strings.TrimSpace(lang))
+	if alias, ok := langAliases[canonical]; ok {
+		canonical = alias
+	}
+	lexer := lexers.Get(canonical)
 	if lexer == nil {
 		lexer = lexers.Analyse(code)
 	}
