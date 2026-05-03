@@ -56,6 +56,12 @@ var localVerbs = []string{
 	"download-model",
 	"setup-model",
 	"swap-mode",
+	"server-start",
+	"server-stop",
+	"server-status",
+	"server-port",
+	"server-uninstall",
+	"default-model",
 }
 
 // runLocal dispatches `milliwaysctl local <verb> [args...]` and returns the
@@ -82,6 +88,18 @@ func runLocal(args []string, stdout, stderr io.Writer) int {
 		return runLocalSetupModel(rest, stdout, stderr)
 	case "swap-mode":
 		return runLocalSwapMode(rest, stdout, stderr)
+	case "server-start":
+		return runLocalServerStart(rest, stdout, stderr)
+	case "server-stop":
+		return runLocalServerStop(rest, stdout, stderr)
+	case "server-status":
+		return runLocalServerStatus(rest, stdout, stderr)
+	case "server-port":
+		return runLocalServerPort(rest, stdout, stderr)
+	case "server-uninstall":
+		return runLocalServerUninstall(rest, stdout, stderr)
+	case "default-model":
+		return runLocalDefaultModel(rest, stdout, stderr)
 	case "-h", "--help", "help":
 		printLocalUsage(stdout)
 		return 0
@@ -104,6 +122,12 @@ func printLocalUsage(w io.Writer) {
 	fmt.Fprintln(w, "  setup-model refresh                             refresh list from HuggingFace API")
 	fmt.Fprintln(w, "  setup-model    <repo> [--quant Q] [--alias A]   download + register in llama-swap")
 	fmt.Fprintln(w, "  swap-mode hot|cold [--ttl N]                    set llama-swap to hot (always-loaded) or cold (unload after TTL seconds, default 600)")
+	fmt.Fprintln(w, "  server-start                                    start the local server (launchctl / systemd / direct)")
+	fmt.Fprintln(w, "  server-stop                                     stop the local server")
+	fmt.Fprintln(w, "  server-status                                   check server reachability and list loaded models")
+	fmt.Fprintln(w, "  server-port                                     print the port number from MILLIWAYS_LOCAL_ENDPOINT")
+	fmt.Fprintln(w, "  server-uninstall [--yes]                        stop server, remove service files and launcher")
+	fmt.Fprintln(w, "  default-model <alias>                           set the default model in the launcher and local.env")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Endpoint defaults to http://localhost:8765/v1; override with MILLIWAYS_LOCAL_ENDPOINT.")
 	fmt.Fprintln(w, "Models cache to $HOME/.local/share/milliways/models/; override with MODEL_DIR.")
@@ -578,7 +602,10 @@ exec %q \
 	}
 
 	// Update MILLIWAYS_LOCAL_MODEL in local.env.
-	envFile := filepath.Join(home, ".config", "milliways", "local.env")
+	envFile, err := configPath("local.env")
+	if err != nil {
+		envFile = filepath.Join(home, ".config", "milliways", "local.env")
+	}
 	_ = os.MkdirAll(filepath.Dir(envFile), 0o700)
 	var lines []string
 	if existing, err := os.ReadFile(envFile); err == nil {
@@ -967,6 +994,341 @@ func insertSwapModelEntry(yamlBytes []byte, alias, ggufPath string) ([]byte, boo
 		return nil, false, err
 	}
 	return out, true, nil
+}
+
+// ── server maintenance verbs ───────────────────────────────────────────────────
+
+// macosPlistPath returns the standard path for the macOS launchd plist.
+func macosPlistPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("home dir: %w", err)
+	}
+	return filepath.Join(home, "Library", "LaunchAgents", "dev.milliways.local.plist"), nil
+}
+
+// linuxServicePath returns the standard path for the systemd user unit.
+func linuxServicePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("home dir: %w", err)
+	}
+	return filepath.Join(home, ".config", "systemd", "user", "dev.milliways.local.service"), nil
+}
+
+// parsePortFromEndpoint extracts the port number from a URL like
+// http://127.0.0.1:8765/v1. Returns "" when the port cannot be found.
+func parsePortFromEndpoint(endpoint string) string {
+	// Strip scheme.
+	s := endpoint
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	// Isolate host:port from path.
+	if i := strings.Index(s, "/"); i >= 0 {
+		s = s[:i]
+	}
+	// Extract port from host:port.
+	if i := strings.LastIndex(s, ":"); i >= 0 {
+		port := s[i+1:]
+		if _, err := strconv.Atoi(port); err == nil {
+			return port
+		}
+	}
+	return ""
+}
+
+// runLocalServerStart starts the local inference server via launchctl (macOS),
+// systemctl --user (Linux), or by exec-ing the launcher directly as a fallback.
+func runLocalServerStart(_ []string, stdout, stderr io.Writer) int {
+	endpoint := localEndpoint()
+
+	// macOS: launchctl load
+	if plist, err := macosPlistPath(); err == nil {
+		if _, err2 := os.Stat(plist); err2 == nil {
+			cmd := execCommand("launchctl", "load", "-w", plist)
+			cmd.Stdout = stdout
+			cmd.Stderr = stderr
+			if err3 := cmd.Run(); err3 == nil {
+				fmt.Fprintf(stdout, "[ok] local server started on %s\n", endpoint)
+				return 0
+			}
+		}
+	}
+
+	// Linux: systemctl --user start
+	if svc, err := linuxServicePath(); err == nil {
+		if _, err2 := os.Stat(svc); err2 == nil {
+			cmd := execCommand("systemctl", "--user", "start", "dev.milliways.local")
+			cmd.Stdout = stdout
+			cmd.Stderr = stderr
+			if err3 := cmd.Run(); err3 == nil {
+				fmt.Fprintf(stdout, "[ok] local server started on %s\n", endpoint)
+				return 0
+			}
+		}
+	}
+
+	// Fallback: run milliways-local-server in background.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(stderr, "server-start: home dir: %v\n", err)
+		return 1
+	}
+	launcher := filepath.Join(home, ".local", "bin", "milliways-local-server")
+	if _, err2 := os.Stat(launcher); err2 != nil {
+		fmt.Fprintf(stderr, "server-start: launcher not found at %s; run `milliwaysctl local install-server` first\n", launcher)
+		return 1
+	}
+	cmd := execCommand(launcher)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err3 := cmd.Start(); err3 != nil {
+		fmt.Fprintf(stderr, "server-start: %v\n", err3)
+		return 1
+	}
+	fmt.Fprintf(stdout, "[ok] local server started on %s\n", endpoint)
+	return 0
+}
+
+// runLocalServerStop stops the local inference server via launchctl (macOS),
+// systemctl --user (Linux), or pkill as a last resort.
+func runLocalServerStop(_ []string, stdout, stderr io.Writer) int {
+	stopped := false
+
+	// macOS: launchctl unload
+	if plist, err := macosPlistPath(); err == nil {
+		if _, err2 := os.Stat(plist); err2 == nil {
+			cmd := execCommand("launchctl", "unload", plist)
+			cmd.Stdout = stdout
+			cmd.Stderr = stderr
+			if err3 := cmd.Run(); err3 == nil {
+				stopped = true
+			}
+		}
+	}
+
+	// Linux: systemctl --user stop
+	if !stopped {
+		if svc, err := linuxServicePath(); err == nil {
+			if _, err2 := os.Stat(svc); err2 == nil {
+				cmd := execCommand("systemctl", "--user", "stop", "dev.milliways.local")
+				cmd.Stdout = stdout
+				cmd.Stderr = stderr
+				if err3 := cmd.Run(); err3 == nil {
+					stopped = true
+				}
+			}
+		}
+	}
+
+	// Fallback: pkill
+	if !stopped {
+		cmd := execCommand("pkill", "-f", "milliways-local-server")
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
+		// pkill exits 1 when no processes were found — that's acceptable.
+		_ = cmd.Run()
+	}
+
+	fmt.Fprintln(stdout, "[ok] local server stopped")
+	return 0
+}
+
+// runLocalServerStatus checks whether the local inference server is reachable,
+// and if so lists the loaded models. Exits 0 when running, 1 when stopped.
+func runLocalServerStatus(_ []string, stdout, stderr io.Writer) int {
+	endpoint := strings.TrimRight(localEndpoint(), "/")
+	url := endpoint + "/models"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		fmt.Fprintf(stderr, "server-status: build request: %v\n", err)
+		return 1
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(stdout, "status:   not running\n")
+		fmt.Fprintf(stdout, "endpoint: %s\n", endpoint)
+		fmt.Fprintf(stdout, "reason:   unreachable (%v)\n", err)
+		return 1
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(stdout, "status:   not running\n")
+		fmt.Fprintf(stdout, "endpoint: %s\n", endpoint)
+		fmt.Fprintf(stdout, "reason:   HTTP %d\n", resp.StatusCode)
+		return 1
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		fmt.Fprintf(stderr, "server-status: read body: %v\n", err)
+		return 1
+	}
+	models, err := parseListModelsResponse(body)
+	if err != nil {
+		fmt.Fprintf(stderr, "server-status: parse models: %v\n", err)
+		return 1
+	}
+
+	port := parsePortFromEndpoint(endpoint)
+	fmt.Fprintf(stdout, "status:   running\n")
+	fmt.Fprintf(stdout, "endpoint: %s\n", endpoint)
+	if port != "" {
+		fmt.Fprintf(stdout, "port:     %s\n", port)
+	}
+	if len(models) > 0 {
+		fmt.Fprintf(stdout, "models:\n")
+		for _, m := range models {
+			fmt.Fprintf(stdout, "  - %s\n", m)
+		}
+	}
+	return 0
+}
+
+// runLocalServerPort prints the port number parsed from MILLIWAYS_LOCAL_ENDPOINT
+// (or the default endpoint). Useful for shell scripts: PORT=$(milliwaysctl local server-port).
+func runLocalServerPort(_ []string, stdout, stderr io.Writer) int {
+	endpoint := localEndpoint()
+	port := parsePortFromEndpoint(endpoint)
+	if port == "" {
+		fmt.Fprintf(stderr, "server-port: cannot parse port from endpoint %q\n", endpoint)
+		return 1
+	}
+	fmt.Fprintln(stdout, port)
+	return 0
+}
+
+// runLocalServerUninstall stops the server, removes service/plist files, the
+// launcher binary, and the MILLIWAYS_LOCAL_ENDPOINT key from local.env.
+func runLocalServerUninstall(args []string, stdout, stderr io.Writer) int {
+	yes := hasFlag(args, "--yes")
+	if !yes {
+		fmt.Fprintln(stderr, "server-uninstall: this will remove the local server service files and launcher.")
+		fmt.Fprintln(stderr, "  Pass --yes to confirm, or run `milliwaysctl local server-stop` to only stop it.")
+		return 2
+	}
+
+	// Stop first (best-effort).
+	_ = runLocalServerStop(nil, stdout, stderr)
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(stderr, "server-uninstall: home dir: %v\n", err)
+		return 1
+	}
+
+	removed := []string{}
+
+	// macOS plist.
+	if plist, err2 := macosPlistPath(); err2 == nil {
+		if err3 := os.Remove(plist); err3 == nil {
+			removed = append(removed, plist)
+		}
+	}
+
+	// Linux systemd unit.
+	if svc, err2 := linuxServicePath(); err2 == nil {
+		if err3 := os.Remove(svc); err3 == nil {
+			removed = append(removed, svc)
+		}
+	}
+
+	// Launcher binary.
+	launcher := filepath.Join(home, ".local", "bin", "milliways-local-server")
+	if err2 := os.Remove(launcher); err2 == nil {
+		removed = append(removed, launcher)
+	}
+
+	// Remove MILLIWAYS_LOCAL_ENDPOINT from local.env.
+	envPath, err := configPath("local.env")
+	if err == nil {
+		if data, err2 := os.ReadFile(envPath); err2 == nil {
+			var kept []string
+			for _, line := range strings.Split(string(data), "\n") {
+				if !strings.HasPrefix(line, "MILLIWAYS_LOCAL_ENDPOINT=") {
+					kept = append(kept, line)
+				}
+			}
+			_ = os.WriteFile(envPath, []byte(strings.Join(kept, "\n")), 0o644)
+		}
+	}
+
+	for _, p := range removed {
+		fmt.Fprintf(stdout, "removed: %s\n", p)
+	}
+	if len(removed) == 0 {
+		fmt.Fprintln(stdout, "nothing to remove (service files and launcher not found)")
+	}
+	return 0
+}
+
+// runLocalDefaultModel updates the launcher script and local.env to use the
+// model matching alias in llama-swap.yaml, then prints confirmation.
+func runLocalDefaultModel(args []string, stdout, stderr io.Writer) int {
+	if len(args) < 1 {
+		fmt.Fprintln(stderr, "local default-model: <alias> required")
+		return 2
+	}
+	alias := args[0]
+
+	// Locate the model path from llama-swap.yaml.
+	cfgPath, err := configPath("llama-swap.yaml")
+	if err != nil {
+		fmt.Fprintf(stderr, "default-model: %v\n", err)
+		return 1
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "default-model: read %s: %v\n  run `milliwaysctl local setup-model` to register models first\n", cfgPath, err)
+		return 1
+	}
+
+	var swapCfg struct {
+		Models map[string]struct {
+			Cmd string `yaml:"cmd"`
+		} `yaml:"models"`
+	}
+	if err := yaml.Unmarshal(data, &swapCfg); err != nil {
+		fmt.Fprintf(stderr, "default-model: parse %s: %v\n", cfgPath, err)
+		return 1
+	}
+
+	entry, ok := swapCfg.Models[alias]
+	if !ok {
+		fmt.Fprintf(stderr, "default-model: alias %q not found in %s\n  available: ", alias, cfgPath)
+		for k := range swapCfg.Models {
+			fmt.Fprintf(stderr, "%s ", k)
+		}
+		fmt.Fprintln(stderr)
+		return 1
+	}
+
+	// Extract model path from the cmd field: "llama-server -m <path> --port ${PORT}"
+	modelPath := ""
+	parts := strings.Fields(entry.Cmd)
+	for i, p := range parts {
+		if p == "-m" && i+1 < len(parts) {
+			modelPath = parts[i+1]
+			break
+		}
+	}
+	if modelPath == "" {
+		fmt.Fprintf(stderr, "default-model: cannot extract -m path from cmd %q\n", entry.Cmd)
+		return 1
+	}
+
+	if err := updateLocalServerLauncher(modelPath, alias, stderr); err != nil {
+		fmt.Fprintf(stderr, "default-model: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintf(stdout, "[ok] default model set to %s\n", alias)
+	return 0
 }
 
 // configPath returns the absolute path under $XDG_CONFIG_HOME (or
