@@ -89,6 +89,25 @@ local abbrs = {
   ['local'] = 'L',
 }
 
+-- Per-client accent colors. Each entry: { accent, cursor, tab_bg, tab_fg, bar_bg }
+-- accent  = status bar highlight color for the active client indicator
+-- cursor  = terminal cursor color
+-- tab_bg  = active tab background
+-- tab_fg  = active tab foreground
+-- bar_bg  = status bar background when this client is active
+local client_themes = {
+  claude  = { accent='#e07840', cursor='#e07840', tab_bg='#2e1800', tab_fg='#f0a060', bar_bg='#1e1000' },
+  codex   = { accent='#3fb950', cursor='#3fb950', tab_bg='#001a08', tab_fg='#7ee88a', bar_bg='#001005' },
+  copilot = { accent='#58a6ff', cursor='#58a6ff', tab_bg='#001428', tab_fg='#90c8ff', bar_bg='#000d1a' },
+  minimax = { accent='#39d353', cursor='#39d353', tab_bg='#001a10', tab_fg='#80eaa0', bar_bg='#001008' },
+  gemini  = { accent='#4285f4', cursor='#4285f4', tab_bg='#001030', tab_fg='#80b4ff', bar_bg='#000820' },
+  ['local'] = { accent='#f0c040', cursor='#f0c040', tab_bg='#1e1600', tab_fg='#ffe080', bar_bg='#141000' },
+  pool    = { accent='#a8a8a8', cursor='#a8a8a8', tab_bg='#141414', tab_fg='#d0d0d0', bar_bg='#0c0c0c' },
+}
+local default_theme = { accent='#4db51f', cursor='#4db51f', tab_bg='#1d2021', tab_fg='#ebdbb2', bar_bg='#1d2021' }
+
+local last_client = ''
+
 local function abbrev_path(path)
   if home ~= '' and path:sub(1, #home) == home then
     return '~' .. path:sub(#home + 1)
@@ -123,8 +142,32 @@ wezterm.on('update-status', function(window, _pane)
   local agents   = data.a or {}
   local woke_ago = data.woke_ago  -- seconds since wake, or nil
 
+  -- Apply per-client color theme when client changes.
+  local theme = client_themes[current] or default_theme
+  if current ~= last_client then
+    last_client = current
+    window:set_config_overrides({
+      colors = {
+        cursor_bg    = theme.cursor,
+        cursor_fg    = '#000000',
+        cursor_border = theme.cursor,
+        tab_bar = {
+          active_tab = {
+            bg_color  = theme.tab_bg,
+            fg_color  = theme.tab_fg,
+            intensity = 'Bold',
+          },
+          inactive_tab = {
+            bg_color = '#1d2021',
+            fg_color = '#7c6f64',
+          },
+        },
+      },
+    })
+  end
+
   local cells = {
-    { Background = { Color = '#1d2021' } },
+    { Background = { Color = theme.bar_bg } },
   }
 
   -- Wake badge: ⚡ Xm when system just resumed from sleep.
@@ -147,7 +190,7 @@ wezterm.on('update-status', function(window, _pane)
   table.insert(cells, { Text = '│' })
 
   if current ~= '' then
-    table.insert(cells, { Foreground = { Color = '#b8bb26' } })
+    table.insert(cells, { Foreground = { Color = theme.accent } })
     table.insert(cells, { Text = ' ●' .. current .. ' ' })
   else
     table.insert(cells, { Foreground = { Color = '#504945' } })
@@ -159,7 +202,7 @@ wezterm.on('update-status', function(window, _pane)
 
   for i, agent in ipairs(agents) do
     local abbr = abbrs[agent] or agent:sub(1, 1):upper()
-    local fg   = (agent == current) and '#b8bb26' or '#7c6f64'
+    local fg   = (agent == current) and theme.accent or '#7c6f64'
     table.insert(cells, { Foreground = { Color = fg } })
     table.insert(cells, { Text = ' ' .. i .. ':' .. abbr })
   end

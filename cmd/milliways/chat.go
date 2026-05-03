@@ -287,7 +287,7 @@ func runChat(ctx context.Context) error {
 		sess:      nil, // landing zone — no active agent until /<runner> picks one
 		rl:        rl,
 		completer: sc,
-		out:       os.Stdout,
+		out:       newCodeHighlighter(os.Stdout),
 		errw:      os.Stderr,
 		ring:      append([]string(nil), chatSwitchableAgents...), // default ring
 		rotateCh:  make(chan string, 1),
@@ -600,6 +600,9 @@ func (l *chatLoop) drainStream() {
 				}
 			}
 		case "chunk_end":
+			if h, ok := l.out.(*codeHighlighter); ok {
+				_ = h.Flush()
+			}
 			fmt.Fprintln(l.out)
 			// Snapshot + reset the streamed response into a turn entry.
 			assistantText := strings.TrimRight(l.pendingAssistant.String(), "\n")
@@ -1818,7 +1821,7 @@ func runnerModelSpec(agentID string) modelSpec {
 		}
 		ep := os.Getenv("MINIMAX_API_URL")
 		if ep == "" {
-			ep = "https://api.minimax.io/v1/text/chatcompletion_v2"
+			ep = "https://api.minimax.io/v1/chat/completions"
 		}
 		return modelSpec{
 			envKey:   "MINIMAX_MODEL",
