@@ -784,9 +784,19 @@ type catalogEntry struct {
 // Run `/setup-model refresh` to fetch a live updated list from HuggingFace.
 var builtinCatalog = []catalogEntry{
 	{
+		Name: "Hermes-3-Llama-3.1-8B", Repo: "NousResearch/Hermes-3-Llama-3.1-8B-GGUF",
+		Quant: "Q4_K_M", SizeGB: "4.9", MinRAM: "8",
+		Tools: true, Note: "★ Best for agentic/tool use. Native OpenAI tool_calls JSON — no translation needed.",
+	},
+	{
+		Name: "Llama-3.1-8B", Repo: "unsloth/Meta-Llama-3.1-8B-Instruct-GGUF",
+		Quant: "Q4_K_M", SizeGB: "4.9", MinRAM: "8",
+		Tools: true, Note: "Native OpenAI tool_calls format. Solid for coding + file writes.",
+	},
+	{
 		Name: "Qwen2.5-Coder-7B", Repo: "unsloth/Qwen2.5-Coder-7B-Instruct-GGUF",
 		Quant: "Q4_K_M", SizeGB: "4.7", MinRAM: "6",
-		Tools: true, Note: "Best 7B coder. Reliable tool use. Recommended default.",
+		Tools: true, Note: "Best 7B coder. XML tool format (milliways translates automatically).",
 	},
 	{
 		Name: "Qwen2.5-Coder-14B", Repo: "unsloth/Qwen2.5-Coder-14B-Instruct-GGUF",
