@@ -220,7 +220,7 @@ upgrade_macos_app() {
 # ── Also refresh support scripts in share dir ─────────────────────────────────
 upgrade_support_scripts() {
   local version="$1"
-  [ -d "$SHARE_DIR/scripts" ] || return 0   # not a binary/source install
+  mkdir -p "$SHARE_DIR/scripts"
 
   local base_url="${MILLIWAYS_SUPPORT_BASE_URL:-https://raw.githubusercontent.com/${REPO}/${version}/scripts}"
   for script in install_local.sh install_local_swap.sh install_feature_deps.sh upgrade.sh; do
