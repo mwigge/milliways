@@ -15,7 +15,7 @@ PORT="${PORT:-8765}"
 MODEL_REPO="${MODEL_REPO:-unsloth/Qwen2.5-Coder-1.5B-Instruct-GGUF}"
 MODEL_QUANT="${MODEL_QUANT:-Q4_K_M}"
 MODEL_ALIAS="${MODEL_ALIAS:-qwen2.5-coder-1.5b}"
-CTX_SIZE="${CTX_SIZE:-16384}"
+CTX_SIZE="${CTX_SIZE:-32768}"
 LOG_DIR="${LOG_DIR:-$HOME/.local/share/milliways/local}"
 MODEL_DIR="${MODEL_DIR:-$HOME/.local/share/milliways/models}"
 
@@ -220,7 +220,8 @@ exec "$llama_bin" \\
   --host "$BIND_HOST" \\
   --port "$PORT" \\
   --ctx-size "$CTX_SIZE" \\
-  --jinja
+  --jinja \\
+  -fa on
 EOF
   chmod +x "$HOME/.local/bin/milliways-local-server"
   ok "wrote $HOME/.local/bin/milliways-local-server"

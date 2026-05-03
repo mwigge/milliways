@@ -247,6 +247,7 @@ func (c *localClient) Send(ctx context.Context, messages []Message, toolDefs []p
 	if c.maxTokens > 0 {
 		payload["max_tokens"] = c.maxTokens
 	}
+	payload["stream_options"] = map[string]any{"include_usage": true}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return TurnResult{}, fmt.Errorf("marshal: %w", err)

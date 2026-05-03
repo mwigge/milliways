@@ -599,7 +599,7 @@ func updateLocalServerLauncher(modelPath, alias string, stderr io.Writer) error 
 
 	host := "127.0.0.1"
 	port := "8765"
-	ctx := "16384"
+	ctx := "32768"
 	for _, line := range strings.Split(content, "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "--host") {
@@ -635,7 +635,8 @@ exec %q \
   --host %q \
   --port %q \
   --ctx-size %q \
-  --jinja
+  --jinja \
+  -fa on
 `, llamaBin, modelPath, alias, host, port, ctx)
 
 	if err := os.WriteFile(launcher, []byte(newLauncher), 0o755); err != nil {
@@ -1030,7 +1031,13 @@ func insertSwapModelEntry(yamlBytes []byte, alias, ggufPath string) ([]byte, boo
 	if models == nil {
 		models = map[string]any{}
 	}
-	desiredCmd := fmt.Sprintf("llama-server -m %s --port ${PORT}", ggufPath)
+	// --jinja is required for tool calling (llama-server ignores tools without it).
+	// --ctx-size 32768: guide recommends ≥32K for agentic loops.
+	// --host / --alias: bind address and logical model name for /v1/models.
+	desiredCmd := fmt.Sprintf(
+		"llama-server -m %s --alias %s --host 127.0.0.1 --port ${PORT} --ctx-size 32768 --jinja",
+		ggufPath, alias,
+	)
 	if existing, ok := models[alias].(map[string]any); ok {
 		if cmd, _ := existing["cmd"].(string); cmd == desiredCmd {
 			return yamlBytes, false, nil
@@ -1038,6 +1045,7 @@ func insertSwapModelEntry(yamlBytes []byte, alias, ggufPath string) ([]byte, boo
 	}
 	models[alias] = map[string]any{
 		"cmd": desiredCmd,
+		"ttl": 600,
 	}
 	root["models"] = models
 	out, err := yaml.Marshal(root)
