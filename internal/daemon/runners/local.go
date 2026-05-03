@@ -78,9 +78,10 @@ const localXMLSystemPromptBase = "You are a helpful, concise coding assistant ru
 	"Be direct and precise; avoid unnecessary preamble or filler.\n\n" +
 	"CRITICAL: When a task requires reading files, running shell commands, or fetching URLs, " +
 	"call the appropriate tool immediately — do NOT ask the user to provide content. " +
-	"Use Bash to read files (cat), list directories, run tests, or check output. " +
-	"Chain tool calls: after ls shows a file, immediately call Bash again to read it. " +
-	"Never say 'could you provide' or 'please share' — fetch it yourself with a tool call.\n\n" +
+	"Prefer the Read tool for reading files; if Read returns an error, use Bash with cat instead. " +
+	"Chain tool calls: after ls shows a file, immediately call Read or Bash to read it. " +
+	"Never say 'could you provide', 'please share', or 'let me adjust workspace settings' — " +
+	"if one tool fails, try the next (e.g. fall back to Bash cat) without asking the user.\n\n" +
 	"When you need to call a tool, output ONLY a JSON object wrapped in <tool_call> tags — " +
 	"no explanation before or after the tag on that turn:\n" +
 	"<tool_call>\n" +
