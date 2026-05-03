@@ -178,6 +178,9 @@ func runInstallScript(relPath string, stdout, stderr io.Writer) int {
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.Stdin = os.Stdin
+	// Augment PATH so install scripts find tools installed by Homebrew, MacPorts,
+	// nvm, and ~/.local/bin even when launched from a GUI app without a full shell.
+	cmd.Env = enrichedEnvForScripts()
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
@@ -348,9 +351,14 @@ func runLocalDownloadModel(args []string, stdout, stderr io.Writer) int {
 	}
 	dest := defaultGGUFDest(modelDir, repo, quant)
 	if !force {
-		if info, err := os.Stat(dest); err == nil && info.Size() > 0 {
+		if info, err := os.Stat(dest); err == nil && info.Size() > 50*1024*1024 {
+			// Only treat as cached if > 50MB — guards against partial downloads
+			// being silently reused. GGUF models are always at least a few hundred MB.
 			fmt.Fprintf(stdout, "%s (cached, %d bytes; pass --force to redownload)\n", dest, info.Size())
 			return 0
+		} else if err == nil && info.Size() > 0 {
+			fmt.Fprintf(stderr, "local download-model: partial download detected (%d bytes) — re-downloading\n", info.Size())
+			_ = os.Remove(dest)
 		}
 	}
 	// Try mirrors in order: primary HF → hf-mirror.com (bypasses many proxies) → HF token auth.
@@ -499,6 +507,39 @@ func runLocalSetupModel(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "backend not yet reachable — start it with `milliwaysctl local install-server` if not already running")
 	}
 	return 0
+}
+
+// enrichedEnvForScripts returns the current environment with PATH augmented to
+// include the standard tool locations that are missing when milliways is
+// launched from a GUI app (MilliWays.app) without a login shell.
+func enrichedEnvForScripts() []string {
+	home, _ := os.UserHomeDir()
+	extra := []string{
+		"/opt/homebrew/bin",         // Apple Silicon Homebrew
+		"/usr/local/bin",            // Intel Homebrew + manual installs
+		"/opt/pkg/bin",              // MacPorts
+		home + "/.local/bin",        // user installs (milliways itself)
+		home + "/.cargo/bin",        // Rust toolchain
+		"/usr/bin", "/bin", "/usr/sbin", "/sbin",
+	}
+	// Prepend extras to current PATH, deduplicating.
+	cur := os.Getenv("PATH")
+	seen := map[string]bool{}
+	parts := []string{}
+	for _, p := range append(extra, strings.Split(cur, ":")...) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			parts = append(parts, p)
+		}
+	}
+	env := os.Environ()
+	result := make([]string, 0, len(env))
+	for _, e := range env {
+		if !strings.HasPrefix(e, "PATH=") {
+			result = append(result, e)
+		}
+	}
+	return append(result, "PATH="+strings.Join(parts, ":"))
 }
 
 // runLocalSwapMode sets llama-swap to hot (ttl=0, always loaded) or cold
