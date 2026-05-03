@@ -87,15 +87,16 @@ data: {"type":"message_stop"}
 
 The HTTP kitchen SHALL support MiniMax SSE streams through the OpenAI-compatible parser variant.
 
-MiniMax (api.minimaxi.com) uses OpenAI-compatible SSE with custom endpoint:
+MiniMax uses OpenAI-compatible SSE with a chat-completions endpoint:
 
 **Request body:**
 ```json
-POST /v1/text/chatcompletion_v2
+POST /v1/chat/completions
 Authorization: Bearer <key>
 {
   "model": "M2-her",
   "stream": true,
+  "reasoning_split": true,
   "messages": [{"role": "user", "content": "<prompt>"}]
 }
 ```
@@ -184,4 +185,3 @@ The parser SHALL treat EOF before a terminal event (`data: [DONE]`, response-for
 - **THEN** result error SHALL contain `"incomplete HTTP stream"`
 - **AND** result output SHALL contain the partial content received before EOF
 - **AND** exit code SHALL be non-zero
-

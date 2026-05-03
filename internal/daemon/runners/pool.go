@@ -156,6 +156,7 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 			stderrMu.Lock()
 			stderrLines = append(stderrLines, line)
 			stderrMu.Unlock()
+			stream.Push(encodeThinking(line))
 			slog.Debug("pool stderr", "line", line)
 		}
 	}()

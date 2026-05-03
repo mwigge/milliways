@@ -155,6 +155,7 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 			stderrMu.Lock()
 			stderrLines = append(stderrLines, line)
 			stderrMu.Unlock()
+			stream.Push(encodeThinking(line))
 			slog.Debug("gemini stderr", "line", line)
 		}
 	}()

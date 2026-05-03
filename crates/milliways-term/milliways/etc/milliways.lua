@@ -1,5 +1,5 @@
 -- milliways.lua — wezterm configuration helpers for the milliways cockpit:
--- status bar (right-status) and cockpit keybindings.
+-- status bar (left-status) and cockpit keybindings.
 --
 -- One-line user setup from ~/.config/wezterm/wezterm.lua:
 --
@@ -11,7 +11,7 @@
 --
 -- Granular API (call one or both as needed):
 --
---   milliways.apply_status_bar(config)   -- right-status only
+--   milliways.apply_status_bar(config)   -- left-status only
 --   milliways.apply_keybindings(config)  -- cockpit hotkeys only
 --
 -- Status bar:
@@ -52,6 +52,25 @@ M.theme = {
   accent = '#7aa2f7',
   dim    = '#5c6370',
 }
+
+------------------------------------------------------------------------
+-- Per-client color themes applied via set_config_overrides when the
+-- active agent changes. Keys match the agent id string returned by
+-- `milliwaysctl status --json` in the `active_agent` field.
+------------------------------------------------------------------------
+M.client_themes = {
+  claude  = { accent='#e07840', cursor='#e07840', tab_bg='#2e1800', tab_fg='#f0a060', bar_bg='#1e1000' },
+  codex   = { accent='#3fb950', cursor='#3fb950', tab_bg='#001a08', tab_fg='#7ee88a', bar_bg='#001005' },
+  copilot = { accent='#58a6ff', cursor='#58a6ff', tab_bg='#001428', tab_fg='#90c8ff', bar_bg='#000d1a' },
+  minimax = { accent='#39d353', cursor='#39d353', tab_bg='#001a10', tab_fg='#80eaa0', bar_bg='#001008' },
+  gemini  = { accent='#4285f4', cursor='#4285f4', tab_bg='#001030', tab_fg='#80b4ff', bar_bg='#000820' },
+  ['local'] = { accent='#f0c040', cursor='#f0c040', tab_bg='#1e1600', tab_fg='#ffe080', bar_bg='#141000' },
+  pool    = { accent='#a8a8a8', cursor='#a8a8a8', tab_bg='#141414', tab_fg='#d0d0d0', bar_bg='#0c0c0c' },
+}
+M.default_client_theme = { accent='#7aa2f7', cursor='#7aa2f7', tab_bg='#1d2021', tab_fg='#ebdbb2', bar_bg='#1d2021' }
+
+-- Tracks the last seen active agent to avoid redundant override calls.
+local last_client = ''
 
 ------------------------------------------------------------------------
 -- Internal cache for the last successful status fetch. The
@@ -229,7 +248,7 @@ local function refresh_cache()
 end
 
 ------------------------------------------------------------------------
--- apply_status_bar(config) — wire the update-right-status hook into
+-- apply_status_bar(config) — wire the update-status hook into
 -- the user's wezterm config. Safe to call multiple times.
 ------------------------------------------------------------------------
 function M.apply_status_bar(config)
@@ -237,8 +256,34 @@ function M.apply_status_bar(config)
   -- watch sidecar's job, not this hook.
   config.status_update_interval = config.status_update_interval or 1000
 
-  wezterm.on('update-right-status', function(window, _pane)
+  wezterm.on('update-status', function(window, _pane)
     local status, stale = refresh_cache()
+
+    -- Apply per-client color theme when the active agent changes.
+    local agent = (status and status.active_agent) or ''
+    if type(agent) ~= 'string' then agent = '' end
+    if agent ~= last_client then
+      last_client = agent
+      local ct = M.client_themes[agent] or M.default_client_theme
+      window:set_config_overrides({
+        colors = {
+          cursor_bg     = ct.cursor,
+          cursor_fg     = '#000000',
+          cursor_border = ct.cursor,
+          tab_bar = {
+            active_tab = {
+              bg_color  = ct.tab_bg,
+              fg_color  = ct.tab_fg,
+              intensity = 'Bold',
+            },
+            inactive_tab = {
+              bg_color = '#1d2021',
+              fg_color = '#7c6f64',
+            },
+          },
+        },
+      })
+    end
 
     -- User-provided formatter can completely replace the default. If
     -- it errors, fall back to the default per the spec's "Custom
@@ -252,7 +297,8 @@ function M.apply_status_bar(config)
       segments = M.status_format(status, { theme = M.theme, stale = stale })
     end
 
-    window:set_right_status(wezterm.format(segments))
+    window:set_left_status(wezterm.format(segments))
+    window:set_right_status('')
   end)
 end
 

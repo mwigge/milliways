@@ -33,6 +33,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -40,7 +41,6 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/mwigge/milliways/internal/provider"
 	"github.com/mwigge/milliways/internal/tools"
@@ -49,7 +49,6 @@ import (
 const (
 	localDefaultEndpoint = "http://localhost:8765/v1"
 	localDefaultModel    = "qwen2.5-coder-1.5b"
-	localTimeout         = 5 * time.Minute
 )
 
 // localSystemPrompt mirrors minimaxSystemPrompt — same guidance, different
@@ -83,6 +82,10 @@ var (
 	localToolRegistryOverride *tools.Registry
 )
 
+type localSessionState struct {
+	messages []Message
+}
+
 func localRegistry() *tools.Registry {
 	if strings.EqualFold(os.Getenv("MILLIWAYS_LOCAL_TOOLS"), "off") {
 		return nil
@@ -99,7 +102,11 @@ func localRegistry() *tools.Registry {
 // localHTTPClient is the per-runner HTTP client. Per-runner (not
 // http.DefaultClient) so test transport injection in this package doesn't
 // leak into other runners (Code-quality B2 / SRE S3.10).
-var localHTTPClient = &http.Client{Timeout: localTimeout}
+var localHTTPClient = &http.Client{}
+
+// ErrLocalQuota indicates a local OpenAI-compatible backend quota or
+// rate-limit response.
+var ErrLocalQuota = errors.New("local backend quota or rate limit")
 
 // RunLocal is the daemon-side local-model session loop. Drains the input
 // channel; for each prompt drives an agentic tool loop against the
@@ -109,18 +116,19 @@ var localHTTPClient = &http.Client{Timeout: localTimeout}
 // chunk_end is always pushed (per dispatch, even on error paths) so
 // clients waiting on a terminal frame per agent.send do not hang.
 func RunLocal(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
+	state := &localSessionState{}
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runLocalOnce(ctx, prompt, stream, metrics)
+		runLocalOnce(ctx, prompt, stream, metrics, state)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
-func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
+func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *localSessionState) {
 	endpoint := strings.TrimRight(os.Getenv("MILLIWAYS_LOCAL_ENDPOINT"), "/")
 	if endpoint == "" {
 		endpoint = localDefaultEndpoint
@@ -147,16 +155,21 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
 		return
 	}
+	if state == nil {
+		state = &localSessionState{}
+	}
+	timeout := runnerRequestTimeout("MILLIWAYS_LOCAL_TIMEOUT")
 
 	spanCtx, span := startDispatchSpan(parent, AgentIDLocal, model)
-	ctx, cancel := context.WithTimeout(spanCtx, localTimeout)
+	ctx, cancel := contextWithOptionalTimeout(spanCtx, timeout)
 	defer cancel()
 
 	registry := localRegistry()
-	messages := []Message{
-		{Role: RoleSystem, Content: localSystemPrompt},
-		{Role: RoleUser, Content: text},
+	if len(state.messages) == 0 {
+		state.messages = []Message{{Role: RoleSystem, Content: localSystemPrompt}}
 	}
+	messages := append([]Message(nil), state.messages...)
+	messages = append(messages, Message{Role: RoleUser, Content: text})
 	client := &localClient{
 		http:        localHTTPClient,
 		endpoint:    endpoint,
@@ -174,10 +187,11 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	if err != nil {
 		observeError(metrics, AgentIDLocal)
 		endDispatchSpan(span, 0, 0, 0, err.Error())
-		stream.Push(classifyDispatchError(AgentIDLocal, err))
+		stream.Push(classifyLocalDispatchError(err))
 		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
 		return
 	}
+	state.messages = messages
 
 	if result.TotalUsage.PromptTokens > 0 || result.TotalUsage.CompletionTokens > 0 {
 		// Local backends are zero-cost from milliways' perspective; observe
@@ -196,6 +210,18 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		push["max_turns_hit"] = true
 	}
 	stream.Push(push)
+}
+
+func classifyLocalDispatchError(err error) map[string]any {
+	if errors.Is(err, ErrLocalQuota) {
+		return map[string]any{
+			"t":     "err",
+			"agent": AgentIDLocal,
+			"code":  -32013,
+			"msg":   AgentIDLocal + ": quota or rate limit reached",
+		}
+	}
+	return classifyDispatchError(AgentIDLocal, err)
 }
 
 // localClient implements the runners.Client interface for RunAgenticLoop.
@@ -245,8 +271,22 @@ func (c *localClient) Send(ctx context.Context, messages []Message, toolDefs []p
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return TurnResult{}, fmt.Errorf("API %s: %s", resp.Status, scrubBearer(strings.TrimSpace(string(errBody))))
+		msg := scrubBearer(strings.TrimSpace(string(errBody)))
+		if resp.StatusCode == http.StatusTooManyRequests || localBodyLooksQuota(msg) {
+			return TurnResult{}, fmt.Errorf("%w: API %d: %s", ErrLocalQuota, resp.StatusCode, msg)
+		}
+		return TurnResult{}, fmt.Errorf("API %s: %s", resp.Status, msg)
 	}
 
 	return streamOpenAITurn(ctx, resp.Body, c.stream)
+}
+
+func localBodyLooksQuota(body string) bool {
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "quota") ||
+		strings.Contains(lower, "rate limit") ||
+		strings.Contains(lower, "rate_limit") ||
+		strings.Contains(lower, "too many requests") ||
+		strings.Contains(lower, "insufficient balance") ||
+		strings.Contains(lower, "limit reached")
 }

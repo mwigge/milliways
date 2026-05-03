@@ -29,8 +29,15 @@ func TestBuildCodexCmdArgs_DefaultsInjectSandboxAndApproval(t *testing.T) {
 	if !containsCodexPair(args, "--ask-for-approval", "never") {
 		t.Errorf("missing --ask-for-approval never default in %v", args)
 	}
-	if got := args[0]; got != "exec" {
-		t.Errorf("args[0] = %q, want %q", got, "exec")
+	idxExec := slices.Index(args, "exec")
+	if idxExec < 0 {
+		t.Fatalf("missing exec subcommand: %v", args)
+	}
+	if idxSandbox := slices.Index(args, "--sandbox"); idxSandbox < 0 || idxSandbox > idxExec {
+		t.Errorf("--sandbox should be a root flag before exec: %v", args)
+	}
+	if idxApproval := slices.Index(args, "--ask-for-approval"); idxApproval < 0 || idxApproval > idxExec {
+		t.Errorf("--ask-for-approval should be a root flag before exec: %v", args)
 	}
 	// Prompt must come after the -- sentinel.
 	idx := slices.Index(args, "--")

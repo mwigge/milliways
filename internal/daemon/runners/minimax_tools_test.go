@@ -55,7 +55,7 @@ func TestRunMiniMax_IncludesSystemPromptAndTools(t *testing.T) {
 	})
 
 	t.Setenv("MINIMAX_API_KEY", "test-key")
-	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/text/chatcompletion_v2")
+	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/chat/completions")
 	withMinimaxToolRegistry(t, tools.NewBuiltInRegistry())
 
 	in := make(chan []byte, 1)
@@ -126,7 +126,7 @@ func TestRunMiniMax_ToolsDisabledByEnv(t *testing.T) {
 	})
 
 	t.Setenv("MINIMAX_API_KEY", "k")
-	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/text/chatcompletion_v2")
+	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/chat/completions")
 	t.Setenv("MINIMAX_TOOLS", "off")
 	withMinimaxToolRegistry(t, tools.NewBuiltInRegistry())
 
@@ -200,7 +200,7 @@ func TestRunMiniMax_AgenticToolLoop(t *testing.T) {
 	withMinimaxToolRegistry(t, reg)
 
 	t.Setenv("MINIMAX_API_KEY", "k")
-	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/text/chatcompletion_v2")
+	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/chat/completions")
 
 	in := make(chan []byte, 1)
 	in <- []byte("call echo")
@@ -308,7 +308,7 @@ func TestRunMiniMax_ToolFailureFoldedAsErrorContent(t *testing.T) {
 	withMinimaxToolRegistry(t, reg)
 
 	t.Setenv("MINIMAX_API_KEY", "k")
-	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/text/chatcompletion_v2")
+	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/chat/completions")
 
 	in := make(chan []byte, 1)
 	in <- []byte("trigger boom")

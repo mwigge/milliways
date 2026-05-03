@@ -57,6 +57,9 @@ func Dial(socket string) (*Client, error) {
 
 // Close releases the underlying UDS connection.
 func (c *Client) Close() error {
+	if c.conn == nil {
+		return nil
+	}
 	return c.conn.Close()
 }
 

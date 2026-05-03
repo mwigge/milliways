@@ -352,3 +352,13 @@ func encodeData(text string) map[string]any {
 		"b64": base64.StdEncoding.EncodeToString([]byte(text)),
 	}
 }
+
+// encodeThinking wraps model reasoning/progress fragments in a separate
+// stream event so clients can show activity without mixing it into the
+// final assistant answer.
+func encodeThinking(text string) map[string]any {
+	return map[string]any{
+		"t":   "thinking",
+		"b64": base64.StdEncoding.EncodeToString([]byte(text)),
+	}
+}

@@ -93,6 +93,7 @@ type Usage struct {
 // TurnResult is what a Client returns after streaming one assistant turn.
 type TurnResult struct {
 	Content      string
+	Reasoning    string
 	ToolCalls    []ToolCall
 	FinishReason string
 	Usage        *Usage

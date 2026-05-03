@@ -72,7 +72,7 @@ mempalace-dev:
 	@echo "  export MEMPALACE_PALACE_PATH='$$HOME/.local/share/mempalace'"
 
 mempalace-test:
-	PYTHONPATH=src third_party/mempalace_milliways/.venv/bin/python -m pytest tests/ --tb=short -q
+	PYTHONPATH=third_party/mempalace_milliways/src third_party/mempalace_milliways/.venv/bin/python -m pytest third_party/mempalace_milliways/tests/ --tb=short -q
 
 
 smoke:

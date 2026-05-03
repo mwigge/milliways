@@ -1,7 +1,7 @@
 -- milliways wezterm integration
 --
 -- Default program: milliways (the AI terminal). Every new tab opens milliways.
--- Status bar reads ${state}/observe.cur written by milliwaysctl observe --watch
+-- Header status reads ${state}/observe.cur written by milliwaysctl observe --watch
 --
 -- Layout: [⚡ woke Xm ago] [≈≈ MW v0.x] [~/path] [●claude] [1:C 2:X 3:G 4:M 5:L]
 -- Wake badge appears for 5 min after system resumes from sleep.
@@ -54,7 +54,7 @@ config.font_size          = 13.0
 config.window_decorations = 'TITLE | RESIZE'
 config.hide_tab_bar_if_only_one_tab = false
 config.use_fancy_tab_bar  = false
-config.tab_bar_at_bottom  = true
+config.tab_bar_at_bottom  = false
 
 -- ── Clickable URLs ────────────────────────────────────────────────────────────
 -- wezterm detects these patterns and makes them Ctrl+Click (macOS: Cmd+Click)
@@ -107,7 +107,7 @@ local xdg       = os.getenv('XDG_RUNTIME_DIR') or ''
 local state_dir = (xdg ~= '' and xdg .. '/milliways') or (home .. '/.local/state/milliways')
 local observe_cur = state_dir .. '/observe.cur'
 
--- ── Status bar ───────────────────────────────────────────────────────────────
+-- ── Header status ────────────────────────────────────────────────────────────
 
 local abbrs = {
   claude  = 'C',
@@ -157,10 +157,11 @@ end
 wezterm.on('update-status', function(window, _pane)
   local data = read_observe()
   if not data then
-    window:set_right_status(wezterm.format({
+    window:set_left_status(wezterm.format({
       { Foreground = { AnsiColor = 'Grey' } },
       { Text = ' milliways: daemon not running ' },
     }))
+    window:set_right_status('')
     return
   end
 
@@ -236,7 +237,8 @@ wezterm.on('update-status', function(window, _pane)
   end
   table.insert(cells, { Text = ' ' })
 
-  window:set_right_status(wezterm.format(cells))
+  window:set_left_status(wezterm.format(cells))
+  window:set_right_status('')
 end)
 
 -- ── Leader keybindings ───────────────────────────────────────────────────────

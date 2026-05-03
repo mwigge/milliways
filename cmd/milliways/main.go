@@ -380,7 +380,7 @@ func dispatch(opts dispatchOpts) error {
 	}
 
 	var recordLegacyConversation = true
-	var hydrator orchestrator.ContextHydrator = makeConversationHydrator(pdb, opts.prompt)
+	hydrator := makeConversationHydrator(pdb, opts.prompt)
 	var sink = makeRuntimeSink(pdb)
 	var substrateReader substrate.Reader
 	projectContext, err := project.ResolveProject(opts.projectRoot)
@@ -979,26 +979,6 @@ func splitEnvArgs(raw string) []string {
 		return nil
 	}
 	return strings.Fields(raw)
-}
-
-// readMMXAPIKey reads the API key from the mmx CLI config (~/.mmx/config.json).
-// Returns "" if the file is absent or malformed.
-func readMMXAPIKey() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	data, err := os.ReadFile(filepath.Join(home, ".mmx", "config.json"))
-	if err != nil {
-		return ""
-	}
-	var cfg struct {
-		APIKey string `json:"api_key"`
-	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return ""
-	}
-	return cfg.APIKey
 }
 
 // detectMempalaceMCP tries to find the mempalace MCP server command and args.

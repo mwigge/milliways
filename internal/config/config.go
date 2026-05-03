@@ -25,7 +25,7 @@ import (
 
 const (
 	defaultConfigPath        = "~/.config/milliways/config.json"
-	defaultMiniMaxBaseURL    = "https://api.minimax.chat/v1"
+	defaultMiniMaxBaseURL    = "https://api.minimax.io/v1"
 	defaultMiniMaxModel      = "MiniMax-Text-01"
 	defaultCompactThreshold  = 0.7
 	defaultViewportScroll    = 3

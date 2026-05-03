@@ -32,7 +32,7 @@ import (
 )
 
 const (
-	defaultMiniMaxBaseURL = "https://api.minimax.chat/v1"
+	defaultMiniMaxBaseURL = "https://api.minimax.io/v1"
 	defaultMiniMaxModel   = "MiniMax-Text-01"
 	defaultHTTPTimeout    = 60 * time.Second
 )
@@ -123,10 +123,12 @@ func (p *MiniMaxProvider) Send(ctx context.Context, req Request) (Response, erro
 }
 
 type chatCompletionRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
-	Tools    []chatTool    `json:"tools,omitempty"`
-	Stream   bool          `json:"stream"`
+	Model          string         `json:"model"`
+	Messages       []chatMessage  `json:"messages"`
+	Tools          []chatTool     `json:"tools,omitempty"`
+	Stream         bool           `json:"stream"`
+	ReasoningSplit bool           `json:"reasoning_split"`
+	StreamOptions  map[string]any `json:"stream_options,omitempty"`
 }
 
 type chatMessage struct {
@@ -205,10 +207,12 @@ func buildChatRequest(req Request, model string) chatCompletionRequest {
 	}
 
 	return chatCompletionRequest{
-		Model:    model,
-		Messages: messages,
-		Tools:    tools,
-		Stream:   true,
+		Model:          model,
+		Messages:       messages,
+		Tools:          tools,
+		Stream:         true,
+		ReasoningSplit: true,
+		StreamOptions:  map[string]any{"include_usage": true},
 	}
 }
 

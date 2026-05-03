@@ -108,6 +108,7 @@ func TestRunMiniMax_NoAPIKey(t *testing.T) {
 // terminating {"t":"chunk_end","cost_usd":N} event.
 func TestRunMiniMax_StreamsDeltas(t *testing.T) {
 	type capturedReq struct {
+		url         string
 		auth        string
 		contentType string
 		body        map[string]any
@@ -119,6 +120,7 @@ func TestRunMiniMax_StreamsDeltas(t *testing.T) {
 		var parsed map[string]any
 		_ = json.Unmarshal(body, &parsed)
 		captured <- capturedReq{
+			url:         r.URL.String(),
 			auth:        r.Header.Get("Authorization"),
 			contentType: r.Header.Get("Content-Type"),
 			body:        parsed,
@@ -138,7 +140,6 @@ func TestRunMiniMax_StreamsDeltas(t *testing.T) {
 	})
 
 	t.Setenv("MINIMAX_API_KEY", "test-key-123")
-	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/text/chatcompletion_v2")
 
 	pusher := &fakePusher{}
 	obs := &mockObserver{}
@@ -161,6 +162,9 @@ func TestRunMiniMax_StreamsDeltas(t *testing.T) {
 	// Verify request shape.
 	select {
 	case req := <-captured:
+		if req.url != minimaxDefaultURL {
+			t.Errorf("request URL = %q, want %q", req.url, minimaxDefaultURL)
+		}
 		if req.auth != "Bearer test-key-123" {
 			t.Errorf("auth header = %q, want Bearer test-key-123", req.auth)
 		}
@@ -169,6 +173,13 @@ func TestRunMiniMax_StreamsDeltas(t *testing.T) {
 		}
 		if req.body["stream"] != true {
 			t.Errorf("body.stream = %v, want true", req.body["stream"])
+		}
+		if req.body["reasoning_split"] != true {
+			t.Errorf("body.reasoning_split = %v, want true", req.body["reasoning_split"])
+		}
+		streamOptions, _ := req.body["stream_options"].(map[string]any)
+		if streamOptions["include_usage"] != true {
+			t.Errorf("body.stream_options.include_usage = %v, want true", streamOptions["include_usage"])
 		}
 		msgs, ok := req.body["messages"].([]any)
 		if !ok || len(msgs) == 0 {
@@ -240,7 +251,7 @@ func TestRunMiniMax_APIError(t *testing.T) {
 	})
 
 	t.Setenv("MINIMAX_API_KEY", "bad")
-	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/text/chatcompletion_v2")
+	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/chat/completions")
 
 	pusher := &fakePusher{}
 	obs := &mockObserver{}
@@ -276,6 +287,106 @@ func TestRunMiniMax_APIError(t *testing.T) {
 	}
 }
 
+func TestRunMiniMax_QuotaErrorUsesSpecificCode(t *testing.T) {
+	withMiniMaxDaemonTransport(t, func(r *http.Request) (*http.Response, error) {
+		return minimaxDaemonResponse(http.StatusTooManyRequests, `{"error":"quota exceeded"}`, nil), nil
+	})
+
+	t.Setenv("MINIMAX_API_KEY", "limited")
+	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/chat/completions")
+
+	pusher := &fakePusher{}
+	in := make(chan []byte, 1)
+	in <- []byte("hello")
+	close(in)
+
+	done := make(chan struct{})
+	go func() {
+		RunMiniMax(context.Background(), in, pusher, &mockObserver{})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("RunMiniMax did not return")
+	}
+
+	for _, event := range pusher.snapshot() {
+		if event["t"] != "err" {
+			continue
+		}
+		code, _ := event["code"].(int)
+		if code != -32013 {
+			t.Fatalf("quota err code = %v, want -32013; event=%v", event["code"], event)
+		}
+		return
+	}
+	t.Fatalf("expected quota err event, got %v", pusher.snapshot())
+}
+
+func TestRunMiniMax_PreservesSessionMessagesAcrossSends(t *testing.T) {
+	bodies := make(chan map[string]any, 2)
+	var calls int
+	withMiniMaxDaemonTransport(t, func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		var parsed map[string]any
+		_ = json.Unmarshal(body, &parsed)
+		bodies <- parsed
+		calls++
+		answer := "five"
+		if calls == 2 {
+			answer = "nine"
+		}
+		fakeSSE := strings.Join([]string{
+			`data: {"choices":[{"finish_reason":"stop","delta":{"content":"` + answer + `"}}]}`,
+			``,
+			`data: [DONE]`,
+			``,
+		}, "\n")
+		return minimaxDaemonResponse(http.StatusOK, fakeSSE, http.Header{"Content-Type": {"text/event-stream"}}), nil
+	})
+
+	t.Setenv("MINIMAX_API_KEY", "test-key")
+	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/chat/completions")
+	t.Setenv("MINIMAX_TOOLS", "off")
+
+	in := make(chan []byte, 2)
+	in <- []byte("what is 2+3?")
+	in <- []byte("add 4 to that")
+	close(in)
+
+	done := make(chan struct{})
+	go func() {
+		RunMiniMax(context.Background(), in, &fakePusher{}, &mockObserver{})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunMiniMax did not return")
+	}
+
+	<-bodies
+	second := <-bodies
+	msgs, _ := second["messages"].([]any)
+	var sawFirstUser, sawAssistant, sawSecondUser bool
+	for _, msg := range msgs {
+		m, _ := msg.(map[string]any)
+		switch {
+		case m["role"] == "user" && m["content"] == "what is 2+3?":
+			sawFirstUser = true
+		case m["role"] == "assistant" && m["content"] == "five":
+			sawAssistant = true
+		case m["role"] == "user" && m["content"] == "add 4 to that":
+			sawSecondUser = true
+		}
+	}
+	if !sawFirstUser || !sawAssistant || !sawSecondUser {
+		t.Fatalf("second request missing prior context: messages=%v", msgs)
+	}
+}
+
 func TestRunMiniMax_IncompleteStreamEmitsError(t *testing.T) {
 	withMiniMaxDaemonTransport(t, func(r *http.Request) (*http.Response, error) {
 		return minimaxDaemonResponse(http.StatusOK,
@@ -285,7 +396,7 @@ func TestRunMiniMax_IncompleteStreamEmitsError(t *testing.T) {
 	})
 
 	t.Setenv("MINIMAX_API_KEY", "test-key-123")
-	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/text/chatcompletion_v2")
+	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/chat/completions")
 
 	pusher := &fakePusher{}
 	obs := &mockObserver{}

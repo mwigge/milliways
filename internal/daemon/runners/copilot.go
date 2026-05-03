@@ -143,6 +143,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 			stderrMu.Lock()
 			stderrLines = append(stderrLines, line)
 			stderrMu.Unlock()
+			stream.Push(encodeThinking(line))
 			slog.Debug("copilot stderr", "line", line, "agent", AgentIDCopilot)
 		}
 	}()

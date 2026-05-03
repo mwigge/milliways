@@ -42,7 +42,6 @@ func stubLocalTransport(t *testing.T, fn func(*http.Request) (*http.Response, er
 	t.Helper()
 	withLocalHTTPClient(t, &http.Client{
 		Transport: localStubTransport{fn: fn},
-		Timeout:   localTimeout,
 	})
 }
 

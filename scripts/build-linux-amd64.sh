@@ -57,7 +57,7 @@ docker run --rm \
 
     # ── 1b. Fetch llama-server (plain CPU build — works on every amd64 host) ─
     # We pin to the latest release tag; LLAMA_TAG can override for reproducibility.
-    llama_tag="${LLAMA_TAG:-$(curl -sSf https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | awk -F\" '/tag_name/{print $4; exit}')}"
+    llama_tag="${LLAMA_TAG:-$(curl -sSf https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | grep -m1 "\"tag_name\"" | cut -d "\"" -f4)}"
     llama_tar="llama-${llama_tag}-bin-ubuntu-x64.tar.gz"
     llama_url="https://github.com/ggml-org/llama.cpp/releases/download/${llama_tag}/${llama_tar}"
     echo "fetching llama-server ${llama_tag} from ${llama_url}"

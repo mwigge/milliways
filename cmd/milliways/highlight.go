@@ -19,6 +19,7 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/alecthomas/chroma/v2"
 	chromaFmt "github.com/alecthomas/chroma/v2/formatters"
@@ -50,11 +51,12 @@ func linkifyURLs(text string) string {
 //
 // Thread-safety: not safe for concurrent use — drainStream is single-goroutine.
 type codeHighlighter struct {
-	out     io.Writer
-	pending bytes.Buffer // holds incomplete (no trailing newline) input
-	buf     bytes.Buffer // accumulates lines inside an open code fence
-	lang    string       // language extracted from the opening fence line
-	inFence bool
+	out        io.Writer
+	pending    bytes.Buffer // holds incomplete (no trailing newline) input
+	buf        bytes.Buffer // accumulates lines inside an open code fence
+	tableLines []string     // accumulates a possible markdown table outside fences
+	lang       string       // language extracted from the opening fence line
+	inFence    bool
 }
 
 // newCodeHighlighter returns a codeHighlighter that writes to out.
@@ -100,10 +102,20 @@ func (h *codeHighlighter) processLine(line string) {
 		// Check for an opening fence: three backticks, optionally followed
 		// by a language identifier.
 		if strings.HasPrefix(line, "```") {
+			h.flushTable()
 			h.inFence = true
 			h.lang = strings.TrimSpace(strings.TrimPrefix(line, "```"))
 			h.buf.Reset()
 			// Do not emit the opening fence to the output.
+			return
+		}
+		if isMarkdownTableCandidate(line) {
+			h.tableLines = append(h.tableLines, line)
+			return
+		}
+		h.flushTable()
+		if rendered, ok := renderActionLine(line); ok {
+			_, _ = io.WriteString(h.out, rendered)
 			return
 		}
 		// Plain text — linkify URLs then write through immediately.
@@ -132,12 +144,28 @@ func (h *codeHighlighter) processLine(line string) {
 func (h *codeHighlighter) Flush() error {
 	// Write any pending partial line first.
 	if h.pending.Len() > 0 {
-		_, err := h.out.Write(h.pending.Bytes())
+		line := h.pending.String()
 		h.pending.Reset()
-		if err != nil {
-			return err
+		if h.inFence {
+			h.buf.WriteString(line)
+		} else if isMarkdownTableCandidate(line) {
+			h.tableLines = append(h.tableLines, line)
+		} else {
+			h.flushTable()
+			if rendered, ok := renderActionLine(line); ok {
+				_, err := io.WriteString(h.out, strings.TrimSuffix(rendered, "\n"))
+				if err != nil {
+					return err
+				}
+				return nil
+			}
+			_, err := io.WriteString(h.out, linkifyURLs(line))
+			if err != nil {
+				return err
+			}
 		}
 	}
+	h.flushTable()
 
 	// If we are inside an open fence, emit buffered code as plain text.
 	if h.inFence && h.buf.Len() > 0 {
@@ -149,6 +177,319 @@ func (h *codeHighlighter) Flush() error {
 	}
 
 	return nil
+}
+
+func (h *codeHighlighter) flushTable() {
+	if len(h.tableLines) == 0 {
+		return
+	}
+	lines := h.tableLines
+	h.tableLines = nil
+	if rendered, ok := renderMarkdownTable(lines); ok {
+		_, _ = io.WriteString(h.out, rendered)
+		return
+	}
+	for _, line := range lines {
+		_, _ = io.WriteString(h.out, linkifyURLs(line)+"\n")
+	}
+}
+
+func isMarkdownTableCandidate(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "|") || !strings.HasSuffix(trimmed, "|") {
+		return false
+	}
+	cells := parseMarkdownTableRow(line)
+	return len(cells) >= 2
+}
+
+func parseMarkdownTableRow(line string) []string {
+	line = strings.TrimSpace(line)
+	if !strings.Contains(line, "|") {
+		return nil
+	}
+	line = strings.TrimPrefix(line, "|")
+	line = strings.TrimSuffix(line, "|")
+	parts := strings.Split(line, "|")
+	cells := make([]string, 0, len(parts))
+	for _, part := range parts {
+		cells = append(cells, strings.TrimSpace(part))
+	}
+	return cells
+}
+
+func renderMarkdownTable(lines []string) (string, bool) {
+	if len(lines) < 2 || !isMarkdownTableSeparator(lines[1]) {
+		return "", false
+	}
+	header := parseMarkdownTableRow(lines[0])
+	separator := parseMarkdownTableRow(lines[1])
+	if len(header) == 0 || len(separator) != len(header) {
+		return "", false
+	}
+
+	align := tableAlignments(separator)
+	rows := make([][]string, 0, len(lines)-2)
+	for _, line := range lines[2:] {
+		row := parseMarkdownTableRow(line)
+		if len(row) == 0 {
+			continue
+		}
+		row = normalizeTableRow(row, len(header))
+		rows = append(rows, row)
+	}
+
+	widths := make([]int, len(header))
+	for i, cell := range header {
+		widths[i] = displayWidth(cell)
+	}
+	for _, row := range rows {
+		for i, cell := range row {
+			if w := displayWidth(cell); w > widths[i] {
+				widths[i] = w
+			}
+		}
+	}
+
+	const (
+		border      = "\033[38;5;240m"
+		headerStyle = "\033[1;38;5;253m"
+		reset       = "\033[0m"
+	)
+	var b strings.Builder
+	writeTableRule(&b, border, reset, "┌", "┬", "┐", widths)
+	writeTableRow(&b, border, headerStyle, reset, header, widths, align)
+	writeTableRule(&b, border, reset, "├", "┼", "┤", widths)
+	for _, row := range rows {
+		writeTableRow(&b, border, "", reset, row, widths, align)
+	}
+	writeTableRule(&b, border, reset, "└", "┴", "┘", widths)
+	return b.String(), true
+}
+
+func isMarkdownTableSeparator(line string) bool {
+	cells := parseMarkdownTableRow(line)
+	if len(cells) < 2 {
+		return false
+	}
+	for _, cell := range cells {
+		cell = strings.TrimSpace(cell)
+		if cell == "" {
+			return false
+		}
+		stripped := strings.Trim(cell, ":")
+		if len(stripped) < 3 || strings.Trim(stripped, "-") != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func tableAlignments(separator []string) []string {
+	align := make([]string, len(separator))
+	for i, cell := range separator {
+		left := strings.HasPrefix(cell, ":")
+		right := strings.HasSuffix(cell, ":")
+		switch {
+		case left && right:
+			align[i] = "center"
+		case right:
+			align[i] = "right"
+		default:
+			align[i] = "left"
+		}
+	}
+	return align
+}
+
+func normalizeTableRow(row []string, cols int) []string {
+	if len(row) > cols {
+		return row[:cols]
+	}
+	for len(row) < cols {
+		row = append(row, "")
+	}
+	return row
+}
+
+func writeTableRule(b *strings.Builder, border, reset, left, mid, right string, widths []int) {
+	b.WriteString(border)
+	b.WriteString(left)
+	for i, width := range widths {
+		b.WriteString(strings.Repeat("─", width+2))
+		if i == len(widths)-1 {
+			b.WriteString(right)
+		} else {
+			b.WriteString(mid)
+		}
+	}
+	b.WriteString(reset)
+	b.WriteByte('\n')
+}
+
+func writeTableRow(b *strings.Builder, border, style, reset string, cells []string, widths []int, align []string) {
+	b.WriteString(border)
+	b.WriteString("│")
+	b.WriteString(reset)
+	for i, width := range widths {
+		if i >= len(cells) {
+			cells = append(cells, "")
+		}
+		cell := alignedCell(cells[i], width, align[i])
+		b.WriteByte(' ')
+		if style != "" {
+			b.WriteString(style)
+		}
+		b.WriteString(linkifyURLs(cell))
+		if style != "" {
+			b.WriteString(reset)
+		}
+		b.WriteByte(' ')
+		b.WriteString(border)
+		b.WriteString("│")
+		b.WriteString(reset)
+	}
+	b.WriteByte('\n')
+}
+
+func alignedCell(cell string, width int, align string) string {
+	cellWidth := displayWidth(cell)
+	if cellWidth >= width {
+		return cell
+	}
+	pad := width - cellWidth
+	switch align {
+	case "right":
+		return strings.Repeat(" ", pad) + cell
+	case "center":
+		left := pad / 2
+		right := pad - left
+		return strings.Repeat(" ", left) + cell + strings.Repeat(" ", right)
+	default:
+		return cell + strings.Repeat(" ", pad)
+	}
+}
+
+func displayWidth(s string) int {
+	return utf8.RuneCountInString(s)
+}
+
+func renderActionLine(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	prefix, rest, ok := splitActionLine(trimmed)
+	if !ok {
+		return "", false
+	}
+	switch strings.ToLower(prefix) {
+	case "edited":
+		return renderEditedAction(rest), true
+	case "ran", "run", "exec", "executed":
+		return renderCommandAction(prefix, rest), true
+	}
+	return "", false
+}
+
+func splitActionLine(line string) (prefix, rest string, ok bool) {
+	line = strings.TrimSpace(strings.TrimPrefix(line, "•"))
+	line = strings.TrimSpace(strings.TrimPrefix(line, "*"))
+	if line == "" {
+		return "", "", false
+	}
+	word, after, found := strings.Cut(line, " ")
+	if !found {
+		return "", "", false
+	}
+	switch strings.ToLower(word) {
+	case "edited", "ran", "run", "exec", "executed":
+		return word, strings.TrimSpace(after), true
+	default:
+		return "", "", false
+	}
+}
+
+func renderEditedAction(rest string) string {
+	const (
+		reset  = "\033[0m"
+		dim    = "\033[38;5;245m"
+		path   = "\033[38;5;117m"
+		add    = "\033[38;5;114m"
+		del    = "\033[38;5;203m"
+		action = "\033[1;38;5;75m"
+	)
+	file, stats := splitTrailingStats(rest)
+	var b strings.Builder
+	b.WriteString(dim)
+	b.WriteString("✎ ")
+	b.WriteString(action)
+	b.WriteString("Edited ")
+	b.WriteString(path)
+	b.WriteString(file)
+	if stats != "" {
+		b.WriteByte(' ')
+		b.WriteString(formatEditStats(stats, add, del, dim, reset))
+	}
+	b.WriteString(reset)
+	b.WriteByte('\n')
+	return b.String()
+}
+
+func splitTrailingStats(s string) (file, stats string) {
+	s = strings.TrimSpace(s)
+	if strings.HasSuffix(s, ")") {
+		if i := strings.LastIndex(s, " ("); i >= 0 {
+			return strings.TrimSpace(s[:i]), strings.TrimSpace(s[i+1:])
+		}
+	}
+	return s, ""
+}
+
+func formatEditStats(stats, add, del, dim, reset string) string {
+	fields := strings.Fields(strings.Trim(stats, "()"))
+	var parts []string
+	for _, field := range fields {
+		switch {
+		case strings.HasPrefix(field, "+"):
+			parts = append(parts, add+field+reset)
+		case strings.HasPrefix(field, "-"):
+			parts = append(parts, del+field+reset)
+		default:
+			parts = append(parts, dim+field+reset)
+		}
+	}
+	if len(parts) == 0 {
+		return dim + stats + reset
+	}
+	return dim + "(" + reset + strings.Join(parts, " ") + dim + ")" + reset
+}
+
+func renderCommandAction(prefix, rest string) string {
+	const (
+		reset  = "\033[0m"
+		dim    = "\033[38;5;245m"
+		action = "\033[1;38;5;178m"
+	)
+	cmd := strings.TrimSpace(rest)
+	cmd = strings.Trim(cmd, "`")
+	highlighted := strings.TrimRight(syntaxHighlight(cmd, "bash"), "\n")
+	var b strings.Builder
+	b.WriteString(dim)
+	b.WriteString("▶ ")
+	b.WriteString(action)
+	b.WriteString(titleWord(prefix))
+	b.WriteString(reset)
+	if highlighted != "" {
+		b.WriteByte(' ')
+		b.WriteString(highlighted)
+	}
+	b.WriteByte('\n')
+	return b.String()
+}
+
+func titleWord(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + strings.ToLower(s[1:])
 }
 
 // langAliases maps common markdown fence tags to their canonical chroma names.

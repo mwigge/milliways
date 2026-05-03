@@ -94,22 +94,37 @@ func TestChatPromptFormat(t *testing.T) {
 	}
 }
 
+func TestThinkingLineUsesDarkerClientColor(t *testing.T) {
+	t.Parallel()
+
+	line := formatThinkingLine("minimax", "planning next step")
+	if !strings.HasPrefix(line, "\033[38;5;98m") {
+		t.Fatalf("thinking line uses %q, want minimax thinking color", line)
+	}
+	if !strings.Contains(line, "… planning next step") {
+		t.Fatalf("thinking line missing message: %q", line)
+	}
+	if strings.Contains(line, agentColor("minimax")) {
+		t.Fatalf("thinking line should use darker companion color, got main color in %q", line)
+	}
+}
+
 // TestParseDigitInRange covers the /1../7 numeric shortcut parser.
 func TestParseDigitInRange(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		s        string
-		lo, hi   int
-		wantN    int
-		wantOK   bool
+		s      string
+		lo, hi int
+		wantN  int
+		wantOK bool
 	}{
 		{"1", 1, 7, 1, true},
 		{"7", 1, 7, 7, true},
 		{"4", 1, 7, 4, true},
-		{"0", 1, 7, 0, false}, // below range
-		{"8", 1, 7, 0, false}, // above range
-		{"", 1, 7, 0, false},  // empty
-		{"a", 1, 7, 0, false}, // non-digit
+		{"0", 1, 7, 0, false},  // below range
+		{"8", 1, 7, 0, false},  // above range
+		{"", 1, 7, 0, false},   // empty
+		{"a", 1, 7, 0, false},  // non-digit
 		{"42", 1, 7, 0, false}, // multi-digit unsupported
 	}
 	for _, c := range cases {
@@ -215,6 +230,72 @@ func TestChatTurnLogCap(t *testing.T) {
 	wantFirst := fmt.Sprintf("turn %d", chatTurnLogCap)
 	if turns[0].Text != wantFirst {
 		t.Errorf("oldest kept turn = %q, want %q", turns[0].Text, wantFirst)
+	}
+}
+
+func TestChatBlocksGroupUserAndAssistantTurns(t *testing.T) {
+	t.Parallel()
+
+	blocks := buildChatBlocks([]chatTurn{
+		{Role: "user", Text: "what is 2+3?"},
+		{Role: "assistant", AgentID: "minimax", Text: "5"},
+		{Role: "user", Text: "add 4"},
+		{Role: "assistant", AgentID: "codex", Text: "9"},
+	})
+	if len(blocks) != 2 {
+		t.Fatalf("blocks len = %d, want 2", len(blocks))
+	}
+	if blocks[0].ID != 1 || blocks[0].AgentID != "minimax" || blocks[0].UserText != "what is 2+3?" || blocks[0].AssistantText != "5" {
+		t.Fatalf("block 1 = %+v", blocks[0])
+	}
+	if blocks[1].ID != 2 || blocks[1].AgentID != "codex" || blocks[1].AssistantText != "9" {
+		t.Fatalf("block 2 = %+v", blocks[1])
+	}
+}
+
+func TestSearchChatBlocksSupportsTermsAndClientFilter(t *testing.T) {
+	t.Parallel()
+
+	blocks := []chatBlock{
+		{ID: 1, AgentID: "minimax", UserText: "lookup /bin/bash", AssistantText: "found executable"},
+		{ID: 2, AgentID: "codex", UserText: "review git diff", AssistantText: "found bug"},
+	}
+	results := searchChatBlocks(blocks, "client:minimax bash")
+	if len(results) != 1 || results[0].ID != 1 {
+		t.Fatalf("search results = %+v, want block 1 only", results)
+	}
+	if got := searchChatBlocks(blocks, "client:gemini bash"); len(got) != 0 {
+		t.Fatalf("filtered search returned %+v, want none", got)
+	}
+}
+
+func TestSelectCopyTextFromBlocks(t *testing.T) {
+	t.Parallel()
+
+	blocks := []chatBlock{{
+		ID:            3,
+		AgentID:       "minimax",
+		UserText:      "write go",
+		AssistantText: "Here:\n```go\nfunc main() {}\n```",
+	}}
+	cases := []struct {
+		mode string
+		want string
+	}{
+		{"", "Here:\n```go\nfunc main() {}\n```"},
+		{"response", "Here:\n```go\nfunc main() {}\n```"},
+		{"prompt", "write go"},
+		{"block", "[user]\nwrite go\n\n[minimax]\nHere:\n```go\nfunc main() {}\n```"},
+		{"code", "func main() {}"},
+	}
+	for _, tc := range cases {
+		got, _, err := selectCopyTextFromBlocks(blocks, tc.mode)
+		if err != nil {
+			t.Fatalf("selectCopyTextFromBlocks(%q) error: %v", tc.mode, err)
+		}
+		if got != tc.want {
+			t.Fatalf("selectCopyTextFromBlocks(%q) = %q, want %q", tc.mode, got, tc.want)
+		}
 	}
 }
 

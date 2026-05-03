@@ -245,8 +245,20 @@ func TestRunCheck_AllWarnOrPass_ExitsZero(t *testing.T) {
 			t.Fatalf("create fake %s: %v", name, err)
 		}
 	}
+
+	// Create fake support scripts in a temp XDG_DATA_HOME.
+	dataDir := t.TempDir()
+	scriptDir := filepath.Join(dataDir, "milliways", "scripts")
+	if err := os.MkdirAll(scriptDir, 0o755); err != nil {
+		t.Fatalf("create script dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptDir, "install_local.sh"), []byte("#!/bin/sh\necho ok"), 0o755); err != nil {
+		t.Fatalf("create fake script: %v", err)
+	}
+
 	// Unset everything that could cause a FAIL.
 	t.Setenv("PATH", dir)
+	t.Setenv("XDG_DATA_HOME", dataDir)
 	t.Setenv("MILLIWAYS_LOCAL_ENDPOINT", "")
 	t.Setenv("MILLIWAYS_OTEL_ENDPOINT", "")
 	t.Setenv("MILLIWAYS_CODEGRAPH_MCP_CMD", "")

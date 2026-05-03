@@ -57,8 +57,8 @@ var allowedSetenvKeys = map[string]bool{
 	"MILLIWAYS_OTEL_PROTOCOL": true,
 	// Endpoint overrides
 	"MINIMAX_API_URL":          true,
-	"MINIMAX_ENDPOINT":         true,
 	"MILLIWAYS_LOCAL_ENDPOINT": true,
+	"MINIMAX_TIMEOUT":          true,
 	// Local-runner tuning (set via /local-temp, /local-max-tokens)
 	"MILLIWAYS_LOCAL_TEMP":       true,
 	"MILLIWAYS_LOCAL_MAX_TOKENS": true,

@@ -99,7 +99,7 @@ var installSpecs = []installSpec{
 	},
 	{
 		client: "minimax",
-		info:   "minimax is HTTP-only; no CLI to install. Set MINIMAX_API_KEY (and optionally MINIMAX_ENDPOINT) and the runner will work.",
+		info:   "minimax is HTTP-only; no CLI to install. Set MINIMAX_API_KEY (and optionally MINIMAX_API_URL) and the runner will work.",
 	},
 	{
 		client: "pool",
