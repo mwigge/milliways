@@ -32,12 +32,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,6 +55,7 @@ var localVerbs = []string{
 	"switch-server",
 	"download-model",
 	"setup-model",
+	"swap-mode",
 }
 
 // runLocal dispatches `milliwaysctl local <verb> [args...]` and returns the
@@ -77,6 +80,8 @@ func runLocal(args []string, stdout, stderr io.Writer) int {
 		return runLocalDownloadModel(rest, stdout, stderr)
 	case "setup-model":
 		return runLocalSetupModel(rest, stdout, stderr)
+	case "swap-mode":
+		return runLocalSwapMode(rest, stdout, stderr)
 	case "-h", "--help", "help":
 		printLocalUsage(stdout)
 		return 0
@@ -96,6 +101,7 @@ func printLocalUsage(w io.Writer) {
 	fmt.Fprintln(w, "  switch-server <kind>               kind = llama-server | llama-swap | ollama | vllm | lmstudio")
 	fmt.Fprintln(w, "  download-model <repo> [--quant Q] [--alias A]   curl a GGUF from HuggingFace")
 	fmt.Fprintln(w, "  setup-model    <repo> [--quant Q] [--alias A]   download + register in llama-swap")
+	fmt.Fprintln(w, "  swap-mode hot|cold [--ttl N]                    set llama-swap to hot (always-loaded) or cold (unload after TTL seconds, default 600)")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Endpoint defaults to http://localhost:8765/v1; override with MILLIWAYS_LOCAL_ENDPOINT.")
 	fmt.Fprintln(w, "Models cache to $HOME/.local/share/milliways/models/; override with MODEL_DIR.")
@@ -459,6 +465,81 @@ func runLocalSetupModel(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "backend not yet reachable — start it with `milliwaysctl local install-server` if not already running")
 	}
 	return 0
+}
+
+// runLocalSwapMode sets llama-swap to hot (ttl=0, always loaded) or cold
+// (ttl=N seconds, unload after idle). It rewrites the global `healthCheckTimeout`
+// field and every per-model `ttl` field in llama-swap.yaml.
+//
+// Usage: milliwaysctl local swap-mode hot|cold [--ttl N]
+// In the REPL: /swap hot  or  /swap cold
+func runLocalSwapMode(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "usage: milliwaysctl local swap-mode hot|cold [--ttl N]")
+		return 2
+	}
+	mode := args[0]
+	if mode != "hot" && mode != "cold" {
+		fmt.Fprintf(stderr, "swap-mode: mode must be 'hot' or 'cold', got %q\n", mode)
+		return 2
+	}
+
+	ttl := 600 // cold default: 10 minutes
+	if mode == "hot" {
+		ttl = 0
+	}
+	for i := 1; i < len(args)-1; i++ {
+		if args[i] == "--ttl" {
+			if n, err := strconv.Atoi(args[i+1]); err == nil {
+				ttl = n
+				i++
+			}
+		}
+	}
+
+	cfgPath, err := configPath("llama-swap.yaml")
+	if err != nil {
+		fmt.Fprintf(stderr, "swap-mode: %v\n", err)
+		return 1
+	}
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "swap-mode: read %s: %v\n", cfgPath, err)
+		fmt.Fprintf(stderr, "  run /install-local-swap first\n")
+		return 1
+	}
+
+	// Patch every `ttl:` line in the file. llama-swap uses the same field
+	// both at the global level and per-model. A simple regexp rewrite is
+	// sufficient — the YAML structure is machine-generated and predictable.
+	updated := swapModePatchTTL(data, ttl)
+	if err := os.WriteFile(cfgPath, updated, 0o644); err != nil {
+		fmt.Fprintf(stderr, "swap-mode: write %s: %v\n", cfgPath, err)
+		return 1
+	}
+
+	label := fmt.Sprintf("cold (unload after %ds idle)", ttl)
+	if ttl == 0 {
+		label = "hot (always loaded, sub-second switches)"
+	}
+	fmt.Fprintf(stdout, "llama-swap mode set to %s\n", label)
+	fmt.Fprintf(stdout, "  config: %s\n", cfgPath)
+	fmt.Fprintf(stdout, "  restart the swap proxy to apply: launchctl kickstart -k gui/$(id -u)/dev.milliways.swap 2>/dev/null || true\n")
+	return 0
+}
+
+// swapModePatchTTL rewrites every `ttl: <N>` line in the llama-swap YAML.
+func swapModePatchTTL(data []byte, ttl int) []byte {
+	lines := bytes.Split(data, []byte("\n"))
+	for i, line := range lines {
+		trimmed := bytes.TrimSpace(line)
+		if bytes.HasPrefix(trimmed, []byte("ttl:")) {
+			// Preserve leading whitespace, replace value.
+			indent := line[:len(line)-len(bytes.TrimLeft(line, " \t"))]
+			lines[i] = append(indent, []byte(fmt.Sprintf("ttl: %d", ttl))...)
+		}
+	}
+	return bytes.Join(lines, []byte("\n"))
 }
 
 // insertSwapModelEntry adds (or refreshes) one model entry in a llama-swap
