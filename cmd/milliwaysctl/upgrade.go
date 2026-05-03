@@ -28,7 +28,9 @@ package main
 import (
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"path/filepath"
 )
 
 // runUpgrade dispatches `milliwaysctl upgrade [--check] [--yes] [--version <tag>]`.
@@ -72,6 +74,55 @@ func runUpgrade(args []string, stdout, stderr io.Writer) int {
 		os.Setenv("MILLIWAYS_VERSION", targetVersion)
 	}
 
+	return runUpgradeScript(stdout, stderr)
+}
+
+// runUpgradeScript finds or downloads upgrade.sh then executes it.
+// Unlike other scripts, upgrade.sh may not exist on machines that installed
+// via `go install` or `go build` without ever running install.sh.
+// In that case we download it fresh from the latest GitHub release so the
+// user gets a working upgrade path.
+func runUpgradeScript(stdout, stderr io.Writer) int {
+	// Try the normal search first (git checkout, package install, binary install).
+	if code := runInstallScript("scripts/upgrade.sh", stdout, stderr); code != 1 {
+		return code // found and ran (0=ok, anything else=real error)
+	}
+
+	// Not found locally — bootstrap by downloading from GitHub.
+	fmt.Fprintln(stderr, "upgrade.sh not found locally; downloading from GitHub...")
+	home, _ := os.UserHomeDir()
+	shareScripts := filepath.Join(home, ".local", "share", "milliways", "scripts")
+	if err := os.MkdirAll(shareScripts, 0o755); err != nil {
+		fmt.Fprintf(stderr, "milliwaysctl upgrade: cannot create scripts dir: %v\n", err)
+		return 1
+	}
+	dest := filepath.Join(shareScripts, "upgrade.sh")
+	url := "https://raw.githubusercontent.com/mwigge/milliways/master/scripts/upgrade.sh"
+	resp, err := http.Get(url) //nolint:gosec,noctx // intentional bootstrap URL
+	if err != nil {
+		fmt.Fprintf(stderr, "milliwaysctl upgrade: download failed: %v\n", err)
+		fmt.Fprintf(stderr, "  Run manually: curl -sSf https://raw.githubusercontent.com/mwigge/milliways/master/install.sh | bash\n")
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		fmt.Fprintf(stderr, "milliwaysctl upgrade: download HTTP %d\n", resp.StatusCode)
+		return 1
+	}
+	data := make([]byte, 0, 1<<20)
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := resp.Body.Read(buf)
+		data = append(data, buf[:n]...)
+		if readErr != nil {
+			break
+		}
+	}
+	if err := os.WriteFile(dest, data, 0o755); err != nil {
+		fmt.Fprintf(stderr, "milliwaysctl upgrade: write %s: %v\n", dest, err)
+		return 1
+	}
+	fmt.Fprintf(stderr, "Downloaded upgrade.sh → %s\n", dest)
 	return runInstallScript("scripts/upgrade.sh", stdout, stderr)
 }
 
