@@ -82,7 +82,10 @@ install_llamaswap() {
     *) fail "unsupported OS: $OS" ;;
   esac
 
-  local url="https://github.com/mostlygeek/llama-swap/releases/download/${SWAP_VERSION}/llama-swap_${SWAP_VERSION}_${platform}.tar.gz"
+  # Asset filenames use the bare version number (no 'v' prefix) even though the
+  # tag has it: llama-swap_211_darwin_arm64.tar.gz at tag v211.
+  local bare_ver="${SWAP_VERSION#v}"
+  local url="https://github.com/mostlygeek/llama-swap/releases/download/${SWAP_VERSION}/llama-swap_${bare_ver}_${platform}.tar.gz"
   local tmp
   tmp="$(mktemp -d)"
 
