@@ -412,6 +412,20 @@ else
   skip "local model catalog (milliwaysctl not found)"
 fi
 
+# ── 13. Local server maintenance ─────────────────────────────────────────────
+section "13. Local server maintenance"
+
+if [ -x "$MILLIWAYSCTL" ]; then
+  "$MILLIWAYSCTL" local server-status >/tmp/mw-server-status.txt 2>&1; status_exit=$?
+  # exit 0 = running, 1 = stopped — both are valid outcomes; just must not crash
+  [ $status_exit -le 1 ] && pass "server-status exits cleanly (exit=$status_exit)" || fail "server-status crashed (exit=$status_exit)"
+  "$MILLIWAYSCTL" local server-port >/tmp/mw-server-port.txt 2>&1
+  port_out=$(cat /tmp/mw-server-port.txt | tr -d '[:space:]')
+  echo "$port_out" | grep -qE '^[0-9]+$' && pass "server-port returns a port number: $port_out" || fail "server-port output not a number: $port_out"
+else
+  skip "local server maintenance (milliwaysctl not found)"
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 printf '\n────────────────────────────────────────\n'
 printf ' Results: \033[32m%d passed\033[0m  \033[31m%d failed\033[0m  \033[33m%d skipped\033[0m\n' \

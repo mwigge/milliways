@@ -111,6 +111,12 @@ var chatCtlAliases = map[string][]string{
 	"list-models-catalog":   {"local", "setup-model", "list"},
 	"refresh-model-catalog": {"local", "setup-model", "refresh"},
 	"swap":                  {"local", "swap-mode"}, // /swap hot | /swap cold
+	"server-start":          {"local", "server-start"},
+	"server-stop":           {"local", "server-stop"},
+	"server-status":         {"local", "server-status"},
+	"server-port":           {"local", "server-port"},
+	"server-uninstall":      {"local", "server-uninstall"},
+	"default-model":         {"local", "default-model"},
 	// Metrics dashboard
 	"metrics": {"metrics"},
 	// OpenSpec wrappers

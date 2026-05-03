@@ -625,3 +625,113 @@ func TestBuiltinCatalogIntegrity(t *testing.T) {
 		t.Errorf("builtin catalog should have at least 8 entries, has %d", len(builtinCatalog))
 	}
 }
+
+// ── server maintenance tests ──────────────────────────────────────────────────
+
+func TestRunLocal_ServerStatus_NotRunning(t *testing.T) {
+	// Port 0 is guaranteed not to be listening.
+	t.Setenv("MILLIWAYS_LOCAL_ENDPOINT", "http://127.0.0.1:0/v1")
+
+	var stdout, stderr bytes.Buffer
+	code := runLocal([]string{"server-status"}, &stdout, &stderr)
+	if code != 1 {
+		t.Errorf("exit = %d, want 1 (not running)", code)
+	}
+	combined := stdout.String() + stderr.String()
+	if !strings.Contains(strings.ToLower(combined), "not running") &&
+		!strings.Contains(strings.ToLower(combined), "stopped") &&
+		!strings.Contains(strings.ToLower(combined), "unreachable") {
+		t.Errorf("expected 'not running'/'stopped'/'unreachable' in output, got stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestRunLocal_ServerPort_ParsesEndpoint(t *testing.T) {
+	t.Setenv("MILLIWAYS_LOCAL_ENDPOINT", "http://127.0.0.1:9999/v1")
+
+	var stdout, stderr bytes.Buffer
+	code := runLocal([]string{"server-port"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	got := strings.TrimSpace(stdout.String())
+	if got != "9999" {
+		t.Errorf("server-port = %q, want %q", got, "9999")
+	}
+}
+
+func TestRunLocal_ServerPort_DefaultPort(t *testing.T) {
+	// Ensure env var is unset so we fall back to the default endpoint.
+	t.Setenv("MILLIWAYS_LOCAL_ENDPOINT", "")
+
+	var stdout, stderr bytes.Buffer
+	code := runLocal([]string{"server-port"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	got := strings.TrimSpace(stdout.String())
+	if got != "8765" {
+		t.Errorf("server-port (default) = %q, want %q", got, "8765")
+	}
+}
+
+func TestRunLocal_DefaultModel_UpdatesLauncher(t *testing.T) {
+	// Build a temporary HOME with a fake launcher and llama-swap.yaml.
+	home := t.TempDir()
+	cfgDir := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+
+	// Create the launcher directory and a minimal fake launcher script.
+	binDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	launcherPath := filepath.Join(binDir, "milliways-local-server")
+	fakeLauncher := "#!/usr/bin/env bash\nexec llama-server -m \"/old/model.gguf\" --alias oldmodel --host 127.0.0.1 --port 8765 --ctx-size 16384 --jinja\n"
+	if err := os.WriteFile(launcherPath, []byte(fakeLauncher), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a fake llama-swap.yaml with a model entry matching the alias.
+	milliCfgDir := filepath.Join(cfgDir, "milliways")
+	if err := os.MkdirAll(milliCfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	modelPath := filepath.Join(home, ".local", "share", "milliways", "models", "mymodel-Q4_K_M.gguf")
+	if err := os.MkdirAll(filepath.Dir(modelPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	swapYAML := "models:\n  mymodel:\n    cmd: llama-server -m " + modelPath + " --port ${PORT}\n"
+	if err := os.WriteFile(filepath.Join(milliCfgDir, "llama-swap.yaml"), []byte(swapYAML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runLocal([]string{"default-model", "mymodel"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stdout = %q stderr = %q", code, stdout.String(), stderr.String())
+	}
+
+	// Verify launcher was updated.
+	launcherData, err := os.ReadFile(launcherPath)
+	if err != nil {
+		t.Fatalf("read launcher: %v", err)
+	}
+	if !strings.Contains(string(launcherData), "mymodel") {
+		t.Errorf("launcher not updated with new alias; got:\n%s", launcherData)
+	}
+
+	// Verify local.env was updated with MILLIWAYS_LOCAL_MODEL=mymodel.
+	envPath := filepath.Join(cfgDir, "milliways", "local.env")
+	envData, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read local.env: %v", err)
+	}
+	if !strings.Contains(string(envData), "MILLIWAYS_LOCAL_MODEL=mymodel") {
+		t.Errorf("local.env not updated; got:\n%s", envData)
+	}
+
+	if !strings.Contains(stdout.String(), "mymodel") {
+		t.Errorf("stdout = %q, want it to mention the alias", stdout.String())
+	}
+}
