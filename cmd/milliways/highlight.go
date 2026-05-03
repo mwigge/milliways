@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"io"
+	"regexp"
 	"strings"
 
 	"github.com/alecthomas/chroma/v2"
@@ -24,6 +25,23 @@ import (
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
 )
+
+// urlRe matches http and https URLs in plain text.
+var urlRe = regexp.MustCompile(`https?://[^\s\x1b<>"]+`)
+
+// linkifyURLs wraps bare URLs in OSC 8 terminal hyperlink sequences so
+// wezterm (and any OSC-8-capable terminal) renders them as clickable links
+// without requiring a modifier key. Text that already contains ESC sequences
+// (i.e. already-highlighted code) is returned unchanged to avoid mangling ANSI.
+func linkifyURLs(text string) string {
+	if strings.ContainsRune(text, '\x1b') {
+		return text // already has ANSI — don't double-process
+	}
+	return urlRe.ReplaceAllStringFunc(text, func(url string) string {
+		// OSC 8 ; params ; uri ST  text  OSC 8 ;; ST
+		return "\x1b]8;;" + url + "\x1b\\" + url + "\x1b]8;;\x1b\\"
+	})
+}
 
 // codeHighlighter wraps an io.Writer and intercepts markdown code fences.
 // Text outside fences is passed through immediately. Text inside fences
@@ -88,8 +106,8 @@ func (h *codeHighlighter) processLine(line string) {
 			// Do not emit the opening fence to the output.
 			return
 		}
-		// Plain text — write through immediately.
-		_, _ = io.WriteString(h.out, line+"\n")
+		// Plain text — linkify URLs then write through immediately.
+		_, _ = io.WriteString(h.out, linkifyURLs(line)+"\n")
 		return
 	}
 

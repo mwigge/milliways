@@ -238,3 +238,90 @@ func TestCodeHighlighter_WriteReturnsInputLength(t *testing.T) {
 		}
 	}
 }
+
+func TestLinkifyURLs(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantOSC8 bool
+		wantURL  string
+	}{
+		{
+			name:     "bare https URL is wrapped",
+			input:    "See https://github.com/mwigge/milliways for details.",
+			wantOSC8: true,
+			wantURL:  "https://github.com/mwigge/milliways",
+		},
+		{
+			name:     "http URL is wrapped",
+			input:    "Endpoint: http://localhost:8080/v1",
+			wantOSC8: true,
+			wantURL:  "http://localhost:8080/v1",
+		},
+		{
+			name:     "plain text without URL is unchanged",
+			input:    "No URLs here, just words.",
+			wantOSC8: false,
+		},
+		{
+			name:     "text with existing ANSI codes is not linkified",
+			input:    "\x1b[32mhttps://example.com\x1b[0m",
+			wantOSC8: false,
+		},
+		{
+			name:     "multiple URLs on same line",
+			input:    "See https://one.example.com and https://two.example.com",
+			wantOSC8: true,
+			wantURL:  "https://one.example.com",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out := linkifyURLs(tc.input)
+			hasOSC8 := strings.Contains(out, "\x1b]8;;")
+			if hasOSC8 != tc.wantOSC8 {
+				t.Errorf("OSC8 present=%v want=%v\noutput: %q", hasOSC8, tc.wantOSC8, out)
+			}
+			if tc.wantURL != "" && !strings.Contains(out, tc.wantURL) {
+				t.Errorf("URL %q not found in output: %q", tc.wantURL, out)
+			}
+			// Original URL text must still be present (visible to user)
+			if tc.wantOSC8 && tc.wantURL != "" && !strings.Contains(out, tc.wantURL+"\x1b]8;;\x1b\\") {
+				t.Errorf("URL text not visible after OSC8 sequence: %q", out)
+			}
+		})
+	}
+}
+
+func TestHighlighterLinkifiesPlainTextURLs(t *testing.T) {
+	var out bytes.Buffer
+	h := newCodeHighlighter(&out)
+	_, _ = h.Write([]byte("Check https://github.com/mwigge/milliways/releases\n"))
+	_ = h.Flush()
+
+	result := out.String()
+	if !strings.Contains(result, "\x1b]8;;https://github.com/mwigge/milliways/releases") {
+		t.Errorf("expected OSC8 hyperlink in output, got: %q", result)
+	}
+}
+
+func TestHighlighterDoesNotLinkifyInsideFence(t *testing.T) {
+	// URLs inside code fences are already ANSI-highlighted — linkifyURLs must not
+	// re-process them (the ANSI guard prevents double-wrapping).
+	var out bytes.Buffer
+	h := newCodeHighlighter(&out)
+	_, _ = h.Write([]byte("```go\nclient.Get(\"https://example.com\")\n```\n"))
+	_ = h.Flush()
+
+	result := out.String()
+	// Must have ANSI from syntax highlighting
+	if !strings.Contains(result, "\x1b[") {
+		t.Errorf("expected ANSI syntax highlighting in code fence output")
+	}
+	// Should NOT have an OSC8 sequence wrapping the URL inside the code block
+	// (the ANSI guard in linkifyURLs prevents this)
+	if strings.Contains(result, "\x1b]8;;https://example.com") {
+		t.Errorf("OSC8 link should not appear inside syntax-highlighted code fence")
+	}
+}
