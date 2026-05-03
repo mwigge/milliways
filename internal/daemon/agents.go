@@ -53,6 +53,8 @@ type AgentSession struct {
 	server  *Server
 
 	mu          sync.Mutex
+	ctx         context.Context
+	cancel      context.CancelFunc
 	input       chan []byte
 	closed      atomic.Bool
 	streamReady chan struct{} // closed by AttachStream when stream is set
@@ -191,9 +193,12 @@ func (r *AgentRegistry) metricsObserver() runners.MetricsObserver {
 // session goroutine is started; for unknown ids returns an error.
 func (r *AgentRegistry) Open(agentID string) (*AgentSession, error) {
 	handle := AgentHandle(r.next.Add(1))
+	ctx, cancel := context.WithCancel(context.Background())
 	sess := &AgentSession{
 		Handle:      handle,
 		AgentID:     agentID,
+		ctx:         ctx,
+		cancel:      cancel,
 		input:       make(chan []byte, 16),
 		streamReady: make(chan struct{}),
 	}
@@ -221,6 +226,7 @@ func (r *AgentRegistry) Open(agentID string) (*AgentSession, error) {
 		go runPool(sess, mo)
 	default:
 		// Unknown / not yet lifted.
+		cancel()
 		r.mu.Lock()
 		delete(r.sessions, handle)
 		r.mu.Unlock()
@@ -240,7 +246,7 @@ func runClaude(sess *AgentSession, metrics runners.MetricsObserver) {
 	if stream == nil {
 		return
 	}
-	runners.RunClaude(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	runners.RunClaude(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
 	stream.Close()
 	slog.Debug("claude session ended", "handle", sess.Handle)
 }
@@ -255,7 +261,7 @@ func runCodex(sess *AgentSession, metrics runners.MetricsObserver) {
 	if stream == nil {
 		return
 	}
-	runners.RunCodex(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	runners.RunCodex(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
 	stream.Close()
 	slog.Debug("codex session ended", "handle", sess.Handle)
 }
@@ -270,7 +276,7 @@ func runCopilot(sess *AgentSession, metrics runners.MetricsObserver) {
 	if stream == nil {
 		return
 	}
-	runners.RunCopilot(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	runners.RunCopilot(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
 	stream.Close()
 	slog.Debug("copilot session ended", "handle", sess.Handle)
 }
@@ -285,7 +291,7 @@ func runMiniMax(sess *AgentSession, metrics runners.MetricsObserver) {
 	if stream == nil {
 		return
 	}
-	runners.RunMiniMax(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	runners.RunMiniMax(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
 	stream.Close()
 	slog.Debug("minimax session ended", "handle", sess.Handle)
 }
@@ -295,7 +301,7 @@ func runLocal(sess *AgentSession, metrics runners.MetricsObserver) {
 	if stream == nil {
 		return
 	}
-	runners.RunLocal(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	runners.RunLocal(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
 	stream.Close()
 	slog.Debug("local session ended", "handle", sess.Handle)
 }
@@ -310,7 +316,7 @@ func runGemini(sess *AgentSession, metrics runners.MetricsObserver) {
 	if stream == nil {
 		return
 	}
-	runners.RunGemini(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	runners.RunGemini(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
 	stream.Close()
 	slog.Debug("gemini session ended", "handle", sess.Handle)
 }
@@ -325,7 +331,7 @@ func runPool(sess *AgentSession, metrics runners.MetricsObserver) {
 	if stream == nil {
 		return
 	}
-	runners.RunPool(context.Background(), sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	runners.RunPool(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
 	stream.Close()
 	slog.Debug("pool session ended", "handle", sess.Handle)
 }
@@ -340,6 +346,8 @@ func waitForStream(sess *AgentSession) *Stream {
 		s := sess.stream
 		sess.mu.Unlock()
 		return s
+	case <-sess.ctx.Done():
+		return nil
 	case <-closedWhenDone(sess):
 		return nil
 	}
@@ -385,6 +393,7 @@ func (r *AgentRegistry) Close(handle AgentHandle) {
 	defer r.mu.Unlock()
 	if s, ok := r.sessions[handle]; ok {
 		if s.closed.CompareAndSwap(false, true) {
+			s.cancel()
 			close(s.input)
 		}
 		delete(r.sessions, handle)

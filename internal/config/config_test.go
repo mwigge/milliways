@@ -53,7 +53,7 @@ func TestLoadSubstitutesEnvAndAppliesDefaults(t *testing.T) {
 	if cfg.MiniMax.APIKey != "secret-key" {
 		t.Fatalf("MiniMax.APIKey = %q, want secret-key", cfg.MiniMax.APIKey)
 	}
-	if cfg.MiniMax.BaseURL != "https://api.minimax.chat/v1" {
+	if cfg.MiniMax.BaseURL != "https://api.minimax.io/v1" {
 		t.Fatalf("MiniMax.BaseURL = %q", cfg.MiniMax.BaseURL)
 	}
 	if cfg.MiniMax.Model != "MiniMax-Text-01" {

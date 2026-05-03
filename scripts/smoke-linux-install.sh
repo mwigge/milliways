@@ -78,6 +78,7 @@ run_case() {
       export MILLIWAYS_VERSION="'"$version"'"
       export MILLIWAYS_RELEASE_BASE_URL=file:///release
       export MILLIWAYS_SUPPORT_BASE_URL=file:///support
+      export MILLIWAYS_WEZTERM_LUA_URL=file:///support/wezterm.lua
       bash /tmp/install.sh > /tmp/install.log 2>&1
       if [ "'"$expect_fallback"'" = "yes" ]; then
         grep -q "Building Go binaries" /tmp/install.log
@@ -90,6 +91,9 @@ run_case() {
       for bin in milliways milliwaysd milliwaysctl; do
         test -x "$PREFIX/bin/$bin"
       done
+      test -f "$PREFIX/share/milliways/wezterm.lua"
+      grep -q "set_left_status" "$PREFIX/share/milliways/wezterm.lua"
+      grep -q "set_right_status('')" "$PREFIX/share/milliways/wezterm.lua"
       "$PREFIX/bin/milliways" --version
       "$PREFIX/bin/milliwaysd" -state-dir /tmp/mw-state -log-level error >/tmp/mw-daemon.log 2>&1 &
       pid=$!
@@ -144,6 +148,8 @@ run_deep_case() {
         apt-get install -yqq --no-install-recommends ca-certificates curl python3
       elif command -v dnf >/dev/null 2>&1; then
         dnf install -y ca-certificates curl python3
+      elif command -v pacman >/dev/null 2>&1; then
+        pacman -Sy --noconfirm ca-certificates curl python
       fi
 
       export PREFIX=/tmp/mw-install
@@ -152,7 +158,11 @@ run_deep_case() {
       export MILLIWAYS_VERSION="'"$version"'"
       export MILLIWAYS_RELEASE_BASE_URL=file:///release
       export MILLIWAYS_SUPPORT_BASE_URL=file:///support
+      export MILLIWAYS_WEZTERM_LUA_URL=file:///support/wezterm.lua
       bash /tmp/install.sh >/tmp/install.log 2>&1
+      test -f "$PREFIX/share/milliways/wezterm.lua"
+      grep -q "set_left_status" "$PREFIX/share/milliways/wezterm.lua"
+      grep -q "set_right_status('')" "$PREFIX/share/milliways/wezterm.lua"
 
       export HOME=/tmp/mw-home
       export XDG_CONFIG_HOME=/tmp/mw-home/.config
@@ -265,7 +275,8 @@ support_release="$tmp_root/support-release"
 mkdir -p "$full_release" "$empty_release" "$partial_release" "$support_release"
 cp "$dist_dir"/milliways*_linux_amd64 "$full_release"/
 cp "$dist_dir/milliways_linux_amd64" "$partial_release"/
-cp "$repo_root/scripts/install_local.sh" "$repo_root/scripts/install_local_swap.sh" "$repo_root/scripts/install_feature_deps.sh" "$support_release"/
+cp "$repo_root/scripts/install_local.sh" "$repo_root/scripts/install_local_swap.sh" "$repo_root/scripts/install_feature_deps.sh" "$repo_root/scripts/upgrade.sh" "$support_release"/
+cp "$repo_root/cmd/milliwaysctl/milliways.lua" "$support_release/wezterm.lua"
 
 images=(
   "ubuntu:24.04|Ubuntu binary install"
@@ -283,3 +294,4 @@ run_case "ubuntu:24.04" "Ubuntu full source fallback from remote repo" "$empty_r
 run_case "fedora:41" "Fedora full source fallback from remote repo" "$empty_release" "yes"
 run_deep_case "ubuntu:24.04" "Ubuntu local server plus two CLI takeover smoke"
 run_deep_case "fedora:41" "Fedora local server plus two CLI takeover smoke"
+run_deep_case "archlinux:latest" "Arch local server plus two CLI takeover smoke"

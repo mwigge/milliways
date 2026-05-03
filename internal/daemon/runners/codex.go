@@ -24,8 +24,8 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"time"
 	"sync/atomic"
+	"time"
 )
 
 // codexJSONEvent mirrors the subset of the `codex exec --json` event
@@ -36,6 +36,7 @@ type codexJSONEvent struct {
 	Content        string          `json:"content,omitempty"`
 	Message        string          `json:"message,omitempty"`
 	Text           string          `json:"text,omitempty"`
+	Summary        string          `json:"summary,omitempty"`
 	Delta          string          `json:"delta,omitempty"`
 	ThreadID       string          `json:"thread_id,omitempty"`
 	SessionID      string          `json:"session_id,omitempty"`
@@ -169,6 +170,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 			stderrMu.Lock()
 			stderrLines = append(stderrLines, line)
 			stderrMu.Unlock()
+			stream.Push(encodeThinking(line))
 			slog.Debug("codex stderr", "line", line, "agent", AgentIDCodex)
 		}
 	}()
@@ -194,6 +196,10 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		}
 		if codexLineSignalsSessionFailure(line) {
 			sawSessionErr.Store(true)
+		}
+		if text, ok := extractCodexThinkingText(line); ok {
+			stream.Push(encodeThinking(text))
+			continue
 		}
 		if text, ok := extractCodexAssistantText(line); ok {
 			stream.Push(encodeData(text))
@@ -436,6 +442,29 @@ func extractCodexAssistantText(line string) (string, bool) {
 			}
 		}
 	}
+	return "", false
+}
+
+func extractCodexThinkingText(line string) (string, bool) {
+	var evt codexJSONEvent
+	if err := json.Unmarshal([]byte(line), &evt); err != nil {
+		return "", false
+	}
+
+	switch evt.Type {
+	case "reasoning", "reasoning.delta", "reasoning.summary", "response.reasoning_summary.delta", "response.reasoning_summary.done":
+		out := codexFirstNonEmpty(evt.Delta, evt.Summary, evt.Text, evt.Message, evt.Content)
+		return out, out != ""
+	case "item.completed":
+		var item codexJSONItem
+		if len(evt.Item) > 0 && json.Unmarshal(evt.Item, &item) == nil {
+			if strings.Contains(item.ItemType, "reasoning") || strings.Contains(item.Type, "reasoning") {
+				out := codexFirstNonEmpty(item.Text, item.Content, item.Message)
+				return out, out != ""
+			}
+		}
+	}
+
 	return "", false
 }
 

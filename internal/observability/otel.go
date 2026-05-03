@@ -31,6 +31,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 const instrumentationName = "github.com/mwigge/milliways/internal/observability"
@@ -273,7 +274,7 @@ func newNoopOTelState() otelState {
 	failoverTotal, _ := meter.Int64Counter("milliways.failover.total")
 
 	return otelState{
-		tracer:           trace.NewNoopTracerProvider().Tracer(instrumentationName),
+		tracer:           noop.NewTracerProvider().Tracer(instrumentationName),
 		meter:            meter,
 		dispatchTotal:    dispatchTotal,
 		dispatchDuration: dispatchDuration,

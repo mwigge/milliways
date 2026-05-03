@@ -82,24 +82,6 @@ func parseLauncherMode(args []string) launcherMode {
 	return modeCobra
 }
 
-// insideMilliwaysTerm returns true when the current process appears to be
-// running inside milliways-term (the wezterm fork). Detection signals:
-//   - WEZTERM_EXECUTABLE — set by wezterm in every spawned shell
-//   - TERM_PROGRAM == "WezTerm" — set by wezterm too
-//   - MILLIWAYS_IN_COCKPIT == "1" — explicit opt-in we set in the lua
-func insideMilliwaysTerm() bool {
-	if os.Getenv("WEZTERM_EXECUTABLE") != "" {
-		return true
-	}
-	if os.Getenv("TERM_PROGRAM") == "WezTerm" {
-		return true
-	}
-	if os.Getenv("MILLIWAYS_IN_COCKPIT") == "1" {
-		return true
-	}
-	return false
-}
-
 // printWelcome emits the v0.5.x quickstart banner. Discoverable by
 // typing `milliways` (no args) inside any milliways-term tab. Queries
 // the live daemon for status + agent list (graceful fallback when the

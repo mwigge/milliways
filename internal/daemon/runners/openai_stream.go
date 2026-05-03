@@ -59,8 +59,29 @@ type openaiStreamUsage struct {
 
 // openaiStreamDelta carries per-chunk content + tool-call fragments.
 type openaiStreamDelta struct {
-	Content   string                 `json:"content"`
-	ToolCalls []openaiStreamToolCall `json:"tool_calls,omitempty"`
+	Content          string                  `json:"content"`
+	Reasoning        string                  `json:"reasoning,omitempty"`
+	ReasoningContent string                  `json:"reasoning_content,omitempty"`
+	ReasoningDetails []openaiReasoningDetail `json:"reasoning_details,omitempty"`
+	ToolCalls        []openaiStreamToolCall  `json:"tool_calls,omitempty"`
+}
+
+type openaiReasoningDetail struct {
+	Text    string `json:"text,omitempty"`
+	Content string `json:"content,omitempty"`
+	Summary string `json:"summary,omitempty"`
+}
+
+func (d openaiStreamDelta) reasoningText() string {
+	var b strings.Builder
+	b.WriteString(d.ReasoningContent)
+	b.WriteString(d.Reasoning)
+	for _, detail := range d.ReasoningDetails {
+		b.WriteString(detail.Text)
+		b.WriteString(detail.Content)
+		b.WriteString(detail.Summary)
+	}
+	return b.String()
 }
 
 // openaiStreamToolCall mirrors OpenAI's streaming tool_call delta shape.
@@ -125,8 +146,10 @@ func streamOpenAITurn(ctx context.Context, r io.Reader, stream Pusher) (TurnResu
 
 	var (
 		contentBuf   strings.Builder
+		reasoningBuf strings.Builder
 		usage        *openaiStreamUsage
 		finishReason string
+		think        thinkTagSplitter
 	)
 	frags := map[int]*openaiToolFrag{}
 	var fragOrder []int
@@ -144,7 +167,17 @@ func streamOpenAITurn(ctx context.Context, r io.Reader, stream Pusher) (TurnResu
 		case strings.HasPrefix(line, "data: "):
 			jsonData = strings.TrimPrefix(line, "data: ")
 			if jsonData == "[DONE]" {
-				return assembleOpenAITurn(contentBuf.String(), frags, fragOrder, usage, finishReason)
+				if visible, reasoning := think.Flush(); visible != "" || reasoning != "" {
+					if reasoning != "" {
+						reasoningBuf.WriteString(reasoning)
+						stream.Push(encodeThinking(reasoning))
+					}
+					if visible != "" {
+						contentBuf.WriteString(visible)
+						stream.Push(encodeData(visible))
+					}
+				}
+				return assembleOpenAITurn(contentBuf.String(), reasoningBuf.String(), frags, fragOrder, usage, finishReason)
 			}
 		case strings.HasPrefix(line, "{"):
 			jsonData = line
@@ -167,9 +200,20 @@ func streamOpenAITurn(ctx context.Context, r io.Reader, stream Pusher) (TurnResu
 			if choice.Message != nil && delta.Content == "" && len(delta.ToolCalls) == 0 {
 				delta = *choice.Message
 			}
+			if reasoning := delta.reasoningText(); reasoning != "" {
+				reasoningBuf.WriteString(reasoning)
+				stream.Push(encodeThinking(reasoning))
+			}
 			if delta.Content != "" {
-				contentBuf.WriteString(delta.Content)
-				stream.Push(encodeData(delta.Content))
+				visible, reasoning := think.Push(delta.Content)
+				if reasoning != "" {
+					reasoningBuf.WriteString(reasoning)
+					stream.Push(encodeThinking(reasoning))
+				}
+				if visible != "" {
+					contentBuf.WriteString(visible)
+					stream.Push(encodeData(visible))
+				}
 			}
 			for _, tc := range delta.ToolCalls {
 				frag, ok := frags[tc.Index]
@@ -191,6 +235,17 @@ func streamOpenAITurn(ctx context.Context, r io.Reader, stream Pusher) (TurnResu
 		}
 	}
 
+	if visible, reasoning := think.Flush(); visible != "" || reasoning != "" {
+		if reasoning != "" {
+			reasoningBuf.WriteString(reasoning)
+			stream.Push(encodeThinking(reasoning))
+		}
+		if visible != "" {
+			contentBuf.WriteString(visible)
+			stream.Push(encodeData(visible))
+		}
+	}
+
 	// Scanner exited without [DONE]. Check for buffer overflow first — that
 	// path silently swallowed lines on prior versions of this code.
 	if scanErr := scanner.Err(); scanErr != nil {
@@ -206,7 +261,7 @@ func streamOpenAITurn(ctx context.Context, r io.Reader, stream Pusher) (TurnResu
 	}
 
 	// Stream ended without [DONE] but produced something assemblable.
-	return assembleOpenAITurn(contentBuf.String(), frags, fragOrder, usage, finishReason)
+	return assembleOpenAITurn(contentBuf.String(), reasoningBuf.String(), frags, fragOrder, usage, finishReason)
 }
 
 // assembleOpenAITurn folds the accumulated state into a TurnResult.
@@ -217,8 +272,8 @@ func streamOpenAITurn(ctx context.Context, r io.Reader, stream Pusher) (TurnResu
 // diagnostic message. RunAgenticLoop's executeOneToolCall folds these into
 // "error: tool ... not found" tool messages, giving the model a chance to
 // recover on the next turn.
-func assembleOpenAITurn(content string, frags map[int]*openaiToolFrag, order []int, usage *openaiStreamUsage, finishReason string) (TurnResult, error) {
-	tr := TurnResult{Content: content, FinishReason: finishReason}
+func assembleOpenAITurn(content, reasoning string, frags map[int]*openaiToolFrag, order []int, usage *openaiStreamUsage, finishReason string) (TurnResult, error) {
+	tr := TurnResult{Content: content, Reasoning: reasoning, FinishReason: finishReason}
 	if usage != nil {
 		tr.Usage = &Usage{
 			PromptTokens:     usage.PromptTokens,
@@ -260,6 +315,71 @@ func assembleOpenAITurn(content string, frags map[int]*openaiToolFrag, order []i
 		tr.FinishReason = FinishToolCalls
 	}
 	return tr, nil
+}
+
+type thinkTagSplitter struct {
+	buf     string
+	inThink bool
+}
+
+func (s *thinkTagSplitter) Push(text string) (visible, reasoning string) {
+	s.buf += text
+	var visibleBuf, reasoningBuf strings.Builder
+	for {
+		tag := "<think>"
+		if s.inThink {
+			tag = "</think>"
+		}
+		lower := strings.ToLower(s.buf)
+		if idx := strings.Index(lower, tag); idx >= 0 {
+			before := s.buf[:idx]
+			if s.inThink {
+				reasoningBuf.WriteString(before)
+			} else {
+				visibleBuf.WriteString(before)
+			}
+			s.buf = s.buf[idx+len(tag):]
+			s.inThink = !s.inThink
+			continue
+		}
+
+		keep := tagSuffixPrefixLen(s.buf, tag)
+		emit := s.buf
+		if keep > 0 {
+			emit = s.buf[:len(s.buf)-keep]
+			s.buf = s.buf[len(s.buf)-keep:]
+		} else {
+			s.buf = ""
+		}
+		if s.inThink {
+			reasoningBuf.WriteString(emit)
+		} else {
+			visibleBuf.WriteString(emit)
+		}
+		return visibleBuf.String(), reasoningBuf.String()
+	}
+}
+
+func (s *thinkTagSplitter) Flush() (visible, reasoning string) {
+	defer func() { s.buf = "" }()
+	if s.inThink {
+		return "", s.buf
+	}
+	return s.buf, ""
+}
+
+func tagSuffixPrefixLen(text, tag string) int {
+	text = strings.ToLower(text)
+	limit := len(tag) - 1
+	if len(text) < limit {
+		limit = len(text)
+	}
+	for n := limit; n > 0; n-- {
+		if strings.HasSuffix(text, tag[:n]) {
+			return n
+		}
+	}
+	return 0
 }
 
 // buildOpenAIChatPayload converts agentic-loop Messages into an

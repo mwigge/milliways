@@ -325,3 +325,81 @@ func TestHighlighterDoesNotLinkifyInsideFence(t *testing.T) {
 		t.Errorf("OSC8 link should not appear inside syntax-highlighted code fence")
 	}
 }
+
+func TestHighlighterRendersMarkdownTable(t *testing.T) {
+	var out bytes.Buffer
+	h := newCodeHighlighter(&out)
+	input := strings.Join([]string{
+		"| Client | Status | Notes |",
+		"|---|:---:|---:|",
+		"| minimax | PASS | 12 |",
+		"| codex | WARN | 3 |",
+		"",
+	}, "\n")
+	_, _ = h.Write([]byte(input))
+	_ = h.Flush()
+
+	result := out.String()
+	for _, want := range []string{"┌", "┬", "├", "┼", "└", "Client", "minimax", "codex"} {
+		if !strings.Contains(result, want) {
+			t.Errorf("rendered table missing %q; got:\n%s", want, result)
+		}
+	}
+	if strings.Contains(result, "|---|") {
+		t.Errorf("markdown separator should be rendered, not passed through; got:\n%s", result)
+	}
+	if !strings.Contains(result, "\x1b[38;5;240m") {
+		t.Errorf("expected muted border ANSI in rendered table; got:\n%q", result)
+	}
+}
+
+func TestHighlighterLeavesNonTablePipesAlone(t *testing.T) {
+	var out bytes.Buffer
+	h := newCodeHighlighter(&out)
+	_, _ = h.Write([]byte("Use A | B when explaining alternatives.\nNext line.\n"))
+	_ = h.Flush()
+
+	want := "Use A | B when explaining alternatives.\nNext line.\n"
+	if got := out.String(); got != want {
+		t.Errorf("non-table pipe text = %q, want %q", got, want)
+	}
+}
+
+func TestHighlighterFlushPartialLineWithoutNewline(t *testing.T) {
+	var out bytes.Buffer
+	h := newCodeHighlighter(&out)
+	_, _ = h.Write([]byte("partial line"))
+	_ = h.Flush()
+
+	if got := out.String(); got != "partial line" {
+		t.Errorf("partial flush = %q, want no added newline", got)
+	}
+}
+
+func TestHighlighterRendersEditedFileActionLine(t *testing.T) {
+	var out bytes.Buffer
+	h := newCodeHighlighter(&out)
+	_, _ = h.Write([]byte("• Edited ~/dev/src/pprojects/milliways/cmd/milliways/chat.go (+4 -0)\n"))
+	_ = h.Flush()
+
+	result := out.String()
+	for _, want := range []string{"Edited", "chat.go", "+4", "-0", "\x1b[38;5;"} {
+		if !strings.Contains(result, want) {
+			t.Errorf("edited action line missing %q; got:\n%q", want, result)
+		}
+	}
+}
+
+func TestHighlighterRendersRanCommandActionLine(t *testing.T) {
+	var out bytes.Buffer
+	h := newCodeHighlighter(&out)
+	_, _ = h.Write([]byte("• Ran `go test ./cmd/milliways`\n"))
+	_ = h.Flush()
+
+	result := out.String()
+	for _, want := range []string{"Ran", "go", "test", "\x1b["} {
+		if !strings.Contains(result, want) {
+			t.Errorf("ran action line missing %q; got:\n%q", want, result)
+		}
+	}
+}

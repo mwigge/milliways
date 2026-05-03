@@ -297,7 +297,7 @@ install_wezterm_lua() {
     ok "Installed wezterm config → $SHARE_DIR/wezterm.lua"
   elif [ -z "$REPO_ROOT" ]; then
     # Binary / curl install — download from release.
-    local url="${SUPPORT_BASE_URL:-https://raw.githubusercontent.com/${REPO}/${VERSION}/cmd/milliwaysctl/milliways.lua}"
+    local url="${MILLIWAYS_WEZTERM_LUA_URL:-https://raw.githubusercontent.com/${REPO}/${VERSION}/cmd/milliwaysctl/milliways.lua}"
     if curl -sSfL "$url" -o "$SHARE_DIR/wezterm.lua.tmp" 2>/dev/null; then
       mv "$SHARE_DIR/wezterm.lua.tmp" "$SHARE_DIR/wezterm.lua"
       ok "Downloaded wezterm config → $SHARE_DIR/wezterm.lua"

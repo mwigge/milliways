@@ -237,7 +237,7 @@ upgrade_support_scripts() {
   done
 
   # Refresh the wezterm Lua config so per-client theming and URL rules stay current.
-  local lua_url="https://raw.githubusercontent.com/${REPO}/${version}/cmd/milliwaysctl/milliways.lua"
+  local lua_url="${MILLIWAYS_WEZTERM_LUA_URL:-https://raw.githubusercontent.com/${REPO}/${version}/cmd/milliwaysctl/milliways.lua}"
   local lua_dest="$SHARE_DIR/wezterm.lua"
   if curl -sSfL "$lua_url" -o "${lua_dest}.tmp" 2>/dev/null; then
     mv "${lua_dest}.tmp" "$lua_dest"

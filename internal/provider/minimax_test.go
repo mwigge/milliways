@@ -51,6 +51,13 @@ func TestMiniMaxProviderSendParsesStreamingResponse(t *testing.T) {
 		if len(tools) != 1 {
 			t.Fatalf("tools len = %d, want 1", len(tools))
 		}
+		if payload["reasoning_split"] != true {
+			t.Fatalf("reasoning_split = %v, want true", payload["reasoning_split"])
+		}
+		streamOptions := payload["stream_options"].(map[string]any)
+		if streamOptions["include_usage"] != true {
+			t.Fatalf("stream_options.include_usage = %v, want true", streamOptions["include_usage"])
+		}
 
 		return providerTestResponse(http.StatusOK,
 			"data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\n"+

@@ -411,10 +411,12 @@ for _s in install_local.sh install_local_swap.sh install_feature_deps.sh upgrade
   printf '#!/usr/bin/env bash\n# old version\n' >"$ug11_scripts/$_s"; chmod +x "$ug11_scripts/$_s"
   printf '#!/usr/bin/env bash\n# new version v1.2.0\n' >"$ug11_server/$_s"; chmod +x "$ug11_server/$_s"
 done
+printf "window:set_left_status('new')\nwindow:set_right_status('')\n" >"$ug11_server/wezterm.lua"
 
 run_upgrade PATH="$ug11_prefix/bin:$PATH" PREFIX="$ug11_prefix" \
   MILLIWAYS_VERSION="v1.2.0" MILLIWAYS_RELEASE_BASE_URL="file://$ug11_release" \
-  MILLIWAYS_SUPPORT_BASE_URL="file://$ug11_server" UPGRADE_YES="1"
+  MILLIWAYS_SUPPORT_BASE_URL="file://$ug11_server" \
+  MILLIWAYS_WEZTERM_LUA_URL="file://$ug11_server/wezterm.lua" UPGRADE_YES="1"
 
 [ "$ug_rc" -eq 0 ] \
   && pass "UG-11: exits 0 after upgrade with script refresh" \
@@ -424,6 +426,10 @@ for _s in install_local.sh install_local_swap.sh install_feature_deps.sh upgrade
     && pass "UG-11: $_s refreshed to new version" \
     || fail "UG-11: $_s not updated (still contains old content)"
 done
+grep -q "set_left_status" "$ug11_share/wezterm.lua" 2>/dev/null \
+  && grep -q "set_right_status('')" "$ug11_share/wezterm.lua" 2>/dev/null \
+  && pass "UG-11: wezterm.lua refreshed with header status fix" \
+  || fail "UG-11: wezterm.lua not refreshed with header status fix"
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 printf '\n\033[1mResults:\033[0m  %s passed  %s failed  %s skipped\n\n' "$PASS" "$FAIL" "$SKIP"
