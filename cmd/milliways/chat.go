@@ -44,11 +44,13 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/chzyer/readline"
+	"github.com/mwigge/milliways/internal/daemon"
 	"github.com/mwigge/milliways/internal/mempalace"
 	"github.com/mwigge/milliways/internal/project"
 	"github.com/mwigge/milliways/internal/rpc"
@@ -258,6 +260,12 @@ func buildCompleter(agentID string) readline.AutoCompleter {
 // failures, transient network blips) are surfaced inline and the loop
 // continues.
 func runChat(ctx context.Context) error {
+	// Load local.env into this process so display and health checks reflect
+	// the same endpoint/model that the daemon uses.
+	if home, err := os.UserHomeDir(); err == nil {
+		daemon.LoadLocalEnv(filepath.Join(home, ".config", "milliways", "local.env"))
+	}
+
 	sock := daemonSocket()
 	if !socketReachable(sock, 500*time.Millisecond) {
 		return fmt.Errorf("milliwaysd not reachable at %s — start MilliWays.app or run `milliwaysd &` first", sock)
