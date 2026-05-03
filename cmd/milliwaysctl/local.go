@@ -502,15 +502,97 @@ func runLocalSetupModel(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s already registered in %s\n", alias, cfgPath)
 	}
 
-	// Step 3: verification is best-effort — backend may not be running yet.
-	// We probe but don't fail setup-model on a cold backend.
-	probeCode := runLocalListModels(nil, io.Discard, io.Discard)
-	if probeCode == 0 {
-		fmt.Fprintln(stdout, "backend reachable; model is ready to use")
-	} else {
-		fmt.Fprintln(stdout, "backend not yet reachable — start it with `milliwaysctl local install-server` if not already running")
+	// Step 3: update the launcher script and local.env to point at the new model,
+	// then restart (or start) the server so the model is immediately active.
+	if err := updateLocalServerLauncher(dest, alias, stderr); err != nil {
+		fmt.Fprintf(stderr, "local setup-model: launcher update: %v\n", err)
+		fmt.Fprintln(stderr, "  Server not restarted — run /install-local-server manually to activate the model.")
+		return 0 // non-fatal: model is registered, just needs manual restart
+	}
+
+	// Step 4: restart server with new model.
+	fmt.Fprintln(stdout, "Restarting local server with new model...")
+	if code := runLocalInstallServer(nil, stdout, stderr); code != 0 {
+		fmt.Fprintln(stderr, "  Could not auto-restart — run /install-local-server to activate.")
 	}
 	return 0
+}
+
+// updateLocalServerLauncher rewrites ~/.local/bin/milliways-local-server to
+// use the given model path and alias, and updates MILLIWAYS_LOCAL_MODEL in
+// local.env. This makes the next server start use the new model automatically.
+func updateLocalServerLauncher(modelPath, alias string, stderr io.Writer) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	launcher := filepath.Join(home, ".local", "bin", "milliways-local-server")
+
+	// Read existing launcher to extract host/port/ctx-size.
+	data, _ := os.ReadFile(launcher)
+	content := string(data)
+
+	host := "127.0.0.1"
+	port := "8765"
+	ctx := "16384"
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "--host") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				host = strings.Trim(parts[1], `"`)
+			}
+		}
+		if strings.HasPrefix(line, "--port") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				port = strings.Trim(parts[1], `"`)
+			}
+		}
+		if strings.HasPrefix(line, "--ctx-size") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				ctx = strings.Trim(parts[1], `"`)
+			}
+		}
+	}
+
+	// Find llama-server binary.
+	llamaBin := "/opt/homebrew/bin/llama-server"
+	if p, err := exec.LookPath("llama-server"); err == nil {
+		llamaBin = p
+	}
+
+	newLauncher := fmt.Sprintf(`#!/usr/bin/env bash
+exec %q \
+  -m %q \
+  --alias %q \
+  --host %q \
+  --port %q \
+  --ctx-size %q \
+  --jinja
+`, llamaBin, modelPath, alias, host, port, ctx)
+
+	if err := os.WriteFile(launcher, []byte(newLauncher), 0o755); err != nil {
+		return fmt.Errorf("write launcher: %w", err)
+	}
+
+	// Update MILLIWAYS_LOCAL_MODEL in local.env.
+	envFile := filepath.Join(home, ".config", "milliways", "local.env")
+	_ = os.MkdirAll(filepath.Dir(envFile), 0o700)
+	var lines []string
+	if existing, err := os.ReadFile(envFile); err == nil {
+		for _, l := range strings.Split(string(existing), "\n") {
+			if !strings.HasPrefix(l, "MILLIWAYS_LOCAL_MODEL=") {
+				lines = append(lines, l)
+			}
+		}
+	}
+	lines = append(lines, "MILLIWAYS_LOCAL_MODEL="+alias)
+	_ = os.WriteFile(envFile, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+
+	fmt.Fprintf(stderr, "  launcher updated: %s → %s\n", alias, modelPath)
+	return nil
 }
 
 // enrichedEnvForScripts returns the current environment with PATH augmented to

@@ -331,7 +331,7 @@ func TestRunLocal_SetupModelDownloadAndRegister(t *testing.T) {
 
 	// defaultGGUFDest("owner/repo-GGUF", "Q4_K_M") = filepath.Join(modelDir, "repo-GGUF-Q4_K_M.gguf")
 	ggufPath := filepath.Join(modelDir, "repo-GGUF-Q4_K_M.gguf")
-	if err := os.WriteFile(ggufPath, []byte("fake-gguf"), 0o644); err != nil {
+	if err := os.WriteFile(ggufPath, make([]byte, 51*1024*1024), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -368,7 +368,7 @@ func TestRunLocal_SetupModelIdempotent(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", cfgDir)
 
 	ggufPath := filepath.Join(modelDir, "repo-GGUF-Q4_K_M.gguf")
-	_ = os.WriteFile(ggufPath, []byte("fake"), 0o644)
+	_ = os.WriteFile(ggufPath, make([]byte, 51*1024*1024), 0o644)
 
 	args := []string{"setup-model", "owner/repo-GGUF", "--quant", "Q4_K_M", "--alias", "my-model"}
 
@@ -392,7 +392,7 @@ func TestRunLocal_DownloadModelUsesCache(t *testing.T) {
 	t.Setenv("MODEL_DIR", modelDir)
 
 	dest := filepath.Join(modelDir, "repo-GGUF-Q4_K_M.gguf")
-	_ = os.WriteFile(dest, []byte("fake-gguf"), 0o644)
+	_ = os.WriteFile(dest, make([]byte, 51*1024*1024), 0o644)
 
 	called := false
 	origExec := execCommand
