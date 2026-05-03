@@ -100,17 +100,17 @@ var chatCtlAliases = map[string][]string{
 	// Upgrade milliways itself
 	"upgrade": {"upgrade"},
 	// Local-model bootstrap
-	"install-local-server": {"local", "install-server"},
-	"install-local-swap":   {"local", "install-swap"},
-	"list-local-models":    {"local", "list-models"},
-	"switch-local-server":  {"local", "switch-server"},
-	"download-local-model": {"local", "download-model"},
-	"download-model":       {"local", "download-model"},
-	"setup-local-model":    {"local", "setup-model"},
-	"setup-model":          {"local", "setup-model"},
-	"list-models-catalog":  {"local", "setup-model", "list"},
+	"install-local-server":  {"local", "install-server"},
+	"install-local-swap":    {"local", "install-swap"},
+	"list-local-models":     {"local", "list-models"},
+	"switch-local-server":   {"local", "switch-server"},
+	"download-local-model":  {"local", "download-model"},
+	"download-model":        {"local", "download-model"},
+	"setup-local-model":     {"local", "setup-model"},
+	"setup-model":           {"local", "setup-model"},
+	"list-models-catalog":   {"local", "setup-model", "list"},
 	"refresh-model-catalog": {"local", "setup-model", "refresh"},
-	"swap":                 {"local", "swap-mode"}, // /swap hot | /swap cold
+	"swap":                  {"local", "swap-mode"}, // /swap hot | /swap cold
 	// Metrics dashboard
 	"metrics": {"metrics"},
 	// OpenSpec wrappers
@@ -302,6 +302,15 @@ func buildCompleter(agentID string) readline.AutoCompleter {
 		readline.PcItem("/repoindex"),
 		// Artifact + context commands (milliways-level, work for all runners).
 		readline.PcItem("/ring"),
+		readline.PcItem("/blocks"),
+		readline.PcItem("/search"),
+		readline.PcItem("/jump"),
+		readline.PcItem("/copy-last",
+			readline.PcItem("response"),
+			readline.PcItem("prompt"),
+			readline.PcItem("block"),
+			readline.PcItem("code"),
+		),
 		readline.PcItem("/history"),
 		readline.PcItem("/cost"),
 		readline.PcItem("/retry"),
@@ -574,6 +583,13 @@ type chatTurn struct {
 	Text    string
 }
 
+type chatBlock struct {
+	ID            int
+	AgentID       string
+	UserText      string
+	AssistantText string
+}
+
 // chatTurnLogCap caps how many turns we keep in memory. Old turns roll
 // off the front. 12 = roughly 6 user/assistant pairs, comfortably
 // covers a meaningful exchange without dragging the briefing past the
@@ -659,7 +675,11 @@ func (l *chatLoop) drainStream() {
 			if b64, ok := ev["b64"].(string); ok {
 				if raw, err := base64.StdEncoding.DecodeString(b64); err == nil {
 					if msg := formatThinkingFragment(string(raw)); msg != "" {
-						fmt.Fprintln(l.errw, "\033[2m… "+msg+"\033[0m")
+						agent := ""
+						if l.sess != nil {
+							agent = l.sess.agentID
+						}
+						fmt.Fprintln(l.errw, formatThinkingLine(agent, msg))
 					}
 				}
 			}
@@ -754,6 +774,14 @@ func formatThinkingFragment(text string) string {
 		return text
 	}
 	return text[:max-1] + "…"
+}
+
+func formatThinkingLine(agentID, msg string) string {
+	color := agentThinkingColor(agentID)
+	if color == "" {
+		color = "\033[38;5;245m"
+	}
+	return color + "… " + msg + "\033[0m"
 }
 
 // maxTurnsSummaryPrompt is sent automatically when the agentic loop hits
@@ -902,6 +930,14 @@ func (l *chatLoop) handleSlash(line string) {
 		l.printQuota()
 	case "ring":
 		l.handleRing(rest)
+	case "blocks":
+		l.printBlocks()
+	case "search":
+		l.handleSearch(rest)
+	case "jump":
+		l.handleJump(rest)
+	case "copy-last":
+		l.handleCopyLast(rest)
 	case "history":
 		l.printHistory()
 	case "cost", "spend":
@@ -993,6 +1029,7 @@ func (l *chatLoop) runCtl(args []string) {
 		fmt.Fprintln(l.errw, "✗ milliwaysctl not on PATH; install with `make install` or set MILLIWAYSCTL_BIN")
 		return
 	}
+	fmt.Fprintf(l.out, "• Ran `%s %s`\n", filepath.Base(bin), strings.Join(args, " "))
 	c := exec.Command(bin, args...)
 	c.Stdin = os.Stdin
 	c.Stdout = l.out
@@ -1279,6 +1316,7 @@ func (l *chatLoop) handleBang(cmd string) {
 		fmt.Fprintln(l.errw, "usage: !<command>")
 		return
 	}
+	fmt.Fprintf(l.out, "• Ran `%s`\n", cmd)
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/sh"
@@ -1310,6 +1348,240 @@ func (l *chatLoop) printHistory() {
 		}
 		fmt.Fprintf(l.out, "  [%d] %s: %s\n", i+1, role, preview)
 	}
+}
+
+func (l *chatLoop) printBlocks() {
+	blocks := buildChatBlocks(l.snapshotTurns())
+	if len(blocks) == 0 {
+		fmt.Fprintln(l.out, "  (no blocks — start a conversation first)")
+		return
+	}
+	for _, block := range blocks {
+		l.printBlockSummary(block)
+	}
+	fmt.Fprintln(l.out, "  /jump <id> opens a block · /copy-last [response|prompt|block|code] copies it")
+}
+
+func (l *chatLoop) printBlockSummary(block chatBlock) {
+	agent := block.AgentID
+	if agent == "" {
+		agent = "pending"
+	}
+	color := agentColor(block.AgentID)
+	reset := "\033[0m"
+	prompt := truncate(strings.Join(strings.Fields(block.UserText), " "), 80)
+	if prompt == "" {
+		prompt = "(no prompt)"
+	}
+	response := truncate(strings.Join(strings.Fields(block.AssistantText), " "), 80)
+	if response == "" {
+		response = "(awaiting response)"
+	}
+	fmt.Fprintf(l.out, "  #%d  %s%-8s%s  %s\n", block.ID, color, agent, reset, prompt)
+	fmt.Fprintf(l.out, "       %s\n", response)
+}
+
+func (l *chatLoop) handleSearch(query string) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		fmt.Fprintln(l.errw, "usage: /search <text> [client:<name>]")
+		return
+	}
+	results := searchChatBlocks(buildChatBlocks(l.snapshotTurns()), query)
+	if len(results) == 0 {
+		fmt.Fprintln(l.out, "  (no matching blocks)")
+		return
+	}
+	for _, block := range results {
+		l.printBlockSummary(block)
+	}
+}
+
+func (l *chatLoop) handleJump(arg string) {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		fmt.Fprintln(l.errw, "usage: /jump <block-id>")
+		return
+	}
+	id, err := parsePositiveInt(arg)
+	if err != nil {
+		fmt.Fprintln(l.errw, "usage: /jump <block-id>")
+		return
+	}
+	block, ok := findChatBlock(buildChatBlocks(l.snapshotTurns()), id)
+	if !ok {
+		fmt.Fprintf(l.errw, "✗ block #%d not found\n", id)
+		return
+	}
+	l.printFullBlock(block)
+}
+
+func (l *chatLoop) printFullBlock(block chatBlock) {
+	agent := block.AgentID
+	if agent == "" {
+		agent = "pending"
+	}
+	color := agentColor(block.AgentID)
+	reset := "\033[0m"
+	fmt.Fprintf(l.out, "%s┌─ block #%d · %s%s\n", color, block.ID, agent, reset)
+	fmt.Fprintln(l.out, "[user]")
+	fmt.Fprintln(l.out, block.UserText)
+	if block.AssistantText != "" {
+		fmt.Fprintln(l.out)
+		fmt.Fprintf(l.out, "[%s]\n", agent)
+		fmt.Fprintln(l.out, block.AssistantText)
+	}
+	fmt.Fprintf(l.out, "%s└─ end block #%d%s\n", color, block.ID, reset)
+}
+
+func (l *chatLoop) handleCopyLast(mode string) {
+	text, label, err := selectCopyTextFromBlocks(buildChatBlocks(l.snapshotTurns()), mode)
+	if err != nil {
+		fmt.Fprintln(l.errw, "✗ "+err.Error())
+		return
+	}
+	if text == "" {
+		fmt.Fprintln(l.errw, "✗ nothing to copy")
+		return
+	}
+	writeClipboardOSC52(l.out, text)
+	fmt.Fprintf(l.out, "  copied last %s (%d bytes)\n", label, len(text))
+}
+
+func buildChatBlocks(turns []chatTurn) []chatBlock {
+	var blocks []chatBlock
+	var pending *chatBlock
+	flush := func() {
+		if pending == nil {
+			return
+		}
+		pending.ID = len(blocks) + 1
+		blocks = append(blocks, *pending)
+		pending = nil
+	}
+	for _, turn := range turns {
+		switch turn.Role {
+		case "user":
+			flush()
+			pending = &chatBlock{UserText: turn.Text}
+		case "assistant":
+			if pending == nil {
+				pending = &chatBlock{}
+			}
+			if pending.AgentID == "" {
+				pending.AgentID = turn.AgentID
+			}
+			if pending.AssistantText != "" {
+				pending.AssistantText += "\n\n"
+			}
+			pending.AssistantText += turn.Text
+			flush()
+		}
+	}
+	flush()
+	return blocks
+}
+
+func searchChatBlocks(blocks []chatBlock, query string) []chatBlock {
+	terms := strings.Fields(strings.ToLower(query))
+	client := ""
+	var needles []string
+	for _, term := range terms {
+		if strings.HasPrefix(term, "client:") {
+			client = strings.TrimPrefix(term, "client:")
+			continue
+		}
+		needles = append(needles, term)
+	}
+	var results []chatBlock
+	for _, block := range blocks {
+		if client != "" && strings.ToLower(block.AgentID) != client {
+			continue
+		}
+		haystack := strings.ToLower(block.UserText + "\n" + block.AssistantText)
+		match := true
+		for _, needle := range needles {
+			if !strings.Contains(haystack, needle) {
+				match = false
+				break
+			}
+		}
+		if match {
+			results = append(results, block)
+		}
+	}
+	return results
+}
+
+func findChatBlock(blocks []chatBlock, id int) (chatBlock, bool) {
+	for _, block := range blocks {
+		if block.ID == id {
+			return block, true
+		}
+	}
+	return chatBlock{}, false
+}
+
+func selectCopyTextFromBlocks(blocks []chatBlock, mode string) (string, string, error) {
+	if len(blocks) == 0 {
+		return "", "", fmt.Errorf("no blocks to copy")
+	}
+	block := blocks[len(blocks)-1]
+	mode = strings.TrimSpace(strings.ToLower(mode))
+	switch mode {
+	case "", "response", "answer":
+		return block.AssistantText, "response", nil
+	case "prompt", "input":
+		return block.UserText, "prompt", nil
+	case "block":
+		return renderBlockPlain(block), "block", nil
+	case "code":
+		code := extractLangBlock(block.AssistantText)
+		if code == "" {
+			return "", "", fmt.Errorf("last block has no code fence")
+		}
+		return code, "code", nil
+	default:
+		return "", "", fmt.Errorf("usage: /copy-last [response|prompt|block|code]")
+	}
+}
+
+func renderBlockPlain(block chatBlock) string {
+	agent := block.AgentID
+	if agent == "" {
+		agent = "assistant"
+	}
+	var b strings.Builder
+	fmt.Fprintln(&b, "[user]")
+	fmt.Fprintln(&b, block.UserText)
+	if block.AssistantText != "" {
+		fmt.Fprintln(&b)
+		fmt.Fprintf(&b, "[%s]\n", agent)
+		b.WriteString(block.AssistantText)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func writeClipboardOSC52(w io.Writer, text string) {
+	encoded := base64.StdEncoding.EncodeToString([]byte(text))
+	fmt.Fprintf(w, "\033]52;c;%s\a", encoded)
+}
+
+func parsePositiveInt(s string) (int, error) {
+	var n int
+	if s == "" {
+		return 0, fmt.Errorf("empty")
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("invalid")
+		}
+		n = n*10 + int(r-'0')
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("invalid")
+	}
+	return n, nil
 }
 
 // printCost shows total cost and tokens from quota.get.
@@ -1551,11 +1823,31 @@ func (l *chatLoop) handleLocalSet(envKey, value, label, sentinel string) {
 		fmt.Fprintln(l.errw, "✗ not connected to daemon")
 		return
 	}
-	if err := l.client.Call("config.setenv", map[string]any{"key": envKey, "value": value}, nil); err != nil {
+	var setenvResult map[string]any
+	if err := l.client.Call("config.setenv", map[string]any{"key": envKey, "value": value}, &setenvResult); err != nil {
 		fmt.Fprintf(l.errw, "✗ %s: %v\n", label, err)
 		return
 	}
 	fmt.Fprintf(l.out, "  %s set to %q (takes effect on next prompt)\n", label, value)
+	reportPersistence(l.out, l.errw, setenvResult)
+}
+
+// reportPersistence reads the persisted/persist_path/persist_error fields
+// from a config.setenv RPC result and prints a clear one-liner so the user
+// knows whether the key will survive a daemon restart.
+func reportPersistence(out, errw io.Writer, result map[string]any) {
+	if result == nil {
+		return
+	}
+	persisted, _ := result["persisted"].(bool)
+	path, _ := result["persist_path"].(string)
+	persistErr, _ := result["persist_error"].(string)
+	if persisted {
+		fmt.Fprintf(out, "  ✓ persisted → %s (survives daemon restart)\n", path)
+	} else if persistErr != "" {
+		fmt.Fprintf(errw, "  ! could not persist to local.env: %s\n", persistErr)
+		fmt.Fprintf(errw, "    Key is set for this session only — add to your shell profile to make permanent.\n")
+	}
 }
 
 // handlePath shows or sets MILLIWAYS_PATH — the PATH used by all runner
@@ -1815,6 +2107,29 @@ func agentColor(name string) string {
 	return ""
 }
 
+// agentThinkingColor returns the quieter companion colour for runner progress.
+// It follows the same hue family as agentColor, but darker so reasoning/status
+// lines are visible without competing with the final response.
+func agentThinkingColor(name string) string {
+	switch name {
+	case "claude":
+		return "\033[38;5;245m" // soft gray
+	case "codex":
+		return "\033[38;5;172m" // muted amber
+	case "copilot":
+		return "\033[38;5;67m" // muted blue
+	case "minimax":
+		return "\033[38;5;98m" // muted purple
+	case "gemini":
+		return "\033[38;5;166m" // muted orange
+	case "local":
+		return "\033[38;5;124m" // muted red
+	case "pool":
+		return "\033[38;5;75m" // muted light blue
+	}
+	return ""
+}
+
 // printLanding is the chat-startup banner: header + dynamic daemon /
 // agent state + a curated slash command map. Mirrors what the user
 // would have seen as the REPL welcome — but every command listed here
@@ -1928,6 +2243,10 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out)
 
 	fmt.Fprintln(l.out, "Context management:")
+	fmt.Fprintln(l.out, "  /blocks                       show prompt/response blocks with IDs")
+	fmt.Fprintln(l.out, "  /jump <id>                    open a full block")
+	fmt.Fprintln(l.out, "  /search <text> [client:<name>] search blocks")
+	fmt.Fprintln(l.out, "  /copy-last [response|prompt|block|code] copy last block via terminal clipboard")
 	fmt.Fprintln(l.out, "  /history                      show the current turn log (read-only)")
 	fmt.Fprintln(l.out, "  /cost                         token usage per runner (last hour)")
 	fmt.Fprintln(l.out, "  /retry                        re-send the last user prompt")
@@ -2218,4 +2537,5 @@ func (l *chatLoop) printLogin(agent string) {
 		return
 	}
 	fmt.Fprintf(l.out, "✓ %s set — try /%s now\n", spec.envKey, agent)
+	reportPersistence(l.out, l.errw, result)
 }
