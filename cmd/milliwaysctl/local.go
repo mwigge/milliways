@@ -413,19 +413,60 @@ func runLocalDownloadModel(args []string, stdout, stderr io.Writer) int {
 }
 
 // buildDownloadMirrors returns candidate URLs for a GGUF model, ordered by
-// likelihood of succeeding. hf-mirror.com is a community mirror that many
-// corporate proxies allow through when huggingface.co is blocked.
+// likelihood of succeeding on corporate networks (Zscaler etc).
 func buildDownloadMirrors(repo, quant string) []string {
 	base := strings.TrimSuffix(filepath.Base(repo), "-GGUF")
 	file := fmt.Sprintf("%s-%s.gguf", base, quant)
-	return []string{
+	// xethub CDN: HuggingFace redirects to cas-bridge.xethub.hf.co which is
+	// typically not categorised as "Generative AI" by Zscaler and passes through.
+	// We resolve it by following the HF redirect first (HEAD request), then
+	// downloading from the CDN URL directly.
+	cdnURL := resolveHFCDNURL(
+		fmt.Sprintf("https://huggingface.co/%s/resolve/main/%s", repo, file),
+		os.Getenv("HF_TOKEN"),
+	)
+	mirrors := []string{}
+	if cdnURL != "" {
+		mirrors = append(mirrors, cdnURL)
+	}
+	mirrors = append(mirrors,
 		fmt.Sprintf("https://huggingface.co/%s/resolve/main/%s", repo, file),
 		fmt.Sprintf("https://hf-mirror.com/%s/resolve/main/%s", repo, file),
-		// ModelScope mirrors most popular HF models under the same org/repo path
-		// and uses a different CDN that many corporate proxies allow through.
 		fmt.Sprintf("https://modelscope.cn/api/v1/models/%s/repo?Revision=master&FilePath=%s", repo, file),
-		fmt.Sprintf("https://huggingface.co/%s/resolve/main/%s", repo, file), // retry with token if set
+	)
+	return mirrors
+}
+
+// resolveHFCDNURL follows a HuggingFace redirect to extract the pre-signed CDN
+// URL (cas-bridge.xethub.hf.co). This CDN host is not blocked by Zscaler on
+// most corporate networks even when huggingface.co itself is blocked.
+func resolveHFCDNURL(hfURL, token string) string {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Stop at first redirect — that's the CDN URL.
+			return http.ErrUseLastResponse
+		},
 	}
+	req, err := http.NewRequest("GET", hfURL, nil)
+	if err != nil {
+		return ""
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusTemporaryRedirect || resp.StatusCode == http.StatusMovedPermanently {
+		loc := resp.Header.Get("Location")
+		if strings.Contains(loc, "xethub.hf.co") || strings.Contains(loc, "cdn-lfs") {
+			return loc
+		}
+	}
+	return ""
 }
 
 func parseDownloadFlags(args []string, stderr io.Writer) (repo, quant, alias string, force bool, code int) {
