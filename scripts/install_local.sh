@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
-# install_local.sh — install llama.cpp + a small Unsloth-quantised coder model
+# install_local.sh — install llama.cpp + a Unsloth-quantised model
 # so milliways' /local runner has something to talk to.
 #
-# Defaults to qwen2.5-coder-1.5b at Unsloth Q4_K_M — small enough to fit
-# comfortably on a 16GB machine, fast enough to feel snappy, smart enough
-# for completions and simple coding tasks. Bigger machines can swap in
-# qwen2.5-coder-7b or deepseek-coder-v2:lite by re-running with MODEL_REPO=...
+# Defaults to Devstral-Small-2505 (Mistral AI, France) — EU-developed, Apache 2.0,
+# native OpenAI tool_calls JSON, top SWE-bench score in class. Requires 16GB RAM.
+# Swap model by re-running with MODEL_REPO=... MODEL_ALIAS=...
 
 set -euo pipefail
 
 BIND_HOST="${BIND_HOST:-127.0.0.1}"
 # 8765 — uncommon enough to avoid the usual web/dev-tunnel collisions on 8080.
 PORT="${PORT:-8765}"
-MODEL_REPO="${MODEL_REPO:-NousResearch/Hermes-3-Llama-3.1-8B-GGUF}"
+MODEL_REPO="${MODEL_REPO:-unsloth/Devstral-Small-2505-GGUF}"
 MODEL_QUANT="${MODEL_QUANT:-Q4_K_M}"
-MODEL_ALIAS="${MODEL_ALIAS:-hermes-3-llama-3.1-8b}"
+MODEL_ALIAS="${MODEL_ALIAS:-devstral-small}"
 CTX_SIZE="${CTX_SIZE:-32768}"
 LOG_DIR="${LOG_DIR:-$HOME/.local/share/milliways/local}"
 MODEL_DIR="${MODEL_DIR:-$HOME/.local/share/milliways/models}"
