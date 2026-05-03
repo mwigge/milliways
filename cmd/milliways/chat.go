@@ -105,9 +105,10 @@ var chatCtlAliases = map[string][]string{
 	"list-local-models":    {"local", "list-models"},
 	"switch-local-server":  {"local", "switch-server"},
 	"download-local-model": {"local", "download-model"},
-	"download-model":       {"local", "download-model"}, // short form
+	"download-model":       {"local", "download-model"},
 	"setup-local-model":    {"local", "setup-model"},
-	"setup-model":          {"local", "setup-model"}, // short form
+	"setup-model":          {"local", "setup-model"},
+	"swap":                 {"local", "swap-mode"}, // /swap hot | /swap cold
 	// Metrics dashboard
 	"metrics": {"metrics"},
 	// OpenSpec wrappers
@@ -270,6 +271,10 @@ func buildCompleter(agentID string) readline.AutoCompleter {
 		readline.PcItem("/download-model"),
 		readline.PcItem("/setup-local-model"),
 		readline.PcItem("/setup-model"),
+		readline.PcItem("/swap",
+			readline.PcItem("hot"),
+			readline.PcItem("cold"),
+		),
 		// PATH override for runner subprocesses
 		readline.PcItem("/path"),
 		// Local-runner runtime tuning

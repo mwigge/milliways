@@ -432,3 +432,75 @@ func TestRunLocal_DownloadModelForceBypassesCache(t *testing.T) {
 		t.Error("expected non-zero exit when curl fails with --force")
 	}
 }
+
+// ── swap-mode tests ───────────────────────────────────────────────────────────
+
+func TestRunLocal_SwapModeMissingArg(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	code := runLocal([]string{"swap-mode"}, &stdout, &stderr)
+	if code != 2 {
+		t.Errorf("exit = %d, want 2", code)
+	}
+}
+
+func TestRunLocal_SwapModeBadMode(t *testing.T) {
+	t.Parallel()
+	var stdout, stderr bytes.Buffer
+	code := runLocal([]string{"swap-mode", "warm"}, &stdout, &stderr)
+	if code == 0 {
+		t.Error("expected non-zero exit for invalid mode")
+	}
+}
+
+func TestRunLocal_SwapModeHot(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+
+	// Write a minimal llama-swap.yaml with a cold ttl.
+	milliDir := filepath.Join(cfgDir, "milliways")
+	_ = os.MkdirAll(milliDir, 0o755)
+	yaml := "ttl: 600\nmodels:\n  my-model:\n    ttl: 600\n    cmd: llama-server\n"
+	if err := os.WriteFile(filepath.Join(milliDir, "llama-swap.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runLocal([]string{"swap-mode", "hot"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	updated, _ := os.ReadFile(filepath.Join(milliDir, "llama-swap.yaml"))
+	if strings.Contains(string(updated), "ttl: 600") {
+		t.Errorf("expected ttl: 600 to be replaced with ttl: 0, got:\n%s", updated)
+	}
+	if !strings.Contains(string(updated), "ttl: 0") {
+		t.Errorf("expected ttl: 0 in hot mode output, got:\n%s", updated)
+	}
+	if !strings.Contains(stdout.String(), "hot") {
+		t.Errorf("expected 'hot' in output, got: %q", stdout.String())
+	}
+}
+
+func TestRunLocal_SwapModeCold(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+
+	milliDir := filepath.Join(cfgDir, "milliways")
+	_ = os.MkdirAll(milliDir, 0o755)
+	yaml := "ttl: 0\nmodels:\n  my-model:\n    ttl: 0\n    cmd: llama-server\n"
+	_ = os.WriteFile(filepath.Join(milliDir, "llama-swap.yaml"), []byte(yaml), 0o644)
+
+	var stdout, stderr bytes.Buffer
+	code := runLocal([]string{"swap-mode", "cold", "--ttl", "300"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	updated, _ := os.ReadFile(filepath.Join(milliDir, "llama-swap.yaml"))
+	if !strings.Contains(string(updated), "ttl: 300") {
+		t.Errorf("expected ttl: 300, got:\n%s", updated)
+	}
+	if !strings.Contains(stdout.String(), "cold") {
+		t.Errorf("expected 'cold' in output, got: %q", stdout.String())
+	}
+}
