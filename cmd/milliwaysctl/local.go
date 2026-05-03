@@ -367,7 +367,8 @@ func runLocalDownloadModel(args []string, stdout, stderr io.Writer) int {
 		if i > 0 {
 			fmt.Fprintf(stderr, "local download-model: trying mirror %d: %s\n", i+1, url)
 		}
-		args := []string{"-fL", "-o", dest, url}
+		// -C - resumes a partial download; safe even when starting fresh.
+		args := []string{"-fL", "-C", "-", "-o", dest, url}
 		if tok := os.Getenv("HF_TOKEN"); tok != "" {
 			args = append([]string{"-H", "Authorization: Bearer " + tok}, args...)
 		}
