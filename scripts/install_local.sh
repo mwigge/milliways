@@ -81,23 +81,62 @@ install_llamacpp() {
       brew install llama.cpp
       ;;
     Linux)
+      # Strategy 1: already bundled in the milliways package at /usr/bin/llama-server
+      # (set by build-linux-amd64.sh) — nothing to do.
+      if [ -x /usr/bin/llama-server ]; then
+        ok "llama-server bundled in package: /usr/bin/llama-server"
+        return
+      fi
+
+      # Strategy 2: download pre-built binary from the milliways release (same tag).
+      local milliways_ver
+      milliways_ver="$(milliways --version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+      if [ -n "$milliways_ver" ]; then
+        local asset_url="https://github.com/mwigge/milliways/releases/download/${milliways_ver}/llama-server_linux_amd64"
+        info "Downloading bundled llama-server from milliways release ${milliways_ver}…"
+        if curl -sSfL "$asset_url" -o /tmp/llama-server-dl 2>/dev/null; then
+          run_privileged install -m 0755 /tmp/llama-server-dl /usr/local/bin/llama-server
+          rm -f /tmp/llama-server-dl
+          ok "llama-server installed from milliways release"
+          return
+        fi
+      fi
+
+      # Strategy 3: download directly from llama.cpp latest release.
+      info "Fetching llama-server from llama.cpp releases…"
+      local llama_tag
+      llama_tag="$(curl -sSf https://api.github.com/repos/ggml-org/llama.cpp/releases/latest \
+        | grep '"tag_name"' | cut -d'"' -f4 2>/dev/null)" || llama_tag=""
+      if [ -n "$llama_tag" ]; then
+        local tar_name="llama-${llama_tag}-bin-ubuntu-x64.tar.gz"
+        local tar_url="https://github.com/ggml-org/llama.cpp/releases/download/${llama_tag}/${tar_name}"
+        if curl -sSfL "$tar_url" -o "/tmp/${tar_name}" 2>/dev/null; then
+          local entry
+          entry="$(tar -tzf "/tmp/${tar_name}" | grep '/llama-server$' | head -1)"
+          tar -xzf "/tmp/${tar_name}" -C /tmp "$entry"
+          run_privileged install -m 0755 "/tmp/${entry}" /usr/local/bin/llama-server
+          rm -rf "/tmp/${tar_name}" "/tmp/$(echo "$entry" | cut -d/ -f1)"
+          ok "llama-server installed from llama.cpp ${llama_tag}"
+          return
+        fi
+      fi
+
+      # Strategy 4: build from source (last resort).
       if command -v apt-get >/dev/null 2>&1; then
         info "Installing build deps via apt-get…"
         sudo apt-get update -qq
-        # libcurl4-openssl-dev is required by -DLLAMA_CURL=ON for HF integration
-        sudo apt-get install -yqq build-essential cmake git curl libcurl4-openssl-dev ca-certificates
+        sudo apt-get install -yqq build-essential cmake git curl ca-certificates
       elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y gcc-c++ cmake git curl libcurl-devel ca-certificates
+        sudo dnf install -y gcc-c++ cmake git curl ca-certificates
       elif command -v pacman >/dev/null 2>&1; then
         sudo pacman -Sy --noconfirm base-devel cmake git curl
       else
-        fail "no supported package manager (apt-get / dnf / pacman). Install build tools manually and re-run."
+        fail "no supported package manager. Install llama.cpp manually from https://github.com/ggml-org/llama.cpp"
       fi
-      info "Building llama.cpp from source (this takes 1–3 minutes)…"
+      info "Building llama.cpp from source (1–3 minutes)…"
+      local tmp
       tmp="$(mktemp -d)"
       git clone --depth 1 https://github.com/ggml-org/llama.cpp "$tmp/llama.cpp"
-      # LLAMA_CURL=OFF — we download the GGUF ourselves with curl so we don't
-      # need the dev libcurl headers at build time. Keeps the Linux path simple.
       cmake -S "$tmp/llama.cpp" -B "$tmp/llama.cpp/build" -DGGML_CUDA=OFF -DLLAMA_CURL=OFF
       cmake --build "$tmp/llama.cpp/build" --config Release -j
       sudo install -m 0755 "$tmp/llama.cpp/build/bin/llama-server" /usr/local/bin/llama-server
