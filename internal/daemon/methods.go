@@ -385,10 +385,21 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 			writeError(enc, req.ID, ErrInvalidParams, "setenv: "+setErr.Error())
 			return
 		}
-		if err := persistLocalEnv(localEnvDefaultPath(), p.Key, p.Value); err != nil {
+		localEnvPath := localEnvDefaultPath()
+		persisted := true
+		persistErr := ""
+		if err := persistLocalEnv(localEnvPath, p.Key, p.Value); err != nil {
+			persisted = false
+			persistErr = err.Error()
 			slog.Warn("config.setenv: could not persist to local.env", "key", p.Key, "err", err)
 		}
-		writeResult(enc, req.ID, map[string]any{"ok": true, "key": p.Key})
+		writeResult(enc, req.ID, map[string]any{
+			"ok":            true,
+			"key":           p.Key,
+			"persisted":     persisted,
+			"persist_path":  localEnvPath,
+			"persist_error": persistErr,
+		})
 	default:
 		writeError(enc, req.ID, ErrMethodNotFound, "unknown method: "+req.Method)
 	}
