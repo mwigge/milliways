@@ -21,6 +21,7 @@ import (
 	"os"
 	"strconv"
 	"syscall"
+	"time"
 )
 
 // Lock is an exclusive flock on a pid file. Per milliwaysd/spec.md, the
@@ -46,11 +47,18 @@ func AcquireLock(pidPath string) (*Lock, error) {
 				f.Close()
 				return nil, fmt.Errorf("flock: %w", err)
 			}
-			// Already locked — check if stale.
-			if attempt == 0 && isStaleLock(f) {
-				slog.Warn("stale lock detected, taking over", "pid_file", pidPath)
-				f.Close()
-				continue
+			// Already locked — check if stale (process gone) or superseded (binary newer).
+			if attempt == 0 {
+				if isStaleLock(f) {
+					slog.Warn("stale lock detected, taking over", "pid_file", pidPath)
+					f.Close()
+					continue
+				}
+				if isSuperseded(f) {
+					slog.Info("newer binary detected; replacing running daemon")
+					f.Close()
+					continue
+				}
 			}
 			pid, _ := readPid(f)
 			f.Close()
@@ -86,6 +94,60 @@ func isStaleLock(f *os.File) bool {
 		return false
 	}
 	return proc.Signal(syscall.Signal(0)) != nil
+}
+
+// isSuperseded returns true when the binary on disk is newer than the process
+// that holds the lock started. In that case we SIGTERM the old process and wait
+// briefly for it to exit so the new binary can take over.
+func isSuperseded(f *os.File) bool {
+	pid, err := readPid(f)
+	if err != nil || pid <= 0 {
+		return false
+	}
+
+	// Get mtime of the running binary on disk.
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	exeInfo, err := os.Stat(exe)
+	if err != nil {
+		return false
+	}
+
+	// Get the start time of the running process via /proc (Linux) or ps (macOS/BSD).
+	procStart := processMtime(pid)
+	if procStart.IsZero() {
+		return false
+	}
+
+	if exeInfo.ModTime().After(procStart) {
+		slog.Info("binary updated since daemon started; SIGTERMing old daemon",
+			"old_pid", pid, "binary_mtime", exeInfo.ModTime(), "proc_start", procStart)
+		proc, findErr := os.FindProcess(pid)
+		if findErr == nil {
+			_ = proc.Signal(syscall.SIGTERM)
+			// Give the old daemon up to 3 seconds to exit cleanly.
+			for i := 0; i < 30; i++ {
+				time.Sleep(100 * time.Millisecond)
+				if proc.Signal(syscall.Signal(0)) != nil {
+					break // process gone
+				}
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// processMtime returns an approximate start time for pid by reading the mtime
+// of /proc/<pid> on Linux. Returns zero time on non-Linux or on error.
+func processMtime(pid int) time.Time {
+	info, err := os.Stat(fmt.Sprintf("/proc/%d", pid))
+	if err != nil {
+		return time.Time{} // macOS/BSD: /proc not available; fall back gracefully
+	}
+	return info.ModTime()
 }
 
 // Release the flock and remove the pid file. Safe to call on a nil receiver.
