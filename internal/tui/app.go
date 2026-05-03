@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"log/slog"
+
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -237,7 +239,7 @@ func NewAdapterModel(providerFactory ProviderFactory, hydrator orchestrator.Cont
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(jobsRefreshCmd(m.ticketStore), m.startSystemMonitor(), initialOpenSpecRefreshCmd(), scheduleOpenSpecRefresh())
+	return tea.Batch(jobsRefreshCmd(m.ticketStore), m.startSystemMonitor(), initialOpenSpecRefreshCmd(), scheduleOpenSpecRefresh(), scheduleSessionSave())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -411,6 +413,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case openSpecRefreshMsg:
 		_ = m.refreshOpenSpecData()
 		cmds = append(cmds, scheduleOpenSpecRefresh())
+
+	case sessionSaveMsg:
+		if err := SaveLastSession(m.blocks); err != nil {
+			slog.Warn("auto-save session failed", "error", err)
+		}
+		cmds = append(cmds, scheduleSessionSave())
 	}
 
 	// Update input or overlay.

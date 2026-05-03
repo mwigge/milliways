@@ -3,6 +3,7 @@ package tui
 import (
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mwigge/milliways/internal/conversation"
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
@@ -68,6 +69,15 @@ type pipelineStepMsg struct {
 // pipelineEventMsg carries an adapter event from a pipeline step.
 type pipelineEventMsg struct {
 	blockID string
-	stepID  string
 	event   adapter.Event
+}
+
+// sessionSaveMsg triggers periodic session persistence.
+type sessionSaveMsg time.Time
+
+// scheduleSessionSave returns a command that sends sessionSaveMsg every 30 seconds.
+func scheduleSessionSave() tea.Cmd {
+	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
+		return sessionSaveMsg(t)
+	})
 }
