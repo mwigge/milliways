@@ -62,11 +62,17 @@ docker run --rm \
     llama_url="https://github.com/ggml-org/llama.cpp/releases/download/${llama_tag}/${llama_tar}"
     echo "fetching llama-server ${llama_tag} from ${llama_url}"
     if curl -sSfL "${llama_url}" -o "/tmp/${llama_tar}"; then
-      tar -xzf "/tmp/${llama_tar}" -C /tmp "$(tar -tzf "/tmp/${llama_tar}" | grep '/llama-server$' | head -1)"
-      extracted="$(tar -tzf "/tmp/${llama_tar}" | grep '/llama-server$' | head -1)"
-      cp "/tmp/${extracted}" dist/llama-server_linux_amd64
-      chmod +x dist/llama-server_linux_amd64
-      echo "llama-server bundled: $(file dist/llama-server_linux_amd64)"
+      # List the tarball first, find the llama-server entry, then extract it.
+      llama_entry="$(tar -tzf "/tmp/${llama_tar}" | grep '/llama-server$' | head -1)"
+      if [ -n "$llama_entry" ]; then
+        tar -xzf "/tmp/${llama_tar}" -C /tmp "$llama_entry"
+        cp "/tmp/${llama_entry}" dist/llama-server_linux_amd64
+        chmod +x dist/llama-server_linux_amd64
+        rm -f "/tmp/${llama_tar}" "/tmp/${llama_entry%/*}" 2>/dev/null || true
+        echo "llama-server bundled: $(file dist/llama-server_linux_amd64)"
+      else
+        echo "WARNING: llama-server not found in ${llama_tar} — skipping bundle"
+      fi
     else
       echo "WARNING: could not fetch llama-server — skipping bundle (users can run /install-local-server)"
     fi
