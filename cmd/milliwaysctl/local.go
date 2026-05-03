@@ -396,6 +396,9 @@ func buildDownloadMirrors(repo, quant string) []string {
 	return []string{
 		fmt.Sprintf("https://huggingface.co/%s/resolve/main/%s", repo, file),
 		fmt.Sprintf("https://hf-mirror.com/%s/resolve/main/%s", repo, file),
+		// ModelScope mirrors most popular HF models under the same org/repo path
+		// and uses a different CDN that many corporate proxies allow through.
+		fmt.Sprintf("https://modelscope.cn/api/v1/models/%s/repo?Revision=master&FilePath=%s", repo, file),
 		fmt.Sprintf("https://huggingface.co/%s/resolve/main/%s", repo, file), // retry with token if set
 	}
 }
