@@ -143,6 +143,10 @@ type switchableCompleter struct {
 }
 
 func (s *switchableCompleter) Do(line []rune, pos int) ([][]rune, int) {
+	// For ! shell commands, provide filesystem path completion on the last word.
+	if pos > 0 && line[0] == '!' {
+		return shellPathComplete(string(line[:pos]))
+	}
 	s.mu.RLock()
 	ac := s.ac
 	s.mu.RUnlock()
@@ -150,6 +154,54 @@ func (s *switchableCompleter) Do(line []rune, pos int) ([][]rune, int) {
 		return nil, 0
 	}
 	return ac.Do(line, pos)
+}
+
+// shellPathComplete provides path completion for ! shell commands.
+// It completes the last whitespace-delimited word as a filesystem path,
+// expanding ~ to the home directory.
+func shellPathComplete(line string) ([][]rune, int) {
+	// Find the last word (the path being completed).
+	lastSpace := strings.LastIndexAny(line, " \t")
+	prefix := line[lastSpace+1:] // everything after the last space
+
+	// Expand leading ~
+	expandedPrefix := prefix
+	if strings.HasPrefix(prefix, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			expandedPrefix = home + prefix[1:]
+		}
+	} else if prefix == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			expandedPrefix = home
+		}
+	}
+
+	// Glob for matches.
+	pattern := expandedPrefix + "*"
+	matches, err := filepath.Glob(pattern)
+	if err != nil || len(matches) == 0 {
+		return nil, 0
+	}
+
+	completions := make([][]rune, 0, len(matches))
+	for _, m := range matches {
+		// Restore ~ if the user typed it.
+		display := m
+		if strings.HasPrefix(prefix, "~") {
+			if home, err := os.UserHomeDir(); err == nil {
+				display = "~" + strings.TrimPrefix(m, home)
+			}
+		}
+		// Append / for directories so the next Tab continues into the dir.
+		if info, err := os.Stat(m); err == nil && info.IsDir() {
+			display += "/"
+		}
+		// Completion is the suffix to append to what the user already typed.
+		suffix := display[len(prefix):]
+		completions = append(completions, []rune(suffix))
+	}
+
+	return completions, len([]rune(prefix))
 }
 
 func (s *switchableCompleter) set(ac readline.AutoCompleter) {
