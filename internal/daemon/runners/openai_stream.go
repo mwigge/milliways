@@ -282,6 +282,18 @@ func streamOpenAITurn(ctx context.Context, r io.Reader, stream Pusher) (TurnResu
 // "error: tool ... not found" tool messages, giving the model a chance to
 // recover on the next turn.
 func assembleOpenAITurn(content, reasoning string, frags map[int]*openaiToolFrag, order []int, usage *openaiStreamUsage, finishReason string) (TurnResult, error) {
+	// Some models (e.g. Qwen2.5-Coder) emit tool calls as XML inside the
+	// content rather than as proper tool_calls JSON objects. Parse them here
+	// so the agentic loop can execute them regardless of the model's format.
+	if len(order) == 0 {
+		if xmlCalls := parseQwenXMLToolCalls(content); len(xmlCalls) > 0 {
+			for i, tc := range xmlCalls {
+				frags[i] = tc
+				order = append(order, i)
+			}
+			content = "" // consumed by tool calls
+		}
+	}
 	tr := TurnResult{Content: content, Reasoning: reasoning, FinishReason: finishReason}
 	if usage != nil {
 		tr.Usage = &Usage{
@@ -467,4 +479,119 @@ func buildOpenAIChatPayload(model string, messages []Message, toolDefs []provide
 		payload["tools"] = t
 	}
 	return payload
+}
+
+// parseQwenXMLToolCalls extracts tool calls from Qwen-style XML content:
+//
+//	```xml
+//	<function_call>{"name":"bash","arguments":{"command":"ls /tmp"}}</function_call>
+//	```
+//
+// or the older Qwen format:
+//
+//	<function name="bash" arguments='{"command":"ls /tmp"}'/>
+//
+// Returns nil if no XML tool calls are found.
+func parseQwenXMLToolCalls(content string) map[int]*openaiToolFrag {
+	stripped := strings.TrimSpace(content)
+	// Strip markdown code fence if present.
+	stripped = strings.TrimPrefix(stripped, "```xml")
+	stripped = strings.TrimSuffix(stripped, "```")
+	stripped = strings.TrimSpace(stripped)
+
+	var calls map[int]*openaiToolFrag
+
+	// Format 1: <function_call>{"name":"...","arguments":{...}}</function_call>
+	const openTag1 = "<function_call>"
+	const closeTag1 = "</function_call>"
+	idx := 0
+	for {
+		start := strings.Index(stripped, openTag1)
+		if start < 0 {
+			break
+		}
+		end := strings.Index(stripped[start:], closeTag1)
+		if end < 0 {
+			break
+		}
+		jsonBody := strings.TrimSpace(stripped[start+len(openTag1) : start+end])
+		stripped = stripped[start+end+len(closeTag1):]
+		var parsed struct {
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if err := json.Unmarshal([]byte(jsonBody), &parsed); err == nil && parsed.Name != "" {
+			if calls == nil {
+				calls = make(map[int]*openaiToolFrag)
+			}
+			f := &openaiToolFrag{}
+			f.name.WriteString(parsed.Name)
+			f.id.WriteString(fmt.Sprintf("call_%d", idx))
+			f.args.Write(parsed.Arguments)
+			calls[idx] = f
+			idx++
+		}
+	}
+	if calls != nil {
+		return calls
+	}
+
+	// Format 2: <function name="bash" arguments='{"command":"ls"}' />
+	// Simple regex-free scan for the attribute values.
+	const funcOpen = "<function "
+	rest := stripped
+	for {
+		start := strings.Index(rest, funcOpen)
+		if start < 0 {
+			break
+		}
+		end := strings.IndexRune(rest[start:], '>')
+		if end < 0 {
+			break
+		}
+		tag := rest[start : start+end+1]
+		rest = rest[start+end+1:]
+		name := extractAttr(tag, "name")
+		args := extractAttr(tag, "arguments")
+		if name == "" {
+			continue
+		}
+		if calls == nil {
+			calls = make(map[int]*openaiToolFrag)
+		}
+		f := &openaiToolFrag{}
+		f.name.WriteString(name)
+		f.id.WriteString(fmt.Sprintf("call_%d", idx))
+		if args != "" {
+			f.args.WriteString(args)
+		} else {
+			f.args.WriteString("{}")
+		}
+		calls[idx] = f
+		idx++
+	}
+	return calls
+}
+
+// extractAttr extracts the value of a named attribute from a simple XML tag string.
+// Handles both single and double quoted values.
+func extractAttr(tag, attr string) string {
+	search := attr + "="
+	idx := strings.Index(tag, search)
+	if idx < 0 {
+		return ""
+	}
+	rest := tag[idx+len(search):]
+	if len(rest) == 0 {
+		return ""
+	}
+	quote := rune(rest[0])
+	if quote != '\'' && quote != '"' {
+		return ""
+	}
+	end := strings.IndexRune(rest[1:], quote)
+	if end < 0 {
+		return ""
+	}
+	return rest[1 : end+1]
 }
