@@ -338,9 +338,12 @@ func assembleOpenAITurn(content, reasoning string, frags map[int]*openaiToolFrag
 			Args: f.args.String(),
 		})
 	}
-	if tr.FinishReason == "" && len(tr.ToolCalls) > 0 {
-		// Some backends omit finish_reason when sending tool_calls; treat
-		// as the canonical tool_calls finish so RunAgenticLoop continues.
+	if len(tr.ToolCalls) > 0 && tr.FinishReason != FinishToolCalls {
+		// Two cases:
+		// 1. Backend omitted finish_reason entirely (some local servers).
+		// 2. XML-based tool callers (Devstral, Qwen, Hermes) always emit
+		//    finish_reason="stop" even when the content contained tool calls.
+		//    In both cases, treat as FinishToolCalls so RunAgenticLoop continues.
 		tr.FinishReason = FinishToolCalls
 	}
 	return tr, nil

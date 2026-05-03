@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/mwigge/milliways/internal/provider"
 	"github.com/mwigge/milliways/internal/tools"
@@ -114,6 +115,14 @@ type LoopOptions struct {
 	SessionID string
 	// Logger is the slog.Logger used for warnings (e.g. cap hit). Optional.
 	Logger *slog.Logger
+	// XMLToolMode enables XML-based tool calling (Devstral / Mistral style).
+	// When true:
+	//   - Tool definitions are expected already in the system prompt (caller's
+	//     responsibility); no tool_defs are sent in the API payload.
+	//   - Tool results are injected as RoleUser messages wrapped in
+	//     <tool_results> XML rather than as RoleTool messages.
+	// This matches Devstral's "only user/assistant messages" contract.
+	XMLToolMode bool
 }
 
 // LoopResult summarises one RunAgenticLoop invocation.
@@ -158,7 +167,9 @@ func RunAgenticLoop(ctx context.Context, client Client, registry *tools.Registry
 	}
 
 	var toolDefs []provider.ToolDef
-	if registry != nil {
+	if registry != nil && !opts.XMLToolMode {
+		// XMLToolMode: tool definitions are already in the system prompt;
+		// sending them as API tool_defs would confuse XML-only models.
 		toolDefs = registry.List()
 	}
 
@@ -181,11 +192,14 @@ func RunAgenticLoop(ctx context.Context, client Client, registry *tools.Registry
 
 		// Append the assistant turn so the model can see its own past output
 		// when it issues follow-up tool calls in the next turn.
-		*messages = append(*messages, Message{
-			Role:      RoleAssistant,
-			Content:   t.Content,
-			ToolCalls: t.ToolCalls,
-		})
+		// XMLToolMode: store content only — ToolCalls are XML-parsed and
+		// must not appear as structured tool_calls in the message history
+		// because the model only understands user/assistant roles.
+		assistantMsg := Message{Role: RoleAssistant, Content: t.Content}
+		if !opts.XMLToolMode {
+			assistantMsg.ToolCalls = t.ToolCalls
+		}
+		*messages = append(*messages, assistantMsg)
 
 		if t.FinishReason != FinishToolCalls || len(t.ToolCalls) == 0 {
 			result.StoppedAt = StopReasonStop
@@ -194,18 +208,34 @@ func RunAgenticLoop(ctx context.Context, client Client, registry *tools.Registry
 		}
 
 		// Execute every tool call in order, append result messages.
-		// Tool output is wrapped in structural markers so the model treats
-		// it as untrusted data rather than as instructions — mitigates
-		// prompt-injection via tool fold-back where attacker-controlled
-		// file content / web content / shell output could otherwise be
-		// interpreted as model directives.
-		for _, call := range t.ToolCalls {
-			content := executeOneToolCall(ctx, registry, opts.SessionID, call)
+		// XMLToolMode: results go back as a single user message containing
+		// <tool_results> XML — Devstral/Mistral style (no tool role).
+		// Standard mode: one RoleTool message per call with <tool_result> wrap.
+		if opts.XMLToolMode {
+			results := make([]string, 0, len(t.ToolCalls))
+			for _, call := range t.ToolCalls {
+				content := executeOneToolCall(ctx, registry, opts.SessionID, call)
+				results = append(results, fmt.Sprintf(
+					`{"name":%q,"output":%s}`,
+					call.Name,
+					jsonStringOrQuote(content),
+				))
+			}
 			*messages = append(*messages, Message{
-				Role:       RoleTool,
-				ToolCallID: call.ID,
-				Content:    wrapToolResult(call.Name, content),
+				Role:    RoleUser,
+				Content: "<tool_results>\n[" + joinStrings(results, ",") + "]\n</tool_results>",
 			})
+		} else {
+			// Tool output is wrapped in structural markers so the model treats
+			// it as untrusted data rather than as instructions.
+			for _, call := range t.ToolCalls {
+				content := executeOneToolCall(ctx, registry, opts.SessionID, call)
+				*messages = append(*messages, Message{
+					Role:       RoleTool,
+					ToolCallID: call.ID,
+					Content:    wrapToolResult(call.Name, content),
+				})
+			}
 		}
 	}
 
@@ -229,6 +259,55 @@ func RunAgenticLoop(ctx context.Context, client Client, registry *tools.Registry
 		}
 	}
 	return result, nil
+}
+
+// jsonStringOrQuote returns s as a JSON value: if s is already valid JSON it
+// is returned as-is; otherwise it is JSON-quoted as a string. Used to embed
+// tool output (which may be plain text or JSON) in the XMLToolMode result.
+func jsonStringOrQuote(s string) string {
+	if json.Valid([]byte(s)) {
+		return s
+	}
+	b, err := json.Marshal(s)
+	if err != nil {
+		return `""`
+	}
+	return string(b)
+}
+
+// joinStrings joins ss with sep — avoids importing strings in this file.
+func joinStrings(ss []string, sep string) string {
+	out := ""
+	for i, s := range ss {
+		if i > 0 {
+			out += sep
+		}
+		out += s
+	}
+	return out
+}
+
+// BuildXMLToolDefs renders tool definitions as XML for injection into system
+// prompts of XML-tool-calling models (Devstral / Mistral style).
+func BuildXMLToolDefs(defs []provider.ToolDef) string {
+	if len(defs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("<tools>\n")
+	for _, d := range defs {
+		b.WriteString("<tool>\n")
+		b.WriteString("<name>" + d.Name + "</name>\n")
+		b.WriteString("<description>" + d.Description + "</description>\n")
+		if d.InputSchema != nil {
+			if raw, err := json.Marshal(d.InputSchema); err == nil {
+				b.WriteString("<parameters_schema>" + string(raw) + "</parameters_schema>\n")
+			}
+		}
+		b.WriteString("</tool>\n")
+	}
+	b.WriteString("</tools>")
+	return b.String()
 }
 
 // MaxToolResultBytes caps the size of any single tool output that gets
