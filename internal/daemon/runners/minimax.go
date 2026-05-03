@@ -27,7 +27,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/mwigge/milliways/internal/provider"
 	"github.com/mwigge/milliways/internal/tools"
@@ -35,7 +34,10 @@ import (
 
 // RunMiniMax drains the input channel; for each batch of bytes treated as
 // a prompt, it drives a chat-completion + tool-loop turn cycle against the
-// MiniMax API. Per-delta content events stream as {"t":"data","b64":...};
+// MiniMax API. The message history is kept for the lifetime of the open
+// daemon agent session, so follow-up prompts and runner handoffs retain
+// prior context instead of behaving like unrelated one-shot requests.
+// Per-delta content events stream as {"t":"data","b64":...};
 // each completed dispatch ends with {"t":"chunk_end","cost_usd":N,
 // "input_tokens":...,"output_tokens":...,"total_tokens":...}. Closing the
 // input channel pushes a final {"t":"end"}.
@@ -46,7 +48,7 @@ import (
 //   - When the model requests tool calls, the daemon executes them via the
 //     registry and re-issues the request with assistant + tool messages
 //     appended. The shared `RunAgenticLoop` helper drives the cycle and
-//     enforces a 10-turn safety bound.
+//     enforces a bounded turn cap.
 //   - Set `MINIMAX_TOOLS=off` to disable tool exposure (chat-only mode).
 //
 // Auth: requires MINIMAX_API_KEY env var. If unset at the start of a send,
@@ -55,27 +57,31 @@ import (
 // the channel closes.
 //
 // URL override: MINIMAX_API_URL is honoured for tests / proxy setups.
+// Timeout override: MiniMax has no milliways-imposed request timeout by
+// default. Set MINIMAX_TIMEOUT to a Go duration ("10m") or seconds ("600")
+// if a deployment wants an explicit wall-clock cap.
 //
 // Per-response usage (prompt/completion tokens + computed cost) is observed
 // into `metrics` if non-nil; auth-missing, marshal/transport failures, and
 // non-2xx responses each push an error_count tick.
 func RunMiniMax(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
+	state := &minimaxSessionState{}
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runMiniMaxOnce(ctx, prompt, stream, metrics)
+		runMiniMaxOnce(ctx, prompt, stream, metrics, state)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
-// minimaxTimeout caps a single agent.send call's HTTP request lifetime.
-const minimaxTimeout = 5 * time.Minute
+// ErrMiniMaxQuota indicates a MiniMax quota or rate-limit response.
+var ErrMiniMaxQuota = errors.New("minimax quota or rate limit")
 
 // minimaxDefaultURL is the production MiniMax chat completion endpoint.
-const minimaxDefaultURL = "https://api.minimax.io/v1/text/chatcompletion_v2"
+const minimaxDefaultURL = "https://api.minimax.io/v1/chat/completions"
 
 // minimaxDefaultModel matches the historical REPL runner default.
 const minimaxDefaultModel = "MiniMax-M2.7"
@@ -111,6 +117,10 @@ var (
 	minimaxToolRegistryOverride *tools.Registry
 )
 
+type minimaxSessionState struct {
+	messages []Message
+}
+
 func minimaxRegistry() *tools.Registry {
 	if strings.EqualFold(os.Getenv("MINIMAX_TOOLS"), "off") {
 		return nil
@@ -130,7 +140,7 @@ func minimaxRegistry() *tools.Registry {
 //
 // chunk_end is always pushed (via defer) so clients waiting on a terminal
 // frame per dispatch never hang, even when an early-return path fires.
-func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
+func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *minimaxSessionState) {
 	apiKey := strings.TrimSpace(os.Getenv("MINIMAX_API_KEY"))
 	if apiKey == "" {
 		observeError(metrics, AgentIDMiniMax)
@@ -148,6 +158,9 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
 		return
 	}
+	if state == nil {
+		state = &minimaxSessionState{}
+	}
 
 	url := strings.TrimSpace(os.Getenv("MINIMAX_API_URL"))
 	if url == "" {
@@ -157,18 +170,24 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	if model == "" {
 		model = minimaxDefaultModel
 	}
+	timeout := runnerRequestTimeout("MINIMAX_TIMEOUT")
 
 	spanCtx, span := startDispatchSpan(parent, AgentIDMiniMax, model)
-	ctx, cancel := context.WithTimeout(spanCtx, minimaxTimeout)
-	defer cancel()
+	ctx := spanCtx
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(spanCtx, timeout)
+		defer cancel()
+	}
 
 	registry := minimaxRegistry()
-	messages := []Message{
-		{Role: RoleSystem, Content: minimaxSystemPrompt},
-		{Role: RoleUser, Content: text},
+	if len(state.messages) == 0 {
+		state.messages = []Message{{Role: RoleSystem, Content: minimaxSystemPrompt}}
 	}
+	messages := append([]Message(nil), state.messages...)
+	messages = append(messages, Message{Role: RoleUser, Content: text})
 	client := &minimaxClient{
-		http:   &http.Client{Timeout: minimaxTimeout},
+		http:   &http.Client{Timeout: timeout},
 		url:    url,
 		apiKey: apiKey,
 		model:  model,
@@ -186,6 +205,7 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
 		return
 	}
+	state.messages = messages
 
 	usage := &openaiStreamUsage{
 		PromptTokens:     result.TotalUsage.PromptTokens,
@@ -224,6 +244,8 @@ type minimaxClient struct {
 
 func (c *minimaxClient) Send(ctx context.Context, messages []Message, toolDefs []provider.ToolDef) (TurnResult, error) {
 	payload := buildOpenAIChatPayload(c.model, messages, toolDefs)
+	payload["reasoning_split"] = true
+	payload["stream_options"] = map[string]any{"include_usage": true}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return TurnResult{}, fmt.Errorf("marshal: %w", err)
@@ -245,7 +267,11 @@ func (c *minimaxClient) Send(ctx context.Context, messages []Message, toolDefs [
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return TurnResult{}, fmt.Errorf("API %d: %s", resp.StatusCode, scrubBearer(strings.TrimSpace(string(errBody))))
+		msg := scrubBearer(strings.TrimSpace(string(errBody)))
+		if resp.StatusCode == http.StatusTooManyRequests || minimaxBodyLooksQuota(msg) {
+			return TurnResult{}, fmt.Errorf("%w: API %d: %s", ErrMiniMaxQuota, resp.StatusCode, msg)
+		}
+		return TurnResult{}, fmt.Errorf("API %d: %s", resp.StatusCode, msg)
 	}
 
 	return streamOpenAITurn(ctx, resp.Body, c.stream)
@@ -284,7 +310,7 @@ func classifyDispatchError(agentID string, err error) map[string]any {
 			"t":     "err",
 			"agent": agentID,
 			"code":  -32009,
-			"msg":   agentID + ": dispatch timeout (5m)",
+			"msg":   agentID + ": dispatch timeout",
 		}
 	case errors.Is(err, ErrIncompleteStream):
 		return map[string]any{
@@ -300,6 +326,13 @@ func classifyDispatchError(agentID string, err error) map[string]any {
 			"code":  -32012,
 			"msg":   agentID + ": SSE line exceeded 1MB scanner buffer (oversized tool-call args?)",
 		}
+	case errors.Is(err, ErrMiniMaxQuota):
+		return map[string]any{
+			"t":     "err",
+			"agent": agentID,
+			"code":  -32013,
+			"msg":   agentID + ": quota or rate limit reached",
+		}
 	default:
 		return map[string]any{
 			"t":     "err",
@@ -308,6 +341,16 @@ func classifyDispatchError(agentID string, err error) map[string]any {
 			"msg":   agentID + ": " + err.Error(),
 		}
 	}
+}
+
+func minimaxBodyLooksQuota(body string) bool {
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "quota") ||
+		strings.Contains(lower, "rate limit") ||
+		strings.Contains(lower, "rate_limit") ||
+		strings.Contains(lower, "too many requests") ||
+		strings.Contains(lower, "insufficient balance") ||
+		strings.Contains(lower, "limit reached")
 }
 
 // exitMsg builds a human-readable error message when a CLI subprocess exits
