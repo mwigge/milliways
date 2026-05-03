@@ -55,6 +55,8 @@ var allowedSetenvKeys = map[string]bool{
 	// Observability export.
 	"MILLIWAYS_OTEL_ENDPOINT": true,
 	"MILLIWAYS_OTEL_PROTOCOL": true,
+	// HuggingFace token — used by milliwaysctl download-model to bypass proxies.
+	"HF_TOKEN": true,
 	// Endpoint overrides
 	"MINIMAX_API_URL":          true,
 	"MILLIWAYS_LOCAL_ENDPOINT": true,
