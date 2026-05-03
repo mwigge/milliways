@@ -353,21 +353,43 @@ func runLocalDownloadModel(args []string, stdout, stderr io.Writer) int {
 			return 0
 		}
 	}
-	url := buildHFGGUFURL(repo, quant)
-	cmd := execCommand("curl", "-fL", "-o", dest, url)
-	cmd.Stdout = stderr // curl progress goes to stderr in our convention
-	cmd.Stderr = stderr
-	if err := cmd.Run(); err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			fmt.Fprintf(stderr, "local download-model: curl exit %d for %s\n", ee.ExitCode(), url)
-			return ee.ExitCode()
+	// Try mirrors in order: primary HF → hf-mirror.com (bypasses many proxies) → HF token auth.
+	mirrors := buildDownloadMirrors(repo, quant)
+	for i, url := range mirrors {
+		if i > 0 {
+			fmt.Fprintf(stderr, "local download-model: trying mirror %d: %s\n", i+1, url)
 		}
-		fmt.Fprintf(stderr, "local download-model: %v\n", err)
-		return 1
+		args := []string{"-fL", "-o", dest, url}
+		if tok := os.Getenv("HF_TOKEN"); tok != "" {
+			args = append([]string{"-H", "Authorization: Bearer " + tok}, args...)
+		}
+		cmd := execCommand("curl", args...)
+		cmd.Stdout = stderr
+		cmd.Stderr = stderr
+		if err := cmd.Run(); err == nil {
+			fmt.Fprintln(stdout, dest)
+			return 0
+		}
 	}
-	fmt.Fprintln(stdout, dest)
-	return 0
+	// All mirrors failed.
+	fmt.Fprintf(stderr, "local download-model: all download sources failed for %s %s\n", repo, quant)
+	fmt.Fprintf(stderr, "  If behind a corporate proxy, set HF_TOKEN and try again:\n")
+	fmt.Fprintf(stderr, "    /login HF_TOKEN hf_xxxx\n")
+	fmt.Fprintf(stderr, "  Or download manually and place the .gguf at: %s\n", dest)
+	return 1
+}
+
+// buildDownloadMirrors returns candidate URLs for a GGUF model, ordered by
+// likelihood of succeeding. hf-mirror.com is a community mirror that many
+// corporate proxies allow through when huggingface.co is blocked.
+func buildDownloadMirrors(repo, quant string) []string {
+	base := strings.TrimSuffix(filepath.Base(repo), "-GGUF")
+	file := fmt.Sprintf("%s-%s.gguf", base, quant)
+	return []string{
+		fmt.Sprintf("https://huggingface.co/%s/resolve/main/%s", repo, file),
+		fmt.Sprintf("https://hf-mirror.com/%s/resolve/main/%s", repo, file),
+		fmt.Sprintf("https://huggingface.co/%s/resolve/main/%s", repo, file), // retry with token if set
+	}
 }
 
 func parseDownloadFlags(args []string, stderr io.Writer) (repo, quant, alias string, force bool, code int) {
@@ -418,6 +440,8 @@ func runLocalSetupModel(args []string, stdout, stderr io.Writer) int {
 		case "refresh":
 			return runModelCatalogRefresh(stdout, stderr)
 		}
+		// Accept catalog index (1-10) or short model name as a convenience.
+		args = resolveCatalogArg(args, stdout)
 	}
 	repo, quant, alias, _, code := parseDownloadFlags(args, stderr)
 	if code != 0 {
@@ -550,6 +574,42 @@ func swapModePatchTTL(data []byte, ttl int) []byte {
 		}
 	}
 	return bytes.Join(lines, []byte("\n"))
+}
+
+// resolveCatalogArg checks if args[0] is a catalog index (1-10) or a short
+// model name that matches a catalog entry, and expands it to the full
+// --repo/--quant/--alias flags. Returns args unchanged if no match.
+func resolveCatalogArg(args []string, stdout io.Writer) []string {
+	if len(args) == 0 {
+		return args
+	}
+	first := args[0]
+	catalog := loadCatalog()
+
+	// Numeric index: /setup-model 1
+	if n, err := strconv.Atoi(first); err == nil && n >= 1 && n <= len(catalog) {
+		e := catalog[n-1]
+		fmt.Fprintf(stdout, "Installing catalog entry %d: %s\n", n, e.Name)
+		return expandCatalogEntry(e, args[1:])
+	}
+
+	// Short name match (case-insensitive prefix): /setup-model Qwen2.5-Coder-7B
+	lower := strings.ToLower(first)
+	for _, e := range catalog {
+		if strings.ToLower(e.Name) == lower ||
+			strings.HasPrefix(strings.ToLower(e.Name), lower) ||
+			strings.HasPrefix(strings.ToLower(filepath.Base(e.Repo)), lower) {
+			fmt.Fprintf(stdout, "Matched catalog: %s → %s\n", first, e.Repo)
+			return expandCatalogEntry(e, args[1:])
+		}
+	}
+
+	return args
+}
+
+func expandCatalogEntry(e catalogEntry, extra []string) []string {
+	args := []string{e.Repo, "--quant", e.Quant, "--alias", strings.ToLower(e.Name)}
+	return append(args, extra...)
 }
 
 // ── Model catalog ─────────────────────────────────────────────────────────────
