@@ -48,7 +48,7 @@ import (
 
 const (
 	localDefaultEndpoint = "http://localhost:8765/v1"
-	localDefaultModel    = "qwen2.5-coder-1.5b"
+	localDefaultModel    = "hermes-3-llama-3.1-8b"
 )
 
 // localSystemPrompt mirrors minimaxSystemPrompt — same guidance, different

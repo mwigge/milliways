@@ -12,9 +12,9 @@ set -euo pipefail
 BIND_HOST="${BIND_HOST:-127.0.0.1}"
 # 8765 — uncommon enough to avoid the usual web/dev-tunnel collisions on 8080.
 PORT="${PORT:-8765}"
-MODEL_REPO="${MODEL_REPO:-unsloth/Qwen2.5-Coder-1.5B-Instruct-GGUF}"
+MODEL_REPO="${MODEL_REPO:-NousResearch/Hermes-3-Llama-3.1-8B-GGUF}"
 MODEL_QUANT="${MODEL_QUANT:-Q4_K_M}"
-MODEL_ALIAS="${MODEL_ALIAS:-qwen2.5-coder-1.5b}"
+MODEL_ALIAS="${MODEL_ALIAS:-hermes-3-llama-3.1-8b}"
 CTX_SIZE="${CTX_SIZE:-32768}"
 LOG_DIR="${LOG_DIR:-$HOME/.local/share/milliways/local}"
 MODEL_DIR="${MODEL_DIR:-$HOME/.local/share/milliways/models}"
