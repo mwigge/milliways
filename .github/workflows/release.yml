@@ -65,6 +65,9 @@ jobs:
           # Agent toolkit bundle
           [ -f dist/milliways-agent-toolkit.tar.gz ] && ASSETS+=(dist/milliways-agent-toolkit.tar.gz)
 
+          # Standalone llama-server for linux/amd64 (bundled in packages; also released separately)
+          [ -f dist/llama-server_linux_amd64 ] && ASSETS+=(dist/llama-server_linux_amd64)
+
           if gh release view "$TAG" --json tagName &>/dev/null; then
             echo "Release $TAG already exists — uploading assets only"
             gh release upload "$TAG" --clobber "${ASSETS[@]}"

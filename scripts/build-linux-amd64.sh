@@ -48,12 +48,28 @@ docker run --rm \
     export GOCACHE=/tmp/mw-gocache
     export GOMODCACHE=/tmp/mw-gomodcache
 
-    # ── 1. Compile binaries ──────────────────────────────────────────────────
+    # ── 1. Compile milliways binaries ────────────────────────────────────────
     for bin in milliways milliwaysd milliwaysctl; do
       echo "building ${bin}_linux_amd64 (${VERSION})"
       go build -ldflags "-X main.version=${VERSION}" -o "dist/${bin}_linux_amd64" "./cmd/${bin}"
       file "dist/${bin}_linux_amd64"
     done
+
+    # ── 1b. Fetch llama-server (plain CPU build — works on every amd64 host) ─
+    # We pin to the latest release tag; LLAMA_TAG can override for reproducibility.
+    llama_tag="${LLAMA_TAG:-$(curl -sSf https://api.github.com/repos/ggml-org/llama.cpp/releases/latest | awk -F\" '/tag_name/{print $4; exit}')}"
+    llama_tar="llama-${llama_tag}-bin-ubuntu-x64.tar.gz"
+    llama_url="https://github.com/ggml-org/llama.cpp/releases/download/${llama_tag}/${llama_tar}"
+    echo "fetching llama-server ${llama_tag} from ${llama_url}"
+    if curl -sSfL "${llama_url}" -o "/tmp/${llama_tar}"; then
+      tar -xzf "/tmp/${llama_tar}" -C /tmp "$(tar -tzf "/tmp/${llama_tar}" | grep '/llama-server$' | head -1)"
+      extracted="$(tar -tzf "/tmp/${llama_tar}" | grep '/llama-server$' | head -1)"
+      cp "/tmp/${extracted}" dist/llama-server_linux_amd64
+      chmod +x dist/llama-server_linux_amd64
+      echo "llama-server bundled: $(file dist/llama-server_linux_amd64)"
+    else
+      echo "WARNING: could not fetch llama-server — skipping bundle (users can run /install-local-server)"
+    fi
 
     # ── 2. Stage the package tree ────────────────────────────────────────────
     # Binaries go to /usr/bin (system-wide, always on PATH).
@@ -63,6 +79,9 @@ docker run --rm \
     install -Dm755 dist/milliways_linux_amd64       "$pkg_root/usr/bin/milliways"
     install -Dm755 dist/milliwaysd_linux_amd64      "$pkg_root/usr/bin/milliwaysd"
     install -Dm755 dist/milliwaysctl_linux_amd64    "$pkg_root/usr/bin/milliwaysctl"
+    # Bundle llama-server when available — removes the need for brew/cmake on first use.
+    [ -f dist/llama-server_linux_amd64 ] && \
+      install -Dm755 dist/llama-server_linux_amd64 "$pkg_root/usr/bin/llama-server"
     install -Dm755 scripts/install_local.sh         "$pkg_root/usr/share/milliways/scripts/install_local.sh"
     install -Dm755 scripts/install_local_swap.sh    "$pkg_root/usr/share/milliways/scripts/install_local_swap.sh"
     install -Dm755 scripts/install_feature_deps.sh  "$pkg_root/usr/share/milliways/scripts/install_feature_deps.sh"
