@@ -261,30 +261,51 @@ install_macos_app() {
 # ── Wezterm config ────────────────────────────────────────────────────────────
 setup_wezterm_config() {
   local wezterm_cfg="$HOME/.config/wezterm/wezterm.lua"
-  [ -f "$wezterm_cfg" ] && { info "wezterm config already exists at $wezterm_cfg"; return 0; }
 
-  # Find the sample config in the checkout or share dir.
+  # Find the canonical config source (checkout takes priority over share dir).
   local sample=""
   for candidate in \
     "${REPO_ROOT:+$REPO_ROOT/cmd/milliwaysctl/milliways.lua}" \
     "$SHARE_DIR/wezterm.lua"; do
     [ -n "$candidate" ] && [ -f "$candidate" ] && sample="$candidate" && break
   done
-
   [ -z "$sample" ] && return 0
 
   mkdir -p "$(dirname "$wezterm_cfg")"
-  ln -sf "$sample" "$wezterm_cfg"
-  ok "Linked wezterm config → $wezterm_cfg"
+
+  if [ -L "$wezterm_cfg" ]; then
+    # Already a symlink — refresh it to point at the current source.
+    ln -sf "$sample" "$wezterm_cfg"
+    ok "Updated wezterm config symlink → $wezterm_cfg"
+  elif [ ! -f "$wezterm_cfg" ]; then
+    # Fresh install — create symlink so future upgrades propagate automatically.
+    ln -sf "$sample" "$wezterm_cfg"
+    ok "Linked wezterm config → $wezterm_cfg"
+  else
+    # User has a hand-edited regular file — never overwrite it, just warn.
+    warn "wezterm config is a regular file (not a symlink) — skipping auto-update"
+    warn "  To receive future updates automatically, run:"
+    warn "  ln -sf $sample $wezterm_cfg"
+  fi
 }
 
 # ── Install the wezterm Lua config into share dir (for checkout installs) ─────
 install_wezterm_lua() {
-  [ -z "$REPO_ROOT" ] && return 0
-  local src="$REPO_ROOT/cmd/milliwaysctl/milliways.lua"
-  [ -f "$src" ] || return 0
-  cp "$src" "$SHARE_DIR/wezterm.lua"
-  ok "Installed wezterm config → $SHARE_DIR/wezterm.lua"
+  if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/cmd/milliwaysctl/milliways.lua" ]; then
+    # Checkout install — copy from repo.
+    cp "$REPO_ROOT/cmd/milliwaysctl/milliways.lua" "$SHARE_DIR/wezterm.lua"
+    ok "Installed wezterm config → $SHARE_DIR/wezterm.lua"
+  elif [ -z "$REPO_ROOT" ]; then
+    # Binary / curl install — download from release.
+    local url="${SUPPORT_BASE_URL:-https://raw.githubusercontent.com/${REPO}/${VERSION}/cmd/milliwaysctl/milliways.lua}"
+    if curl -sSfL "$url" -o "$SHARE_DIR/wezterm.lua.tmp" 2>/dev/null; then
+      mv "$SHARE_DIR/wezterm.lua.tmp" "$SHARE_DIR/wezterm.lua"
+      ok "Downloaded wezterm config → $SHARE_DIR/wezterm.lua"
+    else
+      rm -f "$SHARE_DIR/wezterm.lua.tmp"
+      warn "Could not download wezterm config — MilliWays.app terminal theme unavailable"
+    fi
+  fi
 }
 
 install_support_scripts() {

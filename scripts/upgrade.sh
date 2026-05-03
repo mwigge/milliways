@@ -235,6 +235,24 @@ upgrade_support_scripts() {
       warn "Could not download updated ${script} — keeping existing"
     fi
   done
+
+  # Refresh the wezterm Lua config so per-client theming and URL rules stay current.
+  local lua_url="https://raw.githubusercontent.com/${REPO}/${version}/cmd/milliwaysctl/milliways.lua"
+  local lua_dest="$SHARE_DIR/wezterm.lua"
+  if curl -sSfL "$lua_url" -o "${lua_dest}.tmp" 2>/dev/null; then
+    mv "${lua_dest}.tmp" "$lua_dest"
+    ok "Updated wezterm config → ${lua_dest}"
+    # If ~/.config/wezterm/wezterm.lua is a symlink pointing here it auto-refreshes.
+    # If it is a regular file, warn the user.
+    local wezterm_cfg="$HOME/.config/wezterm/wezterm.lua"
+    if [ -f "$wezterm_cfg" ] && [ ! -L "$wezterm_cfg" ]; then
+      warn "~/.config/wezterm/wezterm.lua is not a symlink — restart MilliWays.app"
+      warn "  To auto-update in future: ln -sf $lua_dest $wezterm_cfg"
+    fi
+  else
+    rm -f "${lua_dest}.tmp"
+    warn "Could not download updated wezterm.lua — keeping existing"
+  fi
 }
 
 # ── Confirmation prompt ───────────────────────────────────────────────────────
