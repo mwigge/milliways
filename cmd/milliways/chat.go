@@ -41,6 +41,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -993,6 +994,54 @@ func (l *chatLoop) switchAgent(newID string) {
 	// Print the live model + endpoint so the user knows exactly what's active.
 	m, ep := runnerModelInfo(newID)
 	fmt.Fprintf(l.out, "→ %s  model: %s  (%s)\n", newID, m, ep)
+
+	// Health-check the local runner endpoint immediately on switch so the
+	// user knows before their first prompt whether the server is reachable.
+	if newID == "local" {
+		go func() {
+			endpoint := os.Getenv("MILLIWAYS_LOCAL_ENDPOINT")
+			if endpoint == "" {
+				endpoint = "http://localhost:8765/v1"
+			}
+			checkLocalEndpoint(endpoint, l.out, l.errw)
+		}()
+	}
+}
+
+// checkLocalEndpoint probes GET /v1/models on the local runner endpoint and
+// prints a one-line health status. Runs in a goroutine so it never blocks input.
+func checkLocalEndpoint(endpoint string, out, errw io.Writer) {
+	url := strings.TrimRight(endpoint, "/") + "/models"
+	client := &http.Client{Timeout: 4 * time.Second}
+	resp, err := client.Get(url) //nolint:noctx
+	if err != nil {
+		fmt.Fprintf(errw, "  ✗ local server not reachable at %s\n", endpoint)
+		fmt.Fprintf(errw, "    run: /install-local-server  or  /local-endpoint <url>\n")
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(errw, "  ✗ local server at %s returned HTTP %d\n", endpoint, resp.StatusCode)
+		return
+	}
+	// Parse model list and show what's loaded.
+	var result struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(body, &result); err != nil || len(result.Data) == 0 {
+		fmt.Fprintf(out, "  ✓ local server reachable (no models listed)\n")
+		return
+	}
+	names := make([]string, 0, len(result.Data))
+	for _, d := range result.Data {
+		if d.ID != "" {
+			names = append(names, d.ID)
+		}
+	}
+	fmt.Fprintf(out, "  ✓ local server ready  models: %s\n", strings.Join(names, ", "))
 }
 
 // buildBriefing assembles a handoff message summarising the recent
