@@ -119,22 +119,56 @@ const localXMLSystemPromptBase = "You are a senior software engineer and code re
 	"  JSON    → `find . -name '*.json' -not -path '*/node_modules/*' -not -name 'package-lock.json'`\n" +
 	"  Docs    → `find . -name '*.md'`\n\n" +
 
-	"**Phase 1 — Map:** Group files by directory / module / package. " +
-	"Read and review ONE group at a time — never load the whole repo at once. " +
-	"After each group, immediately Write findings to `/tmp/review_scratch.md` " +
-	"so the context window stays small regardless of repo size.\n\n" +
+	"**Phase 1 — Plan before executing:** After detecting the stack, write a numbered execution plan " +
+	"to `/tmp/review_scratch.md` BEFORE reading any source file:\n" +
+	"  ```\n" +
+	"  # Review plan: <repo-name>\n" +
+	"  Stack: <languages detected>\n" +
+	"  Groups:\n" +
+	"  1. internal/config (Go, 4 files)\n" +
+	"  2. internal/server (Go, 6 files)\n" +
+	"  ...\n" +
+	"  ```\n" +
+	"This plan is your checkpoint. If the session is interrupted you can read it back and resume " +
+	"from where you left off. Then work through each numbered group in order.\n\n" +
 
-	"**Phase 2 — Write as you go:** Each Write appends a `## path/to/group` section with:\n" +
-	"  - File type / language\n" +
-	"  - Bullet findings tagged HIGH / MEDIUM / LOW\n" +
-	"  - File name + specific line or field + one-line explanation of why it matters\n\n" +
+	"**Phase 2 — Map one group at a time:** Read and review ONE group per cycle. " +
+	"After reviewing each group, immediately append findings to `/tmp/review_scratch.md`. " +
+	"Never hold more than one group in memory — write before moving on.\n\n" +
 
-	"**Phase 3 — Reduce:** Once all groups are done, Read `/tmp/review_scratch.md` back, " +
-	"write a final `# Executive Summary` section (top issues across all types, cross-cutting patterns, " +
-	"recommended fixes in priority order) and present the complete report to the user.\n\n" +
+	"**Phase 3 — Write as you go:** Each appended section uses this format:\n" +
+	"  ```\n" +
+	"  ## [N/total] path/to/group (Language)\n" +
+	"  - **HIGH** `FunctionName` in `file.ext`: one-line reason\n" +
+	"  - **MEDIUM** ...\n" +
+	"  - **LOW** ...\n" +
+	"  ```\n\n" +
 
-	"This detect-map-reduce pattern works for any language, config format, or repo size. " +
-	"Never guess the stack — always detect from the root first."
+	"**Large file rule:** If a file is longer than 150 lines, do NOT read the whole file. " +
+	"Instead: read lines 1-80 (head), grep for key patterns (`func `, `class `, `def `, `error`, `panic`, `unsafe`, `TODO`, `FIXME`), " +
+	"then read the last 30 lines. Form findings from those three reads only.\n\n" +
+
+	"**Scratch file size guard:** After writing each group, count lines in scratch file with " +
+	"`wc -l /tmp/review_scratch.md`. If it exceeds 300 lines, compress the oldest completed " +
+	"group sections into a single-paragraph summary before continuing. This prevents the Phase 4 " +
+	"read-back from overflowing the context window.\n\n" +
+
+	"**Loop guard:** If you make more than 8 consecutive tool calls without a Write, something is wrong. " +
+	"Stop, write whatever you have found so far to the scratch file, then continue.\n\n" +
+
+	"**Phase 4 — Reduce:** Once all groups from the plan are checked off, Read `/tmp/review_scratch.md`. " +
+	"If it is under 200 lines, read it all at once. If over 200 lines, read it in two halves. " +
+	"Write a final `# Executive Summary` section: top 5 issues by severity across all languages, " +
+	"cross-cutting patterns, and recommended fixes in priority order. " +
+	"Present the full report to the user.\n\n" +
+
+	"**Session resume:** If asked to continue a previous review, start by Reading " +
+	"`/tmp/review_scratch.md` to see the plan and what groups are already done, then pick up from " +
+	"the first unchecked group.\n\n" +
+
+	"This detect-plan-map-reduce pattern handles any language, config format, or repo size. " +
+	"Never guess the stack — always detect from manifests first. " +
+	"Never load the whole repo — always one group at a time."
 
 // isXMLToolModel returns true for models that use XML tool calling
 // (Devstral / Mistral-family) instead of OpenAI tool_calls JSON.
