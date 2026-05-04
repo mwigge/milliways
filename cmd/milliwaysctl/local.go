@@ -592,6 +592,48 @@ func runLocalSetupModel(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// serverDefaults holds per-model recommended llama-server flags.
+type serverDefaults struct {
+	GPULayers int
+	Temp      float64
+}
+
+// modelServerDefaults returns recommended llama-server flags for a given model
+// alias. Values are derived from official model documentation and testing:
+//
+//   - GPULayers 99: offload all layers to GPU/Metal. Safe on CPU-only machines
+//     (llama.cpp ignores it gracefully when no GPU is present).
+//   - Temp: lower = more deterministic code output. Coding models perform best
+//     at 0.10–0.20. General/reasoning models at 0.60–0.80.
+func modelServerDefaults(alias string) serverDefaults {
+	lower := strings.ToLower(alias)
+	switch {
+	case strings.Contains(lower, "devstral"), strings.Contains(lower, "mistral"):
+		// Unsloth recommendation: temp 0.15 for Devstral code tasks.
+		return serverDefaults{GPULayers: 99, Temp: 0.15}
+	case strings.Contains(lower, "qwen") && strings.Contains(lower, "coder"):
+		// Qwen Coder models — low temp for deterministic code completion.
+		return serverDefaults{GPULayers: 99, Temp: 0.15}
+	case strings.Contains(lower, "qwen"):
+		// Qwen base/reasoning — slightly higher temp for chain-of-thought diversity.
+		return serverDefaults{GPULayers: 99, Temp: 0.60}
+	case strings.Contains(lower, "deepseek") && strings.Contains(lower, "r1"):
+		// DeepSeek R1 reasoning — higher temp for exploration.
+		return serverDefaults{GPULayers: 99, Temp: 0.60}
+	case strings.Contains(lower, "deepseek"):
+		return serverDefaults{GPULayers: 99, Temp: 0.15}
+	case strings.Contains(lower, "hermes"), strings.Contains(lower, "llama"):
+		// Hermes / Llama instruction models — balanced for agentic tool use.
+		return serverDefaults{GPULayers: 99, Temp: 0.20}
+	case strings.Contains(lower, "phi"):
+		// Phi small models — low temp for reliable output.
+		return serverDefaults{GPULayers: 99, Temp: 0.10}
+	default:
+		// Safe defaults for unknown models.
+		return serverDefaults{GPULayers: 99, Temp: 0.20}
+	}
+}
+
 // updateLocalServerLauncher rewrites ~/.local/bin/milliways-local-server to
 // use the given model path and alias, and updates MILLIWAYS_LOCAL_MODEL in
 // local.env. This makes the next server start use the new model automatically.
@@ -637,6 +679,7 @@ func updateLocalServerLauncher(modelPath, alias string, stderr io.Writer) error 
 		llamaBin = p
 	}
 
+	md := modelServerDefaults(alias)
 	newLauncher := fmt.Sprintf(`#!/usr/bin/env bash
 exec %q \
   -m %q \
@@ -644,11 +687,11 @@ exec %q \
   --host %q \
   --port %q \
   --ctx-size %q \
-  --n-gpu-layers 99 \
-  --temp 0.15 \
+  --n-gpu-layers %d \
+  --temp %.2f \
   --jinja \
   -fa on
-`, llamaBin, modelPath, alias, host, port, ctx)
+`, llamaBin, modelPath, alias, host, port, ctx, md.GPULayers, md.Temp)
 
 	if err := os.WriteFile(launcher, []byte(newLauncher), 0o755); err != nil {
 		return fmt.Errorf("write launcher: %w", err)
