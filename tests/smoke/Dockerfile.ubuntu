@@ -1,0 +1,12 @@
+FROM ubuntu:22.04
+
+RUN apt-get update \
+    && apt-get install -y golang-go git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY . .
+
+RUN go build -o /usr/local/bin/milliwaysctl ./cmd/milliwaysctl/
+
+CMD ["bash", "tests/smoke/run_smoke.sh", "--no-docker"]
