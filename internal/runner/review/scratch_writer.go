@@ -35,6 +35,12 @@ func slugify(s string) string {
 	return sb.String()
 }
 
+// NewScratchWriter returns a ScratchWriter that writes to the default scratch
+// path derived from repoPath.
+func NewScratchWriter(repoPath string) ScratchWriter {
+	return &FileScratchWriter{path: ScratchPathFor(repoPath)}
+}
+
 // FileScratchWriter is the filesystem-backed ScratchWriter. It maintains an
 // in-memory list of groups (populated by Init) to answer NextPending queries,
 // and persists all review progress to a Markdown file.
