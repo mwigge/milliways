@@ -39,6 +39,10 @@ func (s *stubRouter) Route(_ string) (GroupClient, ModelCaps, error) {
 	return s.client, s.caps, s.err
 }
 
+func (s *stubRouter) RouteWithCG(_ string, _ CodeGraphClient) (GroupClient, ModelCaps, error) {
+	return s.client, s.caps, s.err
+}
+
 type stubGroupClient struct {
 	findings []Finding
 	err      error

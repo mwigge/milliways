@@ -106,6 +106,10 @@ type GroupClient interface {
 // model and returns the appropriate GroupClient implementation.
 type ModelRouter interface {
 	Route(alias string) (GroupClient, ModelCaps, error)
+	// RouteWithCG is Route extended with an optional CodeGraph client that is
+	// wired into the returned GroupClient for structural context injection.
+	// Pass nil for cg to get the same behaviour as Route.
+	RouteWithCG(alias string, cg CodeGraphClient) (GroupClient, ModelCaps, error)
 }
 
 // ScratchWriter manages the append-only scratch file that persists review

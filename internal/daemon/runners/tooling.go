@@ -123,6 +123,10 @@ type LoopOptions struct {
 	//     <tool_results> XML rather than as RoleTool messages.
 	// This matches Devstral's "only user/assistant messages" contract.
 	XMLToolMode bool
+	// Compaction configures automatic context compaction when the conversation
+	// approaches the model's context window limit.
+	// Zero-value (CtxTokens=0) disables compaction entirely.
+	Compaction CompactionOptions
 }
 
 // LoopResult summarises one RunAgenticLoop invocation.
@@ -188,6 +192,37 @@ func RunAgenticLoop(ctx context.Context, client Client, registry *tools.Registry
 			result.TotalUsage.PromptTokens += t.Usage.PromptTokens
 			result.TotalUsage.CompletionTokens += t.Usage.CompletionTokens
 			result.TotalUsage.TotalTokens += t.Usage.TotalTokens
+		}
+
+		// Check whether the accumulated token usage has crossed the compaction
+		// threshold. Compaction replaces old conversation history with a summary
+		// to prevent the context window from being exhausted. Disabled when
+		// CtxTokens is zero.
+		if opts.Compaction.CtxTokens > 0 {
+			threshold := opts.Compaction.Threshold
+			if threshold == 0 {
+				threshold = DefaultCompactionThreshold
+			}
+			used := result.TotalUsage.TotalTokens
+			if float64(used)/float64(opts.Compaction.CtxTokens) >= threshold {
+				before := len(*messages)
+				compacted, didCompact, compactErr := compactMessages(ctx, client, *messages, opts.Compaction, toolDefs)
+				if compactErr != nil {
+					if opts.Logger != nil {
+						opts.Logger.Warn("compaction failed, continuing", "error", compactErr)
+					}
+				} else if didCompact {
+					*messages = compacted
+					if opts.Logger != nil {
+						opts.Logger.Info("context compacted",
+							"before", before,
+							"after", len(compacted),
+							"tokens_used", used,
+							"ctx_tokens", opts.Compaction.CtxTokens,
+						)
+					}
+				}
+			}
 		}
 
 		// Append the assistant turn so the model can see its own past output
