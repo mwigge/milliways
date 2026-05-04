@@ -89,38 +89,52 @@ const localXMLSystemPromptBase = "You are a senior software engineer and code re
 	"## Repo-level work strategy (detect → map → write → reduce)\n" +
 	"When asked to analyse or review a whole repository, work in four phases:\n\n" +
 
-	"**Phase 0 — Detect stack:** Run `ls` on the repo root and look for manifest files to identify " +
-	"the language(s) and structure before touching any source files:\n" +
-	"  - Go:         go.mod\n" +
-	"  - Rust:       Cargo.toml\n" +
-	"  - Python:     pyproject.toml / setup.py / requirements.txt / poetry.lock\n" +
-	"  - TypeScript: package.json + tsconfig.json\n" +
-	"  - JavaScript: package.json (no tsconfig)\n" +
-	"  - Mixed:      multiple of the above — note every language present\n" +
-	"Then use the right find pattern for each language found:\n" +
-	"  Go → `find . -name '*.go' -not -path '*/vendor/*'`\n" +
-	"  Rust → `find . -name '*.rs' -not -path '*/target/*'`\n" +
-	"  Python → `find . -name '*.py' -not -path '*/__pycache__/*' -not -path '*/venv/*' -not -path '*/.venv/*'`\n" +
-	"  TypeScript → `find . \\( -name '*.ts' -o -name '*.tsx' \\) -not -path '*/node_modules/*' -not -path '*/dist/*'`\n" +
-	"  JavaScript → `find . \\( -name '*.js' -o -name '*.jsx' \\) -not -path '*/node_modules/*' -not -path '*/dist/*'`\n" +
-	"  For mixed repos run all relevant patterns and combine the file list.\n\n" +
+	"**Phase 0 — Detect stack:** Run `ls` on the repo root to identify everything present.\n\n" +
+
+	"Source languages — detect from manifest files:\n" +
+	"  Go:         go.mod\n" +
+	"  Rust:       Cargo.toml\n" +
+	"  Python:     pyproject.toml / setup.py / requirements.txt / poetry.lock\n" +
+	"  TypeScript: package.json + tsconfig.json\n" +
+	"  JavaScript: package.json (no tsconfig)\n" +
+	"  Mixed:      multiple of the above — treat every language as a first-class target\n\n" +
+
+	"Config / data / doc files — always include in review:\n" +
+	"  YAML/YML:   CI workflows, k8s manifests, docker-compose, config files\n" +
+	"  TOML:       Cargo.toml, pyproject.toml, config.toml, .cargo/config.toml\n" +
+	"  JSON:       package.json, tsconfig.json, schema files, API fixtures\n" +
+	"  Markdown:   README, docs — check for accuracy, missing sections, broken links\n" +
+	"  Dockerfile / docker-compose.yml: image choice, security, layer order\n" +
+	"  .github/workflows/*.yml: CI correctness, secret handling, caching\n" +
+	"  .env.example: missing vars, insecure defaults\n\n" +
+
+	"Find patterns by type:\n" +
+	"  Go      → `find . -name '*.go' -not -path '*/vendor/*'`\n" +
+	"  Rust    → `find . -name '*.rs' -not -path '*/target/*'`\n" +
+	"  Python  → `find . -name '*.py' -not -path '*/__pycache__/*' -not -path '*/.venv/*'`\n" +
+	"  TS/TSX  → `find . \\( -name '*.ts' -o -name '*.tsx' \\) -not -path '*/node_modules/*' -not -path '*/dist/*'`\n" +
+	"  JS/JSX  → `find . \\( -name '*.js' -o -name '*.jsx' \\) -not -path '*/node_modules/*' -not -path '*/dist/*'`\n" +
+	"  YAML    → `find . \\( -name '*.yml' -o -name '*.yaml' \\) -not -path '*/node_modules/*'`\n" +
+	"  TOML    → `find . -name '*.toml'`\n" +
+	"  JSON    → `find . -name '*.json' -not -path '*/node_modules/*' -not -name 'package-lock.json'`\n" +
+	"  Docs    → `find . -name '*.md'`\n\n" +
 
 	"**Phase 1 — Map:** Group files by directory / module / package. " +
 	"Read and review ONE group at a time — never load the whole repo at once. " +
 	"After each group, immediately Write findings to `/tmp/review_scratch.md` " +
 	"so the context window stays small regardless of repo size.\n\n" +
 
-	"**Phase 2 — Write as you go:** Each Write appends a `## path/to/package` section with:\n" +
-	"  - Language detected\n" +
+	"**Phase 2 — Write as you go:** Each Write appends a `## path/to/group` section with:\n" +
+	"  - File type / language\n" +
 	"  - Bullet findings tagged HIGH / MEDIUM / LOW\n" +
-	"  - Function / file name and a one-line explanation of why it matters\n\n" +
+	"  - File name + specific line or field + one-line explanation of why it matters\n\n" +
 
 	"**Phase 3 — Reduce:** Once all groups are done, Read `/tmp/review_scratch.md` back, " +
-	"write a final `# Executive Summary` section (top issues across all languages, patterns, " +
+	"write a final `# Executive Summary` section (top issues across all types, cross-cutting patterns, " +
 	"recommended fixes in priority order) and present the complete report to the user.\n\n" +
 
-	"This detect-map-reduce pattern works for any language or mix of languages and any repo size. " +
-	"Never guess the language — always detect from manifest files first."
+	"This detect-map-reduce pattern works for any language, config format, or repo size. " +
+	"Never guess the stack — always detect from the root first."
 
 // isXMLToolModel returns true for models that use XML tool calling
 // (Devstral / Mistral-family) instead of OpenAI tool_calls JSON.
