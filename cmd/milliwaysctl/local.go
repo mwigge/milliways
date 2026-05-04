@@ -46,6 +46,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// userHomeDirFn is the function used to resolve the home directory.
+// Overridden in tests to prevent writing to the real ~/.local/bin.
+var userHomeDirFn = os.UserHomeDir
+
 // localVerbs is the list of supported `local` verbs surfaced by --help and
 // by the wezterm slash dispatcher (which can read it via help output).
 var localVerbs = []string{
@@ -62,6 +66,7 @@ var localVerbs = []string{
 	"server-port",
 	"server-uninstall",
 	"default-model",
+	"review-code",
 }
 
 // runLocal dispatches `milliwaysctl local <verb> [args...]` and returns the
@@ -100,6 +105,8 @@ func runLocal(args []string, stdout, stderr io.Writer) int {
 		return runLocalServerUninstall(rest, stdout, stderr)
 	case "default-model":
 		return runLocalDefaultModel(rest, stdout, stderr)
+	case "review-code":
+		return runLocalReviewCode(rest, stdout, stderr)
 	case "-h", "--help", "help":
 		printLocalUsage(stdout)
 		return 0
@@ -128,6 +135,8 @@ func printLocalUsage(w io.Writer) {
 	fmt.Fprintln(w, "  server-port                                     print the port number from MILLIWAYS_LOCAL_ENDPOINT")
 	fmt.Fprintln(w, "  server-uninstall [--yes]                        stop server, remove service files and launcher")
 	fmt.Fprintln(w, "  default-model <alias>                           set the default model in the launcher and local.env")
+	fmt.Fprintln(w, "  review-code <path> [--model A] [--out F] [--resume] [--no-memory]")
+	fmt.Fprintln(w, "                                                  review a repository with the loaded local model")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Endpoint defaults to http://localhost:8765/v1; override with MILLIWAYS_LOCAL_ENDPOINT.")
 	fmt.Fprintln(w, "Models cache to $HOME/.local/share/milliways/models/; override with MODEL_DIR.")
@@ -164,7 +173,7 @@ func runInstallScript(relPath string, stdout, stderr io.Writer) int {
 	//   - a native package (v1.0.1 and earlier) without scripts/ subdir
 	//   - install.sh binary install (scripts in ~/.local/share/milliways/scripts/)
 	scriptName := filepath.Base(relPath)
-	home, _ := os.UserHomeDir()
+	home, _ := userHomeDirFn()
 	exe, _ := os.Executable()
 	exeShare := ""
 	if exe != "" {
@@ -362,7 +371,7 @@ func runLocalDownloadModel(args []string, stdout, stderr io.Writer) int {
 	}
 	modelDir := os.Getenv("MODEL_DIR")
 	if modelDir == "" {
-		home, err := os.UserHomeDir()
+		home, err := userHomeDirFn()
 		if err != nil {
 			fmt.Fprintf(stderr, "local download-model: home dir: %v\n", err)
 			return 1
@@ -531,7 +540,7 @@ func runLocalSetupModel(args []string, stdout, stderr io.Writer) int {
 	}
 	modelDir := os.Getenv("MODEL_DIR")
 	if modelDir == "" {
-		home, _ := os.UserHomeDir()
+		home, _ := userHomeDirFn()
 		modelDir = filepath.Join(home, ".local", "share", "milliways", "models")
 	}
 	dest := defaultGGUFDest(modelDir, repo, quant)
@@ -587,7 +596,7 @@ func runLocalSetupModel(args []string, stdout, stderr io.Writer) int {
 // use the given model path and alias, and updates MILLIWAYS_LOCAL_MODEL in
 // local.env. This makes the next server start use the new model automatically.
 func updateLocalServerLauncher(modelPath, alias string, stderr io.Writer) error {
-	home, err := os.UserHomeDir()
+	home, err := userHomeDirFn()
 	if err != nil {
 		return err
 	}
@@ -668,7 +677,7 @@ exec %q \
 // include the standard tool locations that are missing when milliways is
 // launched from a GUI app (MilliWays.app) without a login shell.
 func enrichedEnvForScripts() []string {
-	home, _ := os.UserHomeDir()
+	home, _ := userHomeDirFn()
 	extra := []string{
 		"/opt/homebrew/bin",         // Apple Silicon Homebrew
 		"/usr/local/bin",            // Intel Homebrew + manual installs
@@ -888,7 +897,7 @@ var builtinCatalog = []catalogEntry{
 }
 
 func catalogCachePath() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := userHomeDirFn()
 	if err != nil {
 		return "", err
 	}
@@ -1059,7 +1068,7 @@ func insertSwapModelEntry(yamlBytes []byte, alias, ggufPath string) ([]byte, boo
 
 // macosPlistPath returns the standard path for the macOS launchd plist.
 func macosPlistPath() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := userHomeDirFn()
 	if err != nil {
 		return "", fmt.Errorf("home dir: %w", err)
 	}
@@ -1068,7 +1077,7 @@ func macosPlistPath() (string, error) {
 
 // linuxServicePath returns the standard path for the systemd user unit.
 func linuxServicePath() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := userHomeDirFn()
 	if err != nil {
 		return "", fmt.Errorf("home dir: %w", err)
 	}
@@ -1129,7 +1138,7 @@ func runLocalServerStart(_ []string, stdout, stderr io.Writer) int {
 	}
 
 	// Fallback: run milliways-local-server in background.
-	home, err := os.UserHomeDir()
+	home, err := userHomeDirFn()
 	if err != nil {
 		fmt.Fprintf(stderr, "server-start: home dir: %v\n", err)
 		return 1
@@ -1275,7 +1284,7 @@ func runLocalServerUninstall(args []string, stdout, stderr io.Writer) int {
 	// Stop first (best-effort).
 	_ = runLocalServerStop(nil, stdout, stderr)
 
-	home, err := os.UserHomeDir()
+	home, err := userHomeDirFn()
 	if err != nil {
 		fmt.Fprintf(stderr, "server-uninstall: home dir: %v\n", err)
 		return 1
@@ -1396,7 +1405,7 @@ func configPath(name string) (string, error) {
 	if x := os.Getenv("XDG_CONFIG_HOME"); x != "" {
 		return filepath.Join(x, "milliways", name), nil
 	}
-	home, err := os.UserHomeDir()
+	home, err := userHomeDirFn()
 	if err != nil {
 		return "", fmt.Errorf("config path: %w", err)
 	}
