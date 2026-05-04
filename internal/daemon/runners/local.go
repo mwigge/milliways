@@ -104,10 +104,17 @@ const localXMLSystemPromptBase = "You are a senior software engineer and code re
 	"  Bash: `printf '\\n## section\\n- finding\\n' >> /tmp/review_scratch.md`\n" +
 	"  NOT: Write the whole file again.\n\n" +
 
-	"## Repo-level work strategy (detect → map → write → reduce)\n" +
-	"When asked to analyse or review a whole repository, work in four phases:\n\n" +
+	"## Repo-level work strategy\n" +
+	"When asked to analyse or review a whole repository, follow these five phases in order:\n\n" +
+	"  Phase 1 — DETECT   Identify languages and file types from repo root manifests\n" +
+	"  Phase 2 — PLAN     Write a numbered execution plan to scratch file before reading any source\n" +
+	"  Phase 3 — MAP      Read and review one package/directory group per turn cycle\n" +
+	"  Phase 4 — WRITE    Append findings to scratch file after every group (never skip this)\n" +
+	"  Phase 5 — REDUCE   Read scratch file back and synthesise executive summary\n\n" +
+	"Never skip a phase. Never start Phase 3 without completing Phase 2. " +
+	"Never start Phase 5 without completing Phase 4 for every group in the plan.\n\n" +
 
-	"**Phase 0 — Detect stack:** Run `ls` on the repo root to identify everything present.\n\n" +
+	"**Phase 1 — DETECT:** Run `ls` on the repo root to identify everything present.\n\n" +
 
 	"Source languages — detect from manifest files:\n" +
 	"  Go:         go.mod\n" +
@@ -137,7 +144,7 @@ const localXMLSystemPromptBase = "You are a senior software engineer and code re
 	"  JSON    → `find . -name '*.json' -not -path '*/node_modules/*' -not -name 'package-lock.json'`\n" +
 	"  Docs    → `find . -name '*.md'`\n\n" +
 
-	"**Phase 1 — Plan before executing:** After detecting the stack, write a numbered execution plan " +
+	"**Phase 2 — PLAN:** After detecting the stack, write a numbered execution plan " +
 	"to `/tmp/review_scratch.md` BEFORE reading any source file:\n" +
 	"  ```\n" +
 	"  # Review plan: <repo-name>\n" +
@@ -150,11 +157,11 @@ const localXMLSystemPromptBase = "You are a senior software engineer and code re
 	"This plan is your checkpoint. If the session is interrupted you can read it back and resume " +
 	"from where you left off. Then work through each numbered group in order.\n\n" +
 
-	"**Phase 2 — Map one group at a time:** Read and review ONE group per cycle. " +
+	"**Phase 3 — MAP:** Read and review ONE group per cycle. " +
 	"After reviewing each group, immediately append findings to `/tmp/review_scratch.md`. " +
 	"Never hold more than one group in memory — write before moving on.\n\n" +
 
-	"**Phase 3 — Write as you go:** Each appended section uses this format:\n" +
+	"**Phase 4 — WRITE:** Each appended section uses this format:\n" +
 	"  ```\n" +
 	"  ## [N/total] path/to/group (Language)\n" +
 	"  - **HIGH** `FunctionName` in `file.ext`: one-line reason\n" +
@@ -174,7 +181,7 @@ const localXMLSystemPromptBase = "You are a senior software engineer and code re
 	"**Loop guard:** If you make more than 8 consecutive tool calls without a Write, something is wrong. " +
 	"Stop, write whatever you have found so far to the scratch file, then continue.\n\n" +
 
-	"**Phase 4 — Reduce:** Once all groups from the plan are checked off, Read `/tmp/review_scratch.md`. " +
+	"**Phase 5 — REDUCE:** Once all groups from the plan are checked off, Read `/tmp/review_scratch.md`. " +
 	"If it is under 200 lines, read it all at once. If over 200 lines, read it in two halves. " +
 	"Write a final `# Executive Summary` section: top 5 issues by severity across all languages, " +
 	"cross-cutting patterns, and recommended fixes in priority order. " +
