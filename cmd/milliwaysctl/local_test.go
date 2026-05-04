@@ -364,8 +364,12 @@ func TestRunLocal_SetupModelDownloadAndRegister(t *testing.T) {
 func TestRunLocal_SetupModelIdempotent(t *testing.T) {
 	modelDir := t.TempDir()
 	cfgDir := t.TempDir()
+	homeDir := t.TempDir()
 	t.Setenv("MODEL_DIR", modelDir)
 	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+	orig := userHomeDirFn
+	userHomeDirFn = func() (string, error) { return homeDir, nil }
+	t.Cleanup(func() { userHomeDirFn = orig })
 
 	ggufPath := filepath.Join(modelDir, "repo-GGUF-Q4_K_M.gguf")
 	_ = os.WriteFile(ggufPath, make([]byte, 51*1024*1024), 0o644)
