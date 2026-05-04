@@ -738,7 +738,7 @@ func (l *chatLoop) drainStream() {
 			l.sess.busyMu.Lock()
 			l.sess.busy = false
 			l.sess.busyMu.Unlock()
-			l.refreshPromptHint(ev)
+			l.refreshPromptHint(ev, assistantText != "")
 			// Refresh the readline prompt so the user sees ▶ ready to type.
 			l.rl.Refresh()
 		case "err":
@@ -815,7 +815,7 @@ If you cannot produce a markdown table for step 3, use the dash-list format show
 //
 // When max_turns_hit is set, the terse flag is replaced by a visible break
 // separator and an automatic summarization turn that streams back to the user.
-func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any) {
+func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any, turnSaved bool) {
 	var parts []string
 	cost, _ := chunkEnd["cost_usd"].(float64)
 	inTok, _ := chunkEnd["input_tokens"].(float64)
@@ -826,6 +826,9 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any) {
 	}
 	if inTok > 0 && outTok > 0 {
 		parts = append(parts, fmt.Sprintf("%d→%d tok", int(inTok), int(outTok)))
+	}
+	if turnSaved {
+		parts = append(parts, "\033[32m⊙ saved\033[0m")
 	}
 
 	// Update the window title after each response. Show the running session
@@ -844,6 +847,9 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any) {
 		}
 		if inTok > 0 && outTok > 0 {
 			tabTitle += fmt.Sprintf(" · %d→%d tok", int(inTok), int(outTok))
+		}
+		if turnSaved {
+			tabTitle += " · ⊙"
 		}
 		setTermTitle(tabTitle, win)
 	}
