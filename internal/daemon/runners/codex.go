@@ -113,6 +113,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	cwd, _ := os.Getwd()
 	cmd := exec.CommandContext(ctx, codexBinary, buildCodexCmdArgsWithSession(text, cwd, nil, state.sessionID)...)
 	cmd.Env = safeRunnerEnv()
+	cmd.WaitDelay = 5 * time.Second
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
