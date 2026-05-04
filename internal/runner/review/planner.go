@@ -4,12 +4,20 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 )
+
+// indexChecker is an optional extension of CodeGraphClient. When the client
+// implements this interface, the planner calls IsIndexed before attempting
+// impact scoring, logging and falling back to directory order when false.
+type indexChecker interface {
+	IsIndexed(ctx context.Context) bool
+}
 
 // ImpactPlanner is a Planner that groups files by immediate parent directory
 // and optionally scores each group via CodeGraph impact analysis.
@@ -60,7 +68,14 @@ func (p ImpactPlanner) Plan(ctx context.Context, repoPath string, langs []Lang, 
 
 	// Score groups via CodeGraph when available.
 	if p.CG != nil {
-		groups = p.scoreGroups(ctx, repoPath, groups)
+		// If the client supports index-readiness checking, verify the index
+		// is populated before attempting impact scoring. An empty index means
+		// directory order is the better default.
+		if ic, ok := p.CG.(indexChecker); ok && !ic.IsIndexed(ctx) {
+			slog.Info("codegraph not indexed, using directory order")
+		} else {
+			groups = p.scoreGroups(ctx, repoPath, groups)
+		}
 	}
 
 	// Split groups that exceed caps.MaxGroupLines.
