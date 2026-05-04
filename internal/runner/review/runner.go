@@ -24,6 +24,8 @@ type Config struct {
 	Resume     bool   // continue from existing scratch file
 	NoMemory   bool   // skip all MemPalace calls
 	SocketPath string // daemon socket for MemPalace; default ~/.local/state/milliways/sock
+	GitCommit  bool   // auto-commit after each group that produces file edits
+	LintAfterEdit bool // run lint/tests after edits and feed failures back
 }
 
 // Runner orchestrates the detect→plan→map→write→reduce review cycle.
@@ -34,6 +36,9 @@ type Runner struct {
 	scratch  ScratchWriter
 	memory   Memory // nil = no memory operations
 	reducer  Reducer
+	git      GitIntegration   // nil = no git operations
+	linter   Linter           // nil = no lint after edits
+	context  ContextTracker   // tracks active file set for architect mode
 }
 
 // New wires real dependencies from cfg and returns a Runner ready to run.
@@ -72,18 +77,31 @@ func New(cfg Config) (*Runner, error) {
 		mem = NewMemPalaceMemory(cfg.SocketPath)
 	}
 
+	var git GitIntegration
+	if cfg.GitCommit {
+		git = NewGitIntegration(cfg.RepoPath)
+	}
+	var linter Linter
+	if cfg.LintAfterEdit {
+		linter = NewLinter()
+	}
+
 	return &Runner{
 		detector: NewDetector(),
-		planner:  NewPlanner(nil),
+		planner:  NewPlanner(NewCodeGraphClient(cfg.SocketPath)),
 		router:   router,
 		scratch:  NewScratchWriter(cfg.RepoPath),
 		memory:   mem,
 		reducer:  NewReducer(summarise),
+		git:      git,
+		linter:   linter,
+		context:  NewContextTracker(cfg.RepoPath),
 	}, nil
 }
 
 // NewWithDeps returns a Runner wired with the provided dependencies.
-// Used in tests to inject stubs.
+// Used in tests to inject stubs. Optional fields (git, linter, context)
+// default to nil which disables those features.
 func NewWithDeps(
 	detector Detector,
 	planner Planner,
@@ -99,6 +117,7 @@ func NewWithDeps(
 		scratch:  scratch,
 		memory:   memory,
 		reducer:  reducer,
+		context:  NewContextTracker("."),
 	}
 }
 
@@ -186,8 +205,27 @@ func (r *Runner) Run(ctx context.Context, cfg Config) (ReviewResult, error) {
 		}
 
 		if r.memory != nil {
-			// Memory store failures are intentionally non-fatal.
 			_ = r.memory.StoreFindings(ctx, cfg.RepoPath, group, findings)
+		}
+
+		// Run linter after any edits this group produced (non-fatal).
+		if r.linter != nil {
+			lintFindings, lintErr := r.linter.Run(ctx, cfg.RepoPath)
+			if lintErr != nil {
+				slog.Warn("linter error", "group", group.Dir, "error", lintErr)
+			} else {
+				findings = append(findings, lintFindings...)
+			}
+		}
+
+		// Auto-commit if git integration is enabled and tree is dirty.
+		if r.git != nil && r.git.IsRepo() {
+			if dirty, _ := r.git.Dirty(); dirty {
+				msg := fmt.Sprintf("review: %s findings in %s", group.Lang.Name, group.Dir)
+				if commitErr := r.git.CommitAll(msg); commitErr != nil {
+					slog.Warn("git commit failed", "group", group.Dir, "error", commitErr)
+				}
+			}
 		}
 
 		allFindings = append(allFindings, findings...)
