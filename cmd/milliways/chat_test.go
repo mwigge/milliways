@@ -666,3 +666,98 @@ func TestBriefingStoredAfterBuild(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// refreshPromptHint — ⊙ saved indicator
+// ---------------------------------------------------------------------------
+
+// newHintLoop builds the minimal chatLoop needed to exercise refreshPromptHint.
+func newHintLoop(errw *bytes.Buffer) *chatLoop {
+	return &chatLoop{
+		out:  &bytes.Buffer{},
+		errw: errw,
+	}
+}
+
+// TestRefreshPromptHint_SavedIndicatorPresent — when turnSaved is true the
+// hint line contains the ⊙ saved marker (with ANSI green codes).
+func TestRefreshPromptHint_SavedIndicatorPresent(t *testing.T) {
+	t.Parallel()
+	var errw bytes.Buffer
+	loop := newHintLoop(&errw)
+	loop.refreshPromptHint(map[string]any{
+		"cost_usd":      0.0041,
+		"input_tokens":  float64(100),
+		"output_tokens": float64(25),
+	}, true)
+	got := errw.String()
+	if !strings.Contains(got, "⊙ saved") {
+		t.Errorf("expected '⊙ saved' in hint line; got: %q", got)
+	}
+	// ANSI green escape must wrap the marker.
+	if !strings.Contains(got, "\033[32m") {
+		t.Errorf("expected ANSI green escape in hint line; got: %q", got)
+	}
+}
+
+// TestRefreshPromptHint_SavedIndicatorAbsent — when turnSaved is false
+// (empty response, no turn recorded) ⊙ saved must not appear.
+func TestRefreshPromptHint_SavedIndicatorAbsent(t *testing.T) {
+	t.Parallel()
+	var errw bytes.Buffer
+	loop := newHintLoop(&errw)
+	loop.refreshPromptHint(map[string]any{
+		"cost_usd":      0.0012,
+		"input_tokens":  float64(50),
+		"output_tokens": float64(10),
+	}, false)
+	got := errw.String()
+	if strings.Contains(got, "⊙") {
+		t.Errorf("unexpected ⊙ in hint line when turnSaved=false; got: %q", got)
+	}
+}
+
+// TestRefreshPromptHint_SavedAlongCostAndTokens — ⊙ saved appears together
+// with cost and token parts in a single hint line.
+func TestRefreshPromptHint_SavedAlongCostAndTokens(t *testing.T) {
+	t.Parallel()
+	var errw bytes.Buffer
+	loop := newHintLoop(&errw)
+	loop.refreshPromptHint(map[string]any{
+		"cost_usd":      0.0006,
+		"input_tokens":  float64(1683),
+		"output_tokens": float64(115),
+	}, true)
+	got := errw.String()
+	for _, want := range []string{"$0.0006", "1683→115 tok", "⊙ saved"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("hint line missing %q; got: %q", want, got)
+		}
+	}
+}
+
+// TestRefreshPromptHint_NoCostNoTokens_SavedStillShown — ⊙ saved is emitted
+// even when there are no cost/token stats (e.g. local model or rate-limited).
+func TestRefreshPromptHint_NoCostNoTokens_SavedStillShown(t *testing.T) {
+	t.Parallel()
+	var errw bytes.Buffer
+	loop := newHintLoop(&errw)
+	loop.refreshPromptHint(map[string]any{}, true)
+	got := errw.String()
+	if !strings.Contains(got, "⊙ saved") {
+		t.Errorf("expected '⊙ saved' even with no cost/token data; got: %q", got)
+	}
+}
+
+// TestRefreshPromptHint_EmptyHintWhenNothingToShow — no cost, no tokens,
+// and turnSaved=false → hint line must be blank (no spurious output).
+func TestRefreshPromptHint_EmptyHintWhenNothingToShow(t *testing.T) {
+	t.Parallel()
+	var errw bytes.Buffer
+	loop := newHintLoop(&errw)
+	loop.refreshPromptHint(map[string]any{}, false)
+	got := errw.String()
+	if strings.TrimSpace(got) != "" {
+		t.Errorf("expected empty hint when no data; got: %q", got)
+	}
+}
