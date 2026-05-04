@@ -49,18 +49,18 @@ type Finding struct {
 // reviewing a group. Injected into the review prompt so the model can flag
 // recurring issues and confirm resolved ones.
 type PriorContext struct {
-	Findings    []Finding
+	Findings     []Finding
 	LastReviewed time.Time // zero if never reviewed
 }
 
 // ReviewResult is the final output of a complete ReviewRunner run.
 type ReviewResult struct {
-	RepoPath  string
-	Model     string
-	Groups    []Group
-	Findings  []Finding
-	Summary   string
-	StartedAt time.Time
+	RepoPath   string
+	Model      string
+	Groups     []Group
+	Findings   []Finding
+	Summary    string
+	StartedAt  time.Time
 	FinishedAt time.Time
 }
 
@@ -76,9 +76,9 @@ const (
 // ModelCaps describes runtime capabilities of the loaded model relevant to
 // ReviewRunner (context window size drives max group size).
 type ModelCaps struct {
-	Alias        string
-	Format       ModelFormat
-	CtxTokens    int // total context window
+	Alias         string
+	Format        ModelFormat
+	CtxTokens     int // total context window
 	MaxGroupLines int // max source lines per group; derived from CtxTokens
 }
 
