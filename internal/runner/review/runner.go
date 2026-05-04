@@ -3,15 +3,27 @@ package review
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 )
 
+// scratchCompressThreshold is the line count above which Compress is called.
+const scratchCompressThreshold = 300
+
+// loopGuardMax is the maximum consecutive ReviewGroup calls permitted without
+// an AppendGroup completing. Exceeding this limit forces an empty AppendGroup.
+const loopGuardMax = 8
+
 // Config holds the runtime configuration for a ReviewRunner run.
 type Config struct {
 	RepoPath   string
-	ModelAlias string
-	Resume     bool // if true, resume from the existing scratch file
+	Endpoint   string // default "http://localhost:8765/v1"
+	ModelAlias string // override; empty = query /v1/models
+	OutPath    string // write final report here; empty = return in result only
+	Resume     bool   // continue from existing scratch file
+	NoMemory   bool   // skip all MemPalace calls
+	SocketPath string // daemon socket for MemPalace; default ~/.local/state/milliways/sock
 }
 
 // Runner orchestrates the detect→plan→map→write→reduce review cycle.
@@ -24,7 +36,54 @@ type Runner struct {
 	reducer  Reducer
 }
 
+// New wires real dependencies from cfg and returns a Runner ready to run.
+func New(cfg Config) (*Runner, error) {
+	endpoint := cfg.Endpoint
+	if endpoint == "" {
+		endpoint = "http://localhost:8765/v1"
+	}
+
+	router := NewModelRouter(endpoint)
+
+	// Route now to get caps for the planner; re-route during Run.
+	client, caps, err := router.Route(cfg.ModelAlias)
+	if err != nil {
+		return nil, fmt.Errorf("new runner route %s: %w", cfg.ModelAlias, err)
+	}
+	_ = caps // used implicitly through the router during Run
+
+	summarise := func(ctx context.Context, prompt string) (string, error) {
+		findings, err := client.ReviewGroup(ctx, Group{Dir: "summary", Lang: Lang{Name: "text"}}, PriorContext{
+			Findings: []Finding{{Reason: prompt}},
+		})
+		if err != nil {
+			return "", err
+		}
+		if len(findings) > 0 {
+			return findings[0].Reason, nil
+		}
+		return "", nil
+	}
+
+	var mem Memory
+	if cfg.NoMemory {
+		mem = NoopMemory{}
+	} else {
+		mem = NewMemPalaceMemory(cfg.SocketPath)
+	}
+
+	return &Runner{
+		detector: NewDetector(),
+		planner:  NewPlanner(nil),
+		router:   router,
+		scratch:  NewScratchWriter(cfg.RepoPath),
+		memory:   mem,
+		reducer:  NewReducer(summarise),
+	}, nil
+}
+
 // NewWithDeps returns a Runner wired with the provided dependencies.
+// Used in tests to inject stubs.
 func NewWithDeps(
 	detector Detector,
 	planner Planner,
@@ -89,6 +148,8 @@ func (r *Runner) Run(ctx context.Context, cfg Config) (ReviewResult, error) {
 
 	// Map phase: review each group in order.
 	var allFindings []Finding
+	consecutiveCalls := 0 // loop guard: consecutive ReviewGroup without AppendGroup
+
 	for _, group := range groups {
 		if err := ctx.Err(); err != nil {
 			return ReviewResult{}, err
@@ -103,9 +164,25 @@ func (r *Runner) Run(ctx context.Context, cfg Config) (ReviewResult, error) {
 			findings = nil
 		}
 
+		consecutiveCalls++
+
+		// Loop guard: if too many consecutive calls without AppendGroup completing,
+		// force an empty AppendGroup to unblock the scratch file.
+		if consecutiveCalls > loopGuardMax {
+			slog.Warn("review loop guard triggered: forcing empty append",
+				"consecutive_calls", consecutiveCalls,
+				"group", group.Dir,
+			)
+			if appendErr := r.scratch.AppendGroup(Group{}, nil); appendErr != nil {
+				_ = appendErr // non-fatal
+			}
+			consecutiveCalls = 0
+		}
+
 		if appendErr := r.scratch.AppendGroup(group, findings); appendErr != nil {
-			// Non-fatal: continue reviewing.
-			_ = appendErr
+			_ = appendErr // non-fatal: continue reviewing
+		} else {
+			consecutiveCalls = 0
 		}
 
 		if r.memory != nil {
@@ -114,6 +191,13 @@ func (r *Runner) Run(ctx context.Context, cfg Config) (ReviewResult, error) {
 		}
 
 		allFindings = append(allFindings, findings...)
+
+		// Scratch compress guard: keep file size manageable.
+		if lc, lcErr := r.scratch.LineCount(); lcErr == nil && lc > scratchCompressThreshold {
+			if compressErr := r.scratch.Compress(ctx, client); compressErr != nil {
+				slog.Warn("scratch compress failed", "error", compressErr)
+			}
+		}
 	}
 
 	// Reduce phase: produce executive summary from the completed scratch file.
@@ -127,7 +211,7 @@ func (r *Runner) Run(ctx context.Context, cfg Config) (ReviewResult, error) {
 		_ = r.memory.LogSession(ctx, cfg.RepoPath, cfg.ModelAlias, summary)
 	}
 
-	return ReviewResult{
+	result := ReviewResult{
 		RepoPath:   cfg.RepoPath,
 		Model:      cfg.ModelAlias,
 		Groups:     groups,
@@ -135,7 +219,16 @@ func (r *Runner) Run(ctx context.Context, cfg Config) (ReviewResult, error) {
 		Summary:    summary,
 		StartedAt:  startedAt,
 		FinishedAt: time.Now(),
-	}, nil
+	}
+
+	// Write report to OutPath when configured.
+	if cfg.OutPath != "" {
+		if writeErr := os.WriteFile(cfg.OutPath, []byte(summary), 0o644); writeErr != nil {
+			slog.Warn("write report to OutPath failed", "error", writeErr, "path", cfg.OutPath)
+		}
+	}
+
+	return result, nil
 }
 
 // pendingGroups drains NextPending to build the slice of groups for resume.
