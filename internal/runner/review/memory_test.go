@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -59,10 +60,10 @@ type stubCall struct {
 
 type stubCallRecord struct {
 	method string
-	params any
+	params map[string]any
 }
 
-func (s *stubCall) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
+func (s *stubCall) call(ctx context.Context, method string, params map[string]any) (json.RawMessage, error) {
 	s.calls = append(s.calls, stubCallRecord{method: method, params: params})
 	if s.err != nil {
 		return nil, s.err
@@ -256,7 +257,7 @@ func TestMemPalaceMemory_StoreFindings_CheckDuplicateCalledBeforeKGAdd(t *testin
 		"mcp__mempalace__mempalace_check_duplicate": buildDuplicateResponse(0.1),
 	}
 
-	recordingCall := func(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	recordingCall := func(ctx context.Context, method string, params map[string]any) (json.RawMessage, error) {
 		callOrder = append(callOrder, method)
 		return stub.call(ctx, method, params)
 	}
@@ -305,5 +306,23 @@ func TestMemPalaceMemory_LogSession_DiaryWriteAndKGAddCalled(t *testing.T) {
 	}
 	if !stub.hasMethod("mcp__mempalace__mempalace_kg_add") {
 		t.Error("kg_add (last_reviewed) was not called")
+	}
+}
+
+// TestSocketCall_DialFailure verifies that socketCall returns a wrapped error
+// (not a panic) when the socket path does not exist.
+func TestSocketCall_DialFailure(t *testing.T) {
+	t.Parallel()
+
+	fn := socketCall("/tmp/milliways-nonexistent-socket-test.sock")
+	_, err := fn(context.Background(), "mcp__mempalace__mempalace_kg_query", map[string]any{
+		"entity":    "/repo",
+		"direction": "outgoing",
+	})
+	if err == nil {
+		t.Fatal("socketCall: expected error for bad socket path, got nil")
+	}
+	if !strings.Contains(err.Error(), "dial") {
+		t.Errorf("socketCall: expected error to mention 'dial', got: %v", err)
 	}
 }

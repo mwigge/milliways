@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mwigge/milliways/internal/runner/review"
 )
 
 func TestBuildHFGGUFURL(t *testing.T) {
@@ -742,4 +745,59 @@ func TestRunLocal_DefaultModel_UpdatesLauncher(t *testing.T) {
 	if !strings.Contains(stdout.String(), "mymodel") {
 		t.Errorf("stdout = %q, want it to mention the alias", stdout.String())
 	}
+}
+
+// ── review-code flag tests ─────────────────────────────────────────────────────
+
+// TestRunLocalReviewCode_GitCommitFlag verifies that --git-commit is parsed and
+// forwarded to review.Config.GitCommit.
+func TestRunLocalReviewCode_GitCommitFlag(t *testing.T) {
+	repoDir := t.TempDir()
+
+	var captured review.Config
+	orig := reviewNewFn
+	reviewNewFn = func(cfg review.Config) (reviewRunner, error) {
+		captured = cfg
+		return &stubReviewRunner{}, nil
+	}
+	t.Cleanup(func() { reviewNewFn = orig })
+
+	var stdout, stderr bytes.Buffer
+	code := runLocalReviewCode([]string{"--git-commit", "--no-memory", repoDir}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if !captured.GitCommit {
+		t.Error("Config.GitCommit = false, want true when --git-commit is passed")
+	}
+}
+
+// TestRunLocalReviewCode_LintFlag verifies that --lint is parsed and forwarded
+// to review.Config.LintAfterEdit.
+func TestRunLocalReviewCode_LintFlag(t *testing.T) {
+	repoDir := t.TempDir()
+
+	var captured review.Config
+	orig := reviewNewFn
+	reviewNewFn = func(cfg review.Config) (reviewRunner, error) {
+		captured = cfg
+		return &stubReviewRunner{}, nil
+	}
+	t.Cleanup(func() { reviewNewFn = orig })
+
+	var stdout, stderr bytes.Buffer
+	code := runLocalReviewCode([]string{"--lint", "--no-memory", repoDir}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if !captured.LintAfterEdit {
+		t.Error("Config.LintAfterEdit = false, want true when --lint is passed")
+	}
+}
+
+// stubReviewRunner is a test double for the Runner that returns empty results.
+type stubReviewRunner struct{}
+
+func (s *stubReviewRunner) Run(_ context.Context, _ review.Config) (review.ReviewResult, error) {
+	return review.ReviewResult{}, nil
 }
