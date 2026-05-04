@@ -135,7 +135,7 @@ func printLocalUsage(w io.Writer) {
 	fmt.Fprintln(w, "  server-port                                     print the port number from MILLIWAYS_LOCAL_ENDPOINT")
 	fmt.Fprintln(w, "  server-uninstall [--yes]                        stop server, remove service files and launcher")
 	fmt.Fprintln(w, "  default-model <alias>                           set the default model in the launcher and local.env")
-	fmt.Fprintln(w, "  review-code <path> [--model A] [--out F] [--resume] [--no-memory]")
+	fmt.Fprintln(w, "  review-code <path> [--model A] [--out F] [--resume] [--no-memory] [--git-commit] [--lint]")
 	fmt.Fprintln(w, "                                                  review a repository with the loaded local model")
 	fmt.Fprintln(w, "")
 	fmt.Fprintln(w, "Endpoint defaults to http://localhost:8765/v1; override with MILLIWAYS_LOCAL_ENDPOINT.")

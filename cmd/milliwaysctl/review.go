@@ -13,6 +13,17 @@ import (
 	"github.com/mwigge/milliways/internal/runner/review"
 )
 
+// reviewRunner is the interface satisfied by *review.Runner, extracted to allow
+// test injection via reviewNewFn.
+type reviewRunner interface {
+	Run(ctx context.Context, cfg review.Config) (review.ReviewResult, error)
+}
+
+// reviewNewFn constructs a reviewRunner from a Config. Overridden in tests.
+var reviewNewFn = func(cfg review.Config) (reviewRunner, error) {
+	return review.New(cfg)
+}
+
 // runLocalReviewCode implements `milliwaysctl local review-code`.
 func runLocalReviewCode(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("review-code", flag.ContinueOnError)
@@ -22,6 +33,8 @@ func runLocalReviewCode(args []string, stdout, stderr io.Writer) int {
 	out := fs.String("out", "", "write final report to file (default: stdout)")
 	resume := fs.Bool("resume", false, "continue from an existing scratch file")
 	noMemory := fs.Bool("no-memory", false, "skip MemPalace read/write")
+	gitCommit := fs.Bool("git-commit", false, "auto-commit after each group that produces file edits")
+	lintAfter := fs.Bool("lint", false, "run build/tests after edits and add failures to findings")
 
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -45,16 +58,18 @@ func runLocalReviewCode(args []string, stdout, stderr io.Writer) int {
 	socketPath := defaultSocket()
 
 	cfg := review.Config{
-		RepoPath:   repoPath,
-		Endpoint:   endpoint,
-		ModelAlias: *model,
-		OutPath:    *out,
-		Resume:     *resume,
-		NoMemory:   *noMemory,
-		SocketPath: socketPath,
+		RepoPath:      repoPath,
+		Endpoint:      endpoint,
+		ModelAlias:    *model,
+		OutPath:       *out,
+		Resume:        *resume,
+		NoMemory:      *noMemory,
+		SocketPath:    socketPath,
+		GitCommit:     *gitCommit,
+		LintAfterEdit: *lintAfter,
 	}
 
-	runner, err := review.New(cfg)
+	runner, err := reviewNewFn(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "review-code: %v\n", err)
 		return 1
