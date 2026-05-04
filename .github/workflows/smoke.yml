@@ -1,0 +1,35 @@
+name: smoke
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - 'internal/runner/review/**'
+      - 'cmd/milliwaysctl/**'
+      - 'tests/smoke/**'
+  pull_request:
+    paths:
+      - 'internal/runner/review/**'
+
+jobs:
+  smoke-ubuntu:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.26' }
+      - name: Run smoke tests (native Ubuntu)
+        run: bash tests/smoke/run_smoke.sh --no-docker
+
+  smoke-docker-ubuntu:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run Ubuntu container smoke test
+        run: bash tests/smoke/run_smoke.sh --docker ubuntu
+
+  smoke-docker-fedora:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run Fedora container smoke test
+        run: bash tests/smoke/run_smoke.sh --docker fedora

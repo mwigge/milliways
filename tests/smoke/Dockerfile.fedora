@@ -1,0 +1,10 @@
+FROM fedora:39
+
+RUN dnf install -y golang git ca-certificates && dnf clean all
+
+WORKDIR /app
+COPY . .
+
+RUN go build -o /usr/local/bin/milliwaysctl ./cmd/milliwaysctl/
+
+CMD ["bash", "tests/smoke/run_smoke.sh", "--no-docker"]
