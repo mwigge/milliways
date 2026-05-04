@@ -39,6 +39,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -245,10 +246,18 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		maxTokens:   maxTokens,
 	}
 
+	ctxTokens := 16384 // Devstral default
+	if v := strings.TrimSpace(os.Getenv("MILLIWAYS_LOCAL_CTX_TOKENS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			ctxTokens = n
+		}
+	}
+
 	result, err := RunAgenticLoop(ctx, client, registry, &messages, LoopOptions{
 		SessionID:   AgentIDLocal,
 		Logger:      slog.Default(),
 		XMLToolMode: xmlMode,
+		Compaction:  CompactionOptions{CtxTokens: ctxTokens},
 	})
 	if err != nil {
 		observeError(metrics, AgentIDLocal)

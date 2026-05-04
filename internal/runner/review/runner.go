@@ -33,6 +33,7 @@ type Runner struct {
 	detector Detector
 	planner  Planner
 	router   ModelRouter
+	cg       CodeGraphClient  // optional; nil disables CodeGraph context injection
 	scratch  ScratchWriter
 	memory   Memory // nil = no memory operations
 	reducer  Reducer
@@ -49,9 +50,10 @@ func New(cfg Config) (*Runner, error) {
 	}
 
 	router := NewModelRouter(endpoint)
+	cg := NewCodeGraphClient(cfg.SocketPath)
 
 	// Route now to get caps for the planner; re-route during Run.
-	client, caps, err := router.Route(cfg.ModelAlias)
+	client, caps, err := router.RouteWithCG(cfg.ModelAlias, cg)
 	if err != nil {
 		return nil, fmt.Errorf("new runner route %s: %w", cfg.ModelAlias, err)
 	}
@@ -88,8 +90,9 @@ func New(cfg Config) (*Runner, error) {
 
 	return &Runner{
 		detector: NewDetector(),
-		planner:  NewPlanner(NewCodeGraphClient(cfg.SocketPath)),
+		planner:  NewPlanner(cg),
 		router:   router,
+		cg:       cg,
 		scratch:  NewScratchWriter(cfg.RepoPath),
 		memory:   mem,
 		reducer:  NewReducer(summarise),
@@ -132,7 +135,7 @@ func (r *Runner) Run(ctx context.Context, cfg Config) (ReviewResult, error) {
 	}
 
 	// Route the model first — fail fast if alias is not available.
-	client, caps, err := r.router.Route(cfg.ModelAlias)
+	client, caps, err := r.router.RouteWithCG(cfg.ModelAlias, r.cg)
 	if err != nil {
 		return ReviewResult{}, fmt.Errorf("route model %s: %w", cfg.ModelAlias, err)
 	}

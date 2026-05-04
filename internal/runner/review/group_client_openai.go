@@ -17,7 +17,8 @@ type OpenAIGroupClient struct {
 	Endpoint     string
 	Model        string
 	HTTP         *http.Client
-	MaxFileLines int // large file threshold; 0 uses defaultMaxFileLines
+	MaxFileLines int             // large file threshold; 0 uses defaultMaxFileLines
+	CG           CodeGraphClient // optional; nil disables CodeGraph context injection
 }
 
 // NewOpenAIGroupClient returns a GroupClient for OpenAI-format models (Hermes-3, Llama-3.x).
@@ -27,6 +28,18 @@ func NewOpenAIGroupClient(endpoint, model string) GroupClient {
 		Model:        model,
 		HTTP:         &http.Client{},
 		MaxFileLines: defaultMaxFileLines,
+	}
+}
+
+// NewOpenAIGroupClientWithCG returns a GroupClient with an optional CodeGraph client
+// for structural context injection. Pass nil for cg to disable context injection.
+func NewOpenAIGroupClientWithCG(endpoint, model string, cg CodeGraphClient) GroupClient {
+	return OpenAIGroupClient{
+		Endpoint:     endpoint,
+		Model:        model,
+		HTTP:         &http.Client{},
+		MaxFileLines: defaultMaxFileLines,
+		CG:           cg,
 	}
 }
 
@@ -42,7 +55,8 @@ func (c OpenAIGroupClient) ReviewGroup(ctx context.Context, group Group, prior P
 		return nil, fmt.Errorf("build file context: %w", err)
 	}
 
-	userMsg := buildUserMessage(fileCtx, prior)
+	cgCtx := buildCodeGraphContext(ctx, c.CG, group)
+	userMsg := buildUserMessage(cgCtx, fileCtx, prior)
 
 	payload := chatRequest{
 		Model:  c.modelName(),

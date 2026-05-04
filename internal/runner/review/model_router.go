@@ -27,8 +27,15 @@ func NewModelRouter(endpoint string) ModelRouter {
 }
 
 // Route confirms alias is listed by the server and returns the appropriate
-// GroupClient and ModelCaps.
+// GroupClient and ModelCaps. Equivalent to RouteWithCG(alias, nil).
 func (r *HTTPModelRouter) Route(alias string) (GroupClient, ModelCaps, error) {
+	return r.RouteWithCG(alias, nil)
+}
+
+// RouteWithCG confirms alias is listed by the server and returns the appropriate
+// GroupClient wired with the optional CodeGraph client cg. Pass nil to disable
+// CodeGraph context injection.
+func (r *HTTPModelRouter) RouteWithCG(alias string, cg CodeGraphClient) (GroupClient, ModelCaps, error) {
 	if err := r.confirmModel(alias); err != nil {
 		return nil, ModelCaps{}, err
 	}
@@ -39,9 +46,9 @@ func (r *HTTPModelRouter) Route(alias string) (GroupClient, ModelCaps, error) {
 	var client GroupClient
 	switch format {
 	case FormatXML, FormatQwenXML:
-		client = NewXMLGroupClient(r.endpoint, alias)
+		client = XMLGroupClient{Endpoint: r.endpoint, Model: alias, HTTP: r.http, MaxFileLines: defaultMaxFileLines, CG: cg}
 	default:
-		client = OpenAIGroupClient{Endpoint: r.endpoint, Model: alias, HTTP: r.http}
+		client = OpenAIGroupClient{Endpoint: r.endpoint, Model: alias, HTTP: r.http, MaxFileLines: defaultMaxFileLines, CG: cg}
 	}
 	return client, caps, nil
 }

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -214,6 +215,58 @@ func doChat(ctx context.Context, client *http.Client, endpoint string, payload c
 		return "", fmt.Errorf("no choices in response")
 	}
 	return chatResp.Choices[0].Message.Content, nil
+}
+
+// buildCodeGraphContext fetches caller/callee/impact context from CodeGraph
+// for the files in the group. Returns an empty string when cg is nil or not indexed.
+func buildCodeGraphContext(ctx context.Context, cg CodeGraphClient, group Group) string {
+	if cg == nil {
+		return ""
+	}
+
+	// Call Files to verify CodeGraph has data for this directory (best-effort).
+	_, err := cg.Files(ctx, group.Dir)
+	if err != nil {
+		return ""
+	}
+
+	// Collect up to 3 files with their impact scores.
+	type fileScore struct {
+		name  string
+		score float64
+	}
+
+	limit := len(group.Files)
+	if limit > 3 {
+		limit = 3
+	}
+
+	var scored []fileScore
+	for _, f := range group.Files[:limit] {
+		base := filepath.Base(f)
+		score, impErr := cg.Impact(ctx, base, 1)
+		if impErr != nil {
+			continue
+		}
+		scored = append(scored, fileScore{name: base, score: score})
+	}
+
+	if len(scored) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## CodeGraph context for ")
+	sb.WriteString(group.Dir)
+	sb.WriteString("\n")
+	for _, fs := range scored {
+		centrality := "low-centrality"
+		if fs.score >= 0.5 {
+			centrality = "high-centrality"
+		}
+		sb.WriteString(fmt.Sprintf("- %s: impact score %.2f (%s)\n", fs.name, fs.score, centrality))
+	}
+	return sb.String()
 }
 
 // buildPriorContextBlock formats prior findings for injection into the user message.

@@ -20,7 +20,8 @@ type XMLGroupClient struct {
 	Endpoint     string
 	Model        string
 	HTTP         *http.Client
-	MaxFileLines int // large file threshold; 0 uses defaultMaxFileLines
+	MaxFileLines int             // large file threshold; 0 uses defaultMaxFileLines
+	CG           CodeGraphClient // optional; nil disables CodeGraph context injection
 }
 
 // NewXMLGroupClient returns a GroupClient for XML-format models (Devstral, Mistral, Qwen).
@@ -30,6 +31,18 @@ func NewXMLGroupClient(endpoint, model string) GroupClient {
 		Model:        model,
 		HTTP:         &http.Client{},
 		MaxFileLines: defaultMaxFileLines,
+	}
+}
+
+// NewXMLGroupClientWithCG returns a GroupClient with an optional CodeGraph client
+// for structural context injection. Pass nil for cg to disable context injection.
+func NewXMLGroupClientWithCG(endpoint, model string, cg CodeGraphClient) GroupClient {
+	return XMLGroupClient{
+		Endpoint:     endpoint,
+		Model:        model,
+		HTTP:         &http.Client{},
+		MaxFileLines: defaultMaxFileLines,
+		CG:           cg,
 	}
 }
 
@@ -45,7 +58,8 @@ func (c XMLGroupClient) ReviewGroup(ctx context.Context, group Group, prior Prio
 		return nil, fmt.Errorf("build file context: %w", err)
 	}
 
-	userMsg := buildUserMessage(fileCtx, prior)
+	cgCtx := buildCodeGraphContext(ctx, c.CG, group)
+	userMsg := buildUserMessage(cgCtx, fileCtx, prior)
 
 	payload := chatRequest{
 		Model:  c.modelName(),
@@ -80,9 +94,14 @@ func (c XMLGroupClient) modelName() string {
 	return c.Model
 }
 
-// buildUserMessage constructs the user-turn content from file context and prior findings.
-func buildUserMessage(fileCtx string, prior PriorContext) string {
+// buildUserMessage constructs the user-turn content from optional CodeGraph
+// context, file context, and prior findings.
+func buildUserMessage(cgCtx, fileCtx string, prior PriorContext) string {
 	var sb strings.Builder
+	if cgCtx != "" {
+		sb.WriteString(cgCtx)
+		sb.WriteString("\n")
+	}
 	if block := buildPriorContextBlock(prior); block != "" {
 		sb.WriteString(block)
 		sb.WriteString("\n")
