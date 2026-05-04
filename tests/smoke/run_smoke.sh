@@ -9,10 +9,14 @@ set -euo pipefail
 # Environment variables:
 #   STUB_PORT   Port for the stub llama-server (default: 8765)
 
-STUB_PORT="${STUB_PORT:-8765}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 STUB_PID=""
+
+# Pick a free port automatically unless STUB_PORT is explicitly set.
+if [[ -z "${STUB_PORT:-}" ]]; then
+  STUB_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()" 2>/dev/null || echo 18765)
+fi
 
 cleanup() {
   if [[ -n "${STUB_PID}" ]]; then
