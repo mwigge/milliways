@@ -644,6 +644,8 @@ exec %q \
   --host %q \
   --port %q \
   --ctx-size %q \
+  --n-gpu-layers 99 \
+  --temp 0.15 \
   --jinja \
   -fa on
 `, llamaBin, modelPath, alias, host, port, ctx)

@@ -326,8 +326,12 @@ func TestRunLocal_SetupModelBadQuant(t *testing.T) {
 func TestRunLocal_SetupModelDownloadAndRegister(t *testing.T) {
 	modelDir := t.TempDir()
 	cfgDir := t.TempDir()
+	homeDir := t.TempDir()
 	t.Setenv("MODEL_DIR", modelDir)
 	t.Setenv("XDG_CONFIG_HOME", cfgDir)
+	orig := userHomeDirFn
+	userHomeDirFn = func() (string, error) { return homeDir, nil }
+	t.Cleanup(func() { userHomeDirFn = orig })
 
 	// defaultGGUFDest("owner/repo-GGUF", "Q4_K_M") = filepath.Join(modelDir, "repo-GGUF-Q4_K_M.gguf")
 	ggufPath := filepath.Join(modelDir, "repo-GGUF-Q4_K_M.gguf")
