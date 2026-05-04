@@ -153,3 +153,4 @@ type CodeGraphFile struct {
 	SymbolCount int
 	Language    string
 }
+
