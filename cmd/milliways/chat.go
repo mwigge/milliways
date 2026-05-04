@@ -2469,19 +2469,20 @@ type loginSpec struct {
 	// An interactive key prompt is shown and the key is injected live
 	// into the daemon via config.setenv (no restart needed).
 	envKey string
-	// cliSteps lists manual steps for CLI-auth runners (claude, codex,
-	// copilot, gemini) that handle auth in their own OAuth/browser flow.
+	// cliCmd is set for CLI-OAuth runners; /login runs this command directly.
+	cliCmd []string
+	// cliSteps lists manual steps shown when cliCmd is nil.
 	cliSteps []string
 }
 
 var loginSpecs = map[string]loginSpec{
-	"claude":  {cliSteps: []string{"run `claude` once to authenticate (browser flow)"}},
-	"codex":   {cliSteps: []string{"run `codex login` (browser flow) or set OPENAI_API_KEY"}},
-	"copilot": {cliSteps: []string{"run `gh auth login` (browser flow)"}},
-	"gemini":  {cliSteps: []string{"run `gemini auth login` (browser flow) or set GEMINI_API_KEY"}},
+	"claude":  {cliCmd: []string{"claude", "auth", "login"}},
+	"codex":   {cliCmd: []string{"codex", "login"}},
+	"copilot": {cliCmd: []string{"gh", "auth", "login"}},
+	"gemini":  {cliCmd: []string{"gemini"}},
 	"minimax": {envKey: "MINIMAX_API_KEY"},
 	"local":   {cliSteps: []string{"run /install-local-server, or set MILLIWAYS_LOCAL_ENDPOINT"}},
-	"pool":    {cliSteps: []string{"run `pool login` to authenticate with Poolside"}},
+	"pool":    {cliCmd: []string{"pool", "login"}},
 }
 
 // printLogin handles /login [agent]. For API-key runners it prompts
@@ -2496,9 +2497,12 @@ func (l *chatLoop) printLogin(agent string) {
 			if !ok {
 				continue
 			}
-			if spec.envKey != "" {
+			switch {
+			case spec.envKey != "":
 				fmt.Fprintf(l.out, "  %-8s  → /login %s  (API key prompt)\n", name, name)
-			} else {
+			case len(spec.cliCmd) > 0:
+				fmt.Fprintf(l.out, "  %-8s  → /login %s  (runs: %s)\n", name, name, strings.Join(spec.cliCmd, " "))
+			case len(spec.cliSteps) > 0:
 				fmt.Fprintf(l.out, "  %-8s  → %s\n", name, spec.cliSteps[0])
 			}
 		}
@@ -2511,7 +2515,21 @@ func (l *chatLoop) printLogin(agent string) {
 		return
 	}
 
-	// CLI-auth runner — can't prompt interactively, show steps.
+	// CLI-OAuth runner — run the auth command directly in the foreground.
+	if len(spec.cliCmd) > 0 {
+		cmd := exec.Command(spec.cliCmd[0], spec.cliCmd[1:]...)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintln(l.errw, "✗ auth failed: "+err.Error())
+		} else {
+			fmt.Fprintf(l.out, "✓ %s authenticated — ready\n", agent)
+		}
+		return
+	}
+
+	// CLI-auth runner — show manual steps.
 	if spec.envKey == "" {
 		fmt.Fprintf(l.out, "%s auth:\n", agent)
 		for _, s := range spec.cliSteps {
