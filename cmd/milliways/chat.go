@@ -253,6 +253,7 @@ func buildCompleter(agentID string) readline.AutoCompleter {
 	items = append(items,
 		readline.PcItem("/switch", switchRunners...),
 		readline.PcItem("/login", switchRunners...),
+		readline.PcItem("/briefing"),
 		readline.PcItem("/model"),
 		readline.PcItem("/agents"),
 		readline.PcItem("/quota"),
@@ -569,6 +570,11 @@ type chatLoop struct {
 	// recent turns to bound briefing size and memory.
 	turnMu  sync.Mutex
 	turnLog []chatTurn
+
+	// lastBriefing holds the full briefing text sent on the most recent
+	// /switch so the user can re-read it with /briefing.
+	lastBriefingFrom string
+	lastBriefing     string
 	// pendingAssistant accumulates streamed deltas for the in-flight
 	// assistant response. Drained into turnLog on chunk_end.
 	pendingAssistant strings.Builder
@@ -932,6 +938,8 @@ func (l *chatLoop) handleSlash(line string) {
 			agent = l.sess.agentID
 		}
 		l.printLogin(agent)
+	case "briefing":
+		l.printLastBriefing()
 	case "quota":
 		l.printQuota()
 	case "ring":
@@ -1124,7 +1132,10 @@ func (l *chatLoop) switchAgent(newID string) {
 	if fromID != "" && fromID != newID {
 		if briefing, ok := l.buildBriefing(fromID, newID); ok {
 			m, ep := runnerModelInfo(newID)
-			fmt.Fprintf(l.out, "→ %s  model: %s  (%s)  [briefing from %s]\n", newID, m, ep, fromID)
+			fmt.Fprintf(l.out, "→ %s  model: %s  (%s)\n", newID, m, ep)
+			l.printBriefingBlock(l.snapshotTurns(), fromID)
+			l.lastBriefingFrom = fromID
+			l.lastBriefing = briefing
 			if err := newSess.send(briefing); err != nil {
 				fmt.Fprintln(l.errw, "warn: send briefing: "+err.Error())
 			}
@@ -1312,6 +1323,45 @@ func renderOneTurnTruncated(t chatTurn, max int) string {
 		body = body[:bodyBudget]
 	}
 	return header + body + footer
+}
+
+// printBriefingBlock renders the handed-off turns as a compact sidebar block
+// so the user can see exactly what context was passed to the incoming runner.
+func (l *chatLoop) printBriefingBlock(turns []chatTurn, fromID string) {
+	if len(turns) == 0 {
+		return
+	}
+	noun := "turn"
+	if len(turns) != 1 {
+		noun = "turns"
+	}
+	fmt.Fprintf(l.out, "  ╷ context from %s (%d %s)\n", fromID, len(turns), noun)
+	for _, t := range turns {
+		role := "user"
+		if t.Role == "assistant" {
+			role = t.AgentID
+		}
+		line := strings.ReplaceAll(strings.TrimSpace(t.Text), "\n", " ")
+		if len(line) > 90 {
+			line = line[:87] + "…"
+		}
+		fmt.Fprintf(l.out, "  │ [%s] %s\n", role, line)
+	}
+	fmt.Fprintf(l.out, "  ╵ /briefing to re-read full context\n")
+}
+
+// printLastBriefing shows the full briefing text sent on the most recent
+// /switch so the user can verify what context the new runner received.
+func (l *chatLoop) printLastBriefing() {
+	if l.lastBriefing == "" {
+		fmt.Fprintln(l.out, "  (no briefing yet — switch runners first)")
+		return
+	}
+	fmt.Fprintf(l.out, "  ╷ full briefing sent to active runner (from %s)\n", l.lastBriefingFrom)
+	for _, line := range strings.Split(strings.TrimRight(l.lastBriefing, "\n"), "\n") {
+		fmt.Fprintf(l.out, "  │ %s\n", line)
+	}
+	fmt.Fprintf(l.out, "  ╵\n")
 }
 
 // handleBang runs an arbitrary shell command via $SHELL -c "<cmd>".
@@ -2243,6 +2293,7 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /quota                        current quota snapshot")
 	fmt.Fprintln(l.out, "  /metrics                      live metrics dashboard (token usage, costs, ops)")
 	fmt.Fprintln(l.out, "  /switch <runner>              same as /<runner>")
+	fmt.Fprintln(l.out, "  /briefing                     re-show the full context handed off on last /switch")
 	fmt.Fprintln(l.out, "  /login [client]               auth setup — API key prompt or CLI steps")
 	fmt.Fprintln(l.out, "  /exit                         exit (Ctrl+D also works)")
 	fmt.Fprintln(l.out, "  !<cmd>                        run a shell command inline")
