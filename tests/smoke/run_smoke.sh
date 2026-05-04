@@ -21,6 +21,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# --- assertion helpers ---
+
+assert_file_nonempty() {
+  if [[ ! -s "$1" ]]; then
+    echo "FAIL: $1 is empty or missing" >&2
+    exit 1
+  fi
+}
+
+assert_contains() {
+  if ! grep -q "$2" "$1"; then
+    echo "FAIL: '$2' not found in $1" >&2
+    echo "--- file contents ---" >&2
+    cat "$1" >&2
+    exit 1
+  fi
+}
+
 run_native() {
   echo "[smoke] starting stub llama-server on port ${STUB_PORT} …"
   STUB_PORT="${STUB_PORT}" go run "${REPO_ROOT}/tests/smoke/stub_llama_server.go" &
@@ -55,21 +73,33 @@ run_native() {
     -out "${out_file}" \
     "${fixture_repo}"
 
-  # Assert: output file exists and is non-empty.
-  if [[ ! -s "${out_file}" ]]; then
-    echo "[smoke FAIL] ${out_file} does not exist or is empty" >&2
-    exit 1
-  fi
+  assert_file_nonempty "${out_file}"
   echo "[smoke] output file present and non-empty: OK"
 
-  # Assert: output contains the seeded finding from the stub.
-  if ! grep -q "smoke test finding" "${out_file}"; then
-    echo "[smoke FAIL] 'smoke test finding' not found in ${out_file}" >&2
-    echo "--- file contents ---" >&2
-    cat "${out_file}" >&2
-    exit 1
-  fi
+  assert_contains "${out_file}" "smoke test finding"
   echo "[smoke] seeded finding present in report: OK"
+
+  echo "[smoke] testing Python repo..."
+  rm -f /tmp/smoke_python_review.md
+  rm -f /tmp/review_python-repo.md
+  /tmp/milliwaysctl_smoke local review-code \
+    -model devstral-small -no-memory \
+    -out /tmp/smoke_python_review.md \
+    "${REPO_ROOT}/tests/smoke/fixtures/python-repo"
+  assert_file_nonempty /tmp/smoke_python_review.md
+  assert_contains /tmp/smoke_python_review.md "smoke test finding"
+  echo "[smoke] Python repo: OK"
+
+  echo "[smoke] testing mixed Go+YAML repo..."
+  rm -f /tmp/smoke_mixed_review.md
+  rm -f /tmp/review_mixed-go-yaml.md
+  /tmp/milliwaysctl_smoke local review-code \
+    -model devstral-small -no-memory \
+    -out /tmp/smoke_mixed_review.md \
+    "${REPO_ROOT}/tests/smoke/fixtures/mixed-go-yaml"
+  assert_file_nonempty /tmp/smoke_mixed_review.md
+  assert_contains /tmp/smoke_mixed_review.md "smoke test finding"
+  echo "[smoke] mixed Go+YAML repo: OK"
 
   echo "PASS: smoke test (native)"
 }

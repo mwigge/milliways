@@ -1,0 +1,11 @@
+name: ci
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run with secret in env
+        env:
+          API_KEY: hardcoded-secret-value  # BUG: hardcoded secret — seeded HIGH finding
+        run: echo "building"
