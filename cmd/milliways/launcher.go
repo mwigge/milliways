@@ -301,15 +301,23 @@ func runCockpit(ctx context.Context, _ []string) error {
 	// TERM_PROGRAM which varies across WezTerm forks. wezterm CLI must also
 	// be findable on PATH. Skip deck if MILLIWAYS_NO_DECK=1 is set.
 	weztermPaneID := os.Getenv("WEZTERM_PANE")
-	_, weztermCLIErr := exec.LookPath("wezterm")
+	weztermCLIPath, weztermCLIErr := exec.LookPath("wezterm")
 	deckDisabled := os.Getenv("MILLIWAYS_NO_DECK") == "1"
 	if weztermPaneID != "" && weztermCLIErr == nil && !deckDisabled {
 		if err := runDeck(ctx, socketPath); err != nil {
-			// Deck launch failed — fall through to single chat gracefully.
 			fmt.Fprintf(os.Stderr, "milliways: deck launch failed (%v), falling back to single chat\n", err)
 		} else {
-			// Deck launched — this pane becomes the main chat REPL.
 			return runChat(ctx)
+		}
+	} else if !deckDisabled {
+		// Show one-line reason so users can diagnose or set MILLIWAYS_NO_DECK=1.
+		switch {
+		case weztermPaneID == "" && weztermCLIErr != nil:
+			fmt.Fprintf(os.Stderr, "  deck: WEZTERM_PANE not set, wezterm CLI not found — single pane mode\n")
+		case weztermPaneID == "":
+			fmt.Fprintf(os.Stderr, "  deck: WEZTERM_PANE not set (wezterm CLI: %s) — single pane mode\n", weztermCLIPath)
+		case weztermCLIErr != nil:
+			fmt.Fprintf(os.Stderr, "  deck: wezterm CLI not found (WEZTERM_PANE=%s) — single pane mode\n", weztermPaneID)
 		}
 	}
 
