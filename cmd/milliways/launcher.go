@@ -39,6 +39,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mwigge/milliways/internal/parallel"
 	"github.com/mwigge/milliways/internal/rpc"
 )
 
@@ -268,10 +269,10 @@ func daemonSocket() string { return filepath.Join(stateDir(), "sock") }
 // it spawns the daemon detached.
 func daemonLogPath() string { return filepath.Join(stateDir(), "milliwaysd.log") }
 
-// runCockpit ensures milliwaysd is up, then drops into the chat REPL
-// in the current TTY. Despite the legacy name (kept so external tests
-// keep building), this no longer exec's `milliways-term` — see the
-// package comment for the v0.7.1 crash-cascade story.
+// runCockpit ensures milliwaysd is up, then either launches the full
+// parallel panel deck (when running inside WezTerm) or falls back to the
+// single-pane chat REPL. The deck matches the agent-deck home dashboard:
+// left navigator, per-provider content panes, observability header on top.
 func runCockpit(ctx context.Context, _ []string) error {
 	state := stateDir()
 	if err := os.MkdirAll(state, 0o700); err != nil {
@@ -296,7 +297,90 @@ func runCockpit(ctx context.Context, _ []string) error {
 		}
 	}
 
+	// In WezTerm: launch the full panel deck (home-hero-dashboard style).
+	// The calling pane stays as the main chat; the deck opens alongside it.
+	if os.Getenv("TERM_PROGRAM") == "WezTerm" {
+		if err := runDeck(ctx, socketPath); err != nil {
+			// Deck launch failed — fall through to single chat gracefully.
+			fmt.Fprintf(os.Stderr, "milliways: deck launch failed (%v), falling back to single chat\n", err)
+		} else {
+			// Deck launched — this pane becomes the main chat REPL.
+			return runChat(ctx)
+		}
+	}
+
 	return runChat(ctx)
+}
+
+// runDeck dispatches to all available pool providers and opens the WezTerm
+// parallel panel layout alongside the calling pane. The calling pane remains
+// as the main milliways chat session (/help, /parallel, /scan etc. still work).
+func runDeck(ctx context.Context, socketPath string) error {
+	c, err := rpc.Dial(socketPath)
+	if err != nil {
+		return fmt.Errorf("dial daemon: %w", err)
+	}
+	defer func() { _ = c.Close() }()
+
+	// Discover available providers from agent.list.
+	var agentList []struct {
+		ID         string `json:"id"`
+		Available  bool   `json:"available"`
+		AuthStatus string `json:"auth_status"`
+	}
+	if err := c.Call("agent.list", nil, &agentList); err != nil {
+		return fmt.Errorf("agent.list: %w", err)
+	}
+	var providers []string
+	for _, a := range agentList {
+		// Include all agents that have auth configured (ok or unknown),
+		// not ones with clearly missing credentials. Pool is skipped since
+		// it would duplicate the individual providers.
+		if a.ID != "pool" && a.AuthStatus != "missing_credentials" {
+			providers = append(providers, a.ID)
+		}
+	}
+	if len(providers) == 0 {
+		return fmt.Errorf("no providers available — use /login to configure credentials")
+	}
+
+	// Dispatch the startup group — empty prompt, sessions open ready for input.
+	var dispatchResult struct {
+		GroupID string `json:"group_id"`
+		Slots   []struct {
+			Handle   int64  `json:"handle"`
+			Provider string `json:"provider"`
+		} `json:"slots"`
+		Skipped []struct {
+			Provider string `json:"provider"`
+			Reason   string `json:"reason"`
+		} `json:"skipped,omitempty"`
+	}
+	if err := c.Call("parallel.dispatch", map[string]any{
+		"prompt":    "[deck startup]",
+		"providers": providers,
+	}, &dispatchResult); err != nil {
+		return fmt.Errorf("parallel.dispatch: %w", err)
+	}
+
+	if len(dispatchResult.Slots) == 0 {
+		return fmt.Errorf("no slots opened")
+	}
+
+	// Build DispatchResult for layout.Launch.
+	result := parallel.DispatchResult{GroupID: dispatchResult.GroupID}
+	for i, s := range dispatchResult.Slots {
+		result.Slots = append(result.Slots, parallel.SlotRecord{
+			SlotN:    i + 1,
+			Handle:   s.Handle,
+			Provider: s.Provider,
+			Status:   parallel.SlotRunning,
+		})
+	}
+
+	// Launch the WezTerm deck — navigator pane + one content pane per slot.
+	// The calling pane (this terminal) stays as the main milliways chat.
+	return parallel.Launch(result, dispatchResult.GroupID)
 }
 
 // startDaemonDetached spawns `milliwaysd` in its own session so it survives
