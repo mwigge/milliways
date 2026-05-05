@@ -64,19 +64,33 @@ func probeClaude(ctx context.Context) AgentInfo {
 		return info
 	}
 	info.Available = true
-	// Auth: ~/.claude/credentials.json or ~/.claude/.credentials.json or
-	// ~/.config/anthropic/auth.json. Presence == probably authenticated.
 	home, _ := os.UserHomeDir()
-	candidates := []string{
+	// v1.x: credentials stored as a JSON file.
+	// v2.x: credentials stored in macOS Keychain (no credential file); auth
+	// is signalled by CLAUDE_CODE_EXECPATH being set (the versioned install
+	// path) or by a non-empty ~/.claude/sessions/ directory.
+	credCandidates := []string{
 		filepath.Join(home, ".claude", "credentials.json"),
 		filepath.Join(home, ".claude", ".credentials.json"),
 		filepath.Join(home, ".config", "anthropic", "auth.json"),
 	}
-	for _, c := range candidates {
+	for _, c := range credCandidates {
 		if _, err := os.Stat(c); err == nil {
 			info.AuthStatus = "ok"
 			return info
 		}
+	}
+	// v2.x Keychain auth: CLAUDE_CODE_EXECPATH is set when the user has
+	// authenticated via `claude auth login`.
+	if os.Getenv("CLAUDE_CODE_EXECPATH") != "" {
+		info.AuthStatus = "ok"
+		return info
+	}
+	// Fallback: sessions dir non-empty means at least one login happened.
+	sessDir := filepath.Join(home, ".claude", "sessions")
+	if entries, err := os.ReadDir(sessDir); err == nil && len(entries) > 0 {
+		info.AuthStatus = "ok"
+		return info
 	}
 	if runOK(ctx, "claude", "--version") {
 		info.AuthStatus = "unknown"
