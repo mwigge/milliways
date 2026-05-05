@@ -115,6 +115,16 @@ One-shot prompt (no UI; just dispatch):
   milliways -j "summarise this in JSON"
   milliways --recipe <name> "<prompt>"
 
+Parallel dispatch — fan same prompt to N providers simultaneously:
+  /parallel review internal/server/          all pool providers, live panes
+  /parallel --providers claude,codex <prompt>
+
+Security scanning:
+  /scan                                      scan workspace for CVEs (requires osv-scanner)
+  milliwaysctl security install-scanner      install osv-scanner
+  milliwaysctl security list                 list active findings
+  milliwaysctl security enable/disable       toggle scanning on/off
+
 Slash command palette — Ctrl+Space then / opens a fuzzy filter:
   /install-local-server         install llama.cpp + default coder model
   /list-local-models            show models the active backend serves
