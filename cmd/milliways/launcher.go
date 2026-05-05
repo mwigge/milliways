@@ -342,7 +342,7 @@ func runDeck(ctx context.Context, socketPath string) error {
 		if callErr := c.Call("agent.list", nil, &agentList); callErr == nil {
 			authOK := make(map[string]bool, len(agentList))
 			for _, a := range agentList {
-				authOK[a.ID] = a.AuthStatus != "missing_credentials"
+				authOK[a.ID] = a.AuthStatus == "ok"
 			}
 			var filtered []string
 			for _, p := range providers {
@@ -375,7 +375,7 @@ func runDeck(ctx context.Context, socketPath string) error {
 	// Tab label is set by the terminal title milliways sets on /switch.
 	for _, provider := range providers {
 		spawnArgs := []string{
-			"cli", "spawn",
+			"cli", "spawn", "--new-tab",
 			"--", "env",
 			"MILLIWAYS_START_PROVIDER=" + provider,
 			milliwaysBin,
