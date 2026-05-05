@@ -33,8 +33,8 @@ func TestNewBuiltInRegistryContainsAllTools(t *testing.T) {
 
 	registry := NewBuiltInRegistry()
 	defs := registry.List()
-	if len(defs) != 7 {
-		t.Fatalf("tool count = %d, want 7", len(defs))
+	if len(defs) != 8 {
+		t.Fatalf("tool count = %d, want 8", len(defs))
 	}
 	for _, name := range []string{"Read", "Write", "Edit", "Grep", "Glob", "Bash", "WebFetch"} {
 		if _, ok := registry.Get(name); !ok {

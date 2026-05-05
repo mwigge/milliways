@@ -18,6 +18,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -157,6 +158,43 @@ func (s *SecurityStore) GetByCVE(cveID string) (SecurityFinding, error) {
 		return SecurityFinding{}, fmt.Errorf("CVE %q not found", cveID)
 	}
 	return findings[0], nil
+}
+
+// MarkResolvedForSource marks all active findings for a given scan_source as
+// resolved UNLESS their "cve_id:package_name" key appears in keepKeys. Called
+// by the runner after each scan to retire stale findings for one lockfile.
+func (s *SecurityStore) MarkResolvedForSource(scanSource string, keepKeys map[string]struct{}) error {
+	rows, err := s.db.Query(`
+		SELECT cve_id, package_name, installed_version, ecosystem
+		FROM mw_security_findings
+		WHERE scan_source = ? AND status = 'active'`, scanSource)
+	if err != nil {
+		return fmt.Errorf("query findings for source: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type row struct{ cveID, pkg, ver, eco string }
+	var toResolve []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.cveID, &r.pkg, &r.ver, &r.eco); err != nil {
+			return fmt.Errorf("scan finding row: %w", err)
+		}
+		key := r.cveID + ":" + r.pkg
+		if _, keep := keepKeys[key]; !keep {
+			toResolve = append(toResolve, r)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, r := range toResolve {
+		if err := s.MarkResolved(r.cveID, r.pkg, r.ver, r.eco); err != nil {
+			slog.Debug("MarkResolvedForSource: skip non-matching", "err", err)
+		}
+	}
+	return nil
 }
 
 // MarkResolved sets a finding's status to "resolved".
