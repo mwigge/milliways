@@ -30,11 +30,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -300,28 +302,65 @@ func runCockpit(ctx context.Context, _ []string) error {
 	// WEZTERM_PANE is set by the mux on every pane — more reliable than
 	// TERM_PROGRAM which varies across WezTerm forks. wezterm CLI must also
 	// be findable on PATH. Skip deck if MILLIWAYS_NO_DECK=1 is set.
-	weztermPaneID := os.Getenv("WEZTERM_PANE")
-	weztermCLIPath, weztermCLIErr := exec.LookPath("wezterm")
 	deckDisabled := os.Getenv("MILLIWAYS_NO_DECK") == "1"
-	if weztermPaneID != "" && weztermCLIErr == nil && !deckDisabled {
-		if err := runDeck(ctx, socketPath); err != nil {
-			fmt.Fprintf(os.Stderr, "milliways: deck launch failed (%v), falling back to single chat\n", err)
-		} else {
-			return runChat(ctx)
+	_, weztermCLIErr := exec.LookPath("wezterm")
+	if weztermCLIErr == nil && !deckDisabled {
+		// WEZTERM_PANE may not be set in WezTerm forks — fall back to TTY detection.
+		rightPaneID := os.Getenv("WEZTERM_PANE")
+		if rightPaneID == "" {
+			rightPaneID = detectWeztermCurrentPaneID()
 		}
-	} else if !deckDisabled {
-		// Show one-line reason so users can diagnose or set MILLIWAYS_NO_DECK=1.
-		switch {
-		case weztermPaneID == "" && weztermCLIErr != nil:
-			fmt.Fprintf(os.Stderr, "  deck: WEZTERM_PANE not set, wezterm CLI not found — single pane mode\n")
-		case weztermPaneID == "":
-			fmt.Fprintf(os.Stderr, "  deck: WEZTERM_PANE not set (wezterm CLI: %s) — single pane mode\n", weztermCLIPath)
-		case weztermCLIErr != nil:
-			fmt.Fprintf(os.Stderr, "  deck: wezterm CLI not found (WEZTERM_PANE=%s) — single pane mode\n", weztermPaneID)
+		if rightPaneID != "" {
+			if err := runDeck(ctx, socketPath, rightPaneID); err != nil {
+				fmt.Fprintf(os.Stderr, "milliways: deck launch failed (%v), falling back to single chat\n", err)
+			} else {
+				return runChat(ctx)
+			}
 		}
 	}
 
 	return runChat(ctx)
+}
+
+// detectWeztermCurrentPaneID finds the pane ID of the terminal running this
+// process by matching the current TTY against wezterm cli list output.
+// Falls back to the first is_active pane if TTY matching fails.
+// Returns "" if wezterm CLI is unavailable or no pane can be identified.
+func detectWeztermCurrentPaneID() string {
+	// Get our own TTY device path (e.g. /dev/ttys005).
+	ttyOut, err := exec.Command("tty").Output()
+	if err != nil {
+		return ""
+	}
+	myTTY := strings.TrimSpace(string(ttyOut))
+
+	// Query all panes from the running WezTerm instance.
+	listOut, err := exec.Command("wezterm", "cli", "list", "--format", "json").Output()
+	if err != nil {
+		return ""
+	}
+	var panes []struct {
+		PaneID   int    `json:"pane_id"`
+		IsActive bool   `json:"is_active"`
+		TtyName  string `json:"tty_name"`
+	}
+	if err := json.Unmarshal(listOut, &panes); err != nil {
+		return ""
+	}
+
+	// Prefer exact TTY match (unambiguous).
+	for _, p := range panes {
+		if p.TtyName == myTTY {
+			return strconv.Itoa(p.PaneID)
+		}
+	}
+	// Fall back to first active pane.
+	for _, p := range panes {
+		if p.IsActive {
+			return strconv.Itoa(p.PaneID)
+		}
+	}
+	return ""
 }
 
 // runDeck opens the home-hero-dashboard layout: left navigator (30%) plus
@@ -330,9 +369,7 @@ func runCockpit(ctx context.Context, _ []string) error {
 // The navigator is an interactive provider browser — arrow keys to browse,
 // Enter to switch the right pane to that provider via /switch. No separate
 // provider tabs are spawned; the single right pane handles all providers.
-func runDeck(_ context.Context, _ string) error {
-	// WEZTERM_PANE is guaranteed non-empty by the caller's check.
-	rightPaneID := os.Getenv("WEZTERM_PANE")
+func runDeck(_ context.Context, _ string, rightPaneID string) error {
 
 	milliwaysBin, err := os.Executable()
 	if err != nil {
