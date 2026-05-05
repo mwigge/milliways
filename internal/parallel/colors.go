@@ -1,0 +1,45 @@
+// Copyright 2024 The milliways Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package parallel
+
+// ProviderColor returns the ANSI escape prefix for a provider label.
+// Reset with "\033[0m" after use.
+func ProviderColor(provider string) string {
+	switch provider {
+	case "claude":
+		return "\033[34m" // blue
+	case "codex":
+		return "\033[33m" // yellow
+	case "copilot":
+		return "\033[36m" // cyan
+	case "gemini":
+		return "\033[35m" // magenta
+	case "local":
+		return "\033[32m" // green
+	case "minimax":
+		return "\033[95m" // bright magenta
+	default:
+		return ""
+	}
+}
+
+// ColorProvider wraps provider name in its color + reset.
+func ColorProvider(provider string) string {
+	c := ProviderColor(provider)
+	if c == "" {
+		return provider
+	}
+	return c + provider + "\033[0m"
+}

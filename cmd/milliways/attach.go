@@ -93,8 +93,12 @@ Navigator mode (parallel panel):
 
 // runAttach dials the daemon, subscribes to agent.stream for handle, and
 // drains events to out. stderr receives error messages.
-func runAttach(ctx context.Context, handle int64, jsonMode bool, out io.Writer, errw io.Writer) error {
+// socketOverride, if non-empty, replaces the default daemon socket path.
+func runAttach(ctx context.Context, handle int64, jsonMode bool, out io.Writer, errw io.Writer, socketOverride ...string) error {
 	sock := daemonSocket()
+	if len(socketOverride) > 0 && socketOverride[0] != "" {
+		sock = socketOverride[0]
+	}
 	client, err := rpc.Dial(sock)
 	if err != nil {
 		fmt.Fprintf(errw, "unknown handle: %d\n", handle)
@@ -133,7 +137,7 @@ func drainStreamToWriter(events <-chan []byte, w io.Writer, jsonMode bool) {
 			continue
 		}
 		switch ev.T {
-		case "delta":
+		case "delta", "data": // "data" is the _echo agent's format; "delta" is used by real runners
 			decoded, err := base64.StdEncoding.DecodeString(ev.B64)
 			if err != nil {
 				continue
@@ -253,19 +257,29 @@ func runNavigator(ctx context.Context, groupID string) error {
 
 		fmt.Printf("milliways parallel — %d slot(s)\n", n)
 		fmt.Println("──────────────────────────────")
+		// Slot 0 is the main panel (the calling chat session).
+		mainMarker := "  "
+		if selected == 0 {
+			mainMarker = "▶ "
+		}
+		fmt.Printf("%s0  [main]   full chat · /help /switch /quota…\n", mainMarker)
+		fmt.Println("──")
 		for _, s := range slots {
 			marker := "  "
 			if s.SlotN == selected {
 				marker = "▶ "
 			}
 			ago := "0s ago"
+			if !s.StartedAt.IsZero() {
+				ago = time.Since(s.StartedAt).Round(time.Second).String() + " ago"
+			}
 			fmt.Printf("%s%d  %-8s %-9s %s  %s tok\n",
-				marker, s.SlotN, s.Provider, s.Status, ago, formatNavTokens(s.TokensOut))
+				marker, s.SlotN, parallel.ColorProvider(s.Provider), s.Status, ago, formatNavTokens(s.TokensOut))
 			fmt.Println("──")
 		}
 		fmt.Println("──────────────────────────────")
 		fmt.Printf("%d running | %d done | %s\n", running, done, groupID)
-		fmt.Println("1–9 select · Tab cycle · c consensus · q exit")
+		fmt.Println("0 main · 1–9 select · Tab cycle · c consensus · q exit")
 	}
 
 	pollSlots := func() {
@@ -296,6 +310,10 @@ func runNavigator(ctx context.Context, groupID string) error {
 				return nil
 			}
 			switch {
+			case k == '0':
+				selected = 0
+				render()
+				fmt.Println("\n[switching to main pane — use your original terminal]")
 			case k >= '1' && k <= '9':
 				n := int(k - '0')
 				if n <= len(slots) {

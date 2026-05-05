@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/mwigge/milliways/internal/mempalace"
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/parallel"
 )
@@ -100,9 +101,29 @@ func (s *Server) parallelDispatch(enc *json.Encoder, req *Request) {
 	wg.Wait()
 
 	now := time.Now().UTC()
-	var slots []parallelSlotInfo
 	var skipped []skippedSlot
 
+	// Separate successful opens from failures before touching the DB.
+	type successSlot struct {
+		handle   int64
+		provider string
+	}
+	var opened []successSlot
+	for _, r := range results {
+		if r.err != nil {
+			skipped = append(skipped, skippedSlot{Provider: r.provider, Reason: r.err.Error()})
+			continue
+		}
+		opened = append(opened, successSlot{handle: r.handle, provider: r.provider})
+	}
+	if len(opened) == 0 {
+		writeError(enc, req.ID, ErrInvalidParams, "all providers failed to open")
+		return
+	}
+
+	// Write group + all slots in a single logical transaction: insert group
+	// first, then all slots. If any slot insert fails, mark the group
+	// interrupted and return an error — no orphaned running groups.
 	store := s.pantryDB.Parallel()
 	if err := store.InsertGroup(pantry.ParallelGroupRecord{
 		ID:        groupID,
@@ -114,26 +135,25 @@ func (s *Server) parallelDispatch(enc *json.Encoder, req *Request) {
 		return
 	}
 
-	for _, r := range results {
-		if r.err != nil {
-			skipped = append(skipped, skippedSlot{Provider: r.provider, Reason: r.err.Error()})
-			continue
-		}
+	var slots []parallelSlotInfo
+	for _, o := range opened {
 		if err := store.InsertSlot(pantry.ParallelSlotRecord{
 			GroupID:   groupID,
-			Handle:    r.handle,
-			Provider:  r.provider,
+			Handle:    o.handle,
+			Provider:  o.provider,
 			Status:    pantry.ParallelStatusRunning,
 			StartedAt: now,
 		}); err != nil {
-			slog.Warn("parallel: InsertSlot failed", "provider", r.provider, "err", err)
+			// Slot insert failed — abort: mark group interrupted so it is
+			// not stuck in running state forever.
+			_ = store.UpdateSlotStatus(o.handle, pantry.ParallelStatusInterrupted, 0, 0)
+			if markErr := store.MarkInterruptedSlots(); markErr != nil {
+				slog.Warn("parallel: MarkInterruptedSlots after slot insert failure", "err", markErr)
+			}
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("insert slot for %s: %v", o.provider, err))
+			return
 		}
-		slots = append(slots, parallelSlotInfo{Handle: r.handle, Provider: r.provider})
-	}
-
-	if len(slots) == 0 {
-		writeError(enc, req.ID, ErrInvalidParams, "all providers failed to open")
-		return
+		slots = append(slots, parallelSlotInfo{Handle: o.handle, Provider: o.provider})
 	}
 
 	writeResult(enc, req.ID, parallelDispatchResult{
@@ -182,7 +202,7 @@ func (s *Server) groupStatus(enc *json.Encoder, req *Request) {
 
 	grp, err := s.pantryDB.Parallel().GetGroup(p.GroupID)
 	if err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("group not found: %s", p.GroupID))
+		writeError(enc, req.ID, ErrNotFound, fmt.Sprintf("group not found: %s", p.GroupID))
 		return
 	}
 
@@ -277,7 +297,7 @@ func (s *Server) consensusAggregate(enc *json.Encoder, req *Request) {
 
 	// Verify group exists.
 	if _, err := s.pantryDB.Parallel().GetGroup(p.GroupID); err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("group not found: %s", p.GroupID))
+		writeError(enc, req.ID, ErrNotFound, fmt.Sprintf("group not found: %s", p.GroupID))
 		return
 	}
 
@@ -298,8 +318,50 @@ func (s *Server) consensusAggregate(enc *json.Encoder, req *Request) {
 	})
 }
 
-// mempalaceClient returns the MemPalace MPClient if configured, or nil.
-// Returns nil gracefully when MEMPALACE_MCP_CMD is unset.
+// mempalaceClient returns a parallel.MPClient backed by the MemPalace MCP
+// server when MEMPALACE_MCP_CMD is set. Returns nil gracefully when unset.
 func (s *Server) mempalaceClient() parallel.MPClient {
-	return nil // wired to real mempalace.Client in a follow-up story
+	c, err := mempalace.NewClientFromEnv()
+	if err != nil {
+		return nil
+	}
+	return &mempalaceParallelAdapter{c: c}
+}
+
+// mempalaceParallelAdapter bridges *mempalace.Client to parallel.MPClient.
+type mempalaceParallelAdapter struct {
+	c *mempalace.Client
+}
+
+func (a *mempalaceParallelAdapter) KGQuery(ctx context.Context, subjectPrefix, predicate string, filters map[string]string) ([]parallel.KGTriple, error) {
+	results, err := a.c.Search(ctx, subjectPrefix, 20)
+	if err != nil {
+		return nil, err
+	}
+	triples := make([]parallel.KGTriple, 0, len(results))
+	for _, r := range results {
+		triples = append(triples, parallel.KGTriple{
+			Subject:    r.DrawerID,
+			Predicate:  predicate,
+			Object:     r.Content,
+			Properties: map[string]string{"source": r.Wing, "ts": ""},
+		})
+	}
+	return triples, nil
+}
+
+func (a *mempalaceParallelAdapter) KGAdd(ctx context.Context, subject, predicate, object string, props map[string]string) error {
+	wing := props["source"]
+	if wing == "" {
+		wing = "parallel"
+	}
+	drawerID := predicate + ":" + truncate(object, 80)
+	return a.c.Write(ctx, wing, subject, drawerID, object)
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
 }

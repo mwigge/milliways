@@ -65,9 +65,12 @@ func printParallelUsage(w io.Writer) {
 
 // runParallelList calls group.list and renders a table.
 // stdout and stderr may be nil when not needed (tests pass nil).
-func runParallelList(args []string, stdout, stderr io.Writer) int {
+func runParallelList(args []string, stdout, stderr io.Writer, socketOverride ...string) int {
 	_ = args // no additional flags for list
 	sock := defaultSocket()
+	if len(socketOverride) > 0 && socketOverride[0] != "" {
+		sock = socketOverride[0]
+	}
 	c, err := rpc.Dial(sock)
 	if err != nil {
 		if stderr != nil {
@@ -75,7 +78,7 @@ func runParallelList(args []string, stdout, stderr io.Writer) int {
 		}
 		return 1
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	var result map[string]any
 	if err := c.Call("group.list", map[string]any{}, &result); err != nil {
@@ -143,7 +146,7 @@ func renderParallelList(result map[string]any, w io.Writer) {
 
 // runParallelStatus calls group.status for the given group ID and renders the
 // slot table. stdout and/or stderr may be nil.
-func runParallelStatus(args []string, stdout, stderr io.Writer) int {
+func runParallelStatus(args []string, stdout, stderr io.Writer, socketOverride ...string) int {
 	if len(args) == 0 {
 		if stderr != nil {
 			fmt.Fprintln(stderr, "usage: milliwaysctl parallel status <group-id>")
@@ -153,6 +156,9 @@ func runParallelStatus(args []string, stdout, stderr io.Writer) int {
 	groupID := args[0]
 
 	sock := defaultSocket()
+	if len(socketOverride) > 0 && socketOverride[0] != "" {
+		sock = socketOverride[0]
+	}
 	c, err := rpc.Dial(sock)
 	if err != nil {
 		if stderr != nil {
@@ -160,7 +166,7 @@ func runParallelStatus(args []string, stdout, stderr io.Writer) int {
 		}
 		return 1
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	var result map[string]any
 	if err := c.Call("group.status", map[string]any{"group_id": groupID}, &result); err != nil {
@@ -220,7 +226,7 @@ func renderParallelStatus(result map[string]any, w io.Writer) {
 }
 
 // runParallelConsensus calls consensus.aggregate and prints the summary.
-func runParallelConsensus(args []string, stdout, stderr io.Writer) int {
+func runParallelConsensus(args []string, stdout, stderr io.Writer, socketOverride ...string) int {
 	if len(args) == 0 {
 		if stderr != nil {
 			fmt.Fprintln(stderr, "usage: milliwaysctl parallel consensus <group-id>")
@@ -230,6 +236,9 @@ func runParallelConsensus(args []string, stdout, stderr io.Writer) int {
 	groupID := args[0]
 
 	sock := defaultSocket()
+	if len(socketOverride) > 0 && socketOverride[0] != "" {
+		sock = socketOverride[0]
+	}
 	c, err := rpc.Dial(sock)
 	if err != nil {
 		if stderr != nil {
@@ -237,7 +246,7 @@ func runParallelConsensus(args []string, stdout, stderr io.Writer) int {
 		}
 		return 1
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	var result map[string]any
 	if err := c.Call("consensus.aggregate", map[string]any{"group_id": groupID}, &result); err != nil {

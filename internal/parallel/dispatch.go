@@ -41,7 +41,10 @@ var filePathRe = regexp.MustCompile(`([\w./:-]+/[\w./:-]+\.go)`)
 // If a provider cannot be opened its error is captured in DispatchResult.Skipped
 // rather than aborting the whole dispatch. If all providers fail, errAllUnavailable
 // is returned.
-func Dispatch(ctx context.Context, req DispatchRequest, opener AgentOpener, store *pantry.ParallelStore, mp MPClient) (DispatchResult, error) {
+func Dispatch(ctx context.Context, req DispatchRequest, opener AgentOpener, store *pantry.ParallelStore, mp MPClient, cg CodeGraphClient) (DispatchResult, error) {
+	if store == nil {
+		return DispatchResult{}, errors.New("parallel store is required")
+	}
 	groupID := req.GroupID
 	if groupID == "" {
 		groupID = uuid.NewString()
@@ -111,10 +114,13 @@ func Dispatch(ctx context.Context, req DispatchRequest, opener AgentOpener, stor
 		}
 	}
 
+	preamble := InjectBaseline(ctx, req.Prompt, mp) + InjectCodeGraph(ctx, req.Prompt, cg)
+
 	return DispatchResult{
-		GroupID: groupID,
-		Slots:   slots,
-		Skipped: skipped,
+		GroupID:         groupID,
+		Slots:           slots,
+		Skipped:         skipped,
+		ContextPreamble: preamble,
 	}, nil
 }
 

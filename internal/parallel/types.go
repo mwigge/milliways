@@ -72,9 +72,10 @@ type DispatchRequest struct {
 
 // DispatchResult is returned immediately by Dispatch.
 type DispatchResult struct {
-	GroupID string
-	Slots   []SlotRecord
-	Skipped []SkippedProvider
+	GroupID         string
+	Slots           []SlotRecord
+	Skipped         []SkippedProvider
+	ContextPreamble string // MemPalace + CodeGraph context to prepend to first agent message
 }
 
 // SkippedProvider records a provider that could not be opened.
