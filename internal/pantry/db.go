@@ -79,6 +79,9 @@ func (db *DB) Checkpoints() *CheckpointStore { return &CheckpointStore{db: db.co
 // MemoryItems returns the durable memory item store.
 func (db *DB) MemoryItems() *MemoryItemStore { return &MemoryItemStore{db: db.conn} }
 
+// Parallel returns the parallel-group and slot store.
+func (db *DB) Parallel() *ParallelStore { return &ParallelStore{db: db.conn} }
+
 // Path returns the database file path.
 func (db *DB) Path() string { return db.path }
 
@@ -122,6 +125,11 @@ func migrate(conn *sql.DB) error {
 	if version < 5 {
 		if _, err := conn.Exec(schemaV5); err != nil {
 			return fmt.Errorf("applying schema v5: %w", err)
+		}
+	}
+	if version < 6 {
+		if _, err := conn.Exec(schemaV6); err != nil {
+			return fmt.Errorf("applying schema v6: %w", err)
 		}
 	}
 

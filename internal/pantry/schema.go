@@ -195,3 +195,32 @@ CREATE INDEX IF NOT EXISTS idx_mw_memory_items_conversation_id ON mw_memory_item
 
 INSERT OR IGNORE INTO mw_schema (version) VALUES (5);
 `
+
+const schemaV6 = `
+CREATE TABLE IF NOT EXISTS mw_parallel_groups (
+    id          TEXT PRIMARY KEY,
+    prompt      TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'running',
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_parallel_groups_created_at ON mw_parallel_groups(created_at);
+CREATE INDEX IF NOT EXISTS idx_mw_parallel_groups_status ON mw_parallel_groups(status);
+
+CREATE TABLE IF NOT EXISTS mw_parallel_slots (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id     TEXT NOT NULL REFERENCES mw_parallel_groups(id),
+    handle       INTEGER NOT NULL,
+    provider     TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'running',
+    started_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT NOT NULL DEFAULT '',
+    tokens_in    INTEGER NOT NULL DEFAULT 0,
+    tokens_out   INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_parallel_slots_group_id ON mw_parallel_slots(group_id);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (6);
+`
