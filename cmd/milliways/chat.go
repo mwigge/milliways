@@ -2268,8 +2268,10 @@ func (l *chatLoop) printLanding() {
 	fmt.Fprintln(l.out)
 
 	if os.Getenv("MILLIWAYS_DECK_MODE") == "1" {
-		// In deck mode the left navigator pane handles provider selection.
-		fmt.Fprintln(l.out, "  Select a provider in the left panel  ↑↓ move  ↩ switch")
+		fmt.Fprintln(l.out, "  \033[2m←\033[0m  select a provider in the left panel")
+		fmt.Fprintln(l.out, "       or type \033[1m/switch <name>\033[0m directly here")
+		fmt.Fprintln(l.out)
+		fmt.Fprintln(l.out, "  \033[2m/help\033[0m  all commands   \033[2m/parallel\033[0m  fan out to all providers")
 	} else {
 		fmt.Fprintln(l.out, "Pick a client:")
 		statuses := l.fetchAgentStatuses()
@@ -2283,17 +2285,16 @@ func (l *chatLoop) printLanding() {
 			reset := "\033[0m"
 			fmt.Fprintf(l.out, "  /%d  %s/%-10s%s %s  %s\n", i+1, color, name, reset, s.mark, model)
 		}
+		fmt.Fprintln(l.out)
+		l.ringMu.Lock()
+		ring := append([]string(nil), l.ring...)
+		l.ringMu.Unlock()
+		if len(ring) > 0 {
+			fmt.Fprintf(l.out, "  ring: %s  (/ring to change)\n", strings.Join(ring, " → "))
+		}
 	}
 	fmt.Fprintln(l.out)
-
-	l.ringMu.Lock()
-	ring := append([]string(nil), l.ring...)
-	l.ringMu.Unlock()
-	if len(ring) > 0 {
-		fmt.Fprintf(l.out, "  ring: %s  (/ring to change)\n", strings.Join(ring, " → "))
-	}
-	fmt.Fprintln(l.out)
-	fmt.Fprintln(l.out, "  /login [client]  set up auth      /help  show all commands      /exit  quit")
+	fmt.Fprintln(l.out, "  \033[2m/login [client]\033[0m  set up auth      \033[2m/help\033[0m  all commands      \033[2m/exit\033[0m  quit")
 	fmt.Fprintln(l.out)
 }
 
