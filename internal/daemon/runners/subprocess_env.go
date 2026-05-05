@@ -55,6 +55,11 @@ var safeRunnerEnvKeys = map[string]bool{
 	"ANTHROPIC_MODEL": true, "OPENAI_MODEL": true, "CODEX_MODEL": true,
 	"CLAUDE_MODEL": true, "GEMINI_MODEL": true, "GOOGLE_MODEL": true,
 	"COPILOT_MODEL": true,
+	// Claude Code 2.x runtime identity vars. CLAUDE_CODE_EXECPATH tells the
+	// binary where its versioned install lives (used to locate the credential
+	// store). Without these the daemon subprocess reports "Not logged in" even
+	// though claude works fine in the user's shell.
+	"CLAUDECODE": true, "CLAUDE_CODE_ENTRYPOINT": true, "CLAUDE_CODE_EXECPATH": true,
 }
 
 // safeRunnerEnv returns a filtered environment for runner subprocess
