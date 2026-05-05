@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -48,6 +49,8 @@ import (
 func attachCmd() *cobra.Command {
 	var jsonMode bool
 	var navGroupID string
+	var deckMode bool
+	var rightPaneID string
 
 	cmd := &cobra.Command{
 		Use:   "attach <handle>",
@@ -58,36 +61,40 @@ Streaming mode:
   milliways attach 42               stream decoded content to stdout
   milliways attach --json 42        emit one NDJSON event per delta/done
 
+Deck navigator (interactive provider browser):
+  milliways attach --deck --right-pane <pane-id>
+
 Navigator mode (parallel panel):
   milliways attach --nav grp-abc    render the slot navigator for a parallel group`,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Mutual exclusion: --nav and positional handle cannot coexist.
-			if navGroupID != "" && len(args) > 0 {
-				return fmt.Errorf("--nav and positional handle are mutually exclusive")
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+
+			if deckMode {
+				return runDeckNavigator(ctx, rightPaneID)
 			}
 			if navGroupID != "" {
-				// Navigator mode.
-				ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
-				defer stop()
+				if len(args) > 0 {
+					return fmt.Errorf("--nav and positional handle are mutually exclusive")
+				}
 				return runNavigator(ctx, navGroupID)
 			}
-			// Streaming mode requires exactly one positional handle.
 			if len(args) != 1 {
-				return fmt.Errorf("attach requires a session handle (integer) or --nav <group-id>")
+				return fmt.Errorf("attach requires a session handle (integer), --deck, or --nav <group-id>")
 			}
 			handle, err := strconv.ParseInt(args[0], 10, 64)
 			if err != nil {
 				return fmt.Errorf("invalid handle %q: must be an integer", args[0])
 			}
-			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
-			defer stop()
 			return runAttach(ctx, handle, jsonMode, os.Stdout, os.Stderr)
 		},
 	}
 
 	cmd.Flags().BoolVar(&jsonMode, "json", false, "Emit one NDJSON event per delta/done")
 	cmd.Flags().StringVar(&navGroupID, "nav", "", "Run navigator mode for the given parallel group ID")
+	cmd.Flags().BoolVar(&deckMode, "deck", false, "Run interactive deck provider navigator")
+	cmd.Flags().StringVar(&rightPaneID, "right-pane", "", "WezTerm pane ID of the chat pane (used with --deck)")
 
 	return cmd
 }
@@ -402,4 +409,240 @@ func formatNavTokens(n int) string {
 		return fmt.Sprintf("%d", n)
 	}
 	return fmt.Sprintf("%.1fk", float64(n)/1000.0)
+}
+
+// deckProviderInfo holds the data shown per row in the deck navigator.
+type deckProviderInfo struct {
+	ID         string
+	AuthStatus string
+	Model      string
+}
+
+// runDeckNavigator is the interactive provider browser for deck mode.
+// It shows a list of all providers, lets the user browse with ↑↓, and
+// sends "/switch <provider>\n" to rightPaneID on Enter.
+//
+// Key bindings:
+//
+//	↑ / k   move up
+//	↓ / j   move down
+//	Enter   switch right pane to selected provider
+//	q/^D    exit navigator
+func runDeckNavigator(ctx context.Context, rightPaneID string) error {
+	sock := daemonSocket()
+	client, err := rpc.Dial(sock)
+	if err != nil {
+		return fmt.Errorf("dial milliwaysd: %w", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	fd := int(os.Stdin.Fd())
+	oldState, err := term.MakeRaw(fd)
+	if err != nil {
+		return fmt.Errorf("raw terminal: %w", err)
+	}
+	defer func() {
+		_ = term.Restore(fd, oldState)
+		fmt.Print("\033[?25h\033[0m\n")
+	}()
+	fmt.Print("\033[?25l") // hide cursor while navigating
+
+	var providers []deckProviderInfo
+	selected := 0
+
+	pollProviders := func() {
+		var resp struct {
+			Agents []struct {
+				ID         string `json:"id"`
+				AuthStatus string `json:"auth_status"`
+				Model      string `json:"model"`
+			} `json:"agents"`
+		}
+		if err := client.Call("agent.list", nil, &resp); err != nil {
+			return
+		}
+		updated := make([]deckProviderInfo, 0, len(resp.Agents))
+		for _, a := range resp.Agents {
+			updated = append(updated, deckProviderInfo{
+				ID:         a.ID,
+				AuthStatus: a.AuthStatus,
+				Model:      a.Model,
+			})
+		}
+		if len(updated) > 0 {
+			if selected >= len(updated) {
+				selected = len(updated) - 1
+			}
+			providers = updated
+		}
+	}
+
+	render := func() {
+		w, _, _ := term.GetSize(fd)
+		if w <= 0 {
+			w = 36
+		}
+		const reset = "\033[0m"
+		const dim = "\033[2m"
+		const bold = "\033[1m"
+
+		fmt.Print("\033[2J\033[H") // clear + cursor home
+
+		// Title bar
+		title := " milliways "
+		pad := strings.Repeat("─", (w-len(title))/2)
+		fmt.Printf("%s%s%s%s\n", dim, pad+title+pad, reset, "")
+		fmt.Println()
+
+		if len(providers) == 0 {
+			fmt.Printf("  %sconnecting...%s\n", dim, reset)
+		}
+
+		for i, p := range providers {
+			// Auth indicator
+			authMark := "?"
+			authColor := "\033[33m"
+			switch p.AuthStatus {
+			case "ok":
+				authMark = "✓"
+				authColor = "\033[32m"
+			case "missing_credentials":
+				authMark = "✗"
+				authColor = "\033[2m"
+			}
+
+			provColor := parallel.ProviderColor(p.ID)
+			model := p.Model
+			if model == "" {
+				model = "—"
+			}
+			// Trim model name to fit: pane width minus fixed columns
+			maxModel := w - 16
+			if maxModel < 4 {
+				maxModel = 4
+			}
+			if len(model) > maxModel {
+				model = model[:maxModel-1] + "…"
+			}
+
+			if i == selected {
+				fmt.Printf("%s▶ %s%-9s%s %s%s%s  %s%s%s\033[K\n",
+					bold,
+					provColor, p.ID, reset+bold,
+					authColor, authMark, reset+bold,
+					model, reset, "")
+			} else {
+				fmt.Printf("  %s%-9s%s %s%s%s  %s%s\033[K\n",
+					provColor, p.ID, reset,
+					authColor, authMark, reset,
+					dim+model, reset)
+			}
+		}
+
+		fmt.Println()
+		fmt.Printf("%s↑↓ move  ↩ switch  q quit%s\n", dim, reset)
+	}
+
+	// Key event reader — handles single bytes and 3-byte arrow sequences.
+	type keyKind int
+	const (
+		keyRune  keyKind = iota
+		keyUp
+		keyDown
+		keyEnter
+		keyEOF
+	)
+	type keyEvent struct {
+		kind keyKind
+		ch   byte
+	}
+	keyCh := make(chan keyEvent, 8)
+	go func() {
+		buf := make([]byte, 8)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if err != nil || n == 0 {
+				keyCh <- keyEvent{kind: keyEOF}
+				return
+			}
+			// Arrow keys arrive as ESC [ A/B.
+			if n >= 3 && buf[0] == 27 && buf[1] == '[' {
+				switch buf[2] {
+				case 'A':
+					keyCh <- keyEvent{kind: keyUp}
+				case 'B':
+					keyCh <- keyEvent{kind: keyDown}
+				}
+				continue
+			}
+			keyCh <- keyEvent{kind: keyRune, ch: buf[0]}
+		}
+	}()
+
+	switchProvider := func(provider string) {
+		if rightPaneID == "" {
+			return
+		}
+		_ = exec.Command("wezterm", "cli", "send-text",
+			"--pane-id", rightPaneID,
+			"--no-paste",
+			"/switch "+provider+"\n").Run()
+	}
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	pollProviders()
+	render()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			pollProviders()
+			render()
+		case ev, ok := <-keyCh:
+			if !ok {
+				return nil
+			}
+			switch ev.kind {
+			case keyEOF:
+				return nil
+			case keyUp:
+				if selected > 0 {
+					selected--
+					render()
+				}
+			case keyDown:
+				if selected < len(providers)-1 {
+					selected++
+					render()
+				}
+			case keyEnter:
+				if selected >= 0 && selected < len(providers) {
+					switchProvider(providers[selected].ID)
+				}
+			case keyRune:
+				switch ev.ch {
+				case 'k': // vim up
+					if selected > 0 {
+						selected--
+						render()
+					}
+				case 'j': // vim down
+					if selected < len(providers)-1 {
+						selected++
+						render()
+					}
+				case '\r', '\n':
+					if selected >= 0 && selected < len(providers) {
+						switchProvider(providers[selected].ID)
+					}
+				case 'q', 4: // q or Ctrl+D
+					return nil
+				}
+			}
+		}
+	}
 }
