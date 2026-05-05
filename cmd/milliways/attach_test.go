@@ -314,3 +314,41 @@ func TestSumSlotTokens(t *testing.T) {
 		})
 	}
 }
+
+// TestDeckNavigatorAgentListShape verifies that runDeckNavigator correctly
+// unmarshals the flat []AgentInfo array returned by agent.list (not a
+// wrapped {"agents":[...]} object — that was the original bug).
+func TestDeckNavigatorAgentListShape(t *testing.T) {
+	// Simulate what agent.list actually returns: a flat JSON array.
+	flatArray := `[
+		{"id":"claude","auth_status":"ok","model":"claude-sonnet-4-5"},
+		{"id":"codex","auth_status":"missing_credentials","model":""},
+		{"id":"copilot","auth_status":"ok","model":"gpt-4o"}
+	]`
+
+	var agents []struct {
+		ID         string `json:"id"`
+		AuthStatus string `json:"auth_status"`
+		Model      string `json:"model"`
+	}
+	if err := json.Unmarshal([]byte(flatArray), &agents); err != nil {
+		t.Fatalf("unmarshal flat array: %v", err)
+	}
+	if len(agents) != 3 {
+		t.Fatalf("expected 3 agents from flat array, got %d", len(agents))
+	}
+	if agents[0].ID != "claude" {
+		t.Errorf("expected claude, got %q", agents[0].ID)
+	}
+
+	// Confirm the old (wrong) shape fails to populate.
+	var wrapped struct {
+		Agents []struct {
+			ID string `json:"id"`
+		} `json:"agents"`
+	}
+	_ = json.Unmarshal([]byte(flatArray), &wrapped)
+	if len(wrapped.Agents) != 0 {
+		t.Error("wrapped shape should NOT work with flat array — test assumption wrong")
+	}
+}

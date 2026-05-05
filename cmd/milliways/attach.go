@@ -451,18 +451,17 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 	selected := 0
 
 	pollProviders := func() {
-		var resp struct {
-			Agents []struct {
-				ID         string `json:"id"`
-				AuthStatus string `json:"auth_status"`
-				Model      string `json:"model"`
-			} `json:"agents"`
+		// agent.list returns a flat []AgentInfo array, not {"agents":[...]}.
+		var agents []struct {
+			ID         string `json:"id"`
+			AuthStatus string `json:"auth_status"`
+			Model      string `json:"model"`
 		}
-		if err := client.Call("agent.list", nil, &resp); err != nil {
+		if err := client.Call("agent.list", nil, &agents); err != nil {
 			return
 		}
-		updated := make([]deckProviderInfo, 0, len(resp.Agents))
-		for _, a := range resp.Agents {
+		updated := make([]deckProviderInfo, 0, len(agents))
+		for _, a := range agents {
 			updated = append(updated, deckProviderInfo{
 				ID:         a.ID,
 				AuthStatus: a.AuthStatus,
