@@ -253,6 +253,7 @@ func buildCompleter(agentID string) readline.AutoCompleter {
 	items = append(items,
 		readline.PcItem("/switch", switchRunners...),
 		readline.PcItem("/login", switchRunners...),
+		readline.PcItem("/briefing"),
 		readline.PcItem("/model"),
 		readline.PcItem("/agents"),
 		readline.PcItem("/quota"),
@@ -573,6 +574,11 @@ type chatLoop struct {
 	// recent turns to bound briefing size and memory.
 	turnMu  sync.Mutex
 	turnLog []chatTurn
+
+	// lastBriefing holds the full briefing text sent on the most recent
+	// /switch so the user can re-read it with /briefing.
+	lastBriefingFrom string
+	lastBriefing     string
 	// pendingAssistant accumulates streamed deltas for the in-flight
 	// assistant response. Drained into turnLog on chunk_end.
 	pendingAssistant strings.Builder
@@ -736,7 +742,7 @@ func (l *chatLoop) drainStream() {
 			l.sess.busyMu.Lock()
 			l.sess.busy = false
 			l.sess.busyMu.Unlock()
-			l.refreshPromptHint(ev)
+			l.refreshPromptHint(ev, assistantText != "")
 			// Refresh the readline prompt so the user sees ▶ ready to type.
 			l.rl.Refresh()
 		case "err":
@@ -813,7 +819,7 @@ If you cannot produce a markdown table for step 3, use the dash-list format show
 //
 // When max_turns_hit is set, the terse flag is replaced by a visible break
 // separator and an automatic summarization turn that streams back to the user.
-func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any) {
+func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any, turnSaved bool) {
 	var parts []string
 	cost, _ := chunkEnd["cost_usd"].(float64)
 	inTok, _ := chunkEnd["input_tokens"].(float64)
@@ -824,6 +830,9 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any) {
 	}
 	if inTok > 0 && outTok > 0 {
 		parts = append(parts, fmt.Sprintf("%d→%d tok", int(inTok), int(outTok)))
+	}
+	if turnSaved {
+		parts = append(parts, "\033[32m⊙ saved\033[0m")
 	}
 
 	// Update the window title after each response. Show the running session
@@ -842,6 +851,9 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any) {
 		}
 		if inTok > 0 && outTok > 0 {
 			tabTitle += fmt.Sprintf(" · %d→%d tok", int(inTok), int(outTok))
+		}
+		if turnSaved {
+			tabTitle += " · ⊙"
 		}
 		setTermTitle(tabTitle, win)
 	}
@@ -936,6 +948,8 @@ func (l *chatLoop) handleSlash(line string) {
 			agent = l.sess.agentID
 		}
 		l.printLogin(agent)
+	case "briefing":
+		l.printLastBriefing()
 	case "quota":
 		l.printQuota()
 	case "ring":
@@ -1132,7 +1146,10 @@ func (l *chatLoop) switchAgent(newID string) {
 	if fromID != "" && fromID != newID {
 		if briefing, ok := l.buildBriefing(fromID, newID); ok {
 			m, ep := runnerModelInfo(newID)
-			fmt.Fprintf(l.out, "→ %s  model: %s  (%s)  [briefing from %s]\n", newID, m, ep, fromID)
+			fmt.Fprintf(l.out, "→ %s  model: %s  (%s)\n", newID, m, ep)
+			l.printBriefingBlock(l.snapshotTurns(), fromID)
+			l.lastBriefingFrom = fromID
+			l.lastBriefing = briefing
 			if err := newSess.send(briefing); err != nil {
 				fmt.Fprintln(l.errw, "warn: send briefing: "+err.Error())
 			}
@@ -1320,6 +1337,45 @@ func renderOneTurnTruncated(t chatTurn, max int) string {
 		body = body[:bodyBudget]
 	}
 	return header + body + footer
+}
+
+// printBriefingBlock renders the handed-off turns as a compact sidebar block
+// so the user can see exactly what context was passed to the incoming runner.
+func (l *chatLoop) printBriefingBlock(turns []chatTurn, fromID string) {
+	if len(turns) == 0 {
+		return
+	}
+	noun := "turn"
+	if len(turns) != 1 {
+		noun = "turns"
+	}
+	fmt.Fprintf(l.out, "  ╷ context from %s (%d %s)\n", fromID, len(turns), noun)
+	for _, t := range turns {
+		role := "user"
+		if t.Role == "assistant" {
+			role = t.AgentID
+		}
+		line := strings.ReplaceAll(strings.TrimSpace(t.Text), "\n", " ")
+		if len(line) > 90 {
+			line = line[:87] + "…"
+		}
+		fmt.Fprintf(l.out, "  │ [%s] %s\n", role, line)
+	}
+	fmt.Fprintf(l.out, "  ╵ /briefing to re-read full context\n")
+}
+
+// printLastBriefing shows the full briefing text sent on the most recent
+// /switch so the user can verify what context the new runner received.
+func (l *chatLoop) printLastBriefing() {
+	if l.lastBriefing == "" {
+		fmt.Fprintln(l.out, "  (no briefing yet — switch runners first)")
+		return
+	}
+	fmt.Fprintf(l.out, "  ╷ full briefing sent to active runner (from %s)\n", l.lastBriefingFrom)
+	for _, line := range strings.Split(strings.TrimRight(l.lastBriefing, "\n"), "\n") {
+		fmt.Fprintf(l.out, "  │ %s\n", line)
+	}
+	fmt.Fprintf(l.out, "  ╵\n")
 }
 
 // handleBang runs an arbitrary shell command via $SHELL -c "<cmd>".
@@ -2251,6 +2307,7 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /quota                        current quota snapshot")
 	fmt.Fprintln(l.out, "  /metrics                      live metrics dashboard (token usage, costs, ops)")
 	fmt.Fprintln(l.out, "  /switch <runner>              same as /<runner>")
+	fmt.Fprintln(l.out, "  /briefing                     re-show the full context handed off on last /switch")
 	fmt.Fprintln(l.out, "  /login [client]               auth setup — API key prompt or CLI steps")
 	fmt.Fprintln(l.out, "  /scan                         scan workspace dependencies for known CVEs")
 	fmt.Fprintln(l.out, "  /exit                         exit (Ctrl+D also works)")
@@ -2483,19 +2540,20 @@ type loginSpec struct {
 	// An interactive key prompt is shown and the key is injected live
 	// into the daemon via config.setenv (no restart needed).
 	envKey string
-	// cliSteps lists manual steps for CLI-auth runners (claude, codex,
-	// copilot, gemini) that handle auth in their own OAuth/browser flow.
+	// cliCmd is set for CLI-OAuth runners; /login runs this command directly.
+	cliCmd []string
+	// cliSteps lists manual steps shown when cliCmd is nil.
 	cliSteps []string
 }
 
 var loginSpecs = map[string]loginSpec{
-	"claude":  {cliSteps: []string{"run `claude` once to authenticate (browser flow)"}},
-	"codex":   {cliSteps: []string{"run `codex login` (browser flow) or set OPENAI_API_KEY"}},
-	"copilot": {cliSteps: []string{"run `gh auth login` (browser flow)"}},
-	"gemini":  {cliSteps: []string{"run `gemini auth login` (browser flow) or set GEMINI_API_KEY"}},
+	"claude":  {cliCmd: []string{"claude", "auth", "login"}},
+	"codex":   {cliCmd: []string{"codex", "login"}},
+	"copilot": {cliCmd: []string{"gh", "auth", "login"}},
+	"gemini":  {cliCmd: []string{"gemini"}},
 	"minimax": {envKey: "MINIMAX_API_KEY"},
 	"local":   {cliSteps: []string{"run /install-local-server, or set MILLIWAYS_LOCAL_ENDPOINT"}},
-	"pool":    {cliSteps: []string{"run `pool login` to authenticate with Poolside"}},
+	"pool":    {cliCmd: []string{"pool", "login"}},
 }
 
 // printLogin handles /login [agent]. For API-key runners it prompts
@@ -2510,9 +2568,12 @@ func (l *chatLoop) printLogin(agent string) {
 			if !ok {
 				continue
 			}
-			if spec.envKey != "" {
+			switch {
+			case spec.envKey != "":
 				fmt.Fprintf(l.out, "  %-8s  → /login %s  (API key prompt)\n", name, name)
-			} else {
+			case len(spec.cliCmd) > 0:
+				fmt.Fprintf(l.out, "  %-8s  → /login %s  (runs: %s)\n", name, name, strings.Join(spec.cliCmd, " "))
+			case len(spec.cliSteps) > 0:
 				fmt.Fprintf(l.out, "  %-8s  → %s\n", name, spec.cliSteps[0])
 			}
 		}
@@ -2525,7 +2586,21 @@ func (l *chatLoop) printLogin(agent string) {
 		return
 	}
 
-	// CLI-auth runner — can't prompt interactively, show steps.
+	// CLI-OAuth runner — run the auth command directly in the foreground.
+	if len(spec.cliCmd) > 0 {
+		cmd := exec.Command(spec.cliCmd[0], spec.cliCmd[1:]...)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintln(l.errw, "✗ auth failed: "+err.Error())
+		} else {
+			fmt.Fprintf(l.out, "✓ %s authenticated — ready\n", agent)
+		}
+		return
+	}
+
+	// CLI-auth runner — show manual steps.
 	if spec.envKey == "" {
 		fmt.Fprintf(l.out, "%s auth:\n", agent)
 		for _, s := range spec.cliSteps {

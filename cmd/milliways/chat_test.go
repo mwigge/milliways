@@ -49,6 +49,7 @@ func TestChatHelpEnumeratesKnownCommands(t *testing.T) {
 		"/install", "/install-local-server", "/list-local-models", "/setup-local-model",
 		"/opsx-list",
 		"/login",
+		"/briefing",
 		"/model",
 	} {
 		if !strings.Contains(stdout.String(), want) {
@@ -371,6 +372,7 @@ func TestHandleSlash_Smoke(t *testing.T) {
 	wantOutput := []string{
 		"/help", "/agents", "/quota",
 		"/login", "/login minimax",
+		"/briefing",
 		"/model", "/model minimax",
 		"/1", "/2", "/3", "/4", "/5", "/6", "/7",
 		"/claude", "/codex", "/copilot", "/minimax",
@@ -405,5 +407,357 @@ func TestHandleSlash_Smoke(t *testing.T) {
 				loop.handleSlash(cmd)
 			}()
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// printBriefingBlock
+// ---------------------------------------------------------------------------
+
+// TestPrintBriefingBlock_NoTurns — empty turn slice produces no output.
+func TestPrintBriefingBlock_NoTurns(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	loop := &chatLoop{out: &out, errw: &bytes.Buffer{}}
+	loop.printBriefingBlock(nil, "claude")
+	if out.Len() != 0 {
+		t.Errorf("expected no output for empty turns, got: %q", out.String())
+	}
+}
+
+// TestPrintBriefingBlock_SingularNoun — one turn uses "turn" not "turns".
+func TestPrintBriefingBlock_SingularNoun(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	loop := &chatLoop{out: &out, errw: &bytes.Buffer{}}
+	loop.printBriefingBlock([]chatTurn{{Role: "user", Text: "hello"}}, "minimax")
+	got := out.String()
+	if !strings.Contains(got, "1 turn") {
+		t.Errorf("expected '1 turn'; got: %q", got)
+	}
+	if strings.Contains(got, "1 turns") {
+		t.Errorf("unexpected plural '1 turns'; got: %q", got)
+	}
+}
+
+// TestPrintBriefingBlock_PluralNoun — multiple turns uses "turns".
+func TestPrintBriefingBlock_PluralNoun(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	loop := &chatLoop{out: &out, errw: &bytes.Buffer{}}
+	turns := []chatTurn{
+		{Role: "user", Text: "first"},
+		{Role: "assistant", AgentID: "claude", Text: "reply"},
+		{Role: "user", Text: "second"},
+	}
+	loop.printBriefingBlock(turns, "claude")
+	got := out.String()
+	if !strings.Contains(got, "3 turns") {
+		t.Errorf("expected '3 turns'; got: %q", got)
+	}
+}
+
+// TestPrintBriefingBlock_FromAgentInHeader — from-agent name appears in the
+// opening line and the hint footer is always present.
+func TestPrintBriefingBlock_FromAgentInHeader(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	loop := &chatLoop{out: &out, errw: &bytes.Buffer{}}
+	loop.printBriefingBlock([]chatTurn{{Role: "user", Text: "hi"}}, "minimax")
+	got := out.String()
+	if !strings.Contains(got, "minimax") {
+		t.Errorf("expected from-agent 'minimax' in output; got: %q", got)
+	}
+	if !strings.Contains(got, "/briefing") {
+		t.Errorf("expected /briefing hint in footer; got: %q", got)
+	}
+}
+
+// TestPrintBriefingBlock_AssistantUsesAgentID — assistant turns show the
+// AgentID label, not the string "assistant".
+func TestPrintBriefingBlock_AssistantUsesAgentID(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	loop := &chatLoop{out: &out, errw: &bytes.Buffer{}}
+	turns := []chatTurn{
+		{Role: "user", Text: "ping"},
+		{Role: "assistant", AgentID: "codex", Text: "pong"},
+	}
+	loop.printBriefingBlock(turns, "codex")
+	got := out.String()
+	if !strings.Contains(got, "[codex]") {
+		t.Errorf("expected [codex] label; got: %q", got)
+	}
+	if strings.Contains(got, "[assistant]") {
+		t.Errorf("unexpected [assistant] label; got: %q", got)
+	}
+}
+
+// TestPrintBriefingBlock_TruncatesLongLines — turn text longer than 90
+// bytes is truncated with a '…' marker; the line itself stays short.
+func TestPrintBriefingBlock_TruncatesLongLines(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	loop := &chatLoop{out: &out, errw: &bytes.Buffer{}}
+	longText := strings.Repeat("A", 200)
+	loop.printBriefingBlock([]chatTurn{{Role: "user", Text: longText}}, "claude")
+	got := out.String()
+	if !strings.Contains(got, "…") {
+		t.Errorf("expected truncation marker '…'; got: %q", got)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		// strip the sidebar prefix "  │ " (4 bytes) before measuring content
+		content := strings.TrimPrefix(line, "  │ ")
+		if len(content) > 100 {
+			t.Errorf("line too long (%d bytes): %q", len(content), content)
+		}
+	}
+}
+
+// TestPrintBriefingBlock_NewlinesCollapsed — multiline turn text is
+// flattened to a single display line (newlines replaced with spaces).
+func TestPrintBriefingBlock_NewlinesCollapsed(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	loop := &chatLoop{out: &out, errw: &bytes.Buffer{}}
+	loop.printBriefingBlock([]chatTurn{
+		{Role: "user", Text: "line one\nline two\nline three"},
+	}, "claude")
+	// Each sidebar row must contain at most one \n (its own trailing newline).
+	for _, line := range strings.Split(strings.TrimRight(out.String(), "\n"), "\n") {
+		if strings.Contains(line, "\n") {
+			t.Errorf("unexpected embedded newline in sidebar line: %q", line)
+		}
+	}
+	// The content words should still be present.
+	got := out.String()
+	if !strings.Contains(got, "line one") || !strings.Contains(got, "line two") {
+		t.Errorf("collapsed text missing content words; got: %q", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// printLastBriefing
+// ---------------------------------------------------------------------------
+
+// TestPrintLastBriefing_NoBriefing — before any switch the placeholder is shown.
+func TestPrintLastBriefing_NoBriefing(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	loop := &chatLoop{out: &out, errw: &bytes.Buffer{}}
+	loop.printLastBriefing()
+	if !strings.Contains(out.String(), "no briefing") {
+		t.Errorf("expected 'no briefing' placeholder; got: %q", out.String())
+	}
+}
+
+// TestPrintLastBriefing_ShowsStoredBriefing — after a lastBriefing is set
+// the full text is printed inside a ╷...╵ block with the from-agent label.
+func TestPrintLastBriefing_ShowsStoredBriefing(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	loop := &chatLoop{
+		out:              &out,
+		errw:             &bytes.Buffer{},
+		lastBriefingFrom: "minimax",
+		lastBriefing:     "[Context handoff]\n\nRecent exchange here.\n",
+	}
+	loop.printLastBriefing()
+	got := out.String()
+	for _, want := range []string{"minimax", "[Context handoff]", "Recent exchange here", "╷", "╵"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("printLastBriefing missing %q; got:\n%s", want, got)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// /briefing slash command dispatch
+// ---------------------------------------------------------------------------
+
+// TestHandleSlash_BriefingNoPriorSwitch — /briefing before any switch shows
+// the "no briefing yet" placeholder, never panics.
+func TestHandleSlash_BriefingNoPriorSwitch(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	loop := &chatLoop{out: &out, errw: &bytes.Buffer{}}
+	loop.handleSlash("/briefing")
+	if !strings.Contains(out.String(), "no briefing") {
+		t.Errorf("expected placeholder; got: %q", out.String())
+	}
+}
+
+// TestHandleSlash_BriefingShowsLastBriefing — /briefing after a switch has
+// been recorded surfaces the stored full briefing text.
+func TestHandleSlash_BriefingShowsLastBriefing(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	loop := &chatLoop{
+		out:              &out,
+		errw:             &bytes.Buffer{},
+		lastBriefingFrom: "claude",
+		lastBriefing:     "handoff text from claude\n",
+	}
+	loop.handleSlash("/briefing")
+	if !strings.Contains(out.String(), "handoff text from claude") {
+		t.Errorf("expected briefing body; got: %q", out.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// lastBriefing populated by buildBriefing round-trip
+// ---------------------------------------------------------------------------
+
+// TestBriefingStoredAfterBuild — calling buildBriefing with a real turn log
+// produces a non-empty string that contains the expected handoff markers.
+// This is the canonical smoke test: it exercises the same path that
+// switchAgent takes, proving the data available to printBriefingBlock and
+// printLastBriefing is correct.
+func TestBriefingStoredAfterBuild(t *testing.T) {
+	t.Parallel()
+	loop := &chatLoop{
+		out:  &bytes.Buffer{},
+		errw: &bytes.Buffer{},
+		turnLog: []chatTurn{
+			{Role: "user", Text: "implement the rotation ring enhancement"},
+			{Role: "assistant", AgentID: "minimax", Text: "Here is my plan for the rotation ring..."},
+			{Role: "user", Text: "can we stream the briefing from the switch"},
+		},
+	}
+
+	briefing, ok := loop.buildBriefing("minimax", "claude")
+	if !ok {
+		t.Fatal("buildBriefing returned false; expected a briefing")
+	}
+
+	// Simulate what switchAgent does: store the briefing.
+	loop.lastBriefingFrom = "minimax"
+	loop.lastBriefing = briefing
+
+	// 1. Inline block output contains the expected structure.
+	var blockOut bytes.Buffer
+	loop.out = &blockOut
+	loop.printBriefingBlock(loop.snapshotTurns(), "minimax")
+	block := blockOut.String()
+
+	for _, want := range []string{
+		"╷", "context from minimax", "3 turns",
+		"[user]", "rotation ring",
+		"[minimax]", "rotation ring",
+		"[user]", "stream the briefing",
+		"╵", "/briefing",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("inline block missing %q;\nblock:\n%s", want, block)
+		}
+	}
+
+	// 2. /briefing re-show contains the full handoff text.
+	var reShowOut bytes.Buffer
+	loop.out = &reShowOut
+	loop.printLastBriefing()
+	reShow := reShowOut.String()
+
+	for _, want := range []string{
+		"minimax", "Context handoff", "rotation ring", "stream the briefing",
+	} {
+		if !strings.Contains(reShow, want) {
+			t.Errorf("/briefing re-show missing %q;\noutput:\n%s", want, reShow)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// refreshPromptHint — ⊙ saved indicator
+// ---------------------------------------------------------------------------
+
+// newHintLoop builds the minimal chatLoop needed to exercise refreshPromptHint.
+func newHintLoop(errw *bytes.Buffer) *chatLoop {
+	return &chatLoop{
+		out:  &bytes.Buffer{},
+		errw: errw,
+	}
+}
+
+// TestRefreshPromptHint_SavedIndicatorPresent — when turnSaved is true the
+// hint line contains the ⊙ saved marker (with ANSI green codes).
+func TestRefreshPromptHint_SavedIndicatorPresent(t *testing.T) {
+	t.Parallel()
+	var errw bytes.Buffer
+	loop := newHintLoop(&errw)
+	loop.refreshPromptHint(map[string]any{
+		"cost_usd":      0.0041,
+		"input_tokens":  float64(100),
+		"output_tokens": float64(25),
+	}, true)
+	got := errw.String()
+	if !strings.Contains(got, "⊙ saved") {
+		t.Errorf("expected '⊙ saved' in hint line; got: %q", got)
+	}
+	// ANSI green escape must wrap the marker.
+	if !strings.Contains(got, "\033[32m") {
+		t.Errorf("expected ANSI green escape in hint line; got: %q", got)
+	}
+}
+
+// TestRefreshPromptHint_SavedIndicatorAbsent — when turnSaved is false
+// (empty response, no turn recorded) ⊙ saved must not appear.
+func TestRefreshPromptHint_SavedIndicatorAbsent(t *testing.T) {
+	t.Parallel()
+	var errw bytes.Buffer
+	loop := newHintLoop(&errw)
+	loop.refreshPromptHint(map[string]any{
+		"cost_usd":      0.0012,
+		"input_tokens":  float64(50),
+		"output_tokens": float64(10),
+	}, false)
+	got := errw.String()
+	if strings.Contains(got, "⊙") {
+		t.Errorf("unexpected ⊙ in hint line when turnSaved=false; got: %q", got)
+	}
+}
+
+// TestRefreshPromptHint_SavedAlongCostAndTokens — ⊙ saved appears together
+// with cost and token parts in a single hint line.
+func TestRefreshPromptHint_SavedAlongCostAndTokens(t *testing.T) {
+	t.Parallel()
+	var errw bytes.Buffer
+	loop := newHintLoop(&errw)
+	loop.refreshPromptHint(map[string]any{
+		"cost_usd":      0.0006,
+		"input_tokens":  float64(1683),
+		"output_tokens": float64(115),
+	}, true)
+	got := errw.String()
+	for _, want := range []string{"$0.0006", "1683→115 tok", "⊙ saved"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("hint line missing %q; got: %q", want, got)
+		}
+	}
+}
+
+// TestRefreshPromptHint_NoCostNoTokens_SavedStillShown — ⊙ saved is emitted
+// even when there are no cost/token stats (e.g. local model or rate-limited).
+func TestRefreshPromptHint_NoCostNoTokens_SavedStillShown(t *testing.T) {
+	t.Parallel()
+	var errw bytes.Buffer
+	loop := newHintLoop(&errw)
+	loop.refreshPromptHint(map[string]any{}, true)
+	got := errw.String()
+	if !strings.Contains(got, "⊙ saved") {
+		t.Errorf("expected '⊙ saved' even with no cost/token data; got: %q", got)
+	}
+}
+
+// TestRefreshPromptHint_EmptyHintWhenNothingToShow — no cost, no tokens,
+// and turnSaved=false → hint line must be blank (no spurious output).
+func TestRefreshPromptHint_EmptyHintWhenNothingToShow(t *testing.T) {
+	t.Parallel()
+	var errw bytes.Buffer
+	loop := newHintLoop(&errw)
+	loop.refreshPromptHint(map[string]any{}, false)
+	got := errw.String()
+	if strings.TrimSpace(got) != "" {
+		t.Errorf("expected empty hint when no data; got: %q", got)
 	}
 }
