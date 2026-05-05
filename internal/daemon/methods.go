@@ -365,6 +365,22 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		s.groupList(enc, req)
 	case "consensus.aggregate":
 		s.consensusAggregate(enc, req)
+	case "security.list":
+		s.securityList(enc, req)
+	case "security.show":
+		s.securityShow(enc, req)
+	case "security.exists":
+		s.securityExists(enc, req)
+	case "security.accept":
+		s.securityAccept(enc, req)
+	case "security.scan":
+		s.securityScan(enc, req)
+	case "security.enable":
+		s.securityEnable(enc, req)
+	case "security.disable":
+		s.securityDisable(enc, req)
+	case "security.status":
+		s.securityStatus(enc, req)
 	case "config.setenv":
 		// Injects a single env var into the daemon process so runners that
 		// read it on each request (e.g. MINIMAX_API_KEY) pick it up without

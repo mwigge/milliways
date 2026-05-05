@@ -14,10 +14,19 @@
 
 package tools
 
-import "github.com/mwigge/milliways/internal/provider"
+import (
+	"github.com/mwigge/milliways/internal/pantry"
+	"github.com/mwigge/milliways/internal/provider"
+)
 
 // NewBuiltInRegistry returns a registry populated with all built-in tools.
 func NewBuiltInRegistry() *Registry {
+	return NewBuiltInRegistryWithStore(nil)
+}
+
+// NewBuiltInRegistryWithStore returns a registry populated with all built-in
+// tools, backed by the given SecurityStore for the security_scan tool.
+func NewBuiltInRegistryWithStore(store *pantry.SecurityStore) *Registry {
 	r := NewRegistry()
 	r.Register("Bash", handleBash, provider.ToolDef{
 		Name:        "Bash",
@@ -105,5 +114,6 @@ func NewBuiltInRegistry() *Registry {
 			"required": []string{"content"},
 		},
 	})
+	r.Register("security_scan", securityScanHandler(store), securityScanToolDef())
 	return r
 }

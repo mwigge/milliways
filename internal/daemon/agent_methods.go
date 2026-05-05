@@ -19,9 +19,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/mwigge/milliways/internal/daemon/textproc"
+	"github.com/mwigge/milliways/internal/security"
 )
 
 // JSON-RPC method handlers for the agent.* surface. Each handler reads
@@ -31,6 +33,9 @@ import (
 type agentOpenParams struct {
 	AgentID   string `json:"agent_id"`
 	SessionID string `json:"session_id,omitempty"`
+	// SecurityContext controls whether a security context priming block is
+	// injected before the first user turn. Defaults to true when nil.
+	SecurityContext *bool `json:"security_context,omitempty"`
 }
 
 type agentOpenResult struct {
@@ -72,6 +77,24 @@ func (s *Server) agentOpen(enc *json.Encoder, req *Request) {
 	s.statusMu.Lock()
 	s.currentAgent = p.AgentID
 	s.statusMu.Unlock()
+
+	// Inject security context priming block BEFORE writeResult so the session
+	// receives it before the client starts sending messages.
+	injectSec := p.SecurityContext == nil || *p.SecurityContext
+	if injectSec && s.pantryDB != nil {
+		findings, err := s.pantryDB.Security().ListActive([]string{"CRITICAL", "HIGH"})
+		if err != nil {
+			slog.Debug("security context: list active findings", "err", err)
+		} else if len(findings) > 0 {
+			block := security.BuildContextBlock(findings, security.DefaultTokenCap)
+			if block != "" {
+				if sendErr := sess.Send([]byte(block)); sendErr != nil {
+					slog.Debug("security context: send priming block", "err", sendErr)
+				}
+			}
+		}
+	}
+
 	writeResult(enc, req.ID, agentOpenResult{
 		Handle:  int64(sess.Handle),
 		PtySize: ptySize{Cols: 80, Rows: 24},

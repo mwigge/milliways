@@ -259,6 +259,7 @@ func buildCompleter(agentID string) readline.AutoCompleter {
 		readline.PcItem("/parallel",
 			readline.PcItem("--providers"),
 		),
+		readline.PcItem("/scan"),
 		readline.PcItem("/help"),
 		readline.PcItem("/exit"),
 		// Install / Upgrade
@@ -977,6 +978,8 @@ func (l *chatLoop) handleSlash(line string) {
 		l.handlePath(rest)
 	case "parallel":
 		l.handleParallel(rest)
+	case "scan":
+		l.handleScan(rest)
 	case "help", "?":
 		l.printHelp()
 	case "exit", "quit", "bye":
@@ -2249,6 +2252,7 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /metrics                      live metrics dashboard (token usage, costs, ops)")
 	fmt.Fprintln(l.out, "  /switch <runner>              same as /<runner>")
 	fmt.Fprintln(l.out, "  /login [client]               auth setup — API key prompt or CLI steps")
+	fmt.Fprintln(l.out, "  /scan                         scan workspace dependencies for known CVEs")
 	fmt.Fprintln(l.out, "  /exit                         exit (Ctrl+D also works)")
 	fmt.Fprintln(l.out, "  !<cmd>                        run a shell command inline")
 	fmt.Fprintln(l.out)

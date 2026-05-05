@@ -69,6 +69,9 @@ func main() {
 	if sub == "parallel" {
 		os.Exit(runParallel(rest, os.Stdout, os.Stderr))
 	}
+	if sub == "security" {
+		os.Exit(runSecurity(rest, os.Stdout, os.Stderr))
+	}
 
 	fs := flag.NewFlagSet(sub, flag.ExitOnError)
 	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
@@ -757,6 +760,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  parallel list                              — list recent parallel dispatch groups")
 	fmt.Fprintln(os.Stderr, "  parallel status <group-id>                 — show per-slot status for a group")
 	fmt.Fprintln(os.Stderr, "  parallel consensus <group-id>              — print the consensus aggregate summary")
+	fmt.Fprintln(os.Stderr, "  security list [--include-accepted]         — list active security findings (CVE/OSV)")
+	fmt.Fprintln(os.Stderr, "  security show <cve-id>                     — show full CVE detail")
+	fmt.Fprintln(os.Stderr, "  security accept <cve-id> --package <name> --reason <text> --expires <YYYY-MM-DD>")
 }
 
 func die(f string, a ...any) {

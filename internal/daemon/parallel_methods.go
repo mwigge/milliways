@@ -23,6 +23,7 @@ import (
 
 	"github.com/mwigge/milliways/internal/mempalace"
 	"github.com/mwigge/milliways/internal/parallel"
+	"github.com/mwigge/milliways/internal/security"
 )
 
 // parallelDispatchParams are the JSON-RPC params for parallel.dispatch.
@@ -99,6 +100,14 @@ func (s *Server) parallelDispatch(enc *json.Encoder, req *Request) {
 	if err != nil {
 		writeError(enc, req.ID, ErrInvalidParams, err.Error())
 		return
+	}
+
+	// Prepend security context block to the preamble (generated once for the group).
+	if s.pantryDB != nil {
+		secFindings, _ := s.pantryDB.Security().ListActive([]string{"CRITICAL", "HIGH"})
+		if len(secFindings) > 0 {
+			result.ContextPreamble = security.BuildContextBlock(secFindings, security.DefaultTokenCap) + result.ContextPreamble
+		}
 	}
 
 	// Send preamble + user prompt to every open session. Fire-and-forget:

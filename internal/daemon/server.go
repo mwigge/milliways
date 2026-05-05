@@ -35,6 +35,7 @@ import (
 	"github.com/mwigge/milliways/internal/daemon/runners"
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/parallel"
+	"github.com/mwigge/milliways/internal/security"
 )
 
 // Protocol version exposed via ping. Bump major when breaking; minor for
@@ -85,8 +86,12 @@ type Server struct {
 	// callers); dispatch falls back gracefully in that case.
 	metrics *metrics.Store
 
-	// pantryDB is the milliways SQLite store; owns parallel group persistence.
+	// pantryDB is the milliways SQLite store; owns parallel group and security persistence.
+	// nil if the open fails — features degrade gracefully.
 	pantryDB *pantry.DB
+
+	// secRunner manages background OSV scanning. nil when pantryDB is nil.
+	secRunner *security.Runner
 }
 
 // NewServer binds a UDS at socket with mode 0600. Removes any stale socket
@@ -143,16 +148,24 @@ func NewServer(socket string) (*Server, error) {
 	s.historyQuota = NewHistoryQuota()
 
 	pantryPath := filepath.Join(filepath.Dir(socket), "milliways.db")
-	pdb, err := pantry.Open(pantryPath)
-	if err != nil {
-		l.Close()
-		bgCancel()
-		mstore.Close()
-		return nil, fmt.Errorf("open pantry db: %w", err)
-	}
-	s.pantryDB = pdb
-	if err := parallel.RecoverInterrupted(pdb.Parallel()); err != nil {
-		slog.Warn("parallel: restart recovery failed", "err", err)
+	pdb, pdbErr := pantry.Open(pantryPath)
+	if pdbErr != nil {
+		slog.Warn("pantry db open failed; parallel groups and security scanning disabled", "err", pdbErr)
+	} else {
+		s.pantryDB = pdb
+		if err := parallel.RecoverInterrupted(pdb.Parallel()); err != nil {
+			slog.Warn("parallel: restart recovery failed", "err", err)
+		}
+		workspaceRoot := os.Getenv("MILLIWAYS_WORKSPACE_ROOT")
+		if workspaceRoot == "" {
+			if wd, err := os.Getwd(); err == nil {
+				workspaceRoot = wd
+			} else {
+				workspaceRoot = "."
+			}
+		}
+		s.secRunner = security.NewRunner(pdb.Security(), workspaceRoot)
+		s.secRunner.Start(bgCtx)
 	}
 
 	go s.statusBroadcaster()
