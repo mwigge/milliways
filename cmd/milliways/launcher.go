@@ -296,9 +296,14 @@ func runCockpit(ctx context.Context, _ []string) error {
 		}
 	}
 
-	// In WezTerm: launch the full panel deck (home-hero-dashboard style).
-	// The calling pane stays as the main chat; the deck opens alongside it.
-	if os.Getenv("TERM_PROGRAM") == "WezTerm" {
+	// In WezTerm (any fork): launch the full panel deck.
+	// WEZTERM_PANE is set by the mux on every pane — more reliable than
+	// TERM_PROGRAM which varies across WezTerm forks. wezterm CLI must also
+	// be findable on PATH. Skip deck if MILLIWAYS_NO_DECK=1 is set.
+	weztermPaneID := os.Getenv("WEZTERM_PANE")
+	_, weztermCLIErr := exec.LookPath("wezterm")
+	deckDisabled := os.Getenv("MILLIWAYS_NO_DECK") == "1"
+	if weztermPaneID != "" && weztermCLIErr == nil && !deckDisabled {
 		if err := runDeck(ctx, socketPath); err != nil {
 			// Deck launch failed — fall through to single chat gracefully.
 			fmt.Fprintf(os.Stderr, "milliways: deck launch failed (%v), falling back to single chat\n", err)
@@ -318,12 +323,8 @@ func runCockpit(ctx context.Context, _ []string) error {
 // Enter to switch the right pane to that provider via /switch. No separate
 // provider tabs are spawned; the single right pane handles all providers.
 func runDeck(_ context.Context, _ string) error {
-	// The current pane is the RIGHT (chat) pane. Record its ID so the
-	// navigator can send commands to it via wezterm cli send-text.
+	// WEZTERM_PANE is guaranteed non-empty by the caller's check.
 	rightPaneID := os.Getenv("WEZTERM_PANE")
-	if rightPaneID == "" {
-		return fmt.Errorf("WEZTERM_PANE not set — deck requires a running WezTerm instance")
-	}
 
 	milliwaysBin, err := os.Executable()
 	if err != nil {
