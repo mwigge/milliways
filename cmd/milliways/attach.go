@@ -469,6 +469,7 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 
 	var providers []deckProviderInfo
 	selected := 0
+	active := "" // last provider switched to in the right pane
 	// polled tracks whether at least one successful agent.list call has
 	// returned. Until then we show "connecting..."; after, an empty list
 	// means "no providers" — Bug 3.
@@ -584,6 +585,11 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 		}
 
 		ln("")
+		// Status bar: show active provider if one has been switched to.
+		if active != "" {
+			provColor := parallel.ProviderColor(active)
+			ln("%s● %s%s%s active%s", dim, provColor, active, dim, reset)
+		}
 		ln("%s↑↓ move  ↩ switch  q quit%s", dim, reset)
 	}
 
@@ -631,8 +637,11 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 			"--pane-id", rightPaneID,
 			"--no-paste",
 			"/switch "+provider+"\n").Run(); err != nil {
-			slog.Debug("deck: send-text failed", "err", err)
+			slog.Debug("deck: send-text failed", "provider", provider, "err", err)
+			return
 		}
+		active = provider
+		render()
 	}
 
 	ticker := time.NewTicker(2 * time.Second)
