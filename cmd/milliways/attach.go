@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -430,9 +431,28 @@ type deckProviderInfo struct {
 //	q/^D    exit navigator
 func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 	sock := daemonSocket()
-	client, err := rpc.Dial(sock)
-	if err != nil {
-		return fmt.Errorf("dial milliwaysd: %w", err)
+
+	// Retry dial up to 3 times with 200ms backoff. The navigator is launched
+	// by wezterm cli split-pane concurrently with the chat pane; the daemon
+	// is expected to be up but a short timing race can cause the first dial
+	// to fail.
+	var client *rpc.Client
+	const dialAttempts = 3
+	const dialBackoff = 200 * time.Millisecond
+	for attempt := 1; attempt <= dialAttempts; attempt++ {
+		var err error
+		client, err = rpc.Dial(sock)
+		if err == nil {
+			break
+		}
+		if attempt == dialAttempts {
+			return fmt.Errorf("dial milliwaysd: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(dialBackoff):
+		}
 	}
 	defer func() { _ = client.Close() }()
 
@@ -449,6 +469,10 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 
 	var providers []deckProviderInfo
 	selected := 0
+	// polled tracks whether at least one successful agent.list call has
+	// returned. Until then we show "connecting..."; after, an empty list
+	// means "no providers" — Bug 3.
+	polled := false
 
 	pollProviders := func() {
 		// agent.list returns a flat []AgentInfo array, not {"agents":[...]}.
@@ -460,6 +484,10 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 		if err := client.Call("agent.list", nil, &agents); err != nil {
 			return
 		}
+		// Always update providers from any successful response, even an empty
+		// one. An empty list means no runners are configured, not that we are
+		// still connecting — Bug 3.
+		polled = true
 		updated := make([]deckProviderInfo, 0, len(agents))
 		for _, a := range agents {
 			updated = append(updated, deckProviderInfo{
@@ -468,12 +496,14 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 				Model:      a.Model,
 			})
 		}
-		if len(updated) > 0 {
-			if selected >= len(updated) {
-				selected = len(updated) - 1
-			}
-			providers = updated
+		// Clamp the cursor regardless of whether the new list is empty or
+		// shrunk — Bug 5.
+		if len(updated) == 0 {
+			selected = 0
+		} else if selected >= len(updated) {
+			selected = len(updated) - 1
 		}
+		providers = updated
 	}
 
 	render := func() {
@@ -487,14 +517,23 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 
 		fmt.Print("\033[2J\033[H") // clear + cursor home
 
-		// Title bar
+		// Title bar — guard against negative repeat count when the pane is
+		// narrower than the title string (13 chars).
 		title := " milliways "
-		pad := strings.Repeat("─", (w-len(title))/2)
+		padN := (w - len(title)) / 2
+		if padN < 0 {
+			padN = 0
+		}
+		pad := strings.Repeat("─", padN)
 		fmt.Printf("%s%s%s%s\n", dim, pad+title+pad, reset, "")
 		fmt.Println()
 
 		if len(providers) == 0 {
-			fmt.Printf("  %sconnecting...%s\n", dim, reset)
+			if polled {
+				fmt.Printf("  %sno providers%s\n", dim, reset)
+			} else {
+				fmt.Printf("  %sconnecting...%s\n", dim, reset)
+			}
 		}
 
 		for i, p := range providers {
@@ -582,10 +621,12 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 		if rightPaneID == "" {
 			return
 		}
-		_ = exec.Command("wezterm", "cli", "send-text",
+		if err := exec.Command("wezterm", "cli", "send-text",
 			"--pane-id", rightPaneID,
 			"--no-paste",
-			"/switch "+provider+"\n").Run()
+			"/switch "+provider+"\n").Run(); err != nil {
+			slog.Debug("deck: send-text failed", "err", err)
+		}
 	}
 
 	ticker := time.NewTicker(2 * time.Second)
