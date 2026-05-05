@@ -252,6 +252,7 @@ based on what each tool does best.
 	cmd.AddCommand(initCmd())
 	cmd.AddCommand(modeCmd())
 	cmd.AddCommand(traceCmd())
+	cmd.AddCommand(attachCmd())
 
 	return cmd
 }

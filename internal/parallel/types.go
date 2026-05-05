@@ -34,6 +34,7 @@ const (
 
 // SlotRecord describes one provider slot in a parallel group.
 type SlotRecord struct {
+	SlotN       int // 1-based slot number for display
 	Handle      int64
 	Provider    string
 	Status      SlotStatus
@@ -41,6 +42,15 @@ type SlotRecord struct {
 	CompletedAt time.Time
 	TokensIn    int
 	TokensOut   int
+}
+
+// UsedPct returns the percentage of daily quota consumed (0–100).
+// Returns 0 when LimitDay is 0 (no quota tracking).
+func (q QuotaSummary) UsedPct() float64 {
+	if q.LimitDay == 0 {
+		return 0
+	}
+	return float64(q.UsedToday) / float64(q.LimitDay) * 100
 }
 
 // Group is a parallel dispatch group returned to callers.
@@ -78,17 +88,6 @@ type SkippedProvider struct {
 // by a stub in tests.
 type AgentOpener interface {
 	OpenSession(ctx context.Context, providerID string) (int64, error)
-}
-
-// GroupStore persists parallel group state across daemon restarts.
-// Implemented by pantry.ParallelStore; extracted as an interface for testing.
-type GroupStore interface {
-	InsertGroup(g interface{ groupRecord() }) error
-	InsertSlot(s interface{ slotRecord() }) error
-	UpdateSlotStatus(handle int64, status string, tokensIn, tokensOut int) error
-	GetGroup(id string) (interface{}, error)
-	ListGroups(n int) ([]interface{}, error)
-	MarkInterruptedSlots() error
 }
 
 // MPClient is the subset of the MemPalace client used by the parallel package.

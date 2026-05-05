@@ -357,6 +357,14 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 			return
 		}
 		writeResult(enc, req.ID, res)
+	case "parallel.dispatch":
+		s.parallelDispatch(enc, req)
+	case "group.status":
+		s.groupStatus(enc, req)
+	case "group.list":
+		s.groupList(enc, req)
+	case "consensus.aggregate":
+		s.consensusAggregate(enc, req)
 	case "config.setenv":
 		// Injects a single env var into the daemon process so runners that
 		// read it on each request (e.g. MINIMAX_API_KEY) pick it up without
