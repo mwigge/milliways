@@ -66,6 +66,9 @@ func main() {
 	if sub == "check" {
 		os.Exit(runCheck(rest, os.Stdout, os.Stderr))
 	}
+	if sub == "parallel" {
+		os.Exit(runParallel(rest, os.Stdout, os.Stderr))
+	}
 
 	fs := flag.NewFlagSet(sub, flag.ExitOnError)
 	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
@@ -751,6 +754,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  upgrade [--check] [--yes] [--version <tag>] — upgrade milliways to the latest release")
 	fmt.Fprintln(os.Stderr, "  codegraph <verb> [args...]                 — CodeGraph index management (try `milliwaysctl codegraph --help`)")
 	fmt.Fprintln(os.Stderr, "  check                                      — health check — verify all features are installed")
+	fmt.Fprintln(os.Stderr, "  parallel list                              — list recent parallel dispatch groups")
+	fmt.Fprintln(os.Stderr, "  parallel status <group-id>                 — show per-slot status for a group")
+	fmt.Fprintln(os.Stderr, "  parallel consensus <group-id>              — print the consensus aggregate summary")
 }
 
 func die(f string, a ...any) {

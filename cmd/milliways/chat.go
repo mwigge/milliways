@@ -256,6 +256,9 @@ func buildCompleter(agentID string) readline.AutoCompleter {
 		readline.PcItem("/model"),
 		readline.PcItem("/agents"),
 		readline.PcItem("/quota"),
+		readline.PcItem("/parallel",
+			readline.PcItem("--providers"),
+		),
 		readline.PcItem("/help"),
 		readline.PcItem("/exit"),
 		// Install / Upgrade
@@ -972,6 +975,8 @@ func (l *chatLoop) handleSlash(line string) {
 		l.handleLocalHot(rest)
 	case "path":
 		l.handlePath(rest)
+	case "parallel":
+		l.handleParallel(rest)
 	case "help", "?":
 		l.printHelp()
 	case "exit", "quit", "bye":
@@ -2246,6 +2251,11 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /login [client]               auth setup — API key prompt or CLI steps")
 	fmt.Fprintln(l.out, "  /exit                         exit (Ctrl+D also works)")
 	fmt.Fprintln(l.out, "  !<cmd>                        run a shell command inline")
+	fmt.Fprintln(l.out)
+	fmt.Fprintln(l.out, "Parallel dispatch:")
+	fmt.Fprintln(l.out, "  /parallel [--providers list] <prompt>  run prompt across multiple providers concurrently")
+	fmt.Fprintln(l.out, "    providers: comma-separated list, e.g. claude,codex,local")
+	fmt.Fprintln(l.out, "    omit --providers to use all available providers")
 	fmt.Fprintln(l.out)
 
 	fmt.Fprintln(l.out, "Context management:")

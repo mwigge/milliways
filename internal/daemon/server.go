@@ -82,6 +82,9 @@ type Server struct {
 	// nil if NewServer was constructed without a state dir (e.g. older
 	// callers); dispatch falls back gracefully in that case.
 	metrics *metrics.Store
+
+	// parallel is the in-memory store for parallel dispatch groups.
+	parallel *parallelStore
 }
 
 // NewServer binds a UDS at socket with mode 0600. Removes any stale socket
@@ -136,6 +139,7 @@ func NewServer(socket string) (*Server, error) {
 	slog.Info("runners probed", "n", len(s.agentsCache))
 
 	s.historyQuota = NewHistoryQuota()
+	s.parallel = newParallelStore()
 
 	go s.statusBroadcaster()
 	return s, nil
