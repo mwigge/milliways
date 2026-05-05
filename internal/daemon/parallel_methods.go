@@ -303,7 +303,11 @@ func (s *Server) consensusAggregate(enc *json.Encoder, req *Request) {
 
 // mempalaceClient returns a parallel.MPClient backed by the MemPalace MCP
 // server when MEMPALACE_MCP_CMD is set. Returns nil gracefully when unset.
+// In tests, testMPClient overrides the real client.
 func (s *Server) mempalaceClient() parallel.MPClient {
+	if s.testMPClient != nil {
+		return s.testMPClient
+	}
 	c, err := mempalace.NewClientFromEnv()
 	if err != nil {
 		return nil

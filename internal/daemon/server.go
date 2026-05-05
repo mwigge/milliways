@@ -92,6 +92,9 @@ type Server struct {
 
 	// secRunner manages background OSV scanning. nil when pantryDB is nil.
 	secRunner *security.Runner
+
+	// testMPClient overrides mempalaceClient() in tests. nil in production.
+	testMPClient parallel.MPClient
 }
 
 // NewServer binds a UDS at socket with mode 0600. Removes any stale socket

@@ -21,6 +21,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mwigge/milliways/internal/parallel"
+	"github.com/mwigge/milliways/internal/rpc"
 )
 
 // TestAttachCmd_FlagRegistration verifies that the attach command is registered
@@ -189,5 +192,125 @@ func TestDrainStreamToWriter_PlainMode(t *testing.T) {
 	// Plain mode should not emit JSON structure
 	if strings.Contains(buf.String(), `"type"`) {
 		t.Errorf("plain mode should not emit JSON keys; got %q", buf.String())
+	}
+}
+
+// TestBuildQuotasFromSnapshots verifies that quota.get snapshots with a
+// positive cap are converted to QuotaSummary keyed by agent_id, and that
+// snapshots with zero cap (unlimited / not tracked) are omitted.
+func TestBuildQuotasFromSnapshots(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		snapshots []rpc.QuotaSnapshot
+		wantKeys  []string
+		wantAbsent []string
+		checkFn   func(t *testing.T, m map[string]parallel.QuotaSummary)
+	}{
+		{
+			name: "positive cap included",
+			snapshots: []rpc.QuotaSnapshot{
+				{AgentID: "claude", Used: 34, Cap: 100},
+				{AgentID: "codex", Used: 12, Cap: 100},
+			},
+			wantKeys: []string{"claude", "codex"},
+			checkFn: func(t *testing.T, m map[string]parallel.QuotaSummary) {
+				t.Helper()
+				if m["claude"].UsedToday != 34 {
+					t.Errorf("claude UsedToday = %d, want 34", m["claude"].UsedToday)
+				}
+				if m["claude"].LimitDay != 100 {
+					t.Errorf("claude LimitDay = %d, want 100", m["claude"].LimitDay)
+				}
+				if m["codex"].UsedToday != 12 {
+					t.Errorf("codex UsedToday = %d, want 12", m["codex"].UsedToday)
+				}
+			},
+		},
+		{
+			name: "zero cap omitted",
+			snapshots: []rpc.QuotaSnapshot{
+				{AgentID: "claude", Used: 50, Cap: 0},
+			},
+			wantAbsent: []string{"claude"},
+		},
+		{
+			name:      "empty snapshots returns empty map",
+			snapshots: nil,
+			wantKeys:  nil,
+		},
+		{
+			name: "mixed cap: only positive-cap entries appear",
+			snapshots: []rpc.QuotaSnapshot{
+				{AgentID: "claude", Used: 10, Cap: 200},
+				{AgentID: "gemini", Used: 5, Cap: 0},
+			},
+			wantKeys:   []string{"claude"},
+			wantAbsent: []string{"gemini"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := buildQuotasFromSnapshots(tt.snapshots)
+			for _, k := range tt.wantKeys {
+				if _, ok := got[k]; !ok {
+					t.Errorf("buildQuotasFromSnapshots(): missing key %q", k)
+				}
+			}
+			for _, k := range tt.wantAbsent {
+				if _, ok := got[k]; ok {
+					t.Errorf("buildQuotasFromSnapshots(): key %q should be absent", k)
+				}
+			}
+			if tt.checkFn != nil {
+				tt.checkFn(t, got)
+			}
+		})
+	}
+}
+
+// TestSumSlotTokens verifies that sumSlotTokens correctly totals TokensIn +
+// TokensOut across all slots.
+func TestSumSlotTokens(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		slots []parallel.SlotRecord
+		want  int
+	}{
+		{
+			name: "single slot",
+			slots: []parallel.SlotRecord{
+				{TokensIn: 100, TokensOut: 200},
+			},
+			want: 300,
+		},
+		{
+			name: "multiple slots",
+			slots: []parallel.SlotRecord{
+				{TokensIn: 1000, TokensOut: 2000},
+				{TokensIn: 500, TokensOut: 750},
+			},
+			want: 4250,
+		},
+		{
+			name:  "empty slots",
+			slots: nil,
+			want:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := sumSlotTokens(tt.slots)
+			if got != tt.want {
+				t.Errorf("sumSlotTokens() = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }

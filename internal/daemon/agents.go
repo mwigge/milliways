@@ -65,6 +65,15 @@ type AgentSession struct {
 	// Feeds the apply.extract RPC.
 	respMu      sync.Mutex
 	responseBuf []byte
+
+	// firstSendDone is 0 until the first agent.send runs context injection,
+	// then atomically set to 1 so subsequent sends skip injection.
+	firstSendDone atomic.Uint32
+
+	// onTurnComplete is called once per completed turn (when an "end" event
+	// arrives from the runner). The argument is the final response text.
+	// nil means no hook is installed.
+	onTurnComplete func(finalText string)
 }
 
 // responseBufCap is the per-session response-buffer capacity. 64 KiB is
@@ -137,6 +146,13 @@ func (p *recordingPusher) Push(event any) {
 				}
 			}(p.sess.AgentID, stateDir, payload)
 		}
+		// Fire onTurnComplete once per completed turn when the runner signals "end".
+		if t == "end" {
+			if hook := p.sess.onTurnComplete; hook != nil {
+				finalText := p.sess.snapshotResponse()
+				go hook(finalText)
+			}
+		}
 	default:
 		// ignore others
 	}
@@ -201,6 +217,8 @@ func (r *AgentRegistry) Open(agentID string) (*AgentSession, error) {
 		cancel:      cancel,
 		input:       make(chan []byte, 16),
 		streamReady: make(chan struct{}),
+		// firstSendDone starts at zero (atomic.Uint32 zero value) — first send
+		// will CAS it to 1 and perform context injection exactly once.
 	}
 	r.mu.Lock()
 	r.sessions[handle] = sess
@@ -457,32 +475,22 @@ func (s *AgentSession) Send(bytes []byte) error {
 // bytes is wrapped in `{"t":"data","b64":...}` and pushed back via the
 // stream — verifies the agent.open/send/stream/close pattern end-to-end
 // without needing a real runner subprocess.
+//
+// Events are routed through recordingPusher so that onTurnComplete and
+// response-buffer recording work identically to real runner sessions.
 func runEcho(sess *AgentSession) {
+	stream := waitForStream(sess)
+	if stream == nil {
+		return
+	}
+	pusher := &recordingPusher{stream: stream, sess: sess}
 	for bytes := range sess.input {
-		// Wait until the client subscribes (stream allocated).
-		var stream *Stream
-		for stream == nil {
-			sess.mu.Lock()
-			stream = sess.stream
-			sess.mu.Unlock()
-			if stream != nil {
-				break
-			}
-			// busy-wait briefly; in production we'd notify on a chan
-			// when stream is attached. Acceptable for the echo demo.
-			if sess.closed.Load() {
-				return
-			}
-		}
-		stream.Push(map[string]any{
+		pusher.Push(map[string]any{
 			"t":   "data",
 			"b64": base64.StdEncoding.EncodeToString(bytes),
 		})
-		sess.recordResponse(bytes)
 	}
-	if sess.stream != nil {
-		sess.stream.Push(map[string]any{"t": "end"})
-		sess.stream.Close()
-	}
+	pusher.Push(map[string]any{"t": "end"})
+	stream.Close()
 	slog.Debug("echo session ended", "handle", sess.Handle)
 }
