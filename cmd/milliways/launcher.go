@@ -310,7 +310,6 @@ func runCockpit(ctx context.Context, _ []string) error {
 		if rightPaneID == "" {
 			rightPaneID, _ = detectWeztermCurrentPaneID()
 		}
-		fmt.Fprintf(os.Stderr, "  deck: rightPaneID=%q weztermCLI=ok deckDisabled=%v\n", rightPaneID, deckDisabled)
 		if rightPaneID != "" {
 			if err := runDeck(ctx, socketPath, rightPaneID); err != nil {
 				fmt.Fprintf(os.Stderr, "milliways: deck launch failed (%v), falling back to single chat\n", err)
