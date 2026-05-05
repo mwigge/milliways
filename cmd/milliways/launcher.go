@@ -39,7 +39,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mwigge/milliways/internal/parallel"
 	"github.com/mwigge/milliways/internal/rpc"
 )
 
@@ -312,65 +311,66 @@ func runCockpit(ctx context.Context, _ []string) error {
 	return runChat(ctx)
 }
 
-// runDeck opens one idle session per available provider and displays the
-// WezTerm panel layout alongside the calling pane. Sessions are ready but
-// no prompt is sent — the user types normally in each pane, or uses
-// /parallel <prompt> in the main pane to broadcast to all providers at once.
+// deckProviders is the default set shown in the startup deck — the four
+// primary cloud providers. Local and pool are omitted from the default
+// deck to keep the layout manageable; add via MILLIWAYS_DECK_PROVIDERS env.
+var deckProviders = []string{"claude", "codex", "copilot", "minimax"}
+
+// runDeck opens the home-hero-dashboard layout: left navigator (30%) plus
+// one full milliways chat pane per provider on the right, each pre-switched
+// to its assigned client. The calling pane stays as the main chat session
+// (/help, /parallel, /takeover, /scan etc. work here).
+//
+// Each provider pane is a real independent milliways session — the user can
+// type directly to that client, switch providers with /takeover, or use the
+// main pane to /parallel broadcast to all of them.
 func runDeck(ctx context.Context, socketPath string) error {
-	c, err := rpc.Dial(socketPath)
+	// Allow override via env for power users.
+	providers := deckProviders
+	if env := os.Getenv("MILLIWAYS_DECK_PROVIDERS"); env != "" {
+		providers = splitComma(env)
+	}
+
+	milliwaysBin, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("dial daemon: %w", err)
+		milliwaysBin = "milliways"
 	}
-	defer func() { _ = c.Close() }()
 
-	// Discover available providers.
-	var agentList []struct {
-		ID         string `json:"id"`
-		Available  bool   `json:"available"`
-		AuthStatus string `json:"auth_status"`
+	// Left navigator pane — 30% width, shows status of all deck panes.
+	// Runs `milliways attach --nav deck` which polls group.status.
+	navArgs := []string{"cli", "split-pane", "--percent", "30", "--",
+		milliwaysBin, "attach", "--nav", "deck"}
+	if out, err := exec.Command("wezterm", navArgs...).CombinedOutput(); err != nil {
+		return fmt.Errorf("wezterm split-pane (nav): %w\n%s", err, out)
 	}
-	if err := c.Call("agent.list", nil, &agentList); err != nil {
-		return fmt.Errorf("agent.list: %w", err)
-	}
-	var providers []string
-	for _, a := range agentList {
-		if a.ID != "pool" && a.AuthStatus != "missing_credentials" {
-			providers = append(providers, a.ID)
+
+	// One pane per provider — each runs a full milliways chat pre-switched
+	// to that provider via MILLIWAYS_START_PROVIDER env.
+	for _, provider := range providers {
+		paneArgs := []string{
+			"cli", "split-pane",
+			"--", "env",
+			"MILLIWAYS_START_PROVIDER=" + provider,
+			milliwaysBin,
+		}
+		if out, err := exec.Command("wezterm", paneArgs...).CombinedOutput(); err != nil {
+			// Non-fatal — skip unavailable providers.
+			fmt.Fprintf(os.Stderr, "milliways: deck pane for %s failed: %v\n%s\n", provider, err, out)
 		}
 	}
-	if len(providers) == 0 {
-		return fmt.Errorf("no providers available — use /login to configure credentials")
-	}
 
-	// Open one idle session per provider via agent.open — no prompt sent.
-	// Sessions sit ready for input; /parallel <prompt> will broadcast later.
-	result := parallel.DispatchResult{GroupID: "deck"}
-	for i, provider := range providers {
-		var openResp struct {
-			Handle int64 `json:"handle"`
+	return nil
+}
+
+// splitComma splits a comma-separated string and trims whitespace.
+func splitComma(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
 		}
-		if err := c.Call("agent.open", map[string]any{
-			"agent_id":         provider,
-			"security_context": false, // suppress injection on idle startup panes
-		}, &openResp); err != nil {
-			// Skip providers that fail to open (missing binary, auth error etc.)
-			continue
-		}
-		result.Slots = append(result.Slots, parallel.SlotRecord{
-			SlotN:    i + 1,
-			Handle:   openResp.Handle,
-			Provider: provider,
-			Status:   parallel.SlotRunning,
-		})
 	}
-
-	if len(result.Slots) == 0 {
-		return fmt.Errorf("no provider sessions could be opened")
-	}
-
-	// Launch the WezTerm deck: navigator pane + one idle pane per provider.
-	// The calling pane stays as the main milliways chat.
-	return parallel.Launch(result, result.GroupID)
+	return out
 }
 
 // startDaemonDetached spawns `milliwaysd` in its own session so it survives

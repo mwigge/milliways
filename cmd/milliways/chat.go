@@ -409,6 +409,13 @@ func runChat(ctx context.Context) error {
 	go globalModelCache.RefreshAsync()
 
 	loop.printLanding()
+
+	// When launched by the deck startup, auto-switch to the designated provider
+	// so each WezTerm pane starts live with its assigned AI client.
+	if provider := os.Getenv("MILLIWAYS_START_PROVIDER"); provider != "" {
+		loop.switchAgent(provider)
+	}
+
 	return loop.run(ctx)
 }
 
