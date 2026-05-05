@@ -2267,17 +2267,22 @@ func (l *chatLoop) printLanding() {
 	fmt.Fprintln(l.out, "  daemon  "+state.daemonLine)
 	fmt.Fprintln(l.out)
 
-	fmt.Fprintln(l.out, "Pick a client:")
-	statuses := l.fetchAgentStatuses()
-	for i, name := range chatSwitchableAgents {
-		s := statuses[name]
-		model := s.model
-		if model == "" {
-			model = "—"
+	if os.Getenv("MILLIWAYS_DECK_MODE") == "1" {
+		// In deck mode the left navigator pane handles provider selection.
+		fmt.Fprintln(l.out, "  Select a provider in the left panel  ↑↓ move  ↩ switch")
+	} else {
+		fmt.Fprintln(l.out, "Pick a client:")
+		statuses := l.fetchAgentStatuses()
+		for i, name := range chatSwitchableAgents {
+			s := statuses[name]
+			model := s.model
+			if model == "" {
+				model = "—"
+			}
+			color := agentColor(name)
+			reset := "\033[0m"
+			fmt.Fprintf(l.out, "  /%d  %s/%-10s%s %s  %s\n", i+1, color, name, reset, s.mark, model)
 		}
-		color := agentColor(name)
-		reset := "\033[0m"
-		fmt.Fprintf(l.out, "  /%d  %s/%-10s%s %s  %s\n", i+1, color, name, reset, s.mark, model)
 	}
 	fmt.Fprintln(l.out)
 

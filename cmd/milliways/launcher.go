@@ -311,50 +311,18 @@ func runCockpit(ctx context.Context, _ []string) error {
 	return runChat(ctx)
 }
 
-// deckProviders is the default set shown in the startup deck — the four
-// primary cloud providers. Local and pool are omitted from the default
-// deck to keep the layout manageable; add via MILLIWAYS_DECK_PROVIDERS env.
-var deckProviders = []string{"claude", "codex", "copilot", "minimax"}
-
 // runDeck opens the home-hero-dashboard layout: left navigator (30%) plus
-// one full milliways chat pane per provider on the right, each pre-switched
-// to its assigned client. The calling pane stays as the main chat session
-// (/help, /parallel, /takeover, /scan etc. work here).
+// the calling pane as the main chat session on the right (70%).
 //
-// Each provider pane is a real independent milliways session — the user can
-// type directly to that client, switch providers with /takeover, or use the
-// main pane to /parallel broadcast to all of them.
-func runDeck(ctx context.Context, socketPath string) error {
-	// Allow override via env for power users.
-	providers := deckProviders
-	if env := os.Getenv("MILLIWAYS_DECK_PROVIDERS"); env != "" {
-		providers = splitComma(env)
-	}
-
-	// Filter providers against agent.list — skip any with missing_credentials.
-	// This prevents deck tabs opening for providers the user hasn't configured.
-	c, err := rpc.Dial(socketPath)
-	if err == nil {
-		var agentList []struct {
-			ID         string `json:"id"`
-			AuthStatus string `json:"auth_status"`
-		}
-		if callErr := c.Call("agent.list", nil, &agentList); callErr == nil {
-			authOK := make(map[string]bool, len(agentList))
-			for _, a := range agentList {
-				authOK[a.ID] = a.AuthStatus == "ok"
-			}
-			var filtered []string
-			for _, p := range providers {
-				if authOK[p] {
-					filtered = append(filtered, p)
-				}
-			}
-			if len(filtered) > 0 {
-				providers = filtered
-			}
-		}
-		_ = c.Close()
+// The navigator is an interactive provider browser — arrow keys to browse,
+// Enter to switch the right pane to that provider via /switch. No separate
+// provider tabs are spawned; the single right pane handles all providers.
+func runDeck(_ context.Context, _ string) error {
+	// The current pane is the RIGHT (chat) pane. Record its ID so the
+	// navigator can send commands to it via wezterm cli send-text.
+	rightPaneID := os.Getenv("WEZTERM_PANE")
+	if rightPaneID == "" {
+		return fmt.Errorf("WEZTERM_PANE not set — deck requires a running WezTerm instance")
 	}
 
 	milliwaysBin, err := os.Executable()
@@ -362,30 +330,18 @@ func runDeck(ctx context.Context, socketPath string) error {
 		milliwaysBin = "milliways"
 	}
 
-	// Navigator pane — split LEFT 30%. The calling pane (main milliways chat)
-	// stays on the RIGHT at 70%. This is the home-hero-dashboard left panel.
-	navArgs := []string{"cli", "split-pane", "--left", "--percent", "30", "--",
-		milliwaysBin, "attach", "--nav", "deck"}
+	// Split LEFT 30%: navigator pane. The current pane stays as the chat.
+	navArgs := []string{
+		"cli", "split-pane", "--left", "--percent", "30",
+		"--",
+		milliwaysBin, "attach", "--deck", "--right-pane", rightPaneID,
+	}
 	if out, err := exec.Command("wezterm", navArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("wezterm split-pane (nav): %w\n%s", err, out)
 	}
 
-	// Each provider opens in its own WezTerm TAB via `wezterm cli spawn`.
-	// Tabs never run out of space (unlike split-pane which halves remaining area).
-	// Tab label is set by the terminal title milliways sets on /switch.
-	for _, provider := range providers {
-		spawnArgs := []string{
-			"cli", "spawn", "--new-tab",
-			"--", "env",
-			"MILLIWAYS_START_PROVIDER=" + provider,
-			milliwaysBin,
-		}
-		if out, err := exec.Command("wezterm", spawnArgs...).CombinedOutput(); err != nil {
-			// Non-fatal — log and skip providers that can't start.
-			fmt.Fprintf(os.Stderr, "milliways: deck tab for %s failed: %v\n%s\n", provider, err, out)
-		}
-	}
-
+	// Signal to printLanding that the navigator is handling provider selection.
+	os.Setenv("MILLIWAYS_DECK_MODE", "1")
 	return nil
 }
 
