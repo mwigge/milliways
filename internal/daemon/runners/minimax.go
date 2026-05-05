@@ -244,7 +244,6 @@ type minimaxClient struct {
 
 func (c *minimaxClient) Send(ctx context.Context, messages []Message, toolDefs []provider.ToolDef) (TurnResult, error) {
 	payload := buildOpenAIChatPayload(c.model, messages, toolDefs)
-	payload["reasoning_split"] = true
 	payload["stream_options"] = map[string]any{"include_usage": true}
 	body, err := json.Marshal(payload)
 	if err != nil {

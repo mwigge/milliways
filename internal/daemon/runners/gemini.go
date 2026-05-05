@@ -34,6 +34,19 @@ var geminiBinary = "gemini"
 // prompt. Default builds the headless invocation `gemini -p <prompt> -y`.
 // Tests can swap it to rewrite the command (e.g. point at /bin/sh).
 var geminiArgsBuilder = func(prompt string) []string {
+	return geminiDefaultArgs(prompt)
+}
+
+// geminiDefaultArgs builds the argv for a normal gemini invocation.
+// The -y flag auto-approves all tool use (YOLO mode). Set
+// MILLIWAYS_GEMINI_YOLO=off (or =false) to omit it — useful when gemini
+// aggressively invokes tools for simple questions. Default is to include -y.
+func geminiDefaultArgs(prompt string) []string {
+	yolo := os.Getenv("MILLIWAYS_GEMINI_YOLO")
+	yoloOff := strings.EqualFold(yolo, "off") || strings.EqualFold(yolo, "false")
+	if yoloOff {
+		return []string{"-p", prompt}
+	}
 	return []string{"-p", prompt, "-y"}
 }
 
@@ -155,7 +168,9 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 			stderrMu.Lock()
 			stderrLines = append(stderrLines, line)
 			stderrMu.Unlock()
-			stream.Push(encodeThinking(line))
+			if !geminiStderrIsNoise(line) {
+				stream.Push(encodeThinking(line))
+			}
 			slog.Debug("gemini stderr", "line", line)
 		}
 	}()
@@ -277,6 +292,21 @@ func streamGeminiStdout(r io.Reader, stream Pusher) {
 			return
 		}
 	}
+}
+
+// geminiStderrIsNoise reports whether a stderr line is purely informational
+// and should not be forwarded to the stream as a thinking event. This
+// filters the "YOLO mode" banner and tool-detection noise that gemini CLI
+// prints unconditionally, which would otherwise appear as spurious thinking
+// output to the user.
+func geminiStderrIsNoise(line string) bool {
+	if strings.TrimSpace(line) == "" {
+		return true
+	}
+	lower := strings.ToLower(line)
+	return strings.Contains(lower, "yolo mode") ||
+		strings.Contains(lower, "all tool calls will be automatically approved") ||
+		strings.Contains(lower, "missing pgrep output")
 }
 
 // geminiStderrSignalsLimit returns true when any captured stderr line

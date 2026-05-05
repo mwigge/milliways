@@ -174,8 +174,8 @@ func TestRunMiniMax_StreamsDeltas(t *testing.T) {
 		if req.body["stream"] != true {
 			t.Errorf("body.stream = %v, want true", req.body["stream"])
 		}
-		if req.body["reasoning_split"] != true {
-			t.Errorf("body.reasoning_split = %v, want true", req.body["reasoning_split"])
+		if _, hasReasoningSplit := req.body["reasoning_split"]; hasReasoningSplit {
+			t.Errorf("body must not contain reasoning_split (causes text doubling)")
 		}
 		streamOptions, _ := req.body["stream_options"].(map[string]any)
 		if streamOptions["include_usage"] != true {
@@ -439,5 +439,89 @@ func TestRunMiniMax_IncompleteStreamEmitsError(t *testing.T) {
 	}
 	if got := obs.counterTotal(MetricErrorCount, AgentIDMiniMax); got < 1 {
 		t.Errorf("error_count total = %v, want >= 1 for incomplete stream", got)
+	}
+}
+
+// TestMinimaxNoReasoningSplit verifies that a simulated MiniMax SSE stream
+// where the model emits reasoning_content in one chunk and the same text
+// again in delta.content in the next chunk does NOT double-emit the text.
+//
+// This was the bug caused by reasoning_split=true: MiniMax would send
+// thinking tokens via delta.reasoning_content (content==""), then resend
+// them in delta.content. Without reasoning_split, thinking comes through
+// inline <think> tags inside delta.content and is handled by thinkTagSplitter.
+func TestMinimaxNoReasoningSplit(t *testing.T) {
+	t.Parallel()
+
+	// Simulate the stream MiniMax sends when reasoning_split=true is absent:
+	// thinking appears as a <think> block inside delta.content, followed by
+	// the visible answer. Verify the visible text is emitted exactly once.
+	sseStream := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"<think>let me think</think>"}}]}`,
+		``,
+		`data: {"choices":[{"delta":{"content":"visible answer"}}]}`,
+		``,
+		`data: {"choices":[{"finish_reason":"stop","delta":{}}]}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	pusher := &fakePusher{}
+	result, err := streamOpenAITurn(context.Background(), strings.NewReader(sseStream), pusher)
+	if err != nil {
+		t.Fatalf("streamOpenAITurn() error = %v", err)
+	}
+	if result.Content != "visible answer" {
+		t.Errorf("content = %q, want %q", result.Content, "visible answer")
+	}
+
+	// Count data events; the visible text must appear exactly once.
+	var dataCount int
+	var combined strings.Builder
+	for _, event := range pusher.snapshot() {
+		if event["t"] != "data" {
+			continue
+		}
+		dataCount++
+		b64, _ := event["b64"].(string)
+		raw, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			t.Fatalf("decode b64: %v", err)
+		}
+		combined.Write(raw)
+	}
+	if got := combined.String(); got != "visible answer" {
+		t.Errorf("combined data events = %q, want %q (double-emit?)", got, "visible answer")
+	}
+
+	// Also verify the old double-emit scenario: if reasoning_content arrives
+	// without content in the same delta, it must only appear as a thinking
+	// event, not duplicated in a subsequent data event.
+	doubleEmitStream := strings.Join([]string{
+		// chunk 1: reasoning_content set, content empty — this is the split-mode shape
+		`data: {"choices":[{"delta":{"reasoning_content":"my reasoning","content":""}}]}`,
+		``,
+		// chunk 2: same text resent in content — must NOT be emitted again as data
+		`data: {"choices":[{"delta":{"content":"my reasoning"}}]}`,
+		``,
+		`data: {"choices":[{"finish_reason":"stop","delta":{}}]}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	pusher2 := &fakePusher{}
+	result2, err := streamOpenAITurn(context.Background(), strings.NewReader(doubleEmitStream), pusher2)
+	if err != nil {
+		t.Fatalf("doubleEmit streamOpenAITurn() error = %v", err)
+	}
+	// The visible content should be "my reasoning" (from chunk 2's content field)
+	// and the reasoning should also contain it (from chunk 1).
+	if result2.Content != "my reasoning" {
+		t.Errorf("doubleEmit content = %q, want %q", result2.Content, "my reasoning")
+	}
+	if !strings.Contains(result2.Reasoning, "my reasoning") {
+		t.Errorf("doubleEmit reasoning = %q, want it to contain the thinking text", result2.Reasoning)
 	}
 }
