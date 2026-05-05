@@ -2,8 +2,13 @@ SHELL := /bin/bash
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null)
 LDFLAGS := -X main.version=$(VERSION)
-# Suppress -Wdiscarded-qualifiers from sqlite3-binding.c in go-sqlite3.
+# Suppress qualifier warning from sqlite3-binding.c in go-sqlite3.
+# Linux gcc uses -Wno-discarded-qualifiers; macOS clang uses -Wno-ignored-qualifiers.
+ifeq ($(shell uname),Darwin)
+export CGO_CFLAGS += -Wno-ignored-qualifiers
+else
 export CGO_CFLAGS += -Wno-discarded-qualifiers
+endif
 
 PREFIX ?= $(HOME)/.local
 BIN := $(PREFIX)/bin
