@@ -468,6 +468,7 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 	fmt.Print("\033[?25l") // hide cursor while navigating
 
 	var providers []deckProviderInfo
+	var quotas map[string]parallel.QuotaSummary
 	selected := 0
 	active := "" // last provider switched to in the right pane
 	// polled tracks whether at least one successful agent.list call has
@@ -505,6 +506,12 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 			selected = len(updated) - 1
 		}
 		providers = updated
+
+		// Best-effort quota poll alongside the provider list.
+		var snapshots []rpc.QuotaSnapshot
+		if err := client.Call("quota.get", nil, &snapshots); err == nil {
+			quotas = buildQuotasFromSnapshots(snapshots)
+		}
 	}
 
 	// ln prints a line in raw-mode-safe way: \r\n instead of \n so the
@@ -584,11 +591,19 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 			}
 		}
 
-		ln("")
-		// Status bar: show active provider if one has been switched to.
+		// ── Status bar ──────────────────────────────────────
+		ln("%s%s%s", dim, strings.Repeat("─", w), reset)
 		if active != "" {
 			provColor := parallel.ProviderColor(active)
-			ln("%s● %s%s%s active%s", dim, provColor, active, dim, reset)
+			// Show quota if we have it for the active provider.
+			quotaLine := ""
+			if q, ok := quotas[active]; ok && q.LimitDay > 0 {
+				pct := int(q.UsedPct())
+				quotaLine = fmt.Sprintf("  %d%% quota", pct)
+			}
+			ln("%s● %s%s%s active%s%s", dim, provColor, active, dim, quotaLine, reset)
+		} else {
+			ln("%sno active provider%s", dim, reset)
 		}
 		ln("%s↑↓ move  ↩ switch  q quit%s", dim, reset)
 	}
@@ -633,10 +648,18 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 		if rightPaneID == "" {
 			return
 		}
-		if err := exec.Command("wezterm", "cli", "send-text",
-			"--pane-id", rightPaneID,
-			"--no-paste",
-			"/switch "+provider+"\n").Run(); err != nil {
+		var err error
+		// tmux pane IDs start with '%' (e.g. "%3"); WezTerm IDs are integers.
+		if strings.HasPrefix(rightPaneID, "%") {
+			err = exec.Command("tmux", "send-keys", "-t", rightPaneID,
+				"/switch "+provider, "Enter").Run()
+		} else {
+			err = exec.Command("wezterm", "cli", "send-text",
+				"--pane-id", rightPaneID,
+				"--no-paste",
+				"/switch "+provider+"\n").Run()
+		}
+		if err != nil {
 			slog.Debug("deck: send-text failed", "provider", provider, "err", err)
 			return
 		}
