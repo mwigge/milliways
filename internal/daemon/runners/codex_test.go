@@ -460,7 +460,7 @@ func TestRunCodex_ResumesAfterSessionID(t *testing.T) {
 }
 
 func TestRunCodex_TimeoutUsesConfiguredEnv(t *testing.T) {
-	withCodexTestBinary(t, "#!/bin/sh\nsleep 5\n")
+	withCodexTestBinary(t, "#!/bin/sh\nexec sleep 5\n")
 	t.Setenv("CODEX_TIMEOUT", "20ms")
 
 	pusher, obs := runCodexPrompts(t, context.Background(), "slow")
@@ -481,7 +481,7 @@ func TestRunCodex_TimeoutUsesConfiguredEnv(t *testing.T) {
 }
 
 func TestRunCodex_ParentCancellationIsClassified(t *testing.T) {
-	withCodexTestBinary(t, "#!/bin/sh\nsleep 5\n")
+	withCodexTestBinary(t, "#!/bin/sh\nexec sleep 5\n")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 

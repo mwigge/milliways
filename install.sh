@@ -219,6 +219,8 @@ install_from_source() {
   # to verify the downloaded toolchain's checksum.
   export GOTOOLCHAIN=auto
   export CGO_ENABLED=1
+  # Suppress -Wdiscarded-qualifiers from sqlite3-binding.c in go-sqlite3.
+  export CGO_CFLAGS="${CGO_CFLAGS} -Wno-discarded-qualifiers"
   # Fedora (and some other distros) ship a system-level /usr/lib/golang/go.env
   # that sets GOSUMDB=off and GOTOOLCHAIN=local. GOENV=off only suppresses the
   # *user* env file (~/.config/go/env), not the system one. The only way to

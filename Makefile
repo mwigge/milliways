@@ -2,6 +2,8 @@ SHELL := /bin/bash
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null)
 LDFLAGS := -X main.version=$(VERSION)
+# Suppress -Wdiscarded-qualifiers from sqlite3-binding.c in go-sqlite3.
+export CGO_CFLAGS += -Wno-discarded-qualifiers
 
 PREFIX ?= $(HOME)/.local
 BIN := $(PREFIX)/bin

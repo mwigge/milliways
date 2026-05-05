@@ -147,7 +147,8 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	if cwd != "" {
 		args = append(args, "--add-dir", cwd)
 	}
-	args = append(args, text)
+	// "--" stops flag parsing so --add-dir (variadic) does not consume the prompt.
+	args = append(args, "--", text)
 	cmd := exec.CommandContext(ctx, claudeBinary, args...)
 	cmd.Env = safeRunnerEnv()
 	if cwd != "" {
