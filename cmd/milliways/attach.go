@@ -648,17 +648,10 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 		if rightPaneID == "" {
 			return
 		}
-		var err error
-		// tmux pane IDs start with '%' (e.g. "%3"); WezTerm IDs are integers.
-		if strings.HasPrefix(rightPaneID, "%") {
-			err = exec.Command("tmux", "send-keys", "-t", rightPaneID,
-				"/switch "+provider, "Enter").Run()
-		} else {
-			err = exec.Command("wezterm", "cli", "send-text",
-				"--pane-id", rightPaneID,
-				"--no-paste",
-				"/switch "+provider+"\n").Run()
-		}
+		err := exec.Command("wezterm", "cli", "send-text",
+			"--pane-id", rightPaneID,
+			"--no-paste",
+			"/switch "+provider+"\n").Run()
 		if err != nil {
 			slog.Debug("deck: send-text failed", "provider", provider, "err", err)
 			return
