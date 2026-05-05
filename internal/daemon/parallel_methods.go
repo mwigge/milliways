@@ -19,12 +19,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/mwigge/milliways/internal/mempalace"
-	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/parallel"
 )
 
@@ -54,7 +51,22 @@ type parallelDispatchResult struct {
 	Skipped []skippedSlot      `json:"skipped,omitempty"`
 }
 
+// daemonAgentOpener adapts *AgentRegistry to parallel.AgentOpener.
+type daemonAgentOpener struct{ r *AgentRegistry }
+
+func (d *daemonAgentOpener) OpenSession(_ context.Context, providerID string) (int64, error) {
+	sess, err := d.r.Open(providerID)
+	if err != nil {
+		return 0, err
+	}
+	return int64(sess.Handle), nil
+}
+
 // parallelDispatch handles "parallel.dispatch".
+// It delegates to internal/parallel.Dispatch() so MemPalace baseline
+// injection and CodeGraph context injection run on every dispatch.
+// After the sessions are open it sends the preamble (if any) followed
+// by the user prompt to each slot so the agents start immediately.
 func (s *Server) parallelDispatch(enc *json.Encoder, req *Request) {
 	var p parallelDispatchParams
 	if len(req.Params) > 0 {
@@ -72,91 +84,54 @@ func (s *Server) parallelDispatch(enc *json.Encoder, req *Request) {
 		return
 	}
 
-	groupID := p.GroupID
-	if groupID == "" {
-		groupID = uuid.New().String()
+	result, err := parallel.Dispatch(
+		context.Background(),
+		parallel.DispatchRequest{
+			Prompt:    p.Prompt,
+			Providers: p.Providers,
+			GroupID:   p.GroupID,
+		},
+		&daemonAgentOpener{r: s.agents},
+		s.pantryDB.Parallel(),
+		s.mempalaceClient(),
+		nil, // CodeGraph client — wired when CG index is available
+	)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, err.Error())
+		return
 	}
 
-	type openResult struct {
-		provider string
-		handle   int64
-		err      error
-	}
-
-	results := make([]openResult, len(p.Providers))
-	var wg sync.WaitGroup
-	for i, prov := range p.Providers {
-		i, prov := i, prov
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			sess, err := s.agents.Open(prov)
-			if err != nil {
-				results[i] = openResult{provider: prov, err: err}
-				return
-			}
-			results[i] = openResult{provider: prov, handle: int64(sess.Handle)}
-		}()
-	}
-	wg.Wait()
-
-	now := time.Now().UTC()
-	var skipped []skippedSlot
-
-	// Separate successful opens from failures before touching the DB.
-	type successSlot struct {
-		handle   int64
-		provider string
-	}
-	var opened []successSlot
-	for _, r := range results {
-		if r.err != nil {
-			skipped = append(skipped, skippedSlot{Provider: r.provider, Reason: r.err.Error()})
+	// Send preamble + user prompt to every open session. Fire-and-forget:
+	// errors are logged but do not fail the dispatch — the session stays
+	// open and the user can see what happened in the attach pane.
+	for _, slot := range result.Slots {
+		sess, ok := s.agents.Get(AgentHandle(slot.Handle))
+		if !ok {
+			slog.Warn("parallel: handle missing after dispatch", "handle", slot.Handle, "provider", slot.Provider)
 			continue
 		}
-		opened = append(opened, successSlot{handle: r.handle, provider: r.provider})
-	}
-	if len(opened) == 0 {
-		writeError(enc, req.ID, ErrInvalidParams, "all providers failed to open")
-		return
-	}
-
-	// Write group + all slots in a single logical transaction: insert group
-	// first, then all slots. If any slot insert fails, mark the group
-	// interrupted and return an error — no orphaned running groups.
-	store := s.pantryDB.Parallel()
-	if err := store.InsertGroup(pantry.ParallelGroupRecord{
-		ID:        groupID,
-		Prompt:    p.Prompt,
-		Status:    pantry.ParallelStatusRunning,
-		CreatedAt: now,
-	}); err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("insert group: %v", err))
-		return
-	}
-
-	var slots []parallelSlotInfo
-	for _, o := range opened {
-		if err := store.InsertSlot(pantry.ParallelSlotRecord{
-			GroupID:   groupID,
-			Handle:    o.handle,
-			Provider:  o.provider,
-			Status:    pantry.ParallelStatusRunning,
-			StartedAt: now,
-		}); err != nil {
-			// Slot insert failed — abort: mark only this group's already-inserted
-			// slots as interrupted (not all running slots system-wide).
-			if markErr := store.MarkGroupSlotsInterrupted(groupID); markErr != nil {
-				slog.Warn("parallel: MarkGroupSlotsInterrupted after slot insert failure", "group", groupID, "err", markErr)
+		if result.ContextPreamble != "" {
+			if err := sess.Send([]byte(result.ContextPreamble)); err != nil {
+				slog.Warn("parallel: preamble send failed", "handle", slot.Handle, "err", err)
 			}
-			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("insert slot for %s: %v", o.provider, err))
-			return
 		}
-		slots = append(slots, parallelSlotInfo{Handle: o.handle, Provider: o.provider})
+		if err := sess.Send([]byte(p.Prompt)); err != nil {
+			slog.Warn("parallel: prompt send failed", "handle", slot.Handle, "err", err)
+		}
+	}
+
+	// Map to RPC response types.
+	slots := make([]parallelSlotInfo, len(result.Slots))
+	for i, s := range result.Slots {
+		slots[i] = parallelSlotInfo{Handle: s.Handle, Provider: s.Provider}
+	}
+	skipped := make([]skippedSlot, len(result.Skipped))
+	for i, sk := range result.Skipped {
+		skipped[i] = skippedSlot{Provider: sk.Provider, Reason: sk.Reason}
 	}
 
 	writeResult(enc, req.ID, parallelDispatchResult{
-		GroupID: groupID,
+		GroupID: result.GroupID,
 		Slots:   slots,
 		Skipped: skipped,
 	})
