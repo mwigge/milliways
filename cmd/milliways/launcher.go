@@ -394,9 +394,9 @@ func runDeck(_ context.Context, _ string, rightPaneID string) error {
 		milliwaysBin = "milliways"
 	}
 
-	// Split LEFT 30%: navigator pane. The current pane stays as the chat.
+	// Split LEFT 20%: narrow navigator pane. The current pane stays as the chat.
 	navArgs := []string{
-		"cli", "split-pane", "--left", "--percent", "30",
+		"cli", "split-pane", "--left", "--percent", "20",
 		"--",
 		milliwaysBin, "attach", "--deck", "--right-pane", rightPaneID,
 	}
