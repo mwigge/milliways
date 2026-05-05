@@ -331,31 +331,58 @@ func runDeck(ctx context.Context, socketPath string) error {
 		providers = splitComma(env)
 	}
 
+	// Filter providers against agent.list — skip any with missing_credentials.
+	// This prevents deck tabs opening for providers the user hasn't configured.
+	c, err := rpc.Dial(socketPath)
+	if err == nil {
+		var agentList []struct {
+			ID         string `json:"id"`
+			AuthStatus string `json:"auth_status"`
+		}
+		if callErr := c.Call("agent.list", nil, &agentList); callErr == nil {
+			authOK := make(map[string]bool, len(agentList))
+			for _, a := range agentList {
+				authOK[a.ID] = a.AuthStatus != "missing_credentials"
+			}
+			var filtered []string
+			for _, p := range providers {
+				if authOK[p] {
+					filtered = append(filtered, p)
+				}
+			}
+			if len(filtered) > 0 {
+				providers = filtered
+			}
+		}
+		_ = c.Close()
+	}
+
 	milliwaysBin, err := os.Executable()
 	if err != nil {
 		milliwaysBin = "milliways"
 	}
 
-	// Left navigator pane — 30% width, shows status of all deck panes.
-	// Runs `milliways attach --nav deck` which polls group.status.
-	navArgs := []string{"cli", "split-pane", "--percent", "30", "--",
+	// Navigator pane — split LEFT 30%. The calling pane (main milliways chat)
+	// stays on the RIGHT at 70%. This is the home-hero-dashboard left panel.
+	navArgs := []string{"cli", "split-pane", "--left", "--percent", "30", "--",
 		milliwaysBin, "attach", "--nav", "deck"}
 	if out, err := exec.Command("wezterm", navArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("wezterm split-pane (nav): %w\n%s", err, out)
 	}
 
-	// One pane per provider — each runs a full milliways chat pre-switched
-	// to that provider via MILLIWAYS_START_PROVIDER env.
+	// Each provider opens in its own WezTerm TAB via `wezterm cli spawn`.
+	// Tabs never run out of space (unlike split-pane which halves remaining area).
+	// Tab label is set by the terminal title milliways sets on /switch.
 	for _, provider := range providers {
-		paneArgs := []string{
-			"cli", "split-pane",
+		spawnArgs := []string{
+			"cli", "spawn",
 			"--", "env",
 			"MILLIWAYS_START_PROVIDER=" + provider,
 			milliwaysBin,
 		}
-		if out, err := exec.Command("wezterm", paneArgs...).CombinedOutput(); err != nil {
-			// Non-fatal — skip unavailable providers.
-			fmt.Fprintf(os.Stderr, "milliways: deck pane for %s failed: %v\n%s\n", provider, err, out)
+		if out, err := exec.Command("wezterm", spawnArgs...).CombinedOutput(); err != nil {
+			// Non-fatal — log and skip providers that can't start.
+			fmt.Fprintf(os.Stderr, "milliways: deck tab for %s failed: %v\n%s\n", provider, err, out)
 		}
 	}
 
