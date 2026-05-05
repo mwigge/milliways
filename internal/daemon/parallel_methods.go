@@ -144,11 +144,10 @@ func (s *Server) parallelDispatch(enc *json.Encoder, req *Request) {
 			Status:    pantry.ParallelStatusRunning,
 			StartedAt: now,
 		}); err != nil {
-			// Slot insert failed — abort: mark group interrupted so it is
-			// not stuck in running state forever.
-			_ = store.UpdateSlotStatus(o.handle, pantry.ParallelStatusInterrupted, 0, 0)
-			if markErr := store.MarkInterruptedSlots(); markErr != nil {
-				slog.Warn("parallel: MarkInterruptedSlots after slot insert failure", "err", markErr)
+			// Slot insert failed — abort: mark only this group's already-inserted
+			// slots as interrupted (not all running slots system-wide).
+			if markErr := store.MarkGroupSlotsInterrupted(groupID); markErr != nil {
+				slog.Warn("parallel: MarkGroupSlotsInterrupted after slot insert failure", "group", groupID, "err", markErr)
 			}
 			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("insert slot for %s: %v", o.provider, err))
 			return

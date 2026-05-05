@@ -198,6 +198,22 @@ func (s *ParallelStore) ListGroups(n int) ([]ParallelGroupRecord, error) {
 	return groups, rows.Err()
 }
 
+// MarkGroupSlotsInterrupted sets all running slots for a specific group to
+// interrupted. Used when a dispatch fails mid-way to avoid leaving a partially
+// created group stuck in running state without touching other groups.
+func (s *ParallelStore) MarkGroupSlotsInterrupted(groupID string) error {
+	now := formatTime(time.Now().UTC())
+	_, err := s.db.Exec(
+		`UPDATE mw_parallel_slots SET status = ?, completed_at = ?
+		 WHERE group_id = ? AND status = ?`,
+		string(ParallelStatusInterrupted), now, groupID, string(ParallelStatusRunning),
+	)
+	if err != nil {
+		return fmt.Errorf("mark group slots interrupted: %w", err)
+	}
+	return nil
+}
+
 // MarkInterruptedSlots sets all running slots to interrupted status. Called on
 // daemon restart to clean up slots that were in-flight when the daemon stopped.
 func (s *ParallelStore) MarkInterruptedSlots() error {
