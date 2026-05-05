@@ -506,6 +506,12 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 		providers = updated
 	}
 
+	// ln prints a line in raw-mode-safe way: \r\n instead of \n so the
+	// cursor returns to column 0 on each new line.
+	ln := func(format string, args ...any) {
+		fmt.Printf(format+"\r\n", args...)
+	}
+
 	render := func() {
 		w, _, _ := term.GetSize(fd)
 		if w <= 0 {
@@ -525,14 +531,14 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 			padN = 0
 		}
 		pad := strings.Repeat("─", padN)
-		fmt.Printf("%s%s%s%s\n", dim, pad+title+pad, reset, "")
-		fmt.Println()
+		ln("%s%s%s", dim, pad+title+pad, reset)
+		ln("")
 
 		if len(providers) == 0 {
 			if polled {
-				fmt.Printf("  %sno providers%s\n", dim, reset)
+				ln("  %sno providers%s", dim, reset)
 			} else {
-				fmt.Printf("  %sconnecting...%s\n", dim, reset)
+				ln("  %sconnecting...%s", dim, reset)
 			}
 		}
 
@@ -564,21 +570,21 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 			}
 
 			if i == selected {
-				fmt.Printf("%s▶ %s%-9s%s %s%s%s  %s%s%s\033[K\n",
+				ln("%s▶ %s%-9s%s %s%s%s  %s%s\033[K",
 					bold,
 					provColor, p.ID, reset+bold,
 					authColor, authMark, reset+bold,
-					model, reset, "")
+					model, reset)
 			} else {
-				fmt.Printf("  %s%-9s%s %s%s%s  %s%s\033[K\n",
+				ln("  %s%-9s%s %s%s%s  %s%s\033[K",
 					provColor, p.ID, reset,
 					authColor, authMark, reset,
 					dim+model, reset)
 			}
 		}
 
-		fmt.Println()
-		fmt.Printf("%s↑↓ move  ↩ switch  q quit%s\n", dim, reset)
+		ln("")
+		ln("%s↑↓ move  ↩ switch  q quit%s", dim, reset)
 	}
 
 	// Key event reader — handles single bytes and 3-byte arrow sequences.
