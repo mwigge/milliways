@@ -312,9 +312,10 @@ func runCockpit(ctx context.Context, _ []string) error {
 	return runChat(ctx)
 }
 
-// runDeck dispatches to all available pool providers and opens the WezTerm
-// parallel panel layout alongside the calling pane. The calling pane remains
-// as the main milliways chat session (/help, /parallel, /scan etc. still work).
+// runDeck opens one idle session per available provider and displays the
+// WezTerm panel layout alongside the calling pane. Sessions are ready but
+// no prompt is sent — the user types normally in each pane, or uses
+// /parallel <prompt> in the main pane to broadcast to all providers at once.
 func runDeck(ctx context.Context, socketPath string) error {
 	c, err := rpc.Dial(socketPath)
 	if err != nil {
@@ -322,7 +323,7 @@ func runDeck(ctx context.Context, socketPath string) error {
 	}
 	defer func() { _ = c.Close() }()
 
-	// Discover available providers from agent.list.
+	// Discover available providers.
 	var agentList []struct {
 		ID         string `json:"id"`
 		Available  bool   `json:"available"`
@@ -333,9 +334,6 @@ func runDeck(ctx context.Context, socketPath string) error {
 	}
 	var providers []string
 	for _, a := range agentList {
-		// Include all agents that have auth configured (ok or unknown),
-		// not ones with clearly missing credentials. Pool is skipped since
-		// it would duplicate the individual providers.
 		if a.ID != "pool" && a.AuthStatus != "missing_credentials" {
 			providers = append(providers, a.ID)
 		}
@@ -344,43 +342,35 @@ func runDeck(ctx context.Context, socketPath string) error {
 		return fmt.Errorf("no providers available — use /login to configure credentials")
 	}
 
-	// Dispatch the startup group — empty prompt, sessions open ready for input.
-	var dispatchResult struct {
-		GroupID string `json:"group_id"`
-		Slots   []struct {
-			Handle   int64  `json:"handle"`
-			Provider string `json:"provider"`
-		} `json:"slots"`
-		Skipped []struct {
-			Provider string `json:"provider"`
-			Reason   string `json:"reason"`
-		} `json:"skipped,omitempty"`
-	}
-	if err := c.Call("parallel.dispatch", map[string]any{
-		"prompt":    "[deck startup]",
-		"providers": providers,
-	}, &dispatchResult); err != nil {
-		return fmt.Errorf("parallel.dispatch: %w", err)
-	}
-
-	if len(dispatchResult.Slots) == 0 {
-		return fmt.Errorf("no slots opened")
-	}
-
-	// Build DispatchResult for layout.Launch.
-	result := parallel.DispatchResult{GroupID: dispatchResult.GroupID}
-	for i, s := range dispatchResult.Slots {
+	// Open one idle session per provider via agent.open — no prompt sent.
+	// Sessions sit ready for input; /parallel <prompt> will broadcast later.
+	result := parallel.DispatchResult{GroupID: "deck"}
+	for i, provider := range providers {
+		var openResp struct {
+			Handle int64 `json:"handle"`
+		}
+		if err := c.Call("agent.open", map[string]any{
+			"agent_id":         provider,
+			"security_context": false, // suppress injection on idle startup panes
+		}, &openResp); err != nil {
+			// Skip providers that fail to open (missing binary, auth error etc.)
+			continue
+		}
 		result.Slots = append(result.Slots, parallel.SlotRecord{
 			SlotN:    i + 1,
-			Handle:   s.Handle,
-			Provider: s.Provider,
+			Handle:   openResp.Handle,
+			Provider: provider,
 			Status:   parallel.SlotRunning,
 		})
 	}
 
-	// Launch the WezTerm deck — navigator pane + one content pane per slot.
-	// The calling pane (this terminal) stays as the main milliways chat.
-	return parallel.Launch(result, dispatchResult.GroupID)
+	if len(result.Slots) == 0 {
+		return fmt.Errorf("no provider sessions could be opened")
+	}
+
+	// Launch the WezTerm deck: navigator pane + one idle pane per provider.
+	// The calling pane stays as the main milliways chat.
+	return parallel.Launch(result, result.GroupID)
 }
 
 // startDaemonDetached spawns `milliwaysd` in its own session so it survives
