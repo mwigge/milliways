@@ -365,6 +365,8 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		s.groupList(enc, req)
 	case "consensus.aggregate":
 		s.consensusAggregate(enc, req)
+	case "mempalace.write_handoff":
+		s.mempalaceWriteHandoff(enc, req)
 	case "security.list":
 		s.securityList(enc, req)
 	case "security.show":

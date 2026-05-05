@@ -380,14 +380,15 @@ func runChat(ctx context.Context) error {
 	defer rl.Close()
 
 	loop := &chatLoop{
-		client:    client,
-		sess:      nil, // landing zone — no active agent until /<runner> picks one
-		rl:        rl,
-		completer: sc,
-		out:       newCodeHighlighter(os.Stdout),
-		errw:      os.Stderr,
-		ring:      append([]string(nil), chatSwitchableAgents...), // default ring
-		rotateCh:  make(chan string, 1),
+		client:        client,
+		handoffWriter: &rpcHandoffWriter{client: client},
+		sess:          nil, // landing zone — no active agent until /<runner> picks one
+		rl:            rl,
+		completer:     sc,
+		out:           newCodeHighlighter(os.Stdout),
+		errw:          os.Stderr,
+		ring:          append([]string(nil), chatSwitchableAgents...), // default ring
+		rotateCh:      make(chan string, 1),
 	}
 
 	// Wire palace recall for daemon runner sessions. Resolve the project from
@@ -472,6 +473,30 @@ func chatPrompt(agentID string) string {
 	color := agentColor(agentID)
 	reset := "\033[0m"
 	return "[" + color + agentID + reset + "] ▶ "
+}
+
+// handoffWriter is the interface for writing a cross-pane takeover
+// briefing to MemPalace. Defined at the consumer so it can be swapped
+// for a stub in tests without touching the rpc package.
+type handoffWriter interface {
+	WriteHandoff(targetProvider, fromProvider, briefing string) error
+}
+
+// errHandoffFailed is a sentinel used in tests to simulate a write error.
+var errHandoffFailed = fmt.Errorf("handoff write failed")
+
+// rpcHandoffWriter calls "mempalace.write_handoff" on the daemon via RPC.
+type rpcHandoffWriter struct {
+	client *rpc.Client
+}
+
+func (w *rpcHandoffWriter) WriteHandoff(targetProvider, fromProvider, briefing string) error {
+	var result any
+	return w.client.Call("mempalace.write_handoff", map[string]any{
+		"target_provider": targetProvider,
+		"from_provider":   fromProvider,
+		"briefing":        briefing,
+	}, &result)
 }
 
 // chatSession owns the lifecycle of one (agent.open + agent.stream)
@@ -561,6 +586,11 @@ type chatLoop struct {
 	// palace, when non-nil, is queried on each user prompt to inject
 	// relevant project memory as a context prefix before the runner sees it.
 	palace *mempalace.Client
+	// handoffWriter, when non-nil, writes cross-pane takeover briefings to
+	// MemPalace so the target pane (a separate process) can pick them up.
+	// Nil when MemPalace is unconfigured — takeover degrades gracefully to
+	// same-process-only behaviour.
+	handoffWriter handoffWriter
 	// artifact collects the assistant response text for /pptx, /drawio, /compact.
 	artifact artifactChState
 
@@ -1157,6 +1187,9 @@ func (l *chatLoop) switchAgent(newID string) {
 			l.printBriefingBlock(l.snapshotTurns(), fromID)
 			l.lastBriefingFrom = fromID
 			l.lastBriefing = briefing
+			// Write the briefing to MemPalace so the target pane (a separate
+			// process in the deck) can pick it up on its next agent.open.
+			l.writeHandoffBriefing(newID, fromID, briefing)
 			if err := newSess.send(briefing); err != nil {
 				fmt.Fprintln(l.errw, "warn: send briefing: "+err.Error())
 			}
@@ -1266,6 +1299,20 @@ func (l *chatLoop) buildBriefing(fromID, newID string) (string, bool) {
 	fmt.Fprintln(&b, "===============")
 	fmt.Fprintln(&b, "(End of handoff. Reply briefly to acknowledge, then await the user's next prompt.)")
 	return b.String(), true
+}
+
+// writeHandoffBriefing writes the briefing to MemPalace via the
+// handoffWriter so the target pane (a separate milliways process) can
+// pick it up on its next agent.open. When handoffWriter is nil the call
+// is a no-op — cross-pane injection degrades gracefully to the
+// same-process briefing already sent by switchAgent.
+func (l *chatLoop) writeHandoffBriefing(targetProvider, fromProvider, briefing string) {
+	if l.handoffWriter == nil {
+		return
+	}
+	if err := l.handoffWriter.WriteHandoff(targetProvider, fromProvider, briefing); err != nil {
+		slog.Debug("cross-pane handoff write failed", "target", targetProvider, "err", err)
+	}
 }
 
 // renderTurnsWithBudget renders turns into the briefing body, capping
@@ -2313,7 +2360,7 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /agents                       list clients with live auth status")
 	fmt.Fprintln(l.out, "  /quota                        current quota snapshot")
 	fmt.Fprintln(l.out, "  /metrics                      live metrics dashboard (token usage, costs, ops)")
-	fmt.Fprintln(l.out, "  /switch <runner>              same as /<runner>")
+	fmt.Fprintln(l.out, "  /switch <runner>              hand off briefing to runner (cross-pane via MemPalace)")
 	fmt.Fprintln(l.out, "  /briefing                     re-show the full context handed off on last /switch")
 	fmt.Fprintln(l.out, "  /login [client]               auth setup — API key prompt or CLI steps")
 	fmt.Fprintln(l.out, "  /scan                         scan workspace dependencies for known CVEs")

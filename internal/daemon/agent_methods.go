@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/mwigge/milliways/internal/daemon/textproc"
+	"github.com/mwigge/milliways/internal/parallel"
 	"github.com/mwigge/milliways/internal/security"
 )
 
@@ -95,6 +96,40 @@ func (s *Server) agentOpen(enc *json.Encoder, req *Request) {
 		}
 	}
 
+	// Wire turn-complete hook: extract findings from each response and write to MemPalace.
+	if s.pantryDB != nil {
+		mp := s.mempalaceClient()
+		agentID := p.AgentID
+		sess.onTurnComplete = func(finalText string) {
+			if mp == nil {
+				return
+			}
+			findings := parallel.ExtractFindings(finalText)
+			if len(findings) == 0 {
+				return
+			}
+			if err := parallel.WriteFindings(context.Background(), findings, mp, agentID, "deck"); err != nil {
+				slog.Debug("agentOpen: WriteFindings failed", "agent", agentID, "err", err)
+			}
+		}
+	}
+
+	// Inject pending cross-pane handoff briefing for deck /takeover.
+	if s.pantryDB != nil {
+		if mp := s.mempalaceClient(); mp != nil {
+			triples, err := mp.KGQuery(context.Background(), "handoff:"+p.AgentID, "takeover_briefing", nil)
+			if err != nil {
+				slog.Debug("handoff: KGQuery failed", "agent", p.AgentID, "err", err)
+			} else if len(triples) > 0 {
+				t := triples[len(triples)-1]
+				if t.Object != "" {
+					from := t.Properties["from"]
+					_ = sess.Send([]byte("[handoff from " + from + "]\n" + t.Object))
+				}
+			}
+		}
+	}
+
 	writeResult(enc, req.ID, agentOpenResult{
 		Handle:  int64(sess.Handle),
 		PtySize: ptySize{Cols: 80, Rows: 24},
@@ -134,6 +169,22 @@ func (s *Server) agentSend(enc *json.Encoder, req *Request) {
 	if p.ExpandContext == nil || *p.ExpandContext {
 		bytes = textproc.ExpandContext(context.Background(), bytes)
 	}
+
+	// On the first send in a session, inject MemPalace baseline context before
+	// the user's bytes. CompareAndSwap(0→1) ensures exactly one send injects.
+	if sess.firstSendDone.CompareAndSwap(0, 1) && s.pantryDB != nil {
+		mp := s.mempalaceClient()
+		ctx := context.Background()
+		baseline := parallel.InjectBaseline(ctx, string(bytes), mp)
+		if baseline != "" {
+			if err := sess.Send([]byte(baseline)); err != nil {
+				slog.Debug("agentSend: baseline inject failed", "err", err)
+			}
+		}
+		// TODO: wire cg when CodeGraph MCP client is available on Server.
+		_ = parallel.InjectCodeGraph(ctx, string(bytes), nil)
+	}
+
 	if err := sess.Send(bytes); err != nil {
 		writeError(enc, req.ID, ErrInvalidParams, err.Error())
 		return

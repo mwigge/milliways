@@ -34,6 +34,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -189,6 +190,48 @@ func formatDoneEvent(tokensIn, tokensOut int, ts time.Time) string {
 	return string(b)
 }
 
+// buildQuotasFromSnapshots converts a quota.get response slice into a
+// map[providerID]QuotaSummary suitable for parallel.RenderHeader. Snapshots
+// with a zero cap (unlimited / not tracked) are omitted so the header does
+// not display a meaningless "0% quota" entry.
+func buildQuotasFromSnapshots(snapshots []rpc.QuotaSnapshot) map[string]parallel.QuotaSummary {
+	if len(snapshots) == 0 {
+		return nil
+	}
+	quotas := make(map[string]parallel.QuotaSummary, len(snapshots))
+	for _, s := range snapshots {
+		if s.Cap <= 0 {
+			continue
+		}
+		quotas[string(s.AgentID)] = parallel.QuotaSummary{
+			UsedToday: int(s.Used),
+			LimitDay:  int(s.Cap),
+		}
+	}
+	if len(quotas) == 0 {
+		return nil
+	}
+	return quotas
+}
+
+// sumSlotTokens returns the sum of TokensIn + TokensOut across all slots.
+func sumSlotTokens(slots []parallel.SlotRecord) int {
+	total := 0
+	for _, s := range slots {
+		total += s.TokensIn + s.TokensOut
+	}
+	return total
+}
+
+// termWidth returns the current terminal width, defaulting to 80 on error.
+func termWidth() int {
+	w, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || w <= 0 {
+		return 80
+	}
+	return w
+}
+
 // runNavigator renders the slot list for a parallel group in raw ANSI mode.
 // It polls group.status every 500ms and redraws on each cycle.
 //
@@ -235,6 +278,7 @@ func runNavigator(ctx context.Context, groupID string) error {
 	}()
 
 	var slots []parallel.SlotRecord
+	var quotas map[string]parallel.QuotaSummary
 	var lastErr error
 
 	render := func() {
@@ -243,6 +287,15 @@ func runNavigator(ctx context.Context, groupID string) error {
 		}
 		// Clear and home.
 		fmt.Print("\033[2J\033[H")
+
+		// Render the observability header before the slot list.
+		totalTokens := sumSlotTokens(slots)
+		tw := termWidth()
+		if header := parallel.RenderHeader(slots, quotas, totalTokens, tw); header != "" {
+			fmt.Println(header)
+			fmt.Println(strings.Repeat("─", tw))
+		}
+
 		n := len(slots)
 		running := 0
 		done := 0
@@ -292,6 +345,13 @@ func runNavigator(ctx context.Context, groupID string) error {
 		}
 		slots = resp.Slots
 		lastErr = nil
+
+		// Best-effort quota poll: errors are silently swallowed so a missing
+		// or unreachable quota endpoint never prevents the navigator from rendering.
+		var snapshots []rpc.QuotaSnapshot
+		if err := client.Call("quota.get", nil, &snapshots); err == nil {
+			quotas = buildQuotasFromSnapshots(snapshots)
+		}
 	}
 
 	// Initial poll.

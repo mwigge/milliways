@@ -199,6 +199,65 @@ func TestRenderHeader_ErrorSlotRedBullet(t *testing.T) {
 	}
 }
 
+// TestRenderHeader_WithQuotaData verifies that RenderHeader produces a string
+// containing the provider name, a formatted token count, and the quota
+// percentage when quota data is provided.
+func TestRenderHeader_WithQuotaData(t *testing.T) {
+	t.Parallel()
+
+	slots := []SlotRecord{
+		{SlotN: 1, Provider: "claude", Status: "running", TokensIn: 5000, TokensOut: 7400},
+	}
+	quotas := map[string]QuotaSummary{
+		"claude": {UsedToday: 42, LimitDay: 100},
+	}
+	totalTokens := 5000 + 7400
+
+	result := RenderHeader(slots, quotas, totalTokens, 120)
+
+	// Provider name must appear.
+	if !strings.Contains(result, "claude") {
+		t.Errorf("RenderHeader() missing provider name; got:\n%s", result)
+	}
+	// Token count for the slot (TokensOut formatted).
+	if !strings.Contains(result, "7.4k") {
+		t.Errorf("RenderHeader() missing token count 7.4k; got:\n%s", result)
+	}
+	// Quota percentage must appear.
+	if !strings.Contains(result, "42%") {
+		t.Errorf("RenderHeader() missing quota 42%%; got:\n%s", result)
+	}
+}
+
+// TestRenderHeader_NarrowCollapseSingleLine verifies that a narrow terminal
+// (termWidth < 60) produces a single compact summary line.
+func TestRenderHeader_NarrowCollapseSingleLine(t *testing.T) {
+	t.Parallel()
+
+	slots := []SlotRecord{
+		{SlotN: 1, Provider: "claude", Status: "running", TokensOut: 3000},
+		{SlotN: 2, Provider: "codex", Status: "running", TokensOut: 3000},
+	}
+	quotas := map[string]QuotaSummary{
+		"claude": {UsedToday: 10, LimitDay: 100},
+		"codex":  {UsedToday: 20, LimitDay: 100},
+	}
+
+	result := RenderHeader(slots, quotas, 6000, 40)
+
+	// Must be a single line (no " | " separator between providers).
+	if strings.Contains(result, " | ") {
+		t.Errorf("RenderHeader() narrow: must not contain ' | ' separator; got:\n%s", result)
+	}
+	if !strings.Contains(result, "parallel group") {
+		t.Errorf("RenderHeader() narrow: missing 'parallel group'; got:\n%s", result)
+	}
+	// Total tokens in compact format.
+	if !strings.Contains(result, "6.0k") {
+		t.Errorf("RenderHeader() narrow: missing total '6.0k'; got:\n%s", result)
+	}
+}
+
 func TestLaunch_HeadlessFallback(t *testing.T) {
 	// t.Setenv modifies env; cannot run parallel.
 	t.Setenv("TERM_PROGRAM", "")
