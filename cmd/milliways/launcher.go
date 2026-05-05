@@ -308,8 +308,9 @@ func runCockpit(ctx context.Context, _ []string) error {
 		// WEZTERM_PANE may not be set in WezTerm forks — fall back to TTY detection.
 		rightPaneID := os.Getenv("WEZTERM_PANE")
 		if rightPaneID == "" {
-			rightPaneID = detectWeztermCurrentPaneID()
+			rightPaneID, _ = detectWeztermCurrentPaneID()
 		}
+		fmt.Fprintf(os.Stderr, "  deck: rightPaneID=%q weztermCLI=ok deckDisabled=%v\n", rightPaneID, deckDisabled)
 		if rightPaneID != "" {
 			if err := runDeck(ctx, socketPath, rightPaneID); err != nil {
 				fmt.Fprintf(os.Stderr, "milliways: deck launch failed (%v), falling back to single chat\n", err)
@@ -325,19 +326,19 @@ func runCockpit(ctx context.Context, _ []string) error {
 // detectWeztermCurrentPaneID finds the pane ID of the terminal running this
 // process by matching the current TTY against wezterm cli list output.
 // Falls back to the first is_active pane if TTY matching fails.
-// Returns "" if wezterm CLI is unavailable or no pane can be identified.
-func detectWeztermCurrentPaneID() string {
+// Returns ("", reason) if no pane can be identified.
+func detectWeztermCurrentPaneID() (string, string) {
 	// Get our own TTY device path (e.g. /dev/ttys005).
 	ttyOut, err := exec.Command("tty").Output()
 	if err != nil {
-		return ""
+		return "", "tty cmd failed: " + err.Error()
 	}
 	myTTY := strings.TrimSpace(string(ttyOut))
 
 	// Query all panes from the running WezTerm instance.
 	listOut, err := exec.Command("wezterm", "cli", "list", "--format", "json").Output()
 	if err != nil {
-		return ""
+		return "", "wezterm list failed: " + err.Error()
 	}
 	var panes []struct {
 		PaneID   int    `json:"pane_id"`
@@ -345,22 +346,24 @@ func detectWeztermCurrentPaneID() string {
 		TtyName  string `json:"tty_name"`
 	}
 	if err := json.Unmarshal(listOut, &panes); err != nil {
-		return ""
+		return "", "json unmarshal failed: " + err.Error()
 	}
 
 	// Prefer exact TTY match (unambiguous).
 	for _, p := range panes {
 		if p.TtyName == myTTY {
-			return strconv.Itoa(p.PaneID)
+			return strconv.Itoa(p.PaneID), ""
 		}
 	}
 	// Fall back to first active pane.
+	var ttyNames []string
 	for _, p := range panes {
+		ttyNames = append(ttyNames, p.TtyName)
 		if p.IsActive {
-			return strconv.Itoa(p.PaneID)
+			return strconv.Itoa(p.PaneID), ""
 		}
 	}
-	return ""
+	return "", fmt.Sprintf("myTTY=%q not in pane list %v", myTTY, ttyNames)
 }
 
 // runDeck opens the home-hero-dashboard layout: left navigator (30%) plus
