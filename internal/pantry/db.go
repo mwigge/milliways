@@ -82,6 +82,9 @@ func (db *DB) MemoryItems() *MemoryItemStore { return &MemoryItemStore{db: db.co
 // Parallel returns the parallel-group and slot store.
 func (db *DB) Parallel() *ParallelStore { return &ParallelStore{db: db.conn} }
 
+// Security returns the security findings and accepted-risks store.
+func (db *DB) Security() *SecurityStore { return &SecurityStore{db: db.conn} }
+
 // Path returns the database file path.
 func (db *DB) Path() string { return db.path }
 
@@ -130,6 +133,11 @@ func migrate(conn *sql.DB) error {
 	if version < 6 {
 		if _, err := conn.Exec(schemaV6); err != nil {
 			return fmt.Errorf("applying schema v6: %w", err)
+		}
+	}
+	if version < 7 {
+		if _, err := conn.Exec(schemaV7); err != nil {
+			return fmt.Errorf("applying schema v7: %w", err)
 		}
 	}
 

@@ -224,3 +224,39 @@ CREATE INDEX IF NOT EXISTS idx_mw_parallel_slots_group_id ON mw_parallel_slots(g
 
 INSERT OR IGNORE INTO mw_schema (version) VALUES (6);
 `
+
+const schemaV7 = `
+CREATE TABLE IF NOT EXISTS mw_security_findings (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    cve_id            TEXT NOT NULL,
+    package_name      TEXT NOT NULL,
+    installed_version TEXT NOT NULL,
+    fixed_in_version  TEXT NOT NULL DEFAULT '',
+    severity          TEXT NOT NULL DEFAULT '',
+    ecosystem         TEXT NOT NULL DEFAULT '',
+    summary           TEXT NOT NULL DEFAULT '',
+    scan_source       TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL DEFAULT 'active',
+    first_seen        TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen         TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(cve_id, package_name, installed_version, ecosystem)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_findings_status ON mw_security_findings(status);
+CREATE INDEX IF NOT EXISTS idx_mw_security_findings_severity ON mw_security_findings(severity);
+CREATE INDEX IF NOT EXISTS idx_mw_security_findings_cve_id ON mw_security_findings(cve_id);
+
+CREATE TABLE IF NOT EXISTS mw_security_accepted_risks (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    cve_id       TEXT NOT NULL,
+    package_name TEXT NOT NULL,
+    reason       TEXT NOT NULL DEFAULT '',
+    accepted_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at   TEXT NOT NULL,
+    UNIQUE(cve_id, package_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_accepted_risks_expires_at ON mw_security_accepted_risks(expires_at);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (7);
+`
