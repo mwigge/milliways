@@ -320,17 +320,6 @@ func runCockpit(ctx context.Context, _ []string) error {
 		}
 	}
 
-	// tmux (Linux, macOS, SSH): $TMUX is set whenever inside a tmux session.
-	if os.Getenv("TMUX") != "" && !deckDisabled {
-		if paneID, err := detectTmuxCurrentPaneID(); err == nil && paneID != "" {
-			if err := runTmuxDeck(ctx, socketPath, paneID); err != nil {
-				fmt.Fprintf(os.Stderr, "milliways: tmux deck launch failed (%v), falling back to single chat\n", err)
-			} else {
-				return runChat(ctx)
-			}
-		}
-	}
-
 	return runChat(ctx)
 }
 
@@ -391,40 +380,6 @@ func detectWeztermCurrentPaneIDWith(
 		}
 	}
 	return "", fmt.Sprintf("myTTY=%q not in panes %v", myTTY, ttyNames)
-}
-
-// detectTmuxCurrentPaneID returns the tmux pane ID (e.g. "%3") of the pane
-// running this process. Requires $TMUX to be set (i.e. inside a tmux session).
-func detectTmuxCurrentPaneID() (string, error) {
-	out, err := exec.Command("tmux", "display-message", "-p", "#{pane_id}").Output()
-	if err != nil {
-		return "", fmt.Errorf("tmux display-message: %w", err)
-	}
-	id := strings.TrimSpace(string(out))
-	if id == "" {
-		return "", fmt.Errorf("tmux returned empty pane_id")
-	}
-	return id, nil
-}
-
-// runTmuxDeck opens the dashboard layout inside an active tmux session.
-// It splits the current pane: left 20% navigator, right 80% chat.
-func runTmuxDeck(_ context.Context, _ string, rightPaneID string) error {
-	milliwaysBin, err := os.Executable()
-	if err != nil {
-		milliwaysBin = "milliways"
-	}
-	// split-window -hb: horizontal split, place new pane to the LEFT (-b = before).
-	// -p 20: the new pane takes 20% of available width.
-	args := []string{
-		"split-window", "-hb", "-p", "20",
-		milliwaysBin, "attach", "--deck", "--right-pane", rightPaneID,
-	}
-	if out, err := exec.Command("tmux", args...).CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux split-window: %w\n%s", err, out)
-	}
-	os.Setenv("MILLIWAYS_DECK_MODE", "1")
-	return nil
 }
 
 // runDeck opens the home-hero-dashboard layout: left navigator (30%) plus
