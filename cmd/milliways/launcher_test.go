@@ -15,126 +15,117 @@
 package main
 
 import (
-	"net"
-	"path/filepath"
+	"fmt"
+	"strings"
 	"testing"
-	"time"
 )
 
-// TestSocketReachable verifies socketReachable returns true for a live UDS
-// listener and false for a missing path within the polling deadline.
-func TestSocketReachable(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	sockPath := filepath.Join(dir, "sock")
-
-	ln, err := net.Listen("unix", sockPath)
-	if err != nil {
-		t.Fatalf("net.Listen: %v", err)
-	}
-	defer func() { _ = ln.Close() }()
-
-	// Drain accepts so the listener doesn't fill its backlog (we don't care
-	// about the data — just that Dial succeeds).
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			_ = c.Close()
+// paneListJSON builds a minimal wezterm cli list JSON payload.
+func paneListJSON(panes ...map[string]any) []byte {
+	var entries []string
+	for _, p := range panes {
+		active := "false"
+		if a, ok := p["is_active"].(bool); ok && a {
+			active = "true"
 		}
-	}()
-
-	if !socketReachable(sockPath, 200*time.Millisecond) {
-		t.Errorf("socketReachable(live socket) = false, want true")
+		entries = append(entries, fmt.Sprintf(
+			`{"pane_id":%d,"is_active":%s,"tty_name":%q}`,
+			p["pane_id"], active, p["tty_name"],
+		))
 	}
+	return []byte("[" + strings.Join(entries, ",") + "]")
+}
 
-	missing := filepath.Join(dir, "does-not-exist")
-	if socketReachable(missing, 200*time.Millisecond) {
-		t.Errorf("socketReachable(missing) = true, want false")
+func TestDetectWeztermCurrentPaneID_ExactTTYMatch(t *testing.T) {
+	j := paneListJSON(
+		map[string]any{"pane_id": 0, "is_active": false, "tty_name": "/dev/ttys001"},
+		map[string]any{"pane_id": 3, "is_active": true, "tty_name": "/dev/ttys005"},
+		map[string]any{"pane_id": 5, "is_active": false, "tty_name": "/dev/ttys009"},
+	)
+	id, reason := detectWeztermCurrentPaneIDWith(
+		func() (string, error) { return "/dev/ttys005", nil },
+		func() ([]byte, error) { return j, nil },
+	)
+	if id != "3" {
+		t.Errorf("expected pane 3 (exact TTY match), got %q reason=%q", id, reason)
 	}
 }
 
-// TestModeDispatch covers the parseLauncherMode argument parser. It is the
-// pre-cobra dispatch hook that decides whether to launch milliways-term,
-// print the welcome banner, or fall through to cobra.
-func TestModeDispatch(t *testing.T) {
-	// Ensure no test-host env leakage skews the no-args / not-inside-cockpit
-	// cases. WEZTERM_EXECUTABLE may be set if running inside wezterm itself.
-	t.Setenv("WEZTERM_EXECUTABLE", "")
-	t.Setenv("TERM_PROGRAM", "")
-	t.Setenv("MILLIWAYS_IN_COCKPIT", "")
-
-	tests := []struct {
-		name string
-		args []string
-		want launcherMode
-	}{
-		{
-			name: "no args runs cockpit",
-			args: []string{},
-			want: modeCockpit,
-		},
-		{
-			name: "--version delegates to cobra",
-			args: []string{"--version"},
-			want: modeCobra,
-		},
-		{
-			name: "subcommand delegates to cobra",
-			args: []string{"login", "claude"},
-			want: modeCobra,
-		},
-		{
-			name: "prompt args delegate to cobra",
-			args: []string{"explain", "the", "auth", "flow"},
-			want: modeCobra,
-		},
-		{
-			name: "--help delegates to cobra",
-			args: []string{"--help"},
-			want: modeCobra,
-		},
-		{
-			name: "-h delegates to cobra",
-			args: []string{"-h"},
-			want: modeCobra,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := parseLauncherMode(tt.args)
-			if got != tt.want {
-				t.Errorf("parseLauncherMode(%v) = %v, want %v", tt.args, got, tt.want)
-			}
-		})
+func TestDetectWeztermCurrentPaneID_FallbackToActive(t *testing.T) {
+	j := paneListJSON(
+		map[string]any{"pane_id": 7, "is_active": false, "tty_name": "/dev/ttys010"},
+		map[string]any{"pane_id": 9, "is_active": true, "tty_name": "/dev/ttys011"},
+	)
+	id, reason := detectWeztermCurrentPaneIDWith(
+		func() (string, error) { return "/dev/ttys099", nil },
+		func() ([]byte, error) { return j, nil },
+	)
+	if id != "9" {
+		t.Errorf("expected fallback to active pane 9, got %q reason=%q", id, reason)
 	}
 }
 
-// TestModeDispatch_InsideMilliwaysTermPrintsWelcome verifies the
-// recursive-launch trap is closed: when WEZTERM_EXECUTABLE / TERM_PROGRAM
-// / MILLIWAYS_IN_COCKPIT are set, no-args returns modeWelcome instead of
-// modeCockpit (which would have re-exec'd milliways-term inside itself).
-func TestModeDispatch_InsideMilliwaysTermPrintsWelcome(t *testing.T) {
-	cases := []struct {
-		envKey, envVal string
-	}{
-		{"WEZTERM_EXECUTABLE", "/Applications/MilliWays.app/Contents/MacOS/wezterm-gui"},
-		{"TERM_PROGRAM", "WezTerm"},
-		{"MILLIWAYS_IN_COCKPIT", "1"},
+func TestDetectWeztermCurrentPaneID_TtyCommandFails(t *testing.T) {
+	id, reason := detectWeztermCurrentPaneIDWith(
+		func() (string, error) { return "", fmt.Errorf("not a tty") },
+		func() ([]byte, error) { return nil, nil },
+	)
+	if id != "" {
+		t.Errorf("expected empty id, got %q", id)
 	}
-	for _, c := range cases {
-		t.Run(c.envKey, func(t *testing.T) {
-			t.Setenv("WEZTERM_EXECUTABLE", "")
-			t.Setenv("TERM_PROGRAM", "")
-			t.Setenv("MILLIWAYS_IN_COCKPIT", "")
-			t.Setenv(c.envKey, c.envVal)
-			if got := parseLauncherMode(nil); got != modeWelcome {
-				t.Errorf("parseLauncherMode(nil) with %s=%q = %v, want modeWelcome", c.envKey, c.envVal, got)
-			}
-		})
+	if !strings.Contains(reason, "tty") {
+		t.Errorf("reason should mention tty failure, got %q", reason)
+	}
+}
+
+func TestDetectWeztermCurrentPaneID_WeztermListFails(t *testing.T) {
+	id, reason := detectWeztermCurrentPaneIDWith(
+		func() (string, error) { return "/dev/ttys005", nil },
+		func() ([]byte, error) { return nil, fmt.Errorf("connection refused") },
+	)
+	if id != "" {
+		t.Errorf("expected empty id, got %q", id)
+	}
+	if !strings.Contains(reason, "wezterm list") {
+		t.Errorf("reason should mention wezterm list failure, got %q", reason)
+	}
+}
+
+func TestDetectWeztermCurrentPaneID_MalformedJSON(t *testing.T) {
+	id, reason := detectWeztermCurrentPaneIDWith(
+		func() (string, error) { return "/dev/ttys005", nil },
+		func() ([]byte, error) { return []byte("not json"), nil },
+	)
+	if id != "" {
+		t.Errorf("expected empty id, got %q", id)
+	}
+	if !strings.Contains(reason, "json") {
+		t.Errorf("reason should mention json parse, got %q", reason)
+	}
+}
+
+func TestDetectWeztermCurrentPaneID_EmptyPaneList(t *testing.T) {
+	id, reason := detectWeztermCurrentPaneIDWith(
+		func() (string, error) { return "/dev/ttys005", nil },
+		func() ([]byte, error) { return []byte("[]"), nil },
+	)
+	if id != "" {
+		t.Errorf("expected empty id for empty pane list, got %q", id)
+	}
+	if reason == "" {
+		t.Error("expected non-empty reason when no pane found")
+	}
+}
+
+func TestDetectWeztermCurrentPaneID_PaneIDZero(t *testing.T) {
+	j := paneListJSON(
+		map[string]any{"pane_id": 0, "is_active": true, "tty_name": "/dev/ttys000"},
+	)
+	id, reason := detectWeztermCurrentPaneIDWith(
+		func() (string, error) { return "/dev/ttys000", nil },
+		func() ([]byte, error) { return j, nil },
+	)
+	if id != "0" {
+		t.Errorf("expected pane 0, got %q reason=%q", id, reason)
 	}
 }

@@ -325,18 +325,34 @@ func runCockpit(ctx context.Context, _ []string) error {
 
 // detectWeztermCurrentPaneID finds the pane ID of the terminal running this
 // process by matching the current TTY against wezterm cli list output.
-// Falls back to the first is_active pane if TTY matching fails.
-// Returns ("", reason) if no pane can be identified.
 func detectWeztermCurrentPaneID() (string, string) {
-	// Get our own TTY device path (e.g. /dev/ttys005).
-	ttyOut, err := exec.Command("tty").Output()
-	if err != nil {
-		return "", "tty cmd failed: " + err.Error()
+	ttyGetter := func() (string, error) {
+		// Must pass os.Stdin explicitly — exec.Command defaults stdin to /dev/null
+		// which causes `tty` to report "not a tty".
+		cmd := exec.Command("tty")
+		cmd.Stdin = os.Stdin
+		out, err := cmd.Output()
+		return strings.TrimSpace(string(out)), err
 	}
-	myTTY := strings.TrimSpace(string(ttyOut))
+	listPanes := func() ([]byte, error) {
+		return exec.Command("wezterm", "cli", "list", "--format", "json").Output()
+	}
+	return detectWeztermCurrentPaneIDWith(ttyGetter, listPanes)
+}
 
-	// Query all panes from the running WezTerm instance.
-	listOut, err := exec.Command("wezterm", "cli", "list", "--format", "json").Output()
+// detectWeztermCurrentPaneIDWith is the testable core of detectWeztermCurrentPaneID.
+// It matches the current TTY path against wezterm pane list JSON, falling back to
+// the first is_active pane if no exact TTY match is found.
+func detectWeztermCurrentPaneIDWith(
+	ttyGetter func() (string, error),
+	listPanes func() ([]byte, error),
+) (string, string) {
+	myTTY, err := ttyGetter()
+	if err != nil {
+		return "", "tty failed: " + err.Error()
+	}
+
+	listOut, err := listPanes()
 	if err != nil {
 		return "", "wezterm list failed: " + err.Error()
 	}
@@ -346,7 +362,7 @@ func detectWeztermCurrentPaneID() (string, string) {
 		TtyName  string `json:"tty_name"`
 	}
 	if err := json.Unmarshal(listOut, &panes); err != nil {
-		return "", "json unmarshal failed: " + err.Error()
+		return "", "json parse failed: " + err.Error()
 	}
 
 	// Prefer exact TTY match (unambiguous).
@@ -355,7 +371,7 @@ func detectWeztermCurrentPaneID() (string, string) {
 			return strconv.Itoa(p.PaneID), ""
 		}
 	}
-	// Fall back to first active pane.
+	// Fall back to first active pane (covers WezTerm forks that omit tty_name).
 	var ttyNames []string
 	for _, p := range panes {
 		ttyNames = append(ttyNames, p.TtyName)
@@ -363,7 +379,7 @@ func detectWeztermCurrentPaneID() (string, string) {
 			return strconv.Itoa(p.PaneID), ""
 		}
 	}
-	return "", fmt.Sprintf("myTTY=%q not in pane list %v", myTTY, ttyNames)
+	return "", fmt.Sprintf("myTTY=%q not in panes %v", myTTY, ttyNames)
 }
 
 // runDeck opens the home-hero-dashboard layout: left navigator (30%) plus
