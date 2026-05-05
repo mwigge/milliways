@@ -449,3 +449,97 @@ func assertGeminiHasChunkEnd(t *testing.T, events []map[string]any) {
 		t.Fatalf("expected chunk_end event, got %v", events)
 	}
 }
+
+func TestGeminiStderrIsNoise(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{
+			name: "yolo mode banner",
+			line: "YOLO mode is enabled. All tool calls will be automatically approved.",
+			want: true,
+		},
+		{
+			name: "all tool calls approved",
+			line: "All tool calls will be automatically approved.",
+			want: true,
+		},
+		{
+			name: "missing pgrep output",
+			line: "missing pgrep output: cannot determine sandbox",
+			want: true,
+		},
+		{
+			name: "whitespace only",
+			line: "   ",
+			want: true,
+		},
+		{
+			name: "empty line",
+			line: "",
+			want: true,
+		},
+		{
+			name: "real error passes through",
+			line: "some real error from gemini",
+			want: false,
+		},
+		{
+			name: "api error passes through",
+			line: "Error: API quota exceeded",
+			want: false,
+		},
+		{
+			name: "context window passes through",
+			line: "context window exceeded",
+			want: false,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if got := geminiStderrIsNoise(c.line); got != c.want {
+				t.Errorf("geminiStderrIsNoise(%q) = %v, want %v", c.line, got, c.want)
+			}
+		})
+	}
+}
+
+func TestGeminiArgsBuilderYOLOToggle(t *testing.T) {
+	// t.Setenv requires sequential subtests — no t.Parallel here or in subtests.
+	cases := []struct {
+		name      string
+		envVal    string
+		wantDashY bool
+	}{
+		{"default (empty) includes -y", "", true},
+		{"off omits -y", "off", false},
+		{"OFF case-insensitive omits -y", "OFF", false},
+		{"false omits -y", "false", false},
+		{"FALSE case-insensitive omits -y", "FALSE", false},
+		{"on includes -y", "on", true},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("MILLIWAYS_GEMINI_YOLO", c.envVal)
+			args := geminiDefaultArgs("hello")
+			hasDashY := false
+			for _, a := range args {
+				if a == "-y" {
+					hasDashY = true
+					break
+				}
+			}
+			if hasDashY != c.wantDashY {
+				t.Errorf("MILLIWAYS_GEMINI_YOLO=%q: args=%v, hasDashY=%v, want %v",
+					c.envVal, args, hasDashY, c.wantDashY)
+			}
+		})
+	}
+}
