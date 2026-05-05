@@ -83,7 +83,7 @@ func TestDispatch_ThreeProviders_ThreeSlots(t *testing.T) {
 		Prompt:    "review internal/server/",
 		Providers: []string{"claude", "codex", "local"},
 	}
-	result, err := parallel.Dispatch(context.Background(), req, opener, store, nil)
+	result, err := parallel.Dispatch(context.Background(), req, opener, store, nil, nil)
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestDispatch_OneProviderFails_InSkipped(t *testing.T) {
 		Prompt:    "test",
 		Providers: []string{"claude", "codex", "local"},
 	}
-	result, err := parallel.Dispatch(context.Background(), req, opener, store, nil)
+	result, err := parallel.Dispatch(context.Background(), req, opener, store, nil, nil)
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestDispatch_AllProvidersFail_Error(t *testing.T) {
 	_, err := parallel.Dispatch(context.Background(), parallel.DispatchRequest{
 		Prompt:    "test",
 		Providers: []string{"claude", "codex"},
-	}, opener, store, nil)
+	}, opener, store, nil, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -155,7 +155,7 @@ func TestDispatch_CustomGroupID_Preserved(t *testing.T) {
 		GroupID:   "my-id",
 		Prompt:    "test",
 		Providers: []string{"claude"},
-	}, &stubOpener{}, store, nil)
+	}, &stubOpener{}, store, nil, nil)
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}

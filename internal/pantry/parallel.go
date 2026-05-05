@@ -18,6 +18,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -72,7 +73,10 @@ func parseTime(s string) time.Time {
 	if s == "" {
 		return time.Time{}
 	}
-	t, _ := time.Parse(timeLayout, s)
+	t, err := time.Parse(timeLayout, s)
+	if err != nil {
+		slog.Debug("parallel: parseTime: unrecognised timestamp", "raw", s, "err", err)
+	}
 	return t
 }
 

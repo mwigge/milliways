@@ -153,7 +153,7 @@ func RenderHeader(slots []SlotRecord, quotas map[string]QuotaSummary, totalToken
 			}
 		}
 
-		cols = append(cols, fmt.Sprintf("%s %s  %s %s", slot.Provider, tok, quotaStr, bullet))
+		cols = append(cols, fmt.Sprintf("%s %s  %s %s", ColorProvider(slot.Provider), tok, quotaStr, bullet))
 	}
 
 	// Append total.

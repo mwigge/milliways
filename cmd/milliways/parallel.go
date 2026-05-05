@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/mwigge/milliways/internal/parallel"
 	"github.com/mwigge/milliways/internal/rpc"
 )
 
@@ -113,17 +114,30 @@ func (l *chatLoop) handleParallel(rest string) {
 		return
 	}
 
-	// Print summary. Layout (Agent C) is not yet available; print handles inline.
-	fmt.Fprintf(l.out, "[parallel] group %s started — %d slot(s)\n", result.GroupID, len(result.Slots))
-	for _, slot := range result.Slots {
-		fmt.Fprintf(l.out, "  slot provider=%s handle=%d\n", slot.Provider, slot.Handle)
-	}
 	if len(result.Skipped) > 0 {
-		fmt.Fprintf(l.out, "  [parallel] skipped %d provider(s):\n", len(result.Skipped))
+		fmt.Fprintf(l.out, "[parallel] skipped %d provider(s):\n", len(result.Skipped))
 		for _, sk := range result.Skipped {
-			fmt.Fprintf(l.out, "    %s: %s\n", sk.Provider, sk.Reason)
+			fmt.Fprintf(l.out, "  %s: %s\n", sk.Provider, sk.Reason)
 		}
 	}
-	// Note for layout integration (Agent C's worktree).
-	fmt.Fprintln(l.out, "  [parallel] layout panel not yet available — use `milliwaysctl parallel status "+result.GroupID+"` to track progress")
+
+	// Build parallel.DispatchResult for the layout launcher.
+	dispatchResult := parallel.DispatchResult{GroupID: result.GroupID}
+	for i, s := range result.Slots {
+		dispatchResult.Slots = append(dispatchResult.Slots, parallel.SlotRecord{
+			SlotN:    i + 1,
+			Handle:   s.Handle,
+			Provider: s.Provider,
+			Status:   parallel.SlotRunning,
+		})
+	}
+
+	// Launch split-pane layout. In non-WezTerm environments this prints a
+	// headless fallback with per-slot attach hints.
+	if err := parallel.Launch(dispatchResult, result.GroupID); err != nil {
+		fmt.Fprintln(l.errw, "[parallel] layout error: "+err.Error())
+		for _, s := range result.Slots {
+			fmt.Fprintf(l.out, "  milliways attach %d  (%s)\n", s.Handle, s.Provider)
+		}
+	}
 }
