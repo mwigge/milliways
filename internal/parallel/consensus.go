@@ -179,6 +179,9 @@ func assignConfidence(sourceCount int) Confidence {
 // If KGQuery returns an error the error is logged at WARN level and an empty
 // Summary is returned — callers should not treat a missing KG as fatal.
 func Aggregate(ctx context.Context, groupID string, mp MPClient) (Summary, error) {
+	if mp == nil {
+		return Summary{GroupID: groupID}, nil
+	}
 	triples, err := mp.KGQuery(ctx, "file:", "has_finding", map[string]string{"group_id": groupID})
 	if err != nil {
 		slog.WarnContext(ctx, "KGQuery failed — returning empty consensus summary",

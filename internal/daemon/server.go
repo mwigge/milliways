@@ -33,6 +33,8 @@ import (
 	"github.com/mwigge/milliways/internal/daemon/metrics"
 	"github.com/mwigge/milliways/internal/daemon/observability"
 	"github.com/mwigge/milliways/internal/daemon/runners"
+	"github.com/mwigge/milliways/internal/pantry"
+	"github.com/mwigge/milliways/internal/parallel"
 )
 
 // Protocol version exposed via ping. Bump major when breaking; minor for
@@ -83,8 +85,8 @@ type Server struct {
 	// callers); dispatch falls back gracefully in that case.
 	metrics *metrics.Store
 
-	// parallel is the in-memory store for parallel dispatch groups.
-	parallel *parallelStore
+	// pantryDB is the milliways SQLite store; owns parallel group persistence.
+	pantryDB *pantry.DB
 }
 
 // NewServer binds a UDS at socket with mode 0600. Removes any stale socket
@@ -139,7 +141,19 @@ func NewServer(socket string) (*Server, error) {
 	slog.Info("runners probed", "n", len(s.agentsCache))
 
 	s.historyQuota = NewHistoryQuota()
-	s.parallel = newParallelStore()
+
+	pantryPath := filepath.Join(filepath.Dir(socket), "milliways.db")
+	pdb, err := pantry.Open(pantryPath)
+	if err != nil {
+		l.Close()
+		bgCancel()
+		mstore.Close()
+		return nil, fmt.Errorf("open pantry db: %w", err)
+	}
+	s.pantryDB = pdb
+	if err := parallel.RecoverInterrupted(pdb.Parallel()); err != nil {
+		slog.Warn("parallel: restart recovery failed", "err", err)
+	}
 
 	go s.statusBroadcaster()
 	return s, nil
@@ -285,6 +299,11 @@ func (s *Server) Shutdown() {
 	if s.metrics != nil {
 		if err := s.metrics.Close(); err != nil {
 			slog.Warn("metrics store close", "err", err)
+		}
+	}
+	if s.pantryDB != nil {
+		if err := s.pantryDB.Close(); err != nil {
+			slog.Warn("pantry db close", "err", err)
 		}
 	}
 }
