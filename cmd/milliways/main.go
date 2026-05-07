@@ -615,6 +615,13 @@ func dispatch(opts dispatchOpts) error {
 		}
 		if costInfo != nil {
 			out["cost_usd"] = costInfo.USD
+			out["tokens_in"] = costInfo.InputTokens
+			out["tokens_out"] = costInfo.OutputTokens
+			out["usage_display"] = formatUsageInline(usageStats{
+				InputTokens:  costInfo.InputTokens,
+				OutputTokens: costInfo.OutputTokens,
+				CostUSD:      costInfo.USD,
+			})
 		}
 		if err := printJSON(out, true); err != nil {
 			return err

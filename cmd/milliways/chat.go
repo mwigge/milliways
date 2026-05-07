@@ -1073,45 +1073,6 @@ func wrapPlainForTerminal(text string, width int) []string {
 	return lines
 }
 
-// formatCost renders a USD cost with appropriate precision.
-// - < $0.01: show 4 decimals (e.g., $0.0023)
-// - $0.01-$9.99: show 2 decimals (e.g., $2.50)
-// - >= $10: show 1 decimal (e.g., $42.7)
-func formatCost(usd float64) string {
-	switch {
-	case usd < 0:
-		return "$0.00"
-	case usd < 0.01:
-		return fmt.Sprintf("$%.4f", usd)
-	case usd < 10:
-		return fmt.Sprintf("$%.2f", usd)
-	default:
-		return fmt.Sprintf("$%.1f", usd)
-	}
-}
-
-// formatCostVerbose always shows 4 decimals, for logs/audit
-func formatCostVerbose(usd float64) string {
-	return fmt.Sprintf("$%.4f", usd)
-}
-
-// formatTokenCount renders token counts with K/M suffixes for large numbers.
-func formatTokenCount(n int) string {
-	switch {
-	case n < 1000:
-		return fmt.Sprintf("%d", n)
-	case n < 1_000_000:
-		return fmt.Sprintf("%.1fK", float64(n)/1000)
-	default:
-		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
-	}
-}
-
-// formatTokens displays token pair as "123→456".
-func formatTokens(in, out int) string {
-	return fmt.Sprintf("%d→%d", in, out)
-}
-
 // maxTurnsSummaryPrompt is sent automatically when the agentic loop hits
 // its turn cap. It asks the runner to produce a structured handoff summary
 // so the user gets a clear picture of what was done and a natural prompt
@@ -1136,12 +1097,18 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any, turnSaved bool) {
 	cost, _ := chunkEnd["cost_usd"].(float64)
 	inTok, _ := chunkEnd["input_tokens"].(float64)
 	outTok, _ := chunkEnd["output_tokens"].(float64)
+	totalTok, _ := chunkEnd["total_tokens"].(float64)
+	usage := usageStats{
+		InputTokens:  int(inTok),
+		OutputTokens: int(outTok),
+		TotalTokens:  int(totalTok),
+		CostUSD:      cost,
+	}
 	if cost > 0 {
 		l.sessionCost += cost
-		parts = append(parts, formatCost(cost))
 	}
-	if inTok > 0 && outTok > 0 {
-		parts = append(parts, formatTokens(int(inTok), int(outTok))+" tok")
+	if usageText := formatUsageInline(usage); usageText != "" {
+		parts = append(parts, usageText)
 	}
 	if turnSaved {
 		parts = append(parts, "\033[32m⊙ saved\033[0m")
@@ -1161,8 +1128,8 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any, turnSaved bool) {
 		if l.sessionCost > 0 {
 			tabTitle += " · " + formatCost(l.sessionCost) + " session"
 		}
-		if inTok > 0 && outTok > 0 {
-			tabTitle += fmt.Sprintf(" · %d→%d tok", int(inTok), int(outTok))
+		if usage.hasTokens() {
+			tabTitle += " · " + formatUsagePair(usage.InputTokens, usage.OutputTokens) + " tok"
 		}
 		if turnSaved {
 			tabTitle += " · ⊙"
@@ -2219,11 +2186,11 @@ func (l *chatLoop) printCost() {
 	}
 	var total float64
 	for _, s := range snapshots {
-		fmt.Fprintf(l.out, "  %-10s  %.0f tokens  (%s)\n", s.AgentID, s.Used, s.Window)
+		fmt.Fprintf(l.out, "  %-10s  %s  (%s)\n", s.AgentID, formatUsageTotalLabel(int(s.Used)), s.Window)
 		total += s.Used
 	}
 	fmt.Fprintf(l.out, "  ─────────────────────────────\n")
-	fmt.Fprintf(l.out, "  %-10s  %.0f tokens\n", "total", total)
+	fmt.Fprintf(l.out, "  %-10s  %s\n", "total", formatUsageTotalLabel(int(total)))
 }
 
 func (l *chatLoop) printTrace(rest string) {

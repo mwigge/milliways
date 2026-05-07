@@ -446,11 +446,8 @@ func renderSessionStatusPanel(s sessionDeckSnapshot, width int) string {
 	if current.Handle > 0 {
 		parts = append(parts, fmt.Sprintf("handle %d", current.Handle))
 	}
-	if current.TotalTokens > 0 {
-		parts = append(parts, fmt.Sprintf("tok %d", current.TotalTokens))
-	}
-	if current.CostUSD > 0 {
-		parts = append(parts, formatCostVerbose(current.CostUSD))
+	if usage := formatUsageCompact(usageStats{TotalTokens: current.TotalTokens, CostUSD: current.CostUSD}); usage != "" {
+		parts = append(parts, usage)
 	}
 	if current.LastSaved {
 		parts = append(parts, "saved")
@@ -475,11 +472,8 @@ func renderObservabilityPanel(s sessionDeckSnapshot, width int) string {
 		if st.Unread > 0 {
 			row += fmt.Sprintf(" unread:%d", st.Unread)
 		}
-		if st.InputTokens+st.OutputTokens > 0 {
-			row += fmt.Sprintf(" tok:%d", st.InputTokens+st.OutputTokens)
-		}
-		if st.CostUSD > 0 {
-			row += " " + formatCost(st.CostUSD)
+		if usage := formatUsageCompact(usageStats{InputTokens: st.InputTokens, OutputTokens: st.OutputTokens, CostUSD: st.CostUSD}); usage != "" {
+			row += " usage:" + usage
 		}
 		if st.LatencyMS > 0 {
 			row += fmt.Sprintf(" lat:%s", formatDurationMS(st.LatencyMS))

@@ -125,6 +125,9 @@ func TestFormatDoneEvent(t *testing.T) {
 	if int(tokOut) != 200 {
 		t.Errorf("tokens_out = %v, want 200", m["tokens_out"])
 	}
+	if m["usage_display"] != "in 100 / out 200 / total 300 tok" {
+		t.Errorf("usage_display = %v, want normalized usage string", m["usage_display"])
+	}
 }
 
 // TestDrainStreamToWriter_JSONMode verifies that base64-encoded delta events are
@@ -601,8 +604,8 @@ func TestRenderDeckNavigatorObservabilityActiveProviders(t *testing.T) {
 	if !strings.Contains(got, "clde") {
 		t.Errorf("missing 'clde' short name for claude:\n%s", got)
 	}
-	if !strings.Contains(got, "31k") {
-		t.Errorf("missing '31k' token count for claude:\n%s", got)
+	if !strings.Contains(got, "31.0k tok") {
+		t.Errorf("missing '31.0k tok' token count for claude:\n%s", got)
 	}
 	if !strings.Contains(got, "$0.87") {
 		t.Errorf("missing '$0.87' cost for claude:\n%s", got)
