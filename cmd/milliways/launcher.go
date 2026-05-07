@@ -32,6 +32,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -90,17 +91,16 @@ func parseLauncherMode(args []string) launcherMode {
 // daemon is down) so the user sees their actual cockpit state, not a
 // static template.
 func printWelcome() {
-	out := os.Stdout
-	fmt.Fprintln(out, "milliways "+welcomeVersion()+" — inside MilliWays.app")
-	fmt.Fprintln(out)
+	printWelcomeTo(os.Stdout)
+}
+
+func printWelcomeTo(out io.Writer) {
+	fmt.Fprintln(out, "milliways "+welcomeVersion()+" — launcher")
 
 	// Live daemon status. Short timeout so a hung daemon doesn't block
 	// the welcome render.
 	state := probeDaemonForWelcome(700 * time.Millisecond)
 	fmt.Fprintln(out, "  daemon  "+state.daemonLine)
-	if state.agentLine != "" {
-		fmt.Fprintln(out, "  agents  "+state.agentLine)
-	}
 	if state.activeLine != "" {
 		fmt.Fprintln(out, "  active  "+state.activeLine)
 	}
@@ -109,17 +109,12 @@ func printWelcome() {
 	const body = `Start:
   milliways chat                 interactive chat
   milliways "explain this repo"  one-shot prompt
-  /help                          full command palette
+  milliwaysctl status            daemon status
 
-Switch:
-  /1 claude   /2 codex   /3 copilot   /4 minimax
-  /5 gemini   /6 local   /7 pool
-
-Daily commands:
+Inside chat:
+  /help                          full command reference
+  /agents                        auth and model status
   /parallel <prompt>             fan out to providers
-  /scan                          security scan
-  /install-local-server          local model server
-  !<cmd>                         shell escape with guardrails
 `
 	fmt.Fprint(out, body)
 }

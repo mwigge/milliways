@@ -2881,45 +2881,32 @@ func agentThinkingColor(name string) string {
 	return "\033[38;5;244m" // unknown provider
 }
 
-// printLanding is the chat-startup banner: header + dynamic daemon /
-// agent state + a curated slash command map. Mirrors what the user
-// would have seen as the REPL welcome — but every command listed here
-// works directly in this same chat (numeric or named runner switch,
-// local-bootstrap, opsx, !cmd shell, /help, /exit).
+// printLanding is the chat-startup banner. Keep it intentionally small:
+// /help is the full command reference, while the deck owns rich status panels.
 func (l *chatLoop) printLanding() {
 	if os.Getenv("MILLIWAYS_DECK_MODE") == "1" {
 		return
 	}
 	fmt.Fprintln(l.out, "milliways "+welcomeVersion()+" — chat")
 	state := probeDaemonForWelcome(700 * time.Millisecond)
-
-	fmt.Fprintln(l.out, "\033[1mQuick Menu:\033[0m  \033[1m/help\033[0m · \033[1m!/cmd\033[0m · \033[1m/parallel\033[0m")
-	fmt.Fprintln(l.out)
 	fmt.Fprintln(l.out, "  daemon  "+state.daemonLine)
-	fmt.Fprintln(l.out)
-
-	fmt.Fprintln(l.out, "Pick a client:")
-	statuses := l.fetchAgentStatuses()
-	for i, name := range chatSwitchableAgents {
-		s := statuses[name]
-		model := s.model
-		if model == "" {
-			model = "—"
-		}
-		color := agentColor(name)
-		reset := "\033[0m"
-		fmt.Fprintf(l.out, "  /%d  %s/%-10s%s %s  %s\n", i+1, color, name, reset, s.mark, model)
-	}
-	fmt.Fprintln(l.out)
+	fmt.Fprintln(l.out, "  clients "+formatClientShortcutLine())
 	l.ringMu.Lock()
 	ring := append([]string(nil), l.ring...)
 	l.ringMu.Unlock()
 	if len(ring) > 0 {
-		fmt.Fprintf(l.out, "  ring: %s  (/ring to change)\n", strings.Join(ring, " → "))
+		fmt.Fprintf(l.out, "  ring    %s  (/ring to change)\n", strings.Join(ring, " → "))
 	}
+	fmt.Fprintln(l.out, "  help    /help all commands · /agents auth status · /exit quit")
 	fmt.Fprintln(l.out)
-	fmt.Fprintln(l.out, "  \033[2m/login [client]\033[0m  set up auth      \033[2m/help\033[0m  all commands      \033[2m/exit\033[0m  quit")
-	fmt.Fprintln(l.out)
+}
+
+func formatClientShortcutLine() string {
+	var parts []string
+	for i, name := range chatSwitchableAgents {
+		parts = append(parts, fmt.Sprintf("/%d %s", i+1, name))
+	}
+	return strings.Join(parts, " · ")
 }
 
 // printQuota queries the daemon's quota.get.
@@ -2941,7 +2928,15 @@ func (l *chatLoop) printQuota() {
 // printHelp shows the full command reference. Kept separate from
 // printLanding so the startup banner stays minimal.
 func (l *chatLoop) printHelp() {
-	l.printLanding() // client list + daemon status
+	fmt.Fprintln(l.out, "milliways chat commands")
+	fmt.Fprintln(l.out)
+
+	fmt.Fprintln(l.out, "Clients:")
+	fmt.Fprintln(l.out, "  "+formatClientShortcutLine())
+	fmt.Fprintln(l.out, "  /switch <runner>              switch active workspace without handoff")
+	fmt.Fprintln(l.out, "  /takeover <runner>            hand off active context to another runner")
+	fmt.Fprintln(l.out, "  /<runner> <prompt>            start work in that client without stealing focus")
+	fmt.Fprintln(l.out)
 
 	fmt.Fprintln(l.out, "Client install / upgrade:")
 	fmt.Fprintln(l.out, "  /install <client>             claude | codex | copilot | gemini | local")
@@ -2990,12 +2985,10 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /agents                       list clients with live auth status")
 	fmt.Fprintln(l.out, "  /quota                        current quota snapshot")
 	fmt.Fprintln(l.out, "  /metrics                      live metrics dashboard (token usage, costs, ops)")
-	fmt.Fprintln(l.out, "  /switch <runner>              switch active workspace without handoff")
-	fmt.Fprintln(l.out, "  /takeover <runner>            hand off active context to another runner")
-	fmt.Fprintln(l.out, "  /<runner> <prompt>            start work in that client without stealing focus")
 	fmt.Fprintln(l.out, "  /briefing                     re-show the full context handed off on last /takeover")
 	fmt.Fprintln(l.out, "  /login [client]               auth setup — API key prompt or CLI steps")
 	fmt.Fprintln(l.out, "  /scan                         scan workspace dependencies for known CVEs")
+	fmt.Fprintln(l.out, "  /help                         show this command reference")
 	fmt.Fprintln(l.out, "  /exit                         exit (Ctrl+D also works)")
 	fmt.Fprintln(l.out, "  !<cmd>                        run a shell command inline")
 	fmt.Fprintln(l.out)
