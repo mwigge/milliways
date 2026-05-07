@@ -79,11 +79,30 @@ func friendlyError(prefix string, rawMsg string, err error) string {
 		return prefix + rawMsg
 	}
 
+	raw := err.Error()
 	msg := prefix
 	if rawMsg != "" {
 		msg += rawMsg + ": "
 	}
-	msg += err.Error()
+
+	lowerRaw := strings.ToLower(raw)
+
+	if strings.Contains(lowerRaw, "no such method") || strings.Contains(lowerRaw, "method not found") {
+		msg += "daemon does not support that command"
+		msg += "\n  → Restart or upgrade milliwaysd so the terminal and daemon versions match"
+		return msg
+	}
+
+	if strings.Contains(lowerRaw, "decode") ||
+		strings.Contains(lowerRaw, "cannot unmarshal") ||
+		strings.Contains(lowerRaw, "invalid character") ||
+		strings.Contains(lowerRaw, "unexpected end of json input") {
+		msg += "unexpected daemon response"
+		msg += "\n  → Restart milliwaysd; if this persists, upgrade both milliways and milliwaysd"
+		return msg
+	}
+
+	msg += raw
 
 	// Daemon connection issues
 	if strings.Contains(msg, "connection refused") ||
@@ -110,8 +129,9 @@ func friendlyError(prefix string, rawMsg string, err error) string {
 	}
 
 	// RPC errors
-	if strings.Contains(msg, "rpc") || strings.Contains(msg, "Call") {
-		msg += "\n  → Daemon may be restarting, try again in a moment"
+	if strings.Contains(lowerRaw, "rpc error") || strings.Contains(lowerRaw, "call") {
+		msg = prefix + "daemon request failed"
+		msg += "\n  → Daemon may be restarting; try again in a moment"
 		return msg
 	}
 
@@ -1540,7 +1560,7 @@ func (l *chatLoop) setPromptState(state string) {
 func (l *chatLoop) sendAgentPrompt(agentID, prompt string) {
 	sess, err := l.ensureAgentSession(agentID)
 	if err != nil {
-		fmt.Fprintln(l.errw, "✗ open "+agentID+": "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("✗ open "+agentID+": ", "", err))
 		return
 	}
 	wasActive := l.sess != nil && l.sess.agentID == agentID
@@ -1572,7 +1592,7 @@ func (l *chatLoop) handleTakeover(newID string) {
 	fromID := l.sess.agentID
 	sess, err := l.ensureAgentSession(newID)
 	if err != nil {
-		fmt.Fprintln(l.errw, "✗ open "+newID+": "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("✗ open "+newID+": ", "", err))
 		return
 	}
 	l.activateSession(sess)
@@ -1608,7 +1628,7 @@ func (l *chatLoop) switchAgent(newID string) {
 	}
 	newSess, err := l.ensureAgentSession(newID)
 	if err != nil {
-		fmt.Fprintln(l.errw, "✗ open "+newID+": "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("✗ open "+newID+": ", "", err))
 		return
 	}
 	l.activateSession(newSess)
