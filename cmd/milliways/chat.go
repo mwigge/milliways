@@ -995,9 +995,6 @@ func formatThinkingLineWidth(agentID, msg string, width int) string {
 	dim := agentThinkingColor(agentID)
 	colorEnabled := ansiEnabled()
 	reset := "\033[0m"
-	if dim == "" && colorEnabled {
-		dim = "\033[38;5;250m"
-	}
 	if !colorEnabled {
 		reset = ""
 	}
@@ -2829,9 +2826,15 @@ func isTTYStderr() bool {
 	return ttyResult
 }
 
+const (
+	unknownAgentColor         = "\033[38;5;245m"
+	unknownAgentThinkingColor = "\033[38;5;244m"
+)
+
 // agentColor returns a 256-colour ANSI escape for a runner name.
 // Each runner has a stable identity colour so they're visually distinct
-// in the landing zone and in the prompt header.
+// in the landing zone and in the prompt header. Unknown providers get a
+// neutral colour instead of falling back to an empty/default style.
 func agentColor(name string) string {
 	if !ansiEnabled() {
 		return ""
@@ -2852,7 +2855,7 @@ func agentColor(name string) string {
 	case "pool":
 		return "\033[38;5;117m" // light blue
 	}
-	return ""
+	return unknownAgentColor // unknown provider
 }
 
 // agentThinkingColor returns the quieter companion colour for runner progress.
@@ -2878,7 +2881,7 @@ func agentThinkingColor(name string) string {
 	case "pool":
 		return "\033[38;5;75m" // muted light blue
 	}
-	return "\033[38;5;244m" // unknown provider
+	return unknownAgentThinkingColor // unknown provider
 }
 
 // printLanding is the chat-startup banner. Keep it intentionally small:
