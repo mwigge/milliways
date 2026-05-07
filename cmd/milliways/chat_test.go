@@ -62,6 +62,41 @@ func TestDrainStreamRecordsModelEvent(t *testing.T) {
 	}
 }
 
+func TestDisplayModelInfoUsesObservedSessionModelAndSource(t *testing.T) {
+	sess := &chatSession{agentID: "codex"}
+	sess.setModel("gpt-5.5", "observed")
+	loop := &chatLoop{sessions: map[string]*chatSession{"codex": sess}}
+
+	model, endpoint := loop.displayModelInfo("codex")
+	if model != "gpt-5.5" {
+		t.Fatalf("display model = %q, want observed gpt-5.5", model)
+	}
+	if !strings.Contains(endpoint, "codex CLI") || !strings.Contains(endpoint, "model observed") {
+		t.Fatalf("display endpoint = %q, want endpoint plus observed source", endpoint)
+	}
+}
+
+func TestPrintModelSummaryUsesObservedSessionModel(t *testing.T) {
+	sess := &chatSession{agentID: "codex"}
+	sess.setModel("gpt-5.5", "observed")
+	var out bytes.Buffer
+	loop := &chatLoop{
+		out:      &out,
+		errw:     &bytes.Buffer{},
+		sessions: map[string]*chatSession{"codex": sess},
+	}
+
+	loop.printModel("")
+
+	got := out.String()
+	if !strings.Contains(got, "codex") || !strings.Contains(got, "gpt-5.5") || !strings.Contains(got, "model observed") {
+		t.Fatalf("model summary did not include observed codex model/source:\n%s", got)
+	}
+	if strings.Contains(got, "codex CLI default  (codex CLI)") {
+		t.Fatalf("model summary used static codex default instead of observed model:\n%s", got)
+	}
+}
+
 func TestDrainStreamWritesThinkingToOutputStream(t *testing.T) {
 	stream := make(chan []byte, 2)
 	sess := &chatSession{
