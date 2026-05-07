@@ -256,7 +256,7 @@ func TestPrintHelpDoesNotRepeatStartupBanner(t *testing.T) {
 			t.Fatalf("help should not repeat startup banner; found %q in:\n%s", absent, got)
 		}
 	}
-	for _, want := range []string{"milliways chat commands", "Clients:", "/1 claude", "/7 pool", "Client install / upgrade:", "/install-local-server"} {
+	for _, want := range []string{"milliways chat commands", "Clients:", "/1 claude", "/7 pool", "Client install / upgrade:", "/install-local-server", "Terminal setup:", "cockpit-hint.txt"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("help missing %q; got:\n%s", want, got)
 		}
