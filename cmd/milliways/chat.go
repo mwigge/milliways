@@ -1279,6 +1279,8 @@ func (l *chatLoop) handleSlash(line string) {
 		l.handlePath(rest)
 	case "parallel":
 		l.handleParallel(rest)
+	case "parallel-view", "compare":
+		l.handleParallelView(rest)
 	case "scan":
 		l.handleScan(rest)
 	case "help", "?":
@@ -2863,6 +2865,7 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /parallel [--providers list] <prompt>  run prompt across multiple providers concurrently")
 	fmt.Fprintln(l.out, "    providers: comma-separated list, e.g. claude,codex,local")
 	fmt.Fprintln(l.out, "    omit --providers to use all available providers")
+	fmt.Fprintln(l.out, "  /parallel-view [--watch] <group-id>   side-by-side provider output + consensus")
 	fmt.Fprintln(l.out)
 
 	fmt.Fprintln(l.out, "Context management:")

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/mwigge/milliways/internal/mempalace"
@@ -158,13 +159,17 @@ type groupStatusResult struct {
 
 // groupSlotStatus is one slot in the group.status response.
 type groupSlotStatus struct {
-	Handle      int64  `json:"handle"`
-	Provider    string `json:"provider"`
-	Status      string `json:"status"`
-	StartedAt   string `json:"started_at,omitempty"`
-	CompletedAt string `json:"completed_at,omitempty"`
-	TokensIn    int    `json:"tokens_in"`
-	TokensOut   int    `json:"tokens_out"`
+	Handle       int64  `json:"handle"`
+	Provider     string `json:"provider"`
+	Status       string `json:"status"`
+	StartedAt    string `json:"started_at,omitempty"`
+	CompletedAt  string `json:"completed_at,omitempty"`
+	TokensIn     int    `json:"tokens_in"`
+	TokensOut    int    `json:"tokens_out"`
+	Model        string `json:"model,omitempty"`
+	Text         string `json:"text,omitempty"`
+	LastError    string `json:"last_error,omitempty"`
+	LastThinking string `json:"last_thinking,omitempty"`
 }
 
 // groupStatus handles "group.status".
@@ -189,14 +194,41 @@ func (s *Server) groupStatus(enc *json.Encoder, req *Request) {
 		return
 	}
 
+	liveByHandle := map[int64]DeckSessionSnapshot{}
+	if s.agents != nil {
+		for _, sess := range s.agents.DeckSnapshot("").Sessions {
+			liveByHandle[sess.Handle] = sess
+		}
+	}
+
 	slots := make([]groupSlotStatus, 0, len(grp.Slots))
 	for _, sl := range grp.Slots {
+		status := string(sl.Status)
+		tokensIn := sl.TokensIn
+		tokensOut := sl.TokensOut
 		gs := groupSlotStatus{
 			Handle:    sl.Handle,
 			Provider:  sl.Provider,
-			Status:    string(sl.Status),
-			TokensIn:  sl.TokensIn,
-			TokensOut: sl.TokensOut,
+			Status:    status,
+			TokensIn:  tokensIn,
+			TokensOut: tokensOut,
+		}
+		if live, ok := liveByHandle[sl.Handle]; ok {
+			if live.Status == "idle" && live.TurnCount > 0 && status == string(parallel.SlotRunning) {
+				gs.Status = string(parallel.SlotDone)
+			} else if live.Status != "" && live.Status != "idle" {
+				gs.Status = live.Status
+			}
+			if live.InputTokens > 0 {
+				gs.TokensIn = live.InputTokens
+			}
+			if live.OutputTokens > 0 {
+				gs.TokensOut = live.OutputTokens
+			}
+			gs.Model = live.Model
+			gs.Text = textFromDeckBlocks(live.Buffer, 12_000)
+			gs.LastError = live.LastError
+			gs.LastThinking = live.LastThinking
 		}
 		if !sl.StartedAt.IsZero() {
 			gs.StartedAt = sl.StartedAt.UTC().Format(time.RFC3339)
@@ -207,10 +239,25 @@ func (s *Server) groupStatus(enc *json.Encoder, req *Request) {
 		slots = append(slots, gs)
 	}
 
+	status := string(grp.Status)
+	if len(slots) > 0 {
+		status = string(parallel.SlotDone)
+		for _, sl := range slots {
+			switch sl.Status {
+			case string(parallel.SlotRunning), "thinking", "streaming":
+				status = string(parallel.SlotRunning)
+			case string(parallel.SlotError):
+				if status != string(parallel.SlotRunning) {
+					status = string(parallel.SlotError)
+				}
+			}
+		}
+	}
+
 	result := groupStatusResult{
 		GroupID:   grp.ID,
 		Prompt:    grp.Prompt,
-		Status:    string(grp.Status),
+		Status:    status,
 		CreatedAt: grp.CreatedAt.UTC().Format(time.RFC3339),
 		Slots:     slots,
 	}
@@ -218,6 +265,21 @@ func (s *Server) groupStatus(enc *json.Encoder, req *Request) {
 		result.CompletedAt = grp.CompletedAt.UTC().Format(time.RFC3339)
 	}
 	writeResult(enc, req.ID, result)
+}
+
+func textFromDeckBlocks(blocks []DeckBlock, maxBytes int) string {
+	var b strings.Builder
+	for _, block := range blocks {
+		if block.Kind != "response" {
+			continue
+		}
+		b.WriteString(block.Text)
+	}
+	out := strings.TrimSpace(b.String())
+	if maxBytes > 0 && len(out) > maxBytes {
+		out = out[len(out)-maxBytes:]
+	}
+	return out
 }
 
 // groupSummary is one entry in the group.list response.
