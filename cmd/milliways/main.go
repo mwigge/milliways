@@ -167,10 +167,16 @@ based on what each tool does best.
 		Version: version,
 		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if timeoutDur < 0 {
+				return fmt.Errorf("--timeout must be zero or greater")
+			}
 			// Plain `milliways` (no args) is handled by the launcher before
 			// Cobra. Reaching here with no args means the user invoked a
 			// subcommand without a prompt — surface that explicitly.
 			if len(args) == 0 {
+				if cmd.Flags().Changed("timeout") {
+					return fmt.Errorf("--timeout only applies to one-shot prompts\n\nUse `milliways --timeout 2m \"explain this repo\"`, or run `milliways` with no flags for interactive chat.")
+				}
 				return fmt.Errorf("no prompt provided\n\nUse `milliways` (no flags) to launch milliways-term, or pass a prompt:\n  milliways \"explain the auth flow\"")
 			}
 			projectContext, err := project.ResolveProject(projectRoot)
@@ -238,7 +244,7 @@ based on what each tool does best.
 	cmd.Flags().BoolVar(&useLegacyConversation, "use-legacy-conversation", false, "Use pantry conversation storage instead of substrate")
 	cmd.Flags().StringVar(&sessionName, "session", "", "Named session to resume in headless mode")
 	cmd.Flags().StringVar(&switchTo, "switch-to", "", "Switch a named session to a kitchen before continuing")
-	cmd.Flags().DurationVar(&timeoutDur, "timeout", 5*time.Minute, "Dispatch timeout for headless mode")
+	cmd.Flags().DurationVar(&timeoutDur, "timeout", 5*time.Minute, "Timeout for one-shot headless prompts; 0 disables")
 
 	cmd.AddCommand(chatCmd())
 	cmd.AddCommand(statusCmd(&configPath))
@@ -363,6 +369,10 @@ func loginActionForKitchen(h maitre.KitchenHealth) string {
 }
 
 func dispatch(opts dispatchOpts) error {
+	if opts.timeout < 0 {
+		return fmt.Errorf("--timeout must be zero or greater")
+	}
+
 	cfg, err := maitre.LoadConfig(opts.configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -493,12 +503,12 @@ func dispatch(opts dispatchOpts) error {
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	ctx, cancel := context.WithTimeout(sigCtx, opts.timeout)
+	ctx, cancel := dispatchTimeoutContext(sigCtx, opts.timeout)
 	defer cancel()
 
 	if opts.verbose {
 		fmt.Fprintf(os.Stderr, "[routed] %s\n", decision.Kitchen)
-		fmt.Fprintf(os.Stderr, "[dispatch] %s streaming...\n", decision.Kitchen)
+		fmt.Fprintf(os.Stderr, "[dispatch] %s streaming... timeout=%s\n", decision.Kitchen, formatHeadlessTimeoutLimit(opts.timeout))
 	}
 
 	providerFactory := makeProviderFactory(cfg, reg, som, pdb, opts.verbose)
@@ -564,8 +574,15 @@ func dispatch(opts dispatchOpts) error {
 		}
 	})
 	if runErr != nil {
-		if errors.Is(runErr, context.DeadlineExceeded) {
-			return fmt.Errorf("dispatch timed out after %s — increase --timeout or continue with --session", opts.timeout)
+		if opts.timeout > 0 && errors.Is(runErr, context.DeadlineExceeded) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			elapsed := time.Since(start)
+			report := headlessTimeoutReport(opts, lastKitchen, elapsed)
+			if opts.jsonOutput {
+				if err := printJSON(report, true); err != nil {
+					return err
+				}
+			}
+			return fmt.Errorf("%s", report["message"])
 		}
 		return runErr
 	}
@@ -574,7 +591,7 @@ func dispatch(opts dispatchOpts) error {
 	_ = costInfo // used in verbose/json output below
 
 	if opts.verbose {
-		fmt.Fprintf(os.Stderr, "[dispatch] %s done (%.1fs, exit=%d)\n", lastKitchen, duration, exitCode)
+		fmt.Fprintf(os.Stderr, "[dispatch] %s done (%.1fs, exit=%d, timeout=%s)\n", lastKitchen, duration, exitCode, formatHeadlessTimeoutLimit(opts.timeout))
 	}
 
 	if recordLegacyConversation {
@@ -1062,6 +1079,47 @@ func isExecutable(path string) bool {
 func pythonImports(pythonPath, module string) bool {
 	cmd := exec.Command(pythonPath, "-c", "import "+module)
 	return cmd.Run() == nil
+}
+
+func dispatchTimeoutContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return context.WithCancel(parent)
+	}
+	return context.WithTimeout(parent, timeout)
+}
+
+func formatHeadlessTimeoutLimit(timeout time.Duration) string {
+	if timeout <= 0 {
+		return "disabled"
+	}
+	return timeout.String()
+}
+
+func headlessTimeoutReport(opts dispatchOpts, kitchenName string, elapsed time.Duration) map[string]any {
+	timeout := opts.timeout
+	message := fmt.Sprintf("headless dispatch timed out after %s", formatHeadlessTimeoutLimit(timeout))
+	if kitchenName != "" {
+		message += fmt.Sprintf(" while running %s", kitchenName)
+	}
+	message += " — increase --timeout"
+	if strings.TrimSpace(opts.sessionName) != "" {
+		message += fmt.Sprintf(" or continue with --session %s", opts.sessionName)
+	} else {
+		message += " or retry with --session <name> to make continuation explicit"
+	}
+
+	report := map[string]any{
+		"error":     "timeout",
+		"message":   message,
+		"kitchen":   kitchenName,
+		"timeout":   formatHeadlessTimeoutLimit(timeout),
+		"timeout_s": timeout.Seconds(),
+		"elapsed_s": elapsed.Seconds(),
+	}
+	if strings.TrimSpace(opts.sessionName) != "" {
+		report["session"] = opts.sessionName
+	}
+	return report
 }
 
 func printJSON(v any, asJSON bool) error {
