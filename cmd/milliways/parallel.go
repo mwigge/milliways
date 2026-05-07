@@ -131,6 +131,14 @@ func (l *chatLoop) handleParallel(rest string) {
 			Status:   parallel.SlotRunning,
 		})
 	}
+	if l.deck != nil {
+		l.deck.MarkParallelDispatch(providers, prompt)
+		summaries := make([]parallelSlotSummary, 0, len(result.Slots))
+		for _, s := range result.Slots {
+			summaries = append(summaries, parallelSlotSummary{Provider: s.Provider, Handle: s.Handle})
+		}
+		l.deck.MarkParallelSlots(summaries)
+	}
 
 	// Launch split-pane layout. In non-WezTerm environments this prints a
 	// headless fallback with per-slot attach hints.

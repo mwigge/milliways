@@ -3,12 +3,12 @@
 -- Default program: milliways (the AI terminal). Every new tab opens milliways.
 -- Header status reads ${state}/observe.cur written by milliwaysctl observe --watch
 --
--- Layout: [⚡ woke Xm ago] [≈≈ MW v0.x] [~/path] [●claude] [1:C 2:X 3:G 4:M 5:L]
+-- Layout: [⚡ woke Xm ago] [≈≈ MW v0.x] [~/path] [●claude] [1:C 2:X 3:Cp 4:M 5:G 6:L 7:P]
 -- Wake badge appears for 5 min after system resumes from sleep.
 --
 -- Leader key: Ctrl+Space
 --   Leader + a         open milliways agent pane (split below)
---   Leader + 1..4      switch active runner via milliwaysctl open
+--   Leader + 1..7      switch active runner via milliwaysctl open
 --   Leader + r         resume modal — shows wake/session summary, re-opens last agent
 --   Leader + k         context overlay
 --   Leader + w         observe-render overlay (metrics/spans)
@@ -18,6 +18,7 @@
 
 local wezterm = require 'wezterm'
 local act     = wezterm.action
+local mux     = wezterm.mux
 local io      = io
 local os      = os
 
@@ -112,9 +113,11 @@ local observe_cur = state_dir .. '/observe.cur'
 local abbrs = {
   claude  = 'C',
   codex   = 'X',
-  copilot = 'G',
+  copilot = 'Cp',
   minimax = 'M',
+  gemini  = 'G',
   ['local'] = 'L',
+  pool    = 'P',
 }
 
 -- Per-client accent colors. Each entry: { accent, cursor, tab_bg, tab_fg, bar_bg }
@@ -124,13 +127,13 @@ local abbrs = {
 -- tab_fg  = active tab foreground
 -- bar_bg  = status bar background when this client is active
 local client_themes = {
-  claude  = { accent='#e07840', cursor='#e07840', tab_bg='#2e1800', tab_fg='#f0a060', bar_bg='#1e1000' },
-  codex   = { accent='#3fb950', cursor='#3fb950', tab_bg='#001a08', tab_fg='#7ee88a', bar_bg='#001005' },
-  copilot = { accent='#58a6ff', cursor='#58a6ff', tab_bg='#001428', tab_fg='#90c8ff', bar_bg='#000d1a' },
-  minimax = { accent='#39d353', cursor='#39d353', tab_bg='#001a10', tab_fg='#80eaa0', bar_bg='#001008' },
-  gemini  = { accent='#4285f4', cursor='#4285f4', tab_bg='#001030', tab_fg='#80b4ff', bar_bg='#000820' },
-  ['local'] = { accent='#f0c040', cursor='#f0c040', tab_bg='#1e1600', tab_fg='#ffe080', bar_bg='#141000' },
-  pool    = { accent='#a8a8a8', cursor='#a8a8a8', tab_bg='#141414', tab_fg='#d0d0d0', bar_bg='#0c0c0c' },
+  claude  = { accent='#f4f1e8', cursor='#f4f1e8', tab_bg='#24231f', tab_fg='#fffaf0', bar_bg='#151410' },
+  codex   = { accent='#ffb454', cursor='#ffb454', tab_bg='#2b1a00', tab_fg='#ffd08a', bar_bg='#180f00' },
+  copilot = { accent='#5f8cff', cursor='#5f8cff', tab_bg='#071633', tab_fg='#a9c2ff', bar_bg='#040b1a' },
+  minimax = { accent='#af87d7', cursor='#af87d7', tab_bg='#21132f', tab_fg='#d7b8ff', bar_bg='#130a1c' },
+  gemini  = { accent='#ff8700', cursor='#ff8700', tab_bg='#2b1300', tab_fg='#ffbd66', bar_bg='#170a00' },
+  ['local'] = { accent='#d70000', cursor='#d70000', tab_bg='#2a0000', tab_fg='#ff8a8a', bar_bg='#150000' },
+  pool    = { accent='#87d7ff', cursor='#87d7ff', tab_bg='#061c2a', tab_fg='#b8e7ff', bar_bg='#031018' },
 }
 local default_theme = { accent='#4db51f', cursor='#4db51f', tab_bg='#1d2021', tab_fg='#ebdbb2', bar_bg='#1d2021' }
 
@@ -260,7 +263,7 @@ config.keys = {
     key = 'z', mods = 'LEADER',
     action = act.SpawnCommandInNewTab { args = { os.getenv('SHELL') or 'zsh' } },
   },
-  -- Leader + 1..4  →  switch active runner
+  -- Leader + 1..7  →  switch active runner
   {
     key = '1', mods = 'LEADER',
     action = act.SpawnCommandInNewTab { args = { 'milliwaysctl', 'open', '--agent', 'claude' } },
@@ -276,6 +279,18 @@ config.keys = {
   {
     key = '4', mods = 'LEADER',
     action = act.SpawnCommandInNewTab { args = { 'milliwaysctl', 'open', '--agent', 'minimax' } },
+  },
+  {
+    key = '5', mods = 'LEADER',
+    action = act.SpawnCommandInNewTab { args = { 'milliwaysctl', 'open', '--agent', 'gemini' } },
+  },
+  {
+    key = '6', mods = 'LEADER',
+    action = act.SpawnCommandInNewTab { args = { 'milliwaysctl', 'open', '--agent', 'local' } },
+  },
+  {
+    key = '7', mods = 'LEADER',
+    action = act.SpawnCommandInNewTab { args = { 'milliwaysctl', 'open', '--agent', 'pool' } },
   },
   -- Leader + r  →  resume modal after sleep/wake
   {
@@ -485,8 +500,12 @@ end)
 
 -- ── Auto-start milliwaysd when wezterm opens ─────────────────────────────────
 -- Spawns the daemon once; subsequent windows reuse the existing socket.
+-- Also maximizes the initial window so milliways fills the screen on launch.
 
-wezterm.on('gui-startup', function(_cmd)
+wezterm.on('gui-startup', function(cmd)
+  local _tab, _pane, window = mux.spawn_window(cmd or {})
+  window:gui_window():maximize()
+
   local daemon_sock = state_dir .. '/sock'
   local f = io.open(daemon_sock, 'r')
   if f then

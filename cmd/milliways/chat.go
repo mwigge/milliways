@@ -35,6 +35,7 @@ package main
 //     the agent stream). Ctrl+D exits cleanly.
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -45,6 +46,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -67,6 +69,58 @@ func xmlEscape(s string) string {
 	s = strings.ReplaceAll(s, "\"", "&quot;")
 	s = strings.ReplaceAll(s, "'", "&#39;")
 	return s
+}
+
+// friendlyError returns a user-friendly error message with actionable guidance
+// for common failure modes.
+func friendlyError(prefix string, rawMsg string, err error) string {
+	if err == nil {
+		return prefix + rawMsg
+	}
+
+	msg := prefix
+	if rawMsg != "" {
+		msg += rawMsg + ": "
+	}
+	msg += err.Error()
+
+	// Daemon connection issues
+	if strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "dial milliwaysd") ||
+		(strings.Contains(msg, "unix") && strings.Contains(msg, "connect")) {
+		msg += "\n  → Start daemon: MilliWays.app or `milliwaysd &`"
+		return msg
+	}
+
+	// Auth/credential issues
+	if strings.Contains(msg, "API_KEY") ||
+		strings.Contains(msg, "not set") ||
+		(strings.Contains(msg, "auth") && strings.Contains(msg, "failed")) {
+		msg += "\n  → Run: /login <client>"
+		return msg
+	}
+
+	// Network/timeout issues
+	if strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "network") {
+		msg += "\n  → Check your internet connection or try again"
+		return msg
+	}
+
+	// RPC errors
+	if strings.Contains(msg, "rpc") || strings.Contains(msg, "Call") {
+		msg += "\n  → Daemon may be restarting, try again in a moment"
+		return msg
+	}
+
+	// Not found
+	if strings.Contains(msg, "not found") || strings.Contains(msg, "no such file") {
+		msg += "\n  → Check the path or configuration"
+		return msg
+	}
+
+	return msg
 }
 
 // chatSwitchableAgents is the set of runner IDs the user can switch to
@@ -252,6 +306,7 @@ func buildCompleter(agentID string) readline.AutoCompleter {
 	// Session commands
 	items = append(items,
 		readline.PcItem("/switch", switchRunners...),
+		readline.PcItem("/takeover", switchRunners...),
 		readline.PcItem("/login", switchRunners...),
 		readline.PcItem("/briefing"),
 		readline.PcItem("/model"),
@@ -324,6 +379,7 @@ func buildCompleter(agentID string) readline.AutoCompleter {
 		),
 		readline.PcItem("/history"),
 		readline.PcItem("/cost"),
+		readline.PcItem("/trace"),
 		readline.PcItem("/retry"),
 		readline.PcItem("/undo"),
 		readline.PcItem("/compact"),
@@ -370,7 +426,7 @@ func runChat(ctx context.Context) error {
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          chatPrompt(""),
 		HistoryFile:     chatHistoryFile(),
-		InterruptPrompt: "^C",
+		InterruptPrompt: "^C (use /cancel for active stream, /exit to quit)",
 		EOFPrompt:       "exit",
 		AutoComplete:    sc,
 	})
@@ -383,6 +439,8 @@ func runChat(ctx context.Context) error {
 		client:        client,
 		handoffWriter: &rpcHandoffWriter{client: client},
 		sess:          nil, // landing zone — no active agent until /<runner> picks one
+		sessions:      make(map[string]*chatSession),
+		openAgent:     openAgentForChat,
 		rl:            rl,
 		completer:     sc,
 		out:           newCodeHighlighter(os.Stdout),
@@ -411,13 +469,36 @@ func runChat(ctx context.Context) error {
 
 	loop.printLanding()
 
-	// When launched by the deck startup, auto-switch to the designated provider
-	// so each WezTerm pane starts live with its assigned AI client.
-	if provider := os.Getenv("MILLIWAYS_START_PROVIDER"); provider != "" {
+	// When launched by the deck startup, auto-switch to the designated provider.
+	// Outside deck mode, start on a usable default so "milliways chat" is ready
+	// to type into immediately instead of dropping into an empty landing zone.
+	if provider := loop.startProvider(); provider != "" {
 		loop.switchAgent(provider)
 	}
 
 	return loop.run(ctx)
+}
+
+func (l *chatLoop) startProvider() string {
+	if provider := strings.TrimSpace(os.Getenv("MILLIWAYS_START_PROVIDER")); provider != "" {
+		return provider
+	}
+	if strings.TrimSpace(os.Getenv("MILLIWAYS_NO_AUTO_PROVIDER")) == "1" {
+		return ""
+	}
+	if provider := strings.TrimSpace(os.Getenv("MILLIWAYS_DEFAULT_PROVIDER")); provider != "" {
+		return provider
+	}
+	statuses := l.fetchAgentStatuses()
+	for _, name := range chatSwitchableAgents {
+		if statuses[name].mark == "✓" {
+			return name
+		}
+	}
+	if len(chatSwitchableAgents) > 0 {
+		return chatSwitchableAgents[0]
+	}
+	return ""
 }
 
 // chatCmd returns the cobra subcommand `milliways chat`. Wires runChat
@@ -453,6 +534,12 @@ Anything else is sent to the active runner as a prompt.`,
 // chatHistoryFile returns the path for readline history, or "" to
 // disable history (when the user has no resolvable home dir).
 func chatHistoryFile() string {
+	if p := strings.TrimSpace(os.Getenv("MILLIWAYS_HISTORY_FILE")); p != "" {
+		if strings.EqualFold(p, "off") || p == "/dev/null" {
+			return ""
+		}
+		return p
+	}
 	if h := os.Getenv("XDG_STATE_HOME"); h != "" {
 		return h + "/milliways/chat_history"
 	}
@@ -467,12 +554,40 @@ func chatHistoryFile() string {
 // reset brings everything back to default before the ▶ cursor.
 // The empty-string case is the plain landing-zone prompt.
 func chatPrompt(agentID string) string {
+	return chatPromptState(agentID, "")
+}
+
+func chatPromptState(agentID, state string) string {
+	reset := "\033[0m"
+	arrow := "\033[1;38;5;82m▶\033[0m"
+	if !ansiEnabled() {
+		reset = ""
+		arrow = "▶"
+	}
 	if agentID == "" {
-		return "[no client — pick one with /1../7 or /<name>] ▶ "
+		return "[select: /1 claude · /2 codex · /4 minimax · /help] " + arrow + " "
 	}
 	color := agentColor(agentID)
-	reset := "\033[0m"
-	return "[" + color + agentID + reset + "] ▶ "
+	if !ansiEnabled() {
+		color = ""
+	}
+	if state = strings.TrimSpace(state); state != "" {
+		return "[" + color + agentID + reset + " " + promptStateGlyph(state) + "] " + arrow + " "
+	}
+	return "[" + color + agentID + reset + "] " + arrow + " "
+}
+
+func promptStateGlyph(state string) string {
+	switch state {
+	case "thinking":
+		return "…thinking"
+	case "streaming":
+		return "↯streaming"
+	case "waiting":
+		return "?waiting"
+	default:
+		return state
+	}
 }
 
 // handoffWriter is the interface for writing a cross-pane takeover
@@ -507,6 +622,7 @@ type chatSession struct {
 	handle       int64
 	streamCh     <-chan []byte
 	streamCancel func()
+	sendFn       func(string) error
 
 	// done is closed when the streaming goroutine exits (either the
 	// stream channel closed or the session was explicitly closed).
@@ -548,7 +664,12 @@ func (s *chatSession) close() error {
 	if s == nil {
 		return nil
 	}
-	s.streamCancel()
+	if s.streamCancel != nil {
+		s.streamCancel()
+	}
+	if s.client == nil {
+		return nil
+	}
 	if err := s.client.Call("agent.close", map[string]any{"handle": s.handle}, nil); err != nil {
 		// Best-effort. The stream cancel above is what matters for resource
 		// cleanup; agent.close is just notifying the daemon.
@@ -562,10 +683,30 @@ func (s *chatSession) send(prompt string) error {
 	s.busyMu.Lock()
 	s.busy = true
 	s.busyMu.Unlock()
-	return s.client.Call("agent.send", map[string]any{
+	clearBusy := func() {
+		s.busyMu.Lock()
+		s.busy = false
+		s.busyMu.Unlock()
+	}
+	if s.sendFn != nil {
+		if err := s.sendFn(prompt); err != nil {
+			clearBusy()
+			return err
+		}
+		return nil
+	}
+	if s.client == nil {
+		clearBusy()
+		return fmt.Errorf("agent session %s has no daemon client", s.agentID)
+	}
+	if err := s.client.Call("agent.send", map[string]any{
 		"handle": s.handle,
 		"bytes":  prompt,
-	}, nil)
+	}, nil); err != nil {
+		clearBusy()
+		return err
+	}
+	return nil
 }
 
 // chatLoop ties the readline input + the daemon stream + slash dispatch
@@ -579,6 +720,8 @@ func (s *chatSession) send(prompt string) error {
 type chatLoop struct {
 	client    *rpc.Client
 	sess      *chatSession
+	sessions  map[string]*chatSession
+	openAgent func(*rpc.Client, string) (*chatSession, error)
 	rl        *readline.Instance
 	completer *switchableCompleter
 	out       io.Writer
@@ -625,6 +768,9 @@ type chatLoop struct {
 	// title so the user can track spend at a glance without doing mental
 	// per-response addition.
 	sessionCost float64
+
+	// deck tracks the multi-client session state for the parallel panel.
+	deck *sessionDeck
 }
 
 // chatTurn is one exchange entry across runners. Role is "user" or
@@ -661,8 +807,8 @@ func (l *chatLoop) run(ctx context.Context) error {
 	setTermTitle("milliways", "milliways")
 	defer func() {
 		setTermTitle("milliways", "milliways")
-		if l.sess != nil {
-			_ = l.sess.close()
+		for _, sess := range l.sessions {
+			_ = sess.close()
 		}
 	}()
 
@@ -714,10 +860,17 @@ func (l *chatLoop) run(ctx context.Context) error {
 //   - err        — runner error; print and clear busy
 //   - rate_limit — surface as inline notice
 //   - end        — agent session closed
-func (l *chatLoop) drainStream() {
-	defer close(l.sess.done)
+func (l *chatLoop) drainStream(sessions ...*chatSession) {
+	sess := l.sess
+	if len(sessions) > 0 {
+		sess = sessions[0]
+	}
+	if sess == nil {
+		return
+	}
+	defer close(sess.done)
 	firstData := true
-	for line := range l.sess.streamCh {
+	for line := range sess.streamCh {
 		var ev map[string]any
 		if err := json.Unmarshal(line, &ev); err != nil {
 			continue
@@ -728,11 +881,11 @@ func (l *chatLoop) drainStream() {
 			if b64, ok := ev["b64"].(string); ok {
 				if raw, err := base64.StdEncoding.DecodeString(b64); err == nil {
 					if msg := formatThinkingFragment(string(raw)); msg != "" {
-						agent := ""
-						if l.sess != nil {
-							agent = l.sess.agentID
+						agent := sess.agentID
+						if l.sess == sess {
+							l.setPromptState("thinking")
 						}
-						fmt.Fprintln(l.errw, formatThinkingLine(agent, msg))
+						writeTerminalStatus(l.out, formatThinkingLine(agent, msg))
 					}
 				}
 			}
@@ -742,13 +895,14 @@ func (l *chatLoop) drainStream() {
 					if firstData {
 						// First token arrived — update title from "thinking…" to
 						// active so the user sees the runner is responding.
-						if l.sess != nil {
-							model, _ := runnerModelInfo(l.sess.agentID)
-							win := "● " + l.sess.agentID
+						if l.sess == sess {
+							l.setPromptState("streaming")
+							model, _ := runnerModelInfo(sess.agentID)
+							win := "● " + sess.agentID
 							if model != "" {
 								win += " · " + model
 							}
-							setTermTitle("milliways · "+l.sess.agentID+" · streaming…", win)
+							setTermTitle("milliways · "+sess.agentID+" · streaming…", win)
 						}
 						firstData = false
 					}
@@ -766,7 +920,7 @@ func (l *chatLoop) drainStream() {
 			// Snapshot + reset the streamed response into a turn entry.
 			assistantText := strings.TrimRight(l.pendingAssistant.String(), "\n")
 			if assistantText != "" {
-				l.appendTurn(chatTurn{Role: "assistant", AgentID: l.sess.agentID, Text: assistantText})
+				l.appendTurn(chatTurn{Role: "assistant", AgentID: sess.agentID, Text: assistantText})
 			}
 			l.pendingAssistant.Reset()
 			// Deliver response text to any waiting artifact handler.
@@ -776,12 +930,17 @@ func (l *chatLoop) drainStream() {
 				}
 				close(ch)
 			}
-			l.sess.busyMu.Lock()
-			l.sess.busy = false
-			l.sess.busyMu.Unlock()
+			sess.busyMu.Lock()
+			sess.busy = false
+			sess.busyMu.Unlock()
 			l.refreshPromptHint(ev, assistantText != "")
+			if l.sess == sess {
+				l.setPromptState("")
+			}
 			// Refresh the readline prompt so the user sees ▶ ready to type.
-			l.rl.Refresh()
+			if l.rl != nil && l.sess == sess {
+				l.rl.Refresh()
+			}
 		case "err":
 			msg, _ := ev["msg"].(string)
 			agent, _ := ev["agent"].(string)
@@ -789,25 +948,28 @@ func (l *chatLoop) drainStream() {
 			if strings.Contains(msg, "not set") || strings.Contains(msg, "API_KEY") {
 				fmt.Fprintln(l.errw, "  → /login  for auth setup")
 			}
-			l.sess.busyMu.Lock()
-			l.sess.busy = false
-			l.sess.busyMu.Unlock()
+			sess.busyMu.Lock()
+			sess.busy = false
+			sess.busyMu.Unlock()
 			// Reset title from "streaming…"/"thinking…" to ready state so
 			// the tab doesn't falsely advertise in-flight work after an error.
-			if l.sess != nil {
-				model, _ := runnerModelInfo(l.sess.agentID)
-				win := "● " + l.sess.agentID
+			if l.sess == sess {
+				l.setPromptState("")
+				model, _ := runnerModelInfo(sess.agentID)
+				win := "● " + sess.agentID
 				if model != "" {
 					win += " · " + model
 				}
-				setTermTitle("milliways · "+l.sess.agentID, win)
+				setTermTitle("milliways · "+sess.agentID, win)
 			}
 			// Auto-rotate on session limit if a ring is configured.
 			if agent != "" && isSessionLimitMsg(msg) {
 				go l.autoRotate(agent)
 				return
 			}
-			l.rl.Refresh()
+			if l.rl != nil && l.sess == sess {
+				l.rl.Refresh()
+			}
 		case "rate_limit":
 			status, _ := ev["status"].(string)
 			fmt.Fprintln(l.errw, "⚠ rate limit: "+status)
@@ -822,19 +984,130 @@ func formatThinkingFragment(text string) string {
 	if text == "" {
 		return ""
 	}
-	const max = 240
-	if len(text) <= max {
-		return text
-	}
-	return text[:max-1] + "…"
+	return text
 }
 
+// formatThinkingLine renders runner reasoning as a visible status line.
+// Uses the agent's bright color for the badge and a few shades darker for
+// the message text, so it's visible without competing with the final response.
 func formatThinkingLine(agentID, msg string) string {
-	color := agentThinkingColor(agentID)
-	if color == "" {
-		color = "\033[38;5;245m"
+	return formatThinkingLineWidth(agentID, msg, 104)
+}
+
+func formatThinkingLineWidth(agentID, msg string, width int) string {
+	dim := agentThinkingColor(agentID)
+	if dim == "" {
+		dim = "\033[38;5;250m"
 	}
-	return color + "… " + msg + "\033[0m"
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return ""
+	}
+
+	prefix := fmt.Sprintf("[%s] … ", agentID)
+	continuation := strings.Repeat(" ", displayWidth("["+agentID+"] ")) + "… "
+	budget := width - displayWidth(prefix)
+	if budget < 24 {
+		budget = 24
+	}
+	lines := wrapPlainForTerminal(msg, budget)
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, line := range lines {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(dim)
+		if i == 0 {
+			b.WriteString(prefix)
+		} else {
+			b.WriteString(continuation)
+		}
+		b.WriteString(line)
+		b.WriteString("\033[0m")
+	}
+	return b.String()
+}
+
+func wrapPlainForTerminal(text string, width int) []string {
+	if width <= 0 {
+		return []string{text}
+	}
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return nil
+	}
+	var lines []string
+	var current strings.Builder
+	currentWidth := 0
+	flush := func() {
+		if current.Len() == 0 {
+			return
+		}
+		lines = append(lines, current.String())
+		current.Reset()
+		currentWidth = 0
+	}
+	for _, word := range words {
+		wordWidth := displayWidth(word)
+		if current.Len() == 0 {
+			current.WriteString(word)
+			currentWidth = wordWidth
+			continue
+		}
+		if currentWidth+1+wordWidth > width {
+			flush()
+			current.WriteString(word)
+			currentWidth = wordWidth
+			continue
+		}
+		current.WriteByte(' ')
+		current.WriteString(word)
+		currentWidth += 1 + wordWidth
+	}
+	flush()
+	return lines
+}
+
+// formatCost renders a USD cost with appropriate precision.
+// - < $0.01: show 4 decimals (e.g., $0.0023)
+// - $0.01-$9.99: show 2 decimals (e.g., $2.50)
+// - >= $10: show 1 decimal (e.g., $42.7)
+func formatCost(usd float64) string {
+	switch {
+	case usd < 0:
+		return "$0.00"
+	case usd < 0.01:
+		return fmt.Sprintf("$%.4f", usd)
+	case usd < 10:
+		return fmt.Sprintf("$%.2f", usd)
+	default:
+		return fmt.Sprintf("$%.1f", usd)
+	}
+}
+
+// formatCostVerbose always shows 4 decimals, for logs/audit
+func formatCostVerbose(usd float64) string {
+	return fmt.Sprintf("$%.4f", usd)
+}
+
+// formatTokenCount renders token counts with K/M suffixes for large numbers.
+func formatTokenCount(n int) string {
+	switch {
+	case n < 1000:
+		return fmt.Sprintf("%d", n)
+	case n < 1_000_000:
+		return fmt.Sprintf("%.1fK", float64(n)/1000)
+	default:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	}
+}
+
+// formatTokens displays token pair as "123→456".
+func formatTokens(in, out int) string {
+	return fmt.Sprintf("%d→%d", in, out)
 }
 
 // maxTurnsSummaryPrompt is sent automatically when the agentic loop hits
@@ -863,10 +1136,10 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any, turnSaved bool) {
 	outTok, _ := chunkEnd["output_tokens"].(float64)
 	if cost > 0 {
 		l.sessionCost += cost
-		parts = append(parts, fmt.Sprintf("$%.4f", cost))
+		parts = append(parts, formatCost(cost))
 	}
 	if inTok > 0 && outTok > 0 {
-		parts = append(parts, fmt.Sprintf("%d→%d tok", int(inTok), int(outTok)))
+		parts = append(parts, formatTokens(int(inTok), int(outTok))+" tok")
 	}
 	if turnSaved {
 		parts = append(parts, "\033[32m⊙ saved\033[0m")
@@ -884,7 +1157,7 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any, turnSaved bool) {
 		}
 		tabTitle := "milliways · " + l.sess.agentID
 		if l.sessionCost > 0 {
-			tabTitle += fmt.Sprintf(" · $%.4f session", l.sessionCost)
+			tabTitle += " · " + formatCost(l.sessionCost) + " session"
 		}
 		if inTok > 0 && outTok > 0 {
 			tabTitle += fmt.Sprintf(" · %d→%d tok", int(inTok), int(outTok))
@@ -904,13 +1177,13 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any, turnSaved bool) {
 			// normally so the user gets a clean handoff summary.
 			_ = l.sess.send(maxTurnsSummaryPrompt)
 			if len(parts) > 0 {
-				fmt.Fprintln(l.errw, "  ("+strings.Join(parts, " · ")+")")
+				writeTerminalStatus(l.out, "  ("+strings.Join(parts, " · ")+")")
 			}
 			return
 		}
 	}
 	if len(parts) > 0 {
-		fmt.Fprintln(l.errw, "  ("+strings.Join(parts, " · ")+")")
+		writeTerminalStatus(l.out, "  ("+strings.Join(parts, " · ")+")")
 	}
 }
 
@@ -925,14 +1198,23 @@ func (l *chatLoop) handleSlash(line string) {
 
 	// Numeric shortcut: /1 .. /7 → chatSwitchableAgents[N-1]
 	if n, ok := parseDigitInRange(verb, 1, len(chatSwitchableAgents)); ok {
-		l.switchAgent(chatSwitchableAgents[n-1])
+		agentID := chatSwitchableAgents[n-1]
+		if rest != "" {
+			l.sendAgentPrompt(agentID, rest)
+		} else {
+			l.switchAgent(agentID)
+		}
 		return
 	}
 
 	// Switch shorthand: /<runner>
 	for _, name := range chatSwitchableAgents {
 		if verb == name {
-			l.switchAgent(name)
+			if rest != "" {
+				l.sendAgentPrompt(name, rest)
+			} else {
+				l.switchAgent(name)
+			}
 			return
 		}
 	}
@@ -946,7 +1228,7 @@ func (l *chatLoop) handleSlash(line string) {
 			if strings.TrimPrefix(cmd, "/") == verb {
 				l.appendTurn(chatTurn{Role: "user", Text: line})
 				if err := l.sess.send(line); err != nil {
-					fmt.Fprintln(l.errw, "✗ send: "+err.Error())
+					fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 				}
 				return
 			}
@@ -966,6 +1248,12 @@ func (l *chatLoop) handleSlash(line string) {
 			return
 		}
 		l.switchAgent(rest)
+	case "takeover":
+		if rest == "" {
+			fmt.Fprintln(l.errw, "usage: /takeover <agent>  — hand off active context")
+			return
+		}
+		l.handleTakeover(rest)
 	case "agents":
 		l.printAgents()
 	case "model", "models":
@@ -1003,6 +1291,8 @@ func (l *chatLoop) handleSlash(line string) {
 		l.printHistory()
 	case "cost", "spend":
 		l.printCost()
+	case "trace", "traces":
+		l.printTrace(rest)
 	case "retry":
 		l.handleRetry()
 	case "undo":
@@ -1034,12 +1324,20 @@ func (l *chatLoop) handleSlash(line string) {
 	case "help", "?":
 		l.printHelp()
 	case "exit", "quit", "bye":
-		fmt.Fprintln(l.out, "bye")
+		if l.anyBusy() {
+			fmt.Fprintln(l.errw, "response still in progress — use /exit! to quit anyway")
+			return
+		}
+		l.exitNow()
+	case "exit!", "quit!", "bye!":
+		l.exitNow()
+	case "cancel":
 		if l.sess != nil {
 			_ = l.sess.close()
+			fmt.Fprintln(l.out, "cancelled active stream")
+			return
 		}
-		_ = l.rl.Close()
-		os.Exit(0)
+		fmt.Fprintln(l.errw, "no active stream")
 	case "":
 		// Bare "/" — show help.
 		l.printHelp()
@@ -1051,12 +1349,47 @@ func (l *chatLoop) handleSlash(line string) {
 		if l.sess != nil {
 			l.appendTurn(chatTurn{Role: "user", Text: line})
 			if err := l.sess.send(line); err != nil {
-				fmt.Fprintln(l.errw, "✗ send: "+err.Error())
+				fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 			}
 			return
 		}
 		l.runCtl(append([]string{verb}, splitFields(rest)...))
 	}
+}
+
+func (l *chatLoop) exitNow() {
+	fmt.Fprintln(l.out, "bye")
+	for _, sess := range l.sessions {
+		_ = sess.close()
+	}
+	if l.rl != nil {
+		_ = l.rl.Close()
+	}
+	os.Exit(0)
+}
+
+func (l *chatLoop) anyBusy() bool {
+	if l == nil {
+		return false
+	}
+	for _, sess := range l.sessions {
+		if sess == nil {
+			continue
+		}
+		sess.busyMu.Lock()
+		busy := sess.busy
+		sess.busyMu.Unlock()
+		if busy {
+			return true
+		}
+	}
+	if l.sess != nil {
+		l.sess.busyMu.Lock()
+		busy := l.sess.busy
+		l.sess.busyMu.Unlock()
+		return busy
+	}
+	return false
 }
 
 // parseDigitInRange returns (n, true) if s is a single digit in
@@ -1081,6 +1414,16 @@ func splitFields(s string) []string {
 	return strings.Fields(s)
 }
 
+type chatTraceSpan struct {
+	TraceID    string         `json:"trace_id"`
+	SpanID     string         `json:"span_id"`
+	Name       string         `json:"name"`
+	StartTS    time.Time      `json:"start_ts"`
+	DurationMS float64        `json:"duration_ms"`
+	Status     string         `json:"status"`
+	Attributes map[string]any `json:"attributes,omitempty"`
+}
+
 // runCtl shells to milliwaysctl with the given argv and streams its
 // stdout/stderr inline. milliwaysctl is internal plumbing — users see
 // /<alias> not the underlying ctl call. Reuses the user's PATH lookup
@@ -1100,7 +1443,7 @@ func (l *chatLoop) runCtl(args []string) {
 	c.Stdout = l.out
 	c.Stderr = l.errw
 	if err := c.Run(); err != nil {
-		fmt.Fprintln(l.errw, "✗ ctl: "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("✗ ctl: ", "", err))
 	}
 }
 
@@ -1116,33 +1459,144 @@ func lookupCtlBinary() string {
 	return ""
 }
 
-// switchAgent closes the current session (if any) and opens a new one
-// for newID. From the landing zone (no current session), this is the
-// "first switch" that drops the user into a client.
-//
-// Memory bridge (v0.7.0): if the user is switching from one runner to
-// another and there are recent turns in the log, build a briefing and
-// send it as the new runner's first prompt. The new runner sees the
-// recent exchange + an instruction to wait for the user before taking
-// any action. From the landing zone (no prior session), no briefing is
-// sent.
-func (l *chatLoop) switchAgent(newID string) {
-	if l.client == nil {
-		fmt.Fprintln(l.errw, "✗ daemon not connected — start milliwaysd first")
+func validChatAgent(agentID string) bool {
+	for _, a := range chatSwitchableAgents {
+		if a == agentID {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *chatLoop) ensureAgentSession(agentID string) (*chatSession, error) {
+	if !validChatAgent(agentID) {
+		return nil, fmt.Errorf("unknown agent: %s", agentID)
+	}
+	if l.sessions == nil {
+		l.sessions = make(map[string]*chatSession)
+	}
+	if sess := l.sessions[agentID]; sess != nil {
+		return sess, nil
+	}
+	opener := l.openAgent
+	if opener == nil {
+		opener = openAgentForChat
+	}
+	if l.client == nil && l.openAgent == nil {
+		return nil, fmt.Errorf("daemon not connected — start milliwaysd first")
+	}
+	sess, err := opener(l.client, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if sess.done == nil {
+		sess.done = make(chan struct{})
+	}
+	if sess.streamCancel == nil {
+		sess.streamCancel = func() {}
+	}
+	l.sessions[agentID] = sess
+	if l.deck != nil {
+		l.deck.BindSession(agentID, sess.handle)
+	}
+	if sess.streamCh != nil {
+		go l.drainStream(sess)
+	}
+	return sess, nil
+}
+
+func (l *chatLoop) activateSession(sess *chatSession) {
+	if sess == nil {
 		return
 	}
+	l.sess = sess
+	if l.deck != nil {
+		l.deck.SetActive(sess.agentID)
+	}
+	l.pendingAssistant.Reset()
+	if l.rl != nil {
+		l.setPromptState("")
+	}
+	model, _ := runnerModelInfo(sess.agentID)
+	winTitle := "● " + sess.agentID
+	if model != "" {
+		winTitle += " · " + model
+	}
+	setTermTitle("milliways · "+sess.agentID, winTitle)
+	if l.completer != nil {
+		l.completer.set(buildCompleter(sess.agentID))
+	}
+}
+
+func (l *chatLoop) setPromptState(state string) {
+	if l.rl == nil || l.sess == nil {
+		return
+	}
+	l.rl.SetPrompt(chatPromptState(l.sess.agentID, state))
+	l.rl.Refresh()
+}
+
+func (l *chatLoop) sendAgentPrompt(agentID, prompt string) {
+	sess, err := l.ensureAgentSession(agentID)
+	if err != nil {
+		fmt.Fprintln(l.errw, "✗ open "+agentID+": "+err.Error())
+		return
+	}
+	wasActive := l.sess != nil && l.sess.agentID == agentID
+	if l.sess == nil {
+		l.activateSession(sess)
+		wasActive = true
+	}
+	l.appendTurn(chatTurn{Role: "user", Text: prompt})
+	if l.deck != nil {
+		l.deck.MarkPrompt(agentID, prompt)
+	}
+	if err := sess.send(prompt); err != nil {
+		fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
+		return
+	}
+	if wasActive {
+		l.setPromptState("thinking")
+	}
+	if !wasActive {
+		fmt.Fprintf(l.out, "→ %s background started\n", agentID)
+	}
+}
+
+func (l *chatLoop) handleTakeover(newID string) {
+	if l.sess == nil {
+		fmt.Fprintln(l.errw, "✗ no active client to take over from")
+		return
+	}
+	fromID := l.sess.agentID
+	sess, err := l.ensureAgentSession(newID)
+	if err != nil {
+		fmt.Fprintln(l.errw, "✗ open "+newID+": "+err.Error())
+		return
+	}
+	l.activateSession(sess)
+	if briefing, ok := l.buildBriefing(fromID, newID); ok {
+		m, ep := runnerModelInfo(newID)
+		fmt.Fprintf(l.out, "→ %s  model: %s  (%s)\n", newID, m, ep)
+		l.printBriefingBlock(l.snapshotTurns(), fromID)
+		l.lastBriefingFrom = fromID
+		l.lastBriefing = briefing
+		l.writeHandoffBriefing(newID, fromID, briefing)
+		if err := sess.send(briefing); err != nil {
+			fmt.Fprintln(l.errw, friendlyError("warn: send briefing: ", "", err))
+		}
+		return
+	}
+	fmt.Fprintf(l.out, "→ %s active\n", newID)
+}
+
+// switchAgent changes the visible workspace without sending a handoff.
+func (l *chatLoop) switchAgent(newID string) {
 	if l.sess != nil && newID == l.sess.agentID {
 		fmt.Fprintln(l.errw, "(already on "+newID+")")
 		return
 	}
-	known := false
-	for _, a := range chatSwitchableAgents {
-		if a == newID {
-			known = true
-			break
-		}
-	}
-	if !known {
+	if !validChatAgent(newID) {
 		fmt.Fprintln(l.errw, "✗ unknown agent: "+newID+"  (see /agents)")
 		return
 	}
@@ -1150,52 +1604,15 @@ func (l *chatLoop) switchAgent(newID string) {
 	var fromID string
 	if l.sess != nil {
 		fromID = l.sess.agentID
-		if err := l.sess.close(); err != nil {
-			fmt.Fprintln(l.errw, "warn: closing previous session: "+err.Error())
-		}
-		<-l.sess.done
 	}
-
-	newSess, err := openAgentForChat(l.client, newID)
+	newSess, err := l.ensureAgentSession(newID)
 	if err != nil {
 		fmt.Fprintln(l.errw, "✗ open "+newID+": "+err.Error())
 		return
 	}
-	l.sess = newSess
-	l.pendingAssistant.Reset() // clear any partial text from a cancelled in-flight stream
+	l.activateSession(newSess)
 	slog.Debug("runner switch", "from", fromID, "to", newID)
-	go l.drainStream()
-	l.rl.SetPrompt(chatPrompt(newID))
-	// Window title: compact runner+model so OS window switcher / Mission
-	// Control shows which runner is in this window.
-	// Tab title: "milliways · <runner>" — updated with cost/tokens on chunk_end.
-	model, _ := runnerModelInfo(newID)
-	winTitle := "● " + newID
-	if model != "" {
-		winTitle += " · " + model
-	}
-	setTermTitle("milliways · "+newID, winTitle)
-	if l.completer != nil {
-		l.completer.set(buildCompleter(newID))
-	}
 
-	// Memory bridge — only when there's actual prior conversation to carry.
-	if fromID != "" && fromID != newID {
-		if briefing, ok := l.buildBriefing(fromID, newID); ok {
-			m, ep := runnerModelInfo(newID)
-			fmt.Fprintf(l.out, "→ %s  model: %s  (%s)\n", newID, m, ep)
-			l.printBriefingBlock(l.snapshotTurns(), fromID)
-			l.lastBriefingFrom = fromID
-			l.lastBriefing = briefing
-			// Write the briefing to MemPalace so the target pane (a separate
-			// process in the deck) can pick it up on its next agent.open.
-			l.writeHandoffBriefing(newID, fromID, briefing)
-			if err := newSess.send(briefing); err != nil {
-				fmt.Fprintln(l.errw, "warn: send briefing: "+err.Error())
-			}
-			return
-		}
-	}
 	// Print the live model + endpoint so the user knows exactly what's active.
 	m, ep := runnerModelInfo(newID)
 	fmt.Fprintf(l.out, "→ %s  model: %s  (%s)\n", newID, m, ep)
@@ -1425,11 +1842,9 @@ func (l *chatLoop) printLastBriefing() {
 		fmt.Fprintln(l.out, "  (no briefing yet — switch runners first)")
 		return
 	}
-	fmt.Fprintf(l.out, "  ╷ full briefing sent to active runner (from %s)\n", l.lastBriefingFrom)
-	for _, line := range strings.Split(strings.TrimRight(l.lastBriefing, "\n"), "\n") {
-		fmt.Fprintf(l.out, "  │ %s\n", line)
-	}
-	fmt.Fprintf(l.out, "  ╵\n")
+	fmt.Fprintf(l.out, "  ╷ Summary · full briefing sent to active runner (from %s)\n", l.lastBriefingFrom)
+	writePrefixedRenderedMarkdown(l.out, l.lastBriefing, "  │ ")
+	fmt.Fprintln(l.out, "  ╵")
 }
 
 // handleBang runs an arbitrary shell command via $SHELL -c "<cmd>".
@@ -1439,6 +1854,15 @@ func (l *chatLoop) handleBang(cmd string) {
 	if cmd == "" {
 		fmt.Fprintln(l.errw, "usage: !<command>")
 		return
+	}
+	if shellCommandNeedsConfirmation(cmd) && os.Getenv("MILLIWAYS_SHELL_CONFIRM") != "0" {
+		fmt.Fprintf(l.errw, "destructive shell command detected. Run anyway? [y/N] ")
+		answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		answer = strings.ToLower(strings.TrimSpace(answer))
+		if answer != "y" && answer != "yes" {
+			fmt.Fprintln(l.errw, "cancelled")
+			return
+		}
 	}
 	fmt.Fprintf(l.out, "• Ran `%s`\n", cmd)
 	shell := os.Getenv("SHELL")
@@ -1450,27 +1874,67 @@ func (l *chatLoop) handleBang(cmd string) {
 	c.Stdout = l.out
 	c.Stderr = l.errw
 	if err := c.Run(); err != nil {
-		fmt.Fprintln(l.errw, "✗ shell: "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("✗ shell: ", "", err))
 	}
+}
+
+func shellCommandNeedsConfirmation(cmd string) bool {
+	lower := strings.ToLower(strings.TrimSpace(cmd))
+	dangerous := []string{
+		"rm -rf", "rm -fr", "sudo rm", "mkfs", "diskutil erase", "dd if=", ":(){", "chmod -r 777", "chown -r",
+	}
+	for _, pattern := range dangerous {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // printHistory shows the current in-memory turn log.
 func (l *chatLoop) printHistory() {
 	turns := l.snapshotTurns()
-	if len(turns) == 0 {
-		fmt.Fprintln(l.out, "  (no history — start a conversation first)")
+	if len(turns) > 0 {
+		fmt.Fprintln(l.out, "Session history:")
+		for i, t := range turns {
+			role := t.Role
+			if t.AgentID != "" {
+				role = t.AgentID
+			}
+			preview := t.Text
+			if len(preview) > 120 {
+				preview = preview[:120] + "…"
+			}
+			fmt.Fprintf(l.out, "  [%d] %s: %s\n", i+1, role, preview)
+		}
+	}
+	if l.sess == nil || l.client == nil {
+		if len(turns) == 0 {
+			fmt.Fprintln(l.out, "  (no history — start a conversation first)")
+		}
 		return
 	}
-	for i, t := range turns {
-		role := t.Role
-		if t.AgentID != "" {
-			role = t.AgentID
+	var entries []map[string]any
+	if err := l.client.Call("history.get", map[string]any{"agent_id": l.sess.agentID, "limit": 8}, &entries); err != nil {
+		if len(turns) == 0 {
+			fmt.Fprintln(l.errw, friendlyError("✗ history: ", "", err))
 		}
-		preview := t.Text
-		if len(preview) > 120 {
-			preview = preview[:120] + "…"
+		return
+	}
+	if len(entries) == 0 {
+		if len(turns) == 0 {
+			fmt.Fprintf(l.out, "  (no daemon history for %s)\n", l.sess.agentID)
 		}
-		fmt.Fprintf(l.out, "  [%d] %s: %s\n", i+1, role, preview)
+		return
+	}
+	fmt.Fprintf(l.out, "\nDaemon history · %s:\n", l.sess.agentID)
+	for i, entry := range entries {
+		raw, _ := json.Marshal(entry)
+		line := string(raw)
+		if len(line) > 160 {
+			line = line[:157] + "…"
+		}
+		fmt.Fprintf(l.out, "  [%d] %s\n", i+1, line)
 	}
 }
 
@@ -1549,11 +2013,11 @@ func (l *chatLoop) printFullBlock(block chatBlock) {
 	reset := "\033[0m"
 	fmt.Fprintf(l.out, "%s┌─ block #%d · %s%s\n", color, block.ID, agent, reset)
 	fmt.Fprintln(l.out, "[user]")
-	fmt.Fprintln(l.out, block.UserText)
+	writeRenderedMarkdown(l.out, block.UserText)
 	if block.AssistantText != "" {
 		fmt.Fprintln(l.out)
 		fmt.Fprintf(l.out, "[%s]\n", agent)
-		fmt.Fprintln(l.out, block.AssistantText)
+		writeRenderedMarkdown(l.out, block.AssistantText)
 	}
 	fmt.Fprintf(l.out, "%s└─ end block #%d%s\n", color, block.ID, reset)
 }
@@ -1561,7 +2025,7 @@ func (l *chatLoop) printFullBlock(block chatBlock) {
 func (l *chatLoop) handleCopyLast(mode string) {
 	text, label, err := selectCopyTextFromBlocks(buildChatBlocks(l.snapshotTurns()), mode)
 	if err != nil {
-		fmt.Fprintln(l.errw, "✗ "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("✗ ", "", err))
 		return
 	}
 	if text == "" {
@@ -1720,7 +2184,7 @@ func (l *chatLoop) printCost() {
 		Window  string  `json:"window"`
 	}
 	if err := l.client.Call("quota.get", nil, &snapshots); err != nil {
-		fmt.Fprintln(l.errw, "✗ quota.get: "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("✗ quota.get: ", "", err))
 		return
 	}
 	if len(snapshots) == 0 {
@@ -1734,6 +2198,50 @@ func (l *chatLoop) printCost() {
 	}
 	fmt.Fprintf(l.out, "  ─────────────────────────────\n")
 	fmt.Fprintf(l.out, "  %-10s  %.0f tokens\n", "total", total)
+}
+
+func (l *chatLoop) printTrace(rest string) {
+	if l.client == nil {
+		fmt.Fprintln(l.errw, "✗ daemon not connected — start milliwaysd first")
+		return
+	}
+	limit := 12
+	if fields := splitFields(rest); len(fields) > 0 {
+		if n, err := strconv.Atoi(fields[0]); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	var spans []chatTraceSpan
+	if err := l.client.Call("observability.spans", map[string]any{
+		"since": time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339),
+		"limit": limit,
+	}, &spans); err != nil {
+		fmt.Fprintln(l.errw, friendlyError("✗ observability.spans: ", "", err))
+		return
+	}
+	if len(spans) == 0 {
+		fmt.Fprintln(l.out, "trace: no recent spans")
+		return
+	}
+	fmt.Fprintln(l.out, "Recent traces:")
+	for _, sp := range spans {
+		name := sp.Name
+		if name == "" {
+			name = "span"
+		}
+		status := sp.Status
+		if status == "" {
+			status = "ok"
+		}
+		fmt.Fprintf(l.out, "  %-8s %-28s %-5s %7s", shortTraceID(sp.TraceID), truncatePlain(name, 28), status, formatDurationMS(sp.DurationMS))
+		if method, ok := sp.Attributes["method"].(string); ok && method != "" {
+			fmt.Fprintf(l.out, " method:%s", method)
+		}
+		if agent, ok := sp.Attributes["agent_id"].(string); ok && agent != "" {
+			fmt.Fprintf(l.out, " agent:%s", agent)
+		}
+		fmt.Fprintln(l.out)
+	}
 }
 
 // handleRetry resends the last user prompt to the active runner.
@@ -1757,7 +2265,7 @@ func (l *chatLoop) handleRetry() {
 	fmt.Fprintf(l.out, "  retrying: %s\n\n", truncate(lastUser, 80))
 	enriched := l.enrichWithPalace(context.Background(), lastUser)
 	if err := l.sess.send(enriched); err != nil {
-		fmt.Fprintln(l.errw, "✗ send: "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 	}
 }
 
@@ -2057,8 +2565,10 @@ func (l *chatLoop) handlePrompt(prompt string) {
 		win += " · " + model
 	}
 	setTermTitle("milliways · "+l.sess.agentID+" · thinking…", win)
+	l.setPromptState("thinking")
 	if err := l.sess.send(enriched); err != nil {
-		fmt.Fprintln(l.errw, "✗ send: "+err.Error())
+		l.setPromptState("")
+		fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 		return
 	}
 	// We don't block here — the response streams async. The next
@@ -2237,7 +2747,7 @@ func agentColor(name string) string {
 func agentThinkingColor(name string) string {
 	switch name {
 	case "claude":
-		return "\033[38;5;245m" // soft gray
+		return "\033[38;5;250m" // muted pearl
 	case "codex":
 		return "\033[38;5;172m" // muted amber
 	case "copilot":
@@ -2251,7 +2761,7 @@ func agentThinkingColor(name string) string {
 	case "pool":
 		return "\033[38;5;75m" // muted light blue
 	}
-	return ""
+	return "\033[38;5;244m" // unknown provider
 }
 
 // printLanding is the chat-startup banner: header + dynamic daemon /
@@ -2260,38 +2770,35 @@ func agentThinkingColor(name string) string {
 // works directly in this same chat (numeric or named runner switch,
 // local-bootstrap, opsx, !cmd shell, /help, /exit).
 func (l *chatLoop) printLanding() {
+	if os.Getenv("MILLIWAYS_DECK_MODE") == "1" {
+		return
+	}
 	fmt.Fprintln(l.out, "milliways "+welcomeVersion()+" — chat")
-	fmt.Fprintln(l.out)
-
 	state := probeDaemonForWelcome(700 * time.Millisecond)
+
+	fmt.Fprintln(l.out, "\033[1mQuick Menu:\033[0m  \033[1m/help\033[0m · \033[1m!/cmd\033[0m · \033[1m/parallel\033[0m")
+	fmt.Fprintln(l.out)
 	fmt.Fprintln(l.out, "  daemon  "+state.daemonLine)
 	fmt.Fprintln(l.out)
 
-	if os.Getenv("MILLIWAYS_DECK_MODE") == "1" {
-		fmt.Fprintln(l.out, "  \033[2m←\033[0m  select a provider in the left panel")
-		fmt.Fprintln(l.out, "       or type \033[1m/switch <name>\033[0m directly here")
-		fmt.Fprintln(l.out)
-		fmt.Fprintln(l.out, "  \033[2m/help\033[0m  all commands   \033[2m/parallel\033[0m  fan out to all providers")
-	} else {
-		fmt.Fprintln(l.out, "Pick a client:")
-		statuses := l.fetchAgentStatuses()
-		for i, name := range chatSwitchableAgents {
-			s := statuses[name]
-			model := s.model
-			if model == "" {
-				model = "—"
-			}
-			color := agentColor(name)
-			reset := "\033[0m"
-			fmt.Fprintf(l.out, "  /%d  %s/%-10s%s %s  %s\n", i+1, color, name, reset, s.mark, model)
+	fmt.Fprintln(l.out, "Pick a client:")
+	statuses := l.fetchAgentStatuses()
+	for i, name := range chatSwitchableAgents {
+		s := statuses[name]
+		model := s.model
+		if model == "" {
+			model = "—"
 		}
-		fmt.Fprintln(l.out)
-		l.ringMu.Lock()
-		ring := append([]string(nil), l.ring...)
-		l.ringMu.Unlock()
-		if len(ring) > 0 {
-			fmt.Fprintf(l.out, "  ring: %s  (/ring to change)\n", strings.Join(ring, " → "))
-		}
+		color := agentColor(name)
+		reset := "\033[0m"
+		fmt.Fprintf(l.out, "  /%d  %s/%-10s%s %s  %s\n", i+1, color, name, reset, s.mark, model)
+	}
+	fmt.Fprintln(l.out)
+	l.ringMu.Lock()
+	ring := append([]string(nil), l.ring...)
+	l.ringMu.Unlock()
+	if len(ring) > 0 {
+		fmt.Fprintf(l.out, "  ring: %s  (/ring to change)\n", strings.Join(ring, " → "))
 	}
 	fmt.Fprintln(l.out)
 	fmt.Fprintln(l.out, "  \033[2m/login [client]\033[0m  set up auth      \033[2m/help\033[0m  all commands      \033[2m/exit\033[0m  quit")
@@ -2306,7 +2813,7 @@ func (l *chatLoop) printQuota() {
 	}
 	var resp any
 	if err := l.client.Call("quota.get", nil, &resp); err != nil {
-		fmt.Fprintln(l.errw, "✗ quota.get: "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("✗ quota.get: ", "", err))
 		return
 	}
 	enc := json.NewEncoder(l.out)
@@ -2366,8 +2873,10 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /agents                       list clients with live auth status")
 	fmt.Fprintln(l.out, "  /quota                        current quota snapshot")
 	fmt.Fprintln(l.out, "  /metrics                      live metrics dashboard (token usage, costs, ops)")
-	fmt.Fprintln(l.out, "  /switch <runner>              hand off briefing to runner (cross-pane via MemPalace)")
-	fmt.Fprintln(l.out, "  /briefing                     re-show the full context handed off on last /switch")
+	fmt.Fprintln(l.out, "  /switch <runner>              switch active workspace without handoff")
+	fmt.Fprintln(l.out, "  /takeover <runner>            hand off active context to another runner")
+	fmt.Fprintln(l.out, "  /<runner> <prompt>            start work in that client without stealing focus")
+	fmt.Fprintln(l.out, "  /briefing                     re-show the full context handed off on last /takeover")
 	fmt.Fprintln(l.out, "  /login [client]               auth setup — API key prompt or CLI steps")
 	fmt.Fprintln(l.out, "  /scan                         scan workspace dependencies for known CVEs")
 	fmt.Fprintln(l.out, "  /exit                         exit (Ctrl+D also works)")
@@ -2386,6 +2895,7 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /copy-last [response|prompt|block|code] copy last block via terminal clipboard")
 	fmt.Fprintln(l.out, "  /history                      show the current turn log (read-only)")
 	fmt.Fprintln(l.out, "  /cost                         token usage per runner (last hour)")
+	fmt.Fprintln(l.out, "  /trace [limit]                show recent daemon/agent spans")
 	fmt.Fprintln(l.out, "  /retry                        re-send the last user prompt")
 	fmt.Fprintln(l.out, "  /undo                         drop the last user+assistant turn pair")
 	fmt.Fprintln(l.out)
@@ -2586,7 +3096,7 @@ func (l *chatLoop) setModel(agentID, newModel string) {
 		"key":   s.envKey,
 		"value": newModel,
 	}, &result); err != nil {
-		fmt.Fprintln(l.errw, "✗ could not set model: "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("✗ could not set model: ", "", err))
 		return
 	}
 	color := agentColor(agentID)
@@ -2614,6 +3124,46 @@ var loginSpecs = map[string]loginSpec{
 	"minimax": {envKey: "MINIMAX_API_KEY"},
 	"local":   {cliSteps: []string{"run /install-local-server, or set MILLIWAYS_LOCAL_ENDPOINT"}},
 	"pool":    {cliCmd: []string{"pool", "login"}},
+}
+
+func effectiveLoginPath() string {
+	seen := map[string]bool{}
+	var parts []string
+	addList := func(value string) {
+		for _, part := range filepath.SplitList(value) {
+			part = strings.TrimSpace(part)
+			if part == "" || seen[part] {
+				continue
+			}
+			seen[part] = true
+			parts = append(parts, part)
+		}
+	}
+	addList(os.Getenv("MILLIWAYS_PATH"))
+	addList(os.Getenv("PATH"))
+	addList("/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+	return strings.Join(parts, string(os.PathListSeparator))
+}
+
+func lookupLoginCommand(agent string) (string, error) {
+	spec, ok := loginSpecs[agent]
+	if !ok || len(spec.cliCmd) == 0 {
+		return "", fmt.Errorf("no login command for %q", agent)
+	}
+	bin := spec.cliCmd[0]
+	if strings.ContainsRune(bin, filepath.Separator) {
+		if isExecutable(bin) {
+			return bin, nil
+		}
+		return "", fmt.Errorf("%s is not executable", bin)
+	}
+	for _, dir := range filepath.SplitList(effectiveLoginPath()) {
+		candidate := filepath.Join(dir, bin)
+		if isExecutable(candidate) {
+			return candidate, nil
+		}
+	}
+	return "", exec.ErrNotFound
 }
 
 // printLogin handles /login [agent]. For API-key runners it prompts
@@ -2648,12 +3198,18 @@ func (l *chatLoop) printLogin(agent string) {
 
 	// CLI-OAuth runner — run the auth command directly in the foreground.
 	if len(spec.cliCmd) > 0 {
-		cmd := exec.Command(spec.cliCmd[0], spec.cliCmd[1:]...)
+		bin, err := lookupLoginCommand(agent)
+		if err != nil {
+			fmt.Fprintln(l.errw, friendlyError("✗ auth failed: ", "", err))
+			return
+		}
+		cmd := exec.Command(bin, spec.cliCmd[1:]...)
+		cmd.Env = append(os.Environ(), "PATH="+effectiveLoginPath())
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			fmt.Fprintln(l.errw, "✗ auth failed: "+err.Error())
+			fmt.Fprintln(l.errw, friendlyError("✗ auth failed: ", "", err))
 		} else {
 			fmt.Fprintf(l.out, "✓ %s authenticated — ready\n", agent)
 		}
@@ -2687,7 +3243,7 @@ func (l *chatLoop) printLogin(agent string) {
 		"key":   spec.envKey,
 		"value": trimmed,
 	}, &result); err != nil {
-		fmt.Fprintln(l.errw, "✗ could not set key in daemon: "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("✗ could not set key in daemon: ", "", err))
 		fmt.Fprintf(l.errw, "  Fallback: export %s=<key> and restart the daemon.\n", spec.envKey)
 		return
 	}

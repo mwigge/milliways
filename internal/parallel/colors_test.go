@@ -26,12 +26,13 @@ func TestProviderColor_KnownProviders(t *testing.T) {
 		provider  string
 		wantColor string
 	}{
-		{"claude", "\033[34m"},
-		{"codex", "\033[33m"},
-		{"copilot", "\033[36m"},
-		{"gemini", "\033[35m"},
-		{"local", "\033[32m"},
-		{"minimax", "\033[95m"},
+		{"claude", "\033[97m"},
+		{"codex", "\033[38;5;214m"},
+		{"copilot", "\033[38;5;69m"},
+		{"gemini", "\033[38;5;208m"},
+		{"local", "\033[38;5;160m"},
+		{"minimax", "\033[38;5;141m"},
+		{"pool", "\033[38;5;117m"},
 	}
 
 	for _, tt := range tests {
@@ -71,8 +72,8 @@ func TestColorProvider_ContainsColorCode(t *testing.T) {
 	t.Parallel()
 
 	got := ColorProvider("claude")
-	if !strings.Contains(got, "\033[34m") {
-		t.Errorf("ColorProvider(%q) = %q, does not contain blue color code \\033[34m", "claude", got)
+	if !strings.Contains(got, "\033[97m") {
+		t.Errorf("ColorProvider(%q) = %q, does not contain pearl color code \\033[97m", "claude", got)
 	}
 }
 

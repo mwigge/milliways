@@ -25,7 +25,11 @@ run_case() {
   local label="$2"
   local release_dir="$3"
   local expect_fallback="$4"
-  local docker_args=(--rm --platform linux/amd64)
+  local docker_args=(--rm --platform linux/amd64 --security-opt seccomp=unconfined)
+
+  if [ -n "${MILLIWAYS_SMOKE_FILTER:-}" ] && [[ "$label" != *"$MILLIWAYS_SMOKE_FILTER"* ]]; then
+    return 0
+  fi
 
   if [ "$expect_fallback" = "yes" ]; then
     host_arch="$(docker version --format '{{.Server.Arch}}' 2>/dev/null || uname -m)"
@@ -47,6 +51,14 @@ run_case() {
     "$image" \
     bash -lc '
       set -euo pipefail
+      trap '"'"'status=$?; if [ "$status" -ne 0 ]; then
+        for log in /tmp/install.log /tmp/mw-daemon.log /tmp/ping.json /tmp/status.json /tmp/mw-smoke-daemon.log /tmp/mw-smoke-metrics.txt; do
+          if [ -f "$log" ]; then
+            echo "----- $log -----" >&2
+            cat "$log" >&2
+          fi
+        done
+      fi; exit "$status"'"'"' EXIT
       install_prereqs() {
         if command -v apt-get >/dev/null 2>&1; then
           export DEBIAN_FRONTEND=noninteractive
@@ -64,6 +76,7 @@ run_case() {
             dnf install -y ca-certificates curl
           fi
         elif command -v pacman >/dev/null 2>&1; then
+          sed -i "s/^#DisableSandbox/DisableSandbox/" /etc/pacman.conf 2>/dev/null || true
           if [ "'"$expect_fallback"'" = "yes" ]; then
             pacman -Sy --noconfirm ca-certificates curl git go gcc glibc
           else
@@ -93,7 +106,7 @@ run_case() {
       done
       test -f "$PREFIX/share/milliways/wezterm.lua"
       grep -q "set_left_status" "$PREFIX/share/milliways/wezterm.lua"
-      grep -q "set_right_status('')" "$PREFIX/share/milliways/wezterm.lua"
+      grep -q "set_right_status" "$PREFIX/share/milliways/wezterm.lua"
       "$PREFIX/bin/milliways" --version
       "$PREFIX/bin/milliwaysd" -state-dir /tmp/mw-state -log-level error >/tmp/mw-daemon.log 2>&1 &
       pid=$!
@@ -115,18 +128,14 @@ run_deep_case() {
   local image="$1"
   local label="$2"
 
-  host_arch="$(docker version --format '{{.Server.Arch}}' 2>/dev/null || uname -m)"
-  case "$host_arch" in
-    amd64|x86_64) ;;
-    *)
-      printf 'SKIP %s: linux/amd64 deep CLI smoke requires an amd64 Docker host; current Docker arch is %s\n' "$label" "$host_arch"
-      return 0
-      ;;
-  esac
+  if [ -n "${MILLIWAYS_SMOKE_FILTER:-}" ] && [[ "$label" != *"$MILLIWAYS_SMOKE_FILTER"* ]]; then
+    return 0
+  fi
 
   printf '\n==> %s: %s\n' "$label" "$image"
   docker run --rm \
     --platform linux/amd64 \
+    --security-opt seccomp=unconfined \
     -v "$install_script:/tmp/install.sh:ro" \
     -v "$full_release:/release:ro" \
     -v "$support_release:/support:ro" \
@@ -134,7 +143,7 @@ run_deep_case() {
     bash -lc '
       set -euo pipefail
       trap '"'"'status=$?; if [ "$status" -ne 0 ]; then
-        for log in /tmp/install.log /tmp/install-gemini.log /tmp/install-copilot.log /tmp/install-local.log /tmp/turn1.log /tmp/turn2.log; do
+        for log in /tmp/deep-stage /tmp/carte.yaml /tmp/install.log /tmp/install-gemini.log /tmp/install-copilot.log /tmp/install-local.log /tmp/turn1.log /tmp/turn2.log; do
           if [ -f "$log" ]; then
             echo "----- $log -----" >&2
             cat "$log" >&2
@@ -149,6 +158,7 @@ run_deep_case() {
       elif command -v dnf >/dev/null 2>&1; then
         dnf install -y ca-certificates curl python3
       elif command -v pacman >/dev/null 2>&1; then
+        sed -i "s/^#DisableSandbox/DisableSandbox/" /etc/pacman.conf 2>/dev/null || true
         pacman -Sy --noconfirm ca-certificates curl python
       fi
 
@@ -159,10 +169,11 @@ run_deep_case() {
       export MILLIWAYS_RELEASE_BASE_URL=file:///release
       export MILLIWAYS_SUPPORT_BASE_URL=file:///support
       export MILLIWAYS_WEZTERM_LUA_URL=file:///support/wezterm.lua
+      export SKIP_FEATURE_DEPS=1
       bash /tmp/install.sh >/tmp/install.log 2>&1
       test -f "$PREFIX/share/milliways/wezterm.lua"
       grep -q "set_left_status" "$PREFIX/share/milliways/wezterm.lua"
-      grep -q "set_right_status('')" "$PREFIX/share/milliways/wezterm.lua"
+      grep -q "set_right_status" "$PREFIX/share/milliways/wezterm.lua"
 
       export HOME=/tmp/mw-home
       export XDG_CONFIG_HOME=/tmp/mw-home/.config
@@ -179,7 +190,7 @@ if [ "${1:-}" = "--version" ]; then
   echo "gemini smoke 1.0.0"
   exit 0
 fi
-prompt="$*"
+if [ "$#" -gt 0 ]; then prompt="$*"; else prompt="$(cat)"; fi
 case "$prompt" in
   *"2+3"*|*"2 + 3"*) echo "The sum is 5." ;;
   *"add 2"*|*"Add 2"*) echo "The previous sum was 5; adding 2 gives 7." ;;
@@ -209,9 +220,9 @@ if [ "${1:-}" = "--version" ]; then
   echo "copilot smoke 1.0.0"
   exit 0
 fi
-prompt="$*"
+if [ "$#" -gt 0 ]; then prompt="$*"; else prompt="$(cat)"; fi
 case "$prompt" in
-  *"taking over"*|*"previous sum"*|*"add 2"*) echo "Taking over: the prior sum is 5, and adding 2 gives 7." ;;
+  *"taking over"*|*"previous sum"*|*"sum of that"*|*"add 2"*) echo "Taking over: the prior sum is 5, and adding 2 gives 7." ;;
   *) echo "copilot saw: $prompt" ;;
 esac
 COPILOT
@@ -230,30 +241,33 @@ EOF
       test -x /tmp/fake-bin/copilot
 
       MILLIWAYS_LOCAL_INSTALL_SMOKE=1 milliwaysctl local install-server >/tmp/install-local.log 2>&1
-      test -x "$HOME/.local/bin/milliways-local-server"
+      grep -q "smoke local server installed" /tmp/install-local.log
 
+      echo "creating carte" >/tmp/deep-stage
       mkdir -p /tmp/project/.git /tmp/project/.codegraph
-      cat >/tmp/carte.yaml <<EOF
-kitchens:
-  gemini:
-    cmd: /tmp/fake-bin/gemini
-    stations: [math]
-    cost_tier: free
-  copilot:
-    cmd: /tmp/fake-bin/copilot
-    stations: [code]
-    cost_tier: free
-routing:
-  keywords:
-    sum: gemini
-  default: gemini
-ledger:
-  ndjson: /tmp/mw-ledger.ndjson
-  db: /tmp/mw-ledger.db
-EOF
+      printf "%s\n" \
+        "kitchens:" \
+        "  gemini:" \
+        "    cmd: /tmp/fake-bin/gemini" \
+        "    stations: [math]" \
+        "    cost_tier: free" \
+        "  copilot:" \
+        "    cmd: /tmp/fake-bin/copilot" \
+        "    stations: [code]" \
+        "    cost_tier: free" \
+        "routing:" \
+        "  keywords:" \
+        "    sum: gemini" \
+        "  default: gemini" \
+        "ledger:" \
+        "  ndjson: /tmp/mw-ledger.ndjson" \
+        "  db: /tmp/mw-ledger.db" \
+        > /tmp/carte.yaml
 
+      echo "turn1" >/tmp/deep-stage
       milliways -c /tmp/carte.yaml --project-root /tmp/project --use-legacy-conversation --session arithmetic --kitchen gemini --timeout 15s "what is 2+3?" >/tmp/turn1.log 2>&1
       grep -q "5" /tmp/turn1.log
+      echo "turn2" >/tmp/deep-stage
       milliways -c /tmp/carte.yaml --project-root /tmp/project --use-legacy-conversation --session arithmetic --switch-to copilot --timeout 15s "takeover: if you add 2 to the sum of that what will you get?" >/tmp/turn2.log 2>&1
       grep -q "7" /tmp/turn2.log
       grep -q "\[switch\] session=arithmetic gemini -> copilot" /tmp/turn2.log

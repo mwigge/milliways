@@ -268,6 +268,81 @@ func TestRunMiniMax_AgenticToolLoop(t *testing.T) {
 	}
 }
 
+func TestRunMiniMax_AsksConfirmationStopsBeforeToolExecution(t *testing.T) {
+	var turn atomic.Int32
+
+	withMiniMaxDaemonTransport(t, func(r *http.Request) (*http.Response, error) {
+		turn.Add(1)
+		fakeSSE := strings.Join([]string{
+			`data: {"choices":[{"delta":{"content":"This will edit files. Should I proceed?"}}]}`,
+			``,
+			`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"echo","arguments":"{\"text\":\"unsafe\"}"}}]}}]}`,
+			``,
+			`data: {"choices":[{"finish_reason":"tool_calls","delta":{}}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}`,
+			``,
+			`data: [DONE]`,
+			``,
+		}, "\n")
+		return minimaxDaemonResponse(http.StatusOK, fakeSSE, http.Header{"Content-Type": {"text/event-stream"}}), nil
+	})
+
+	var echoRan atomic.Bool
+	reg := tools.NewRegistry()
+	reg.Register("echo", func(_ context.Context, _ map[string]any) (string, error) {
+		echoRan.Store(true)
+		return "should not run", nil
+	}, provider.ToolDef{Name: "echo", Description: "echo a string"})
+	withMinimaxToolRegistry(t, reg)
+
+	t.Setenv("MINIMAX_API_KEY", "k")
+	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/chat/completions")
+
+	in := make(chan []byte, 1)
+	in <- []byte("edit files, but ask first")
+	close(in)
+	pusher := &fakePusher{}
+	done := make(chan struct{})
+	go func() {
+		RunMiniMax(context.Background(), in, pusher, &mockObserver{})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunMiniMax did not return")
+	}
+
+	if echoRan.Load() {
+		t.Fatal("tool ran even though assistant asked for confirmation")
+	}
+	if got := turn.Load(); got != 1 {
+		t.Fatalf("API turns = %d, want 1 before waiting for user confirmation", got)
+	}
+	events := pusher.snapshot()
+	var sawQuestion bool
+	var sawNeedsInput bool
+	for _, e := range events {
+		switch e["t"] {
+		case "data":
+			b64, _ := e["b64"].(string)
+			raw, _ := base64.StdEncoding.DecodeString(b64)
+			if strings.Contains(string(raw), "Should I proceed?") {
+				sawQuestion = true
+			}
+		case "chunk_end":
+			if needsInput, _ := e["needs_input"].(bool); needsInput {
+				sawNeedsInput = true
+			}
+		}
+	}
+	if !sawQuestion {
+		t.Fatalf("confirmation question was not streamed; events=%v", events)
+	}
+	if !sawNeedsInput {
+		t.Fatalf("chunk_end did not mark needs_input; events=%v", events)
+	}
+}
+
 // TestRunMiniMax_ToolFailureFoldedAsErrorContent — a failing tool produces an
 // "error: …" tool message back to the model so it can recover. The loop must
 // not crash the daemon stream.

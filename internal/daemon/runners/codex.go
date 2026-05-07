@@ -58,6 +58,7 @@ var codexBinary = "codex"
 
 type codexSessionState struct {
 	sessionID string
+	model     string
 }
 
 // RunCodex is the daemon-side codex session loop. It reads prompts from
@@ -110,8 +111,14 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
 	}()
 
+	model := codexModelFromEnv()
+	if state.sessionID != "" && model != state.model {
+		state.sessionID = ""
+	}
+	state.model = model
+
 	cwd, _ := os.Getwd()
-	cmd := exec.CommandContext(ctx, codexBinary, buildCodexCmdArgsWithSession(text, cwd, nil, state.sessionID)...)
+	cmd := exec.CommandContext(ctx, codexBinary, buildCodexCmdArgsWithSession(text, cwd, codexModelExtraArgs(model), state.sessionID)...)
 	cmd.Env = safeRunnerEnv()
 	cmd.WaitDelay = 5 * time.Second
 	if cwd != "" {
@@ -164,9 +171,13 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 			}
 			if codexLineLooksProxyBlocked(line) {
 				sawProxyBlock.Store(true)
+				continue
 			}
 			if codexLineSignalsSessionFailure(line) {
 				sawSessionErr.Store(true)
+			}
+			if codexLineLooksBackendModelNoise(line) {
+				continue
 			}
 			stderrMu.Lock()
 			stderrLines = append(stderrLines, line)
@@ -254,6 +265,25 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 
 func codexRequestTimeout() time.Duration {
 	return runnerRequestTimeout("CODEX_TIMEOUT")
+}
+
+func codexModelFromEnv() string {
+	model := strings.TrimSpace(os.Getenv("CODEX_MODEL"))
+	if model == "" {
+		model = strings.TrimSpace(os.Getenv("OPENAI_MODEL"))
+	}
+	return model
+}
+
+func codexModelExtraArgsFromEnv() []string {
+	return codexModelExtraArgs(codexModelFromEnv())
+}
+
+func codexModelExtraArgs(model string) []string {
+	if model == "" {
+		return nil
+	}
+	return []string{"--model", model}
 }
 
 // buildCodexCmdArgs assembles the codex CLI argv for a fresh exec turn.
@@ -368,6 +398,14 @@ func codexLineLooksProxyBlocked(line string) bool {
 		strings.Contains(lower, "unexpected status 403 forbidden") ||
 		strings.Contains(lower, "307 temporary redirect") ||
 		(strings.Contains(lower, "chatgpt.com/backend-api/codex") && strings.Contains(lower, "failed to connect"))
+}
+
+func codexLineLooksBackendModelNoise(line string) bool {
+	lower := strings.ToLower(line)
+	return strings.Contains(lower, "chatgpt.com/backend-api/codex/models") ||
+		strings.Contains(lower, "backend-api/codex/models?client_version=") ||
+		(strings.Contains(lower, "url: https://chatgpt.com/backend-api/codex") && strings.Contains(lower, "color:")) ||
+		(strings.Contains(lower, "white-space:") && strings.Contains(lower, "max-width:"))
 }
 
 // codexLineSignalsSessionLimit returns true when a stdout JSON event line

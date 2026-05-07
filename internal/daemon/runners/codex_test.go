@@ -109,6 +109,22 @@ func decodeCodexData(events []map[string]any) string {
 	return out.String()
 }
 
+func decodeCodexThinking(events []map[string]any) string {
+	var out strings.Builder
+	for _, event := range events {
+		if event["t"] != "thinking" {
+			continue
+		}
+		b64, _ := event["b64"].(string)
+		raw, err := base64.StdEncoding.DecodeString(b64)
+		if err == nil {
+			out.Write(raw)
+			out.WriteByte('\n')
+		}
+	}
+	return out.String()
+}
+
 func TestExtractCodexAssistantText_Message(t *testing.T) {
 	t.Parallel()
 	line := `{"type":"message","content":"hello world"}`
@@ -308,6 +324,107 @@ func TestBuildCodexCmdArgs_ResumeUsesSessionID(t *testing.T) {
 	}
 }
 
+func TestCodexModelExtraArgsFromEnv(t *testing.T) {
+	t.Setenv("CODEX_MODEL", "gpt-5.3-codex")
+	t.Setenv("OPENAI_MODEL", "gpt-5.5")
+	args := codexModelExtraArgsFromEnv()
+	if !codexArgsContainPair(args, "--model", "gpt-5.3-codex") {
+		t.Fatalf("CODEX_MODEL should win, got %v", args)
+	}
+}
+
+func TestRunCodex_PassesConfiguredModel(t *testing.T) {
+	t.Setenv("CODEX_MODEL", "gpt-5.3-codex")
+	argsFile := filepath.Join(t.TempDir(), "args.tsv")
+	withCodexTestBinary(t, codexRecorderScript(argsFile, `printf '%s\n' '{"type":"message","content":"ok"}'`))
+
+	runCodexPrompts(t, context.Background(), "hello")
+
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read args file: %v", err)
+	}
+	args := strings.Split(strings.TrimSpace(strings.TrimPrefix(string(data), "CALL\t")), "\t")
+	if !codexArgsContainPair(args, "--model", "gpt-5.3-codex") {
+		t.Fatalf("codex exec did not receive configured model; args=%v", args)
+	}
+}
+
+func TestRunCodex_ModelChangeStartsFreshSession(t *testing.T) {
+	t.Setenv("CODEX_MODEL", "")
+	t.Setenv("OPENAI_MODEL", "")
+	argsFile := filepath.Join(t.TempDir(), "args.tsv")
+	withCodexTestBinary(t, codexRecorderScript(argsFile, `printf '%s\n' '{"type":"session_configured","session_id":"sess-1"}'`))
+
+	state := &codexSessionState{}
+	runCodexOnce(context.Background(), []byte("first"), &fakePusher{}, &mockObserver{}, state)
+	if state.sessionID == "" {
+		t.Fatal("first run did not capture a session id")
+	}
+
+	t.Setenv("CODEX_MODEL", "gpt-5.5")
+	runCodexOnce(context.Background(), []byte("second"), &fakePusher{}, &mockObserver{}, state)
+
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read args file: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("recorded calls = %d, want 2; data=%q", len(lines), string(data))
+	}
+	firstArgs := strings.Split(strings.TrimPrefix(lines[0], "CALL\t"), "\t")
+	secondArgs := strings.Split(strings.TrimPrefix(lines[1], "CALL\t"), "\t")
+	if containsCodexSubsequence(firstArgs, []string{"exec", "resume"}) {
+		t.Fatalf("first call should be fresh, got %v", firstArgs)
+	}
+	if containsCodexSubsequence(secondArgs, []string{"exec", "resume"}) {
+		t.Fatalf("model change should not resume old Codex session; args=%v", secondArgs)
+	}
+	if !codexArgsContainPair(secondArgs, "--model", "gpt-5.5") {
+		t.Fatalf("second call missing new model arg; args=%v", secondArgs)
+	}
+}
+
+func TestRunCodex_SuppressesBackendModelFetchNoise(t *testing.T) {
+	withCodexTestBinary(t, codexRecorderScript(filepath.Join(t.TempDir(), "args.tsv"), `
+printf '%s\n' 'body { color:#009dd0; } url: https://chatgpt.com/backend-api/codex/models?client_version=0.125.0' >&2
+printf '%s\n' '{"type":"message","content":"ok"}'
+`))
+
+	pusher, _ := runCodexPrompts(t, context.Background(), "hello")
+	events := pusher.snapshot()
+	thinking := decodeCodexThinking(events)
+	if strings.Contains(thinking, "backend-api/codex/models") || strings.Contains(thinking, "color:#009dd0") {
+		t.Fatalf("backend model fetch noise leaked as thinking: %q", thinking)
+	}
+	if got := decodeCodexData(events); got != "ok" {
+		t.Fatalf("assistant data = %q, want ok", got)
+	}
+}
+
+func TestRunCodex_SuppressesProxyRetryNoiseAfterActionableError(t *testing.T) {
+	withCodexTestBinary(t, codexRecorderScript(filepath.Join(t.TempDir(), "args.tsv"), `
+printf '%s\n' '2026-05-05T20:30:35Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 307 Temporary Redirect, url: wss://chatgpt.com/backend-api/codex/responses' >&2
+exit 1
+`))
+
+	pusher, _ := runCodexPrompts(t, context.Background(), "hello")
+	events := pusher.snapshot()
+	thinking := decodeCodexThinking(events)
+	if strings.Contains(thinking, "307 Temporary Redirect") || strings.Contains(thinking, "backend-api/codex/responses") {
+		t.Fatalf("proxy retry noise leaked as thinking: %q", thinking)
+	}
+	errEvent, ok := findCodexEvent(events, "err")
+	if !ok {
+		t.Fatalf("expected actionable err event, got %+v", events)
+	}
+	msg, _ := errEvent["msg"].(string)
+	if !strings.Contains(msg, "blocked by Zscaler/proxy") {
+		t.Fatalf("error message = %q, want proxy guidance", msg)
+	}
+}
+
 // TestRunCodex_InputClose_PushesEnd verifies that closing the input
 // channel triggers a final {"t":"end"} push.
 func TestRunCodex_InputClose_PushesEnd(t *testing.T) {
@@ -440,6 +557,8 @@ func TestRunCodex_StreamsJSONAndRecordsArgs(t *testing.T) {
 }
 
 func TestRunCodex_ResumesAfterSessionID(t *testing.T) {
+	t.Setenv("CODEX_MODEL", "gpt-5.5")
+	t.Setenv("OPENAI_MODEL", "")
 	argsFile := filepath.Join(t.TempDir(), "args.tsv")
 	withCodexTestBinary(t, codexRecorderScript(argsFile, strings.Join([]string{
 		`printf '%s\n' '{"type":"session_configured","thread_id":"thread-abc"}'`,
@@ -454,7 +573,8 @@ func TestRunCodex_ResumesAfterSessionID(t *testing.T) {
 	if containsCodexSubsequence(calls[0], []string{"exec", "resume"}) {
 		t.Fatalf("first call should be fresh exec, got %v", calls[0])
 	}
-	if !containsCodexSubsequence(calls[1], []string{"exec", "resume", "--json", "--skip-git-repo-check", "thread-abc", "--", "second"}) {
+	if !containsCodexSubsequence(calls[1], []string{"exec", "resume", "--json", "--skip-git-repo-check"}) ||
+		!containsCodexSubsequence(calls[1], []string{"thread-abc", "--", "second"}) {
 		t.Fatalf("second call should resume thread-abc, got %v", calls[1])
 	}
 }

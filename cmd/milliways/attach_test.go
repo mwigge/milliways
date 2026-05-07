@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -202,11 +203,11 @@ func TestBuildQuotasFromSnapshots(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		snapshots []rpc.QuotaSnapshot
-		wantKeys  []string
+		name       string
+		snapshots  []rpc.QuotaSnapshot
+		wantKeys   []string
 		wantAbsent []string
-		checkFn   func(t *testing.T, m map[string]parallel.QuotaSummary)
+		checkFn    func(t *testing.T, m map[string]parallel.QuotaSummary)
 	}{
 		{
 			name: "positive cap included",
@@ -350,5 +351,204 @@ func TestDeckNavigatorAgentListShape(t *testing.T) {
 	_ = json.Unmarshal([]byte(flatArray), &wrapped)
 	if len(wrapped.Agents) != 0 {
 		t.Error("wrapped shape should NOT work with flat array — test assumption wrong")
+	}
+}
+
+func TestRenderDeckNavigatorShowsRequestedPanels(t *testing.T) {
+	t.Parallel()
+
+	got := stripANSI(renderDeckNavigator(34, []deckProviderInfo{
+		{ID: "claude", AuthStatus: "ok", Model: "sonnet"},
+		{ID: "codex", AuthStatus: "ok", Model: "gpt-5.5"},
+	}, 1, "codex", true, map[string]parallel.QuotaSummary{
+		"codex": {UsedToday: 25, LimitDay: 100},
+	}))
+
+	wantFragments := []string{
+		"Clients",
+		"Active",
+		"Status",
+		"Observability",
+		"codex active",
+		"daemon connected",
+		"2 clients",
+		"quota 25%",
+	}
+	for _, want := range wantFragments {
+		if !strings.Contains(got, want) {
+			t.Errorf("renderDeckNavigator() missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderDeckNavigatorSizedKeepsObservabilityVisible(t *testing.T) {
+	t.Parallel()
+
+	providers := []deckProviderInfo{
+		{ID: "claude", AuthStatus: "ok", Status: "idle"},
+		{ID: "codex", AuthStatus: "ok", Status: "idle"},
+		{ID: "copilot", AuthStatus: "missing_credentials", Status: "idle"},
+		{ID: "gemini", AuthStatus: "ok", Status: "idle"},
+		{ID: "minimax", AuthStatus: "ok", Status: "idle"},
+		{ID: "local", AuthStatus: "ok", Status: "idle"},
+		{ID: "pool", AuthStatus: "ok", Status: "idle"},
+	}
+
+	got := stripANSI(renderDeckNavigatorSized(34, 22, providers, 6, "pool", true, nil))
+	if lines := strings.Count(got, "\r\n"); lines > 22 {
+		t.Fatalf("rendered %d lines, want <= 22:\n%s", lines, got)
+	}
+	for _, want := range []string{"Clients", "pool", "Observability", "Active", "auth"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("render missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderDeckNavigatorSizedShowsSevenWhenThereIsRoom(t *testing.T) {
+	t.Parallel()
+
+	providers := []deckProviderInfo{
+		{ID: "claude", AuthStatus: "ok", Status: "idle"},
+		{ID: "codex", AuthStatus: "ok", Status: "idle"},
+		{ID: "copilot", AuthStatus: "ok", Status: "idle"},
+		{ID: "gemini", AuthStatus: "ok", Status: "idle"},
+		{ID: "minimax", AuthStatus: "ok", Status: "idle"},
+		{ID: "local", AuthStatus: "ok", Status: "idle"},
+		{ID: "pool", AuthStatus: "ok", Status: "idle"},
+	}
+
+	got := stripANSI(renderDeckNavigatorSized(44, 40, providers, 0, "", true, nil))
+	if strings.Contains(got, "clients 1-") {
+		t.Fatalf("expected all clients without a ranged heading when height allows it:\n%s", got)
+	}
+	if strings.Contains(got, "milliways-deck") {
+		t.Fatalf("expected no redundant deck title line:\n%s", got)
+	}
+	for _, want := range []string{"claude", "codex", "copilot", "gemini", "minimax", "local", "pool"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected all seven clients, missing %q:\n%s", want, got)
+		}
+	}
+	// Quick Menu was removed — verify it is absent.
+	for _, absent := range []string{"Quick Menu", "/<client> <prompt>", "background"} {
+		if strings.Contains(got, absent) {
+			t.Fatalf("Quick Menu should be absent, found %q:\n%s", absent, got)
+		}
+	}
+	// Observability panel is present with its new content.
+	for _, want := range []string{"Observability", "◌ all idle", "quota"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("new Observability panel missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderDeckNavigatorUsesAgentIdentityColors(t *testing.T) {
+	t.Parallel()
+
+	got := renderDeckNavigatorSized(44, 30, []deckProviderInfo{
+		{ID: "claude", AuthStatus: "ok", Status: "idle"},
+		{ID: "gemini", AuthStatus: "ok", Status: "idle"},
+		{ID: "minimax", AuthStatus: "ok", Status: "idle"},
+		{ID: "pool", AuthStatus: "ok", Status: "idle"},
+	}, 2, "minimax", true, nil)
+	for _, want := range []string{
+		agentColor("claude"),
+		agentColor("gemini"),
+		agentColor("minimax"),
+		agentColor("pool"),
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("render missing client color %q:\n%q", want, got)
+		}
+	}
+}
+
+func TestOrderDeckProvidersMatchesNumericShortcuts(t *testing.T) {
+	t.Parallel()
+
+	providers := []deckProviderInfo{
+		{ID: "pool"},
+		{ID: "gemini"},
+		{ID: "claude"},
+		{ID: "minimax"},
+		{ID: "codex"},
+	}
+	got := orderDeckProviders(providers)
+	var ids []string
+	for _, p := range got {
+		ids = append(ids, p.ID)
+	}
+	want := []string{"claude", "codex", "minimax", "gemini", "pool"}
+	if strings.Join(ids, ",") != strings.Join(want, ",") {
+		t.Fatalf("ordered providers = %v, want %v", ids, want)
+	}
+}
+
+func stripANSI(s string) string {
+	return regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`).ReplaceAllString(s, "")
+}
+
+func TestRenderDeckNavigatorObservabilityNoQuickMenu(t *testing.T) {
+	t.Parallel()
+
+	got := stripANSI(renderDeckNavigator(40, []deckProviderInfo{
+		{ID: "claude", AuthStatus: "ok", Status: "idle"},
+		{ID: "codex", AuthStatus: "ok", Status: "idle"},
+	}, 0, "claude", true, nil))
+
+	// Quick Menu must be absent.
+	for _, absent := range []string{"Quick Menu", "/switch", "background", "/help", "/parallel"} {
+		if strings.Contains(got, absent) {
+			t.Errorf("Quick Menu content should be absent, found %q:\n%s", absent, got)
+		}
+	}
+	// Observability panel must be present with its structural elements.
+	for _, want := range []string{"Observability", "◌ all idle", "auth 2/2", "quota"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Observability panel missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderDeckNavigatorObservabilityActiveProviders(t *testing.T) {
+	t.Parallel()
+
+	providers := []deckProviderInfo{
+		{ID: "claude", AuthStatus: "ok", Status: "thinking", Tokens: 31000, CostUSD: 0.87, CurrentTrace: "abcdef123456", TTFTMS: 240, TokenRate: 18},
+		{ID: "codex", AuthStatus: "ok", Status: "streaming", Tokens: 8000, CostUSD: 0.18, LastTrace: "1234567890ab", LatencyMS: 1230, QueueDepth: 1},
+		{ID: "gemini", AuthStatus: "ok", Status: "idle"},
+	}
+	got := stripANSI(renderDeckNavigator(90, providers, 0, "claude", true, nil))
+
+	// Fleet status bar must show thinking and streaming counts.
+	if !strings.Contains(got, "1●") {
+		t.Errorf("fleet bar missing thinking count '1●':\n%s", got)
+	}
+	if !strings.Contains(got, "1⟳") {
+		t.Errorf("fleet bar missing streaming count '1⟳':\n%s", got)
+	}
+	// Per-agent rows for active providers.
+	if !strings.Contains(got, "clde") {
+		t.Errorf("missing 'clde' short name for claude:\n%s", got)
+	}
+	if !strings.Contains(got, "31k") {
+		t.Errorf("missing '31k' token count for claude:\n%s", got)
+	}
+	if !strings.Contains(got, "$0.87") {
+		t.Errorf("missing '$0.87' cost for claude:\n%s", got)
+	}
+	for _, want := range []string{"ttft240ms", "18t/s", "trabcdef12", "lat1.2s", "q1", "tr12345678"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing observability detail %q:\n%s", want, got)
+		}
+	}
+	// Idle summary for gemini.
+	if !strings.Contains(got, "◌ idle") {
+		t.Errorf("missing idle summary:\n%s", got)
+	}
+	if !strings.Contains(got, "gemi") {
+		t.Errorf("missing 'gemi' in idle summary:\n%s", got)
 	}
 }
