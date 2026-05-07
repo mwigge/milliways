@@ -179,6 +179,75 @@ func TestPrintLandingSuppressesMainBannerInDeckMode(t *testing.T) {
 	}
 }
 
+func TestPrintLandingIsConciseStartupSurface(t *testing.T) {
+	t.Setenv("MILLIWAYS_DECK_MODE", "")
+	var stdout bytes.Buffer
+	loop := &chatLoop{
+		out:  &stdout,
+		errw: &bytes.Buffer{},
+	}
+
+	loop.printLanding()
+
+	got := stdout.String()
+	for _, absent := range []string{"Quick Menu", "Pick a client:", "/install-local-server", "Client install"} {
+		if strings.Contains(got, absent) {
+			t.Fatalf("landing should be concise; found %q in:\n%s", absent, got)
+		}
+	}
+	for _, want := range []string{"milliways ", "daemon", "clients", "/1 claude", "/7 pool", "/help all commands", "/agents auth status"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("landing missing %q; got:\n%s", want, got)
+		}
+	}
+	if lines := strings.Count(got, "\n"); lines > 6 {
+		t.Fatalf("landing line count = %d, want <= 6:\n%s", lines, got)
+	}
+}
+
+func TestPrintHelpDoesNotRepeatStartupBanner(t *testing.T) {
+	var stdout bytes.Buffer
+	loop := &chatLoop{
+		out:  &stdout,
+		errw: &bytes.Buffer{},
+	}
+
+	loop.printHelp()
+
+	got := stdout.String()
+	for _, absent := range []string{"Quick Menu", "Pick a client:", "daemon  "} {
+		if strings.Contains(got, absent) {
+			t.Fatalf("help should not repeat startup banner; found %q in:\n%s", absent, got)
+		}
+	}
+	for _, want := range []string{"milliways chat commands", "Clients:", "/1 claude", "/7 pool", "Client install / upgrade:", "/install-local-server"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("help missing %q; got:\n%s", want, got)
+		}
+	}
+}
+
+func TestPrintWelcomeIsConciseLauncherSurface(t *testing.T) {
+	var stdout bytes.Buffer
+
+	printWelcomeTo(&stdout)
+
+	got := stdout.String()
+	for _, absent := range []string{"Switch:", "Daily commands:", "/install-local-server", "!<cmd>"} {
+		if strings.Contains(got, absent) {
+			t.Fatalf("welcome should be concise; found %q in:\n%s", absent, got)
+		}
+	}
+	for _, want := range []string{"milliways ", "launcher", "daemon", "Start:", "Inside chat:", "/help", "/agents", "/parallel <prompt>"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("welcome missing %q; got:\n%s", want, got)
+		}
+	}
+	if lines := strings.Count(got, "\n"); lines > 12 {
+		t.Fatalf("welcome line count = %d, want <= 12:\n%s", lines, got)
+	}
+}
+
 func TestChooseStartProviderPrefersExplicitThenDefaultThenAuthOK(t *testing.T) {
 	statuses := map[string]agentStatus{
 		"claude":  {mark: "✗"},
