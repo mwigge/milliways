@@ -851,9 +851,9 @@ func (l *chatLoop) run(ctx context.Context) error {
 }
 
 // drainStream reads NDJSON events from the daemon stream and writes
-// content deltas to stdout. Recognised event types:
-//   - data       — base64-encoded content; write decoded bytes to stdout
-//   - thinking   — base64-encoded runner reasoning/progress; dim status line
+// content deltas to the response stream. Recognised event types:
+//   - data       — base64-encoded content; write decoded bytes to the response stream
+//   - thinking   — base64-encoded runner reasoning/progress; dim inline status line
 //   - chunk_end  — end of one prompt response; print a trailing newline
 //     if the runner didn't, clear busy
 //   - err        — runner error; print and clear busy
@@ -892,7 +892,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 						if l.sess == sess {
 							l.setPromptState("thinking")
 						}
-						writeTerminalStatus(l.out, formatThinkingLine(agent, msg))
+						l.writeStreamStatus(formatThinkingLine(agent, msg))
 					}
 				}
 			}
@@ -1117,7 +1117,7 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any, turnSaved bool) {
 	// Update the window title after each response. Show the running session
 	// total (not per-response) so the title bar answers "how much have I
 	// spent this session?" at a glance. Per-response stats stay in the
-	// inline hint line printed to stderr below.
+	// inline hint line printed in the same response stream below.
 	if l.sess != nil {
 		model, _ := l.displayModelInfo(l.sess.agentID)
 		win := "● " + l.sess.agentID
@@ -1146,14 +1146,18 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any, turnSaved bool) {
 			// normally so the user gets a clean handoff summary.
 			_ = l.sess.send(maxTurnsSummaryPrompt)
 			if len(parts) > 0 {
-				writeTerminalStatus(l.out, "  ("+strings.Join(parts, " · ")+")")
+				l.writeStreamStatus("  (" + strings.Join(parts, " · ") + ")")
 			}
 			return
 		}
 	}
 	if len(parts) > 0 {
-		writeTerminalStatus(l.out, "  ("+strings.Join(parts, " · ")+")")
+		l.writeStreamStatus("  (" + strings.Join(parts, " · ") + ")")
 	}
+}
+
+func (l *chatLoop) writeStreamStatus(line string) {
+	writeTerminalStatus(l.out, line)
 }
 
 // handleSlash dispatches a /<word> [args...] line.

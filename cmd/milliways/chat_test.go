@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -57,6 +58,46 @@ func TestDrainStreamRecordsModelEvent(t *testing.T) {
 	}
 	if source != "observed" {
 		t.Fatalf("source = %q, want observed", source)
+	}
+}
+
+func TestDrainStreamWritesThinkingToOutputStream(t *testing.T) {
+	stream := make(chan []byte, 2)
+	sess := &chatSession{
+		agentID:      "minimax",
+		streamCh:     stream,
+		done:         make(chan struct{}),
+		streamCancel: func() {},
+	}
+	var out bytes.Buffer
+	var errw bytes.Buffer
+	loop := &chatLoop{
+		out:      &out,
+		errw:     &errw,
+		sess:     sess,
+		sessions: map[string]*chatSession{"minimax": sess},
+	}
+
+	event, err := json.Marshal(map[string]any{
+		"t":   "thinking",
+		"b64": base64.StdEncoding.EncodeToString([]byte("inspecting files")),
+	})
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+	stream <- event
+	stream <- []byte(`{"t":"end"}`)
+	close(stream)
+
+	loop.drainStream(sess)
+	if got := out.String(); !strings.Contains(got, "[minimax]") || !strings.Contains(got, "inspecting files") {
+		t.Fatalf("thinking feedback missing from output stream:\nstdout=%q\nstderr=%q", got, errw.String())
+	}
+	if got := errw.String(); got != "" {
+		t.Fatalf("thinking feedback must not write to errw; got %q", got)
+	}
+	if pending := loop.pendingAssistant.String(); pending != "" {
+		t.Fatalf("thinking feedback should not be stored as assistant response; got %q", pending)
 	}
 }
 
