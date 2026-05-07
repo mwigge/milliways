@@ -128,8 +128,7 @@ func (h *codeHighlighter) processLine(line string) {
 			_, _ = io.WriteString(h.out, rendered)
 			return
 		}
-		// Plain text — linkify URLs then write through immediately.
-		_, _ = io.WriteString(h.out, linkifyURLs(line)+"\n")
+		_, _ = io.WriteString(h.out, renderPlainMarkdownLine(line, true))
 		return
 	}
 
@@ -169,7 +168,7 @@ func (h *codeHighlighter) Flush() error {
 				}
 				return nil
 			}
-			_, err := io.WriteString(h.out, linkifyURLs(line))
+			_, err := io.WriteString(h.out, strings.TrimSuffix(renderPlainMarkdownLine(line, false), "\n"))
 			if err != nil {
 				return err
 			}
@@ -199,8 +198,118 @@ func (h *codeHighlighter) flushTable() {
 		return
 	}
 	for _, line := range lines {
-		_, _ = io.WriteString(h.out, linkifyURLs(line)+"\n")
+		_, _ = io.WriteString(h.out, renderPlainMarkdownLine(line, true))
 	}
+}
+
+func renderPlainMarkdownLine(line string, addNewline bool) string {
+	if strings.TrimSpace(line) == "" {
+		if addNewline {
+			return "\n"
+		}
+		return ""
+	}
+	line = normalizeMarkdownIndent(line)
+	width := plainMarkdownWrapWidth()
+	if !looksLikeMarkdownStructure(strings.TrimSpace(line)) && displayWidth(line) <= width {
+		if addNewline {
+			return linkifyURLs(line) + "\n"
+		}
+		return linkifyURLs(line)
+	}
+	prefix, body, continuation := markdownLinePrefix(line)
+	if body == "" {
+		if addNewline {
+			return linkifyURLs(prefix) + "\n"
+		}
+		return linkifyURLs(prefix)
+	}
+	bodyWidth := width - displayWidth(prefix)
+	if bodyWidth < 24 {
+		bodyWidth = 24
+	}
+	lines := wrapPlainForTerminal(body, bodyWidth)
+	if len(lines) == 0 {
+		lines = []string{body}
+	}
+	var b strings.Builder
+	for i, wrapped := range lines {
+		if i > 0 {
+			b.WriteByte('\n')
+			b.WriteString(continuation)
+		} else {
+			b.WriteString(prefix)
+		}
+		b.WriteString(linkifyURLs(wrapped))
+	}
+	if addNewline {
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func normalizeMarkdownIndent(line string) string {
+	if strings.TrimSpace(line) == "" {
+		return ""
+	}
+	leading := len(line) - len(strings.TrimLeft(line, " \t"))
+	if leading >= 4 && looksLikeMarkdownStructure(strings.TrimSpace(line)) {
+		return strings.TrimSpace(line)
+	}
+	return strings.TrimRight(line, " \t")
+}
+
+func looksLikeMarkdownStructure(trimmed string) bool {
+	if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ">") {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "+ ") {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "**") || strings.HasPrefix(trimmed, "__") {
+		return true
+	}
+	if _, _, ok := splitOrderedListPrefix(trimmed); ok {
+		return true
+	}
+	return false
+}
+
+func markdownLinePrefix(line string) (prefix, body, continuation string) {
+	trimmed := strings.TrimSpace(line)
+	switch {
+	case strings.HasPrefix(trimmed, "- "), strings.HasPrefix(trimmed, "* "), strings.HasPrefix(trimmed, "+ "):
+		return trimmed[:2], strings.TrimSpace(trimmed[2:]), "  "
+	case strings.HasPrefix(trimmed, ">"):
+		body := strings.TrimSpace(strings.TrimPrefix(trimmed, ">"))
+		return "> ", body, "> "
+	}
+	if marker, rest, ok := splitOrderedListPrefix(trimmed); ok {
+		return marker + " ", rest, strings.Repeat(" ", displayWidth(marker)+1)
+	}
+	return "", strings.TrimSpace(line), ""
+}
+
+func splitOrderedListPrefix(line string) (marker, rest string, ok bool) {
+	i := 0
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	if i == 0 || i >= len(line) || line[i] != '.' {
+		return "", "", false
+	}
+	if i+1 >= len(line) || line[i+1] != ' ' {
+		return "", "", false
+	}
+	return line[:i+1], strings.TrimSpace(line[i+2:]), true
+}
+
+func plainMarkdownWrapWidth() int {
+	cols := codePanelTermWidth()
+	if cols > 12 {
+		return cols - 2
+	}
+	return 80
 }
 
 func isMarkdownTableCandidate(line string) bool {

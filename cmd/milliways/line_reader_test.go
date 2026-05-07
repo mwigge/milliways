@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
@@ -91,5 +92,50 @@ func TestLineReaderSavesCappedHistory(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
 	if len(lines) != 1000 {
 		t.Fatalf("history lines = %d, want 1000", len(lines))
+	}
+}
+
+func TestLineReaderCursorEditing(t *testing.T) {
+	var out bytes.Buffer
+	r := &chatLineReader{out: &out, prompt: "> ", buf: []rune("abcd"), cursor: 4}
+
+	r.moveCursor(-2)
+	r.insertRune('X')
+	if got := string(r.buf); got != "abXcd" {
+		t.Fatalf("insert at cursor = %q, want abXcd", got)
+	}
+	if r.cursor != 3 {
+		t.Fatalf("cursor after insert = %d, want 3", r.cursor)
+	}
+
+	r.backspace()
+	if got := string(r.buf); got != "abcd" {
+		t.Fatalf("backspace at cursor = %q, want abcd", got)
+	}
+	if r.cursor != 2 {
+		t.Fatalf("cursor after backspace = %d, want 2", r.cursor)
+	}
+
+	r.deleteAtCursor()
+	if got := string(r.buf); got != "abd" {
+		t.Fatalf("delete at cursor = %q, want abd", got)
+	}
+	if r.cursor != 2 {
+		t.Fatalf("cursor after delete = %d, want 2", r.cursor)
+	}
+}
+
+func TestLineReaderRedrawRestoresCursorPosition(t *testing.T) {
+	var out bytes.Buffer
+	r := &chatLineReader{out: &out, prompt: "> ", buf: []rune("abcd"), cursor: 2}
+
+	r.redrawLocked()
+
+	got := out.String()
+	if !strings.Contains(got, "\rabcd") && !strings.Contains(got, "> abcd") {
+		t.Fatalf("redraw missing buffer: %q", got)
+	}
+	if !strings.Contains(got, "\033[2D") {
+		t.Fatalf("redraw should move cursor left by trailing width; got %q", got)
 	}
 }
