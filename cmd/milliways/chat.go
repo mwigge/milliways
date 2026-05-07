@@ -1868,8 +1868,22 @@ func (l *chatLoop) handleBang(cmd string) {
 		fmt.Fprintln(l.errw, "usage: !<command>")
 		return
 	}
-	if shellCommandNeedsConfirmation(cmd) && os.Getenv("MILLIWAYS_SHELL_CONFIRM") != "0" {
-		fmt.Fprintf(l.errw, "destructive shell command detected. Run anyway? [y/N] ")
+	parsed := parseShellEscape(cmd)
+	if parsed.command == "" {
+		fmt.Fprintln(l.errw, "usage: !<command>")
+		return
+	}
+	if parsed.dryRun {
+		fmt.Fprintf(l.out, "dry run: %s\n", parsed.command)
+		return
+	}
+	risk := classifyShellCommand(parsed.command)
+	if risk.needsConfirmation && os.Getenv("MILLIWAYS_SHELL_CONFIRM") != "0" {
+		if !stdinIsInteractive() {
+			fmt.Fprintf(l.errw, "refusing shell command: %s. Run interactively to confirm, use ! --dry-run, or set MILLIWAYS_SHELL_CONFIRM=0.\n", risk.reason)
+			return
+		}
+		fmt.Fprintf(l.errw, "shell command may be destructive: %s. Run anyway? [y/N] ", risk.reason)
 		answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		answer = strings.ToLower(strings.TrimSpace(answer))
 		if answer != "y" && answer != "yes" {
@@ -1877,12 +1891,12 @@ func (l *chatLoop) handleBang(cmd string) {
 			return
 		}
 	}
-	fmt.Fprintf(l.out, "• Ran `%s`\n", cmd)
+	fmt.Fprintf(l.out, "• Ran `%s`\n", parsed.command)
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		shell = "/bin/sh"
 	}
-	c := exec.Command(shell, "-c", cmd)
+	c := exec.Command(shell, "-c", parsed.command)
 	c.Stdin = os.Stdin
 	c.Stdout = l.out
 	c.Stderr = l.errw
@@ -1891,17 +1905,77 @@ func (l *chatLoop) handleBang(cmd string) {
 	}
 }
 
-func shellCommandNeedsConfirmation(cmd string) bool {
-	lower := strings.ToLower(strings.TrimSpace(cmd))
-	dangerous := []string{
-		"rm -rf", "rm -fr", "sudo rm", "mkfs", "diskutil erase", "dd if=", ":(){", "chmod -r 777", "chown -r",
-	}
-	for _, pattern := range dangerous {
-		if strings.Contains(lower, pattern) {
-			return true
+type shellEscape struct {
+	command string
+	dryRun  bool
+}
+
+func parseShellEscape(cmd string) shellEscape {
+	cmd = strings.TrimSpace(cmd)
+	for _, prefix := range []string{"--dry-run", "-n"} {
+		if cmd == prefix {
+			return shellEscape{dryRun: true}
+		}
+		if rest, ok := strings.CutPrefix(cmd, prefix+" "); ok {
+			return shellEscape{command: strings.TrimSpace(rest), dryRun: true}
 		}
 	}
-	return false
+	return shellEscape{command: cmd}
+}
+
+type shellCommandRisk struct {
+	needsConfirmation bool
+	reason            string
+}
+
+func shellCommandNeedsConfirmation(cmd string) bool {
+	return classifyShellCommand(cmd).needsConfirmation
+}
+
+func classifyShellCommand(cmd string) shellCommandRisk {
+	lower := strings.ToLower(strings.TrimSpace(cmd))
+	dangerous := []struct {
+		pattern string
+		reason  string
+	}{
+		{"sudo rm", "privileged delete"},
+		{"rm -rf", "recursive force delete"},
+		{"rm -fr", "recursive force delete"},
+		{"mkfs", "filesystem formatting"},
+		{"diskutil erase", "disk erase"},
+		{"dd if=", "raw disk write/copy"},
+		{":(){", "fork bomb"},
+		{"chmod -r 777", "recursive permission widening"},
+		{"chown -r", "recursive ownership change"},
+		{"git reset --hard", "discarding git changes"},
+		{"git clean -fd", "deleting untracked git files"},
+		{"docker system prune", "removing docker resources"},
+		{"kubectl delete", "deleting cluster resources"},
+		{"curl ", "network shell pipeline"},
+		{"wget ", "network shell pipeline"},
+	}
+	for _, item := range dangerous {
+		if strings.Contains(lower, item.pattern) {
+			if (item.pattern == "curl " || item.pattern == "wget ") && !hasShellPipe(lower) {
+				continue
+			}
+			return shellCommandRisk{needsConfirmation: true, reason: item.reason}
+		}
+	}
+	return shellCommandRisk{}
+}
+
+func hasShellPipe(cmd string) bool {
+	return strings.Contains(cmd, "| sh") ||
+		strings.Contains(cmd, "| bash") ||
+		strings.Contains(cmd, "| zsh") ||
+		strings.Contains(cmd, "| sudo sh") ||
+		strings.Contains(cmd, "| sudo bash")
+}
+
+var stdinIsInteractive = func() bool {
+	info, err := os.Stdin.Stat()
+	return err == nil && (info.Mode()&os.ModeCharDevice) != 0
 }
 
 // printHistory shows the current in-memory turn log and, when connected, the

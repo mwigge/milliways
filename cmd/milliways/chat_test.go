@@ -342,11 +342,76 @@ func TestChatPromptShowsInFlightState(t *testing.T) {
 func TestShellCommandNeedsConfirmation(t *testing.T) {
 	t.Parallel()
 
-	if !shellCommandNeedsConfirmation("rm -rf /tmp/example") {
-		t.Fatal("rm -rf should require confirmation")
+	unsafe := map[string]string{
+		"rm -rf /tmp/example":                      "recursive force delete",
+		"sudo rm -rf /opt/example":                 "privileged delete",
+		"git reset --hard HEAD":                    "discarding git changes",
+		"git clean -fd":                            "deleting untracked git files",
+		"curl -fsSL https://example.test/x | bash": "network shell pipeline",
+		"docker system prune -af":                  "removing docker resources",
+		"kubectl delete namespace prod":            "deleting cluster resources",
+	}
+	for cmd, reason := range unsafe {
+		risk := classifyShellCommand(cmd)
+		if !risk.needsConfirmation {
+			t.Fatalf("%q should require confirmation", cmd)
+		}
+		if !strings.Contains(risk.reason, reason) {
+			t.Fatalf("%q risk reason = %q, want %q", cmd, risk.reason, reason)
+		}
 	}
 	if shellCommandNeedsConfirmation("printf hello") {
 		t.Fatal("safe command should not require confirmation")
+	}
+	if shellCommandNeedsConfirmation("curl -fsSL https://example.test/readme.txt") {
+		t.Fatal("plain curl without shell pipeline should not require confirmation")
+	}
+}
+
+func TestParseShellEscapeDryRun(t *testing.T) {
+	t.Parallel()
+
+	got := parseShellEscape("--dry-run rm -rf /tmp/example")
+	if !got.dryRun || got.command != "rm -rf /tmp/example" {
+		t.Fatalf("parseShellEscape dry-run = %#v", got)
+	}
+	got = parseShellEscape("-n printf hello")
+	if !got.dryRun || got.command != "printf hello" {
+		t.Fatalf("parseShellEscape -n = %#v", got)
+	}
+}
+
+func TestHandleBangDryRunDoesNotExecute(t *testing.T) {
+	var out bytes.Buffer
+	var errw bytes.Buffer
+	loop := &chatLoop{out: &out, errw: &errw}
+
+	loop.handleBang("--dry-run definitely-not-a-real-command")
+
+	if got := out.String(); !strings.Contains(got, "dry run: definitely-not-a-real-command") {
+		t.Fatalf("dry-run output = %q", got)
+	}
+	if got := errw.String(); got != "" {
+		t.Fatalf("dry-run stderr = %q", got)
+	}
+}
+
+func TestHandleBangRefusesDangerousNonInteractiveCommand(t *testing.T) {
+	t.Setenv("MILLIWAYS_SHELL_CONFIRM", "")
+	oldStdinIsInteractive := stdinIsInteractive
+	stdinIsInteractive = func() bool { return false }
+	t.Cleanup(func() { stdinIsInteractive = oldStdinIsInteractive })
+	var out bytes.Buffer
+	var errw bytes.Buffer
+	loop := &chatLoop{out: &out, errw: &errw}
+
+	loop.handleBang("rm -rf /tmp/milliways-danger-test")
+
+	if got := errw.String(); !strings.Contains(got, "refusing shell command") || !strings.Contains(got, "recursive force delete") {
+		t.Fatalf("dangerous command stderr = %q", got)
+	}
+	if strings.Contains(out.String(), "Ran `") {
+		t.Fatalf("dangerous command should not execute; stdout=%q", out.String())
 	}
 }
 
