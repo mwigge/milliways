@@ -26,7 +26,7 @@ import (
 )
 
 // chatLoopHelpsTest mirrors chatLoop but allows tests to inspect output
-// streams without spawning a real readline / daemon connection.
+// streams without spawning a real input reader / daemon connection.
 type chatLoopHelpsTest struct{ *chatLoop }
 
 // TestChatHelpEnumeratesKnownCommands asserts /help lists the user-facing
