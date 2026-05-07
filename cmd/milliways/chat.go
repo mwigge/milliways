@@ -856,6 +856,9 @@ func (l *chatLoop) run(ctx context.Context) error {
 			continue
 		}
 		if err == io.EOF {
+			if !l.confirmExitRequested("Ctrl+D") {
+				continue
+			}
 			return nil
 		}
 		if err != nil {
@@ -1323,8 +1326,7 @@ func (l *chatLoop) handleSlash(line string) {
 	case "help", "?":
 		l.printHelp()
 	case "exit", "quit", "bye":
-		if l.anyBusy() {
-			fmt.Fprintln(l.errw, "response still in progress — use /exit! to quit anyway")
+		if !l.confirmExitRequested("/" + verb) {
 			return
 		}
 		l.exitNow()
@@ -1353,6 +1355,17 @@ func (l *chatLoop) handleSlash(line string) {
 		}
 		l.runCtl(append([]string{verb}, splitFields(rest)...))
 	}
+}
+
+func (l *chatLoop) confirmExitRequested(source string) bool {
+	if !l.anyBusy() {
+		return true
+	}
+	if source == "" {
+		source = "exit"
+	}
+	fmt.Fprintf(l.errw, "response still in progress — %s ignored; use /cancel to stop it or /exit! to quit anyway\n", source)
+	return false
 }
 
 func (l *chatLoop) cancelActiveSession() bool {

@@ -586,6 +586,40 @@ func TestCancelActiveSessionClosesAndResetsPrompt(t *testing.T) {
 	}
 }
 
+func TestConfirmExitRequestedBlocksWhileBusy(t *testing.T) {
+	var errw bytes.Buffer
+	sess := &chatSession{agentID: "codex"}
+	sess.busyMu.Lock()
+	sess.busy = true
+	sess.busyMu.Unlock()
+	loop := &chatLoop{
+		sess:     sess,
+		sessions: map[string]*chatSession{"codex": sess},
+		errw:     &errw,
+	}
+
+	if loop.confirmExitRequested("Ctrl+D") {
+		t.Fatal("confirmExitRequested returned true while response is busy")
+	}
+	got := errw.String()
+	for _, want := range []string{"response still in progress", "/cancel", "/exit!"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("exit confirmation missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestConfirmExitRequestedAllowsIdle(t *testing.T) {
+	var errw bytes.Buffer
+	loop := &chatLoop{errw: &errw}
+	if !loop.confirmExitRequested("/exit") {
+		t.Fatal("confirmExitRequested returned false while idle")
+	}
+	if errw.Len() != 0 {
+		t.Fatalf("idle exit wrote warning: %q", errw.String())
+	}
+}
+
 func TestEffectiveLoginPathAddsSystemFallbacks(t *testing.T) {
 	t.Setenv("PATH", "/tmp/custom-bin")
 	t.Setenv("MILLIWAYS_PATH", "")
