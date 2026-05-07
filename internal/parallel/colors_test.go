@@ -100,17 +100,58 @@ func TestColorProvider_RespectsNoColor(t *testing.T) {
 	}
 }
 
+func TestColorProvider_RespectsTerminalCapability(t *testing.T) {
+	oldNoColor, hadNoColor := os.LookupEnv("NO_COLOR")
+	oldTerm, hadTerm := os.LookupEnv("TERM")
+	oldColorTerm, hadColorTerm := os.LookupEnv("COLORTERM")
+	oldTermProgram, hadTermProgram := os.LookupEnv("TERM_PROGRAM")
+	t.Cleanup(func() {
+		restoreTestEnv("NO_COLOR", oldNoColor, hadNoColor)
+		restoreTestEnv("TERM", oldTerm, hadTerm)
+		restoreTestEnv("COLORTERM", oldColorTerm, hadColorTerm)
+		restoreTestEnv("TERM_PROGRAM", oldTermProgram, hadTermProgram)
+	})
+	_ = os.Unsetenv("NO_COLOR")
+	_ = os.Unsetenv("COLORTERM")
+	_ = os.Unsetenv("TERM_PROGRAM")
+	_ = os.Setenv("TERM", "dumb")
+
+	if got := ProviderColor("claude"); got != "" {
+		t.Fatalf("ProviderColor() with TERM=dumb = %q, want empty", got)
+	}
+	if got := ColorProvider("claude"); got != "claude" {
+		t.Fatalf("ColorProvider() with TERM=dumb = %q, want undecorated provider", got)
+	}
+}
+
+func restoreTestEnv(key, value string, ok bool) {
+	if ok {
+		_ = os.Setenv(key, value)
+		return
+	}
+	_ = os.Unsetenv(key)
+}
+
 func withoutNoColor(t *testing.T) {
 	t.Helper()
 	old, ok := os.LookupEnv("NO_COLOR")
+	oldTerm, hadTerm := os.LookupEnv("TERM")
 	if err := os.Unsetenv("NO_COLOR"); err != nil {
 		t.Fatalf("unset NO_COLOR: %v", err)
+	}
+	if err := os.Setenv("TERM", "xterm-256color"); err != nil {
+		t.Fatalf("set TERM: %v", err)
 	}
 	t.Cleanup(func() {
 		if ok {
 			_ = os.Setenv("NO_COLOR", old)
 		} else {
 			_ = os.Unsetenv("NO_COLOR")
+		}
+		if hadTerm {
+			_ = os.Setenv("TERM", oldTerm)
+		} else {
+			_ = os.Unsetenv("TERM")
 		}
 	})
 }
