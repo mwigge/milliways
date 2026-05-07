@@ -31,9 +31,9 @@ var poolBinary = "pool"
 
 // poolArgsBuilder constructs the argv passed to the Poolside CLI for a given
 // prompt and working directory. Default builds the headless invocation
-// `pool exec -p <prompt> --directory <dir> --unsafe-auto-allow`. Tests can swap it.
+// `pool exec -p <prompt> --directory <dir>`. Tests can swap it.
 var poolArgsBuilder = func(prompt, dir string) []string {
-	args := []string{"exec", "-p", prompt, "--unsafe-auto-allow"}
+	args := []string{"exec", "-p", prompt}
 	if dir != "" {
 		args = append(args, "--directory", dir)
 	}
@@ -45,7 +45,7 @@ var poolArgsBuilder = func(prompt, dir string) []string {
 const poolChunkSize = 4 * 1024
 
 // RunPool drains the input channel, spawning one
-// `pool exec -p <prompt> --unsafe-auto-allow` subprocess per prompt. Stdout
+// `pool exec -p <prompt>` subprocess per prompt. Stdout
 // streams as {"t":"data","b64":...} events; stderr is consumed in parallel
 // and inspected for session-limit signals (quota / rate-limit /
 // context-window exhaustion). On subprocess exit a {"t":"chunk_end",
