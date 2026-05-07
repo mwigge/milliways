@@ -504,22 +504,46 @@ Anything else is sent to the active runner as a prompt.`,
 	}
 }
 
-// chatHistoryFile returns the path for chat input history, or "" to
-// disable history (when the user has no resolvable home dir).
+// chatHistoryFile returns the path for chat input history, or "" to disable
+// history. Explicit configuration wins, then XDG state, then an existing
+// legacy ~/.chat_history file, then the default XDG-compatible home path.
 func chatHistoryFile() string {
 	if p := strings.TrimSpace(os.Getenv("MILLIWAYS_HISTORY_FILE")); p != "" {
 		if strings.EqualFold(p, "off") || p == "/dev/null" {
 			return ""
 		}
-		return p
+		return expandHomePath(p)
 	}
 	if h := os.Getenv("XDG_STATE_HOME"); h != "" {
-		return h + "/milliways/chat_history"
+		return filepath.Join(h, "milliways", "chat_history")
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		return home + "/.local/state/milliways/chat_history"
+		if legacy := filepath.Join(home, ".chat_history"); fileExists(legacy) {
+			return legacy
+		}
+		return filepath.Join(home, ".local", "state", "milliways", "chat_history")
 	}
 	return ""
+}
+
+func expandHomePath(path string) string {
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+		return path
+	}
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, strings.TrimPrefix(path, "~/"))
+		}
+	}
+	return path
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 // chatPrompt renders the chat prompt header for the active agent.
