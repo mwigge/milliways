@@ -530,8 +530,81 @@ var langAliases = map[string]string{
 	"toon":       "toml",
 }
 
+const (
+	defaultDarkHighlightStyle  = "monokai"
+	defaultLightHighlightStyle = "github"
+)
+
+// highlightStyleName returns the Chroma style used by terminal code panels.
+// MILLIWAYS_HIGHLIGHT_STYLE is the preferred user-facing knob; the older
+// MILLIWAYS_CHROMA_STYLE name is retained as a compatibility alias.
+func highlightStyleName() string {
+	return highlightStyleNameFromEnv(os.Getenv)
+}
+
+func highlightStyleNameFromEnv(getenv func(string) string) string {
+	for _, key := range []string{"MILLIWAYS_HIGHLIGHT_STYLE", "MILLIWAYS_CHROMA_STYLE"} {
+		if value := strings.TrimSpace(getenv(key)); value != "" {
+			if strings.EqualFold(value, "auto") {
+				return defaultHighlightStyleForTerminal(getenv)
+			}
+			return value
+		}
+	}
+	return defaultHighlightStyleForTerminal(getenv)
+}
+
+func defaultHighlightStyleForTerminal(getenv func(string) string) string {
+	if terminalLooksLight(getenv("COLORFGBG")) {
+		return defaultLightHighlightStyle
+	}
+	return defaultDarkHighlightStyle
+}
+
+func terminalLooksLight(colorfgbg string) bool {
+	parts := strings.Split(strings.TrimSpace(colorfgbg), ";")
+	if len(parts) == 0 {
+		return false
+	}
+	bg, err := strconv.Atoi(parts[len(parts)-1])
+	if err != nil {
+		return false
+	}
+	switch {
+	case bg >= 0 && bg <= 6:
+		return false
+	case bg == 8:
+		return false
+	case bg == 232:
+		return false
+	case bg >= 233 && bg <= 244:
+		return false
+	case bg >= 7 && bg <= 15:
+		return true
+	case bg >= 245 && bg <= 255:
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveHighlightStyle(name string) *chroma.Style {
+	styleName := strings.TrimSpace(name)
+	if styleName == "" {
+		styleName = defaultDarkHighlightStyle
+	}
+	style := styles.Registry[strings.ToLower(styleName)]
+	if style == nil {
+		style = styles.Registry[defaultDarkHighlightStyle]
+		if style == nil {
+			style = styles.Fallback
+		}
+	}
+	return style
+}
+
 // syntaxHighlight applies chroma terminal256 highlighting to code using the
-// monokai style. If lang is empty or unrecognised, chroma attempts auto-
+// configured style. If lang is empty or unrecognised, chroma attempts auto-
 // detection; if that also fails the source is returned unchanged. Errors
 // during formatting fall back to the raw source so highlighting never breaks
 // the stream.
@@ -552,17 +625,7 @@ func syntaxHighlight(code, lang string) string {
 	}
 	lexer = chroma.Coalesce(lexer)
 
-	styleName := strings.TrimSpace(os.Getenv("MILLIWAYS_CHROMA_STYLE"))
-	if styleName == "" {
-		styleName = "monokai"
-	}
-	style := styles.Get(styleName)
-	if style == nil {
-		style = styles.Get("monokai")
-	}
-	if style == nil {
-		style = styles.Fallback
-	}
+	style := resolveHighlightStyle(highlightStyleName())
 
 	formatter := chromaFmt.Get("terminal256")
 	if formatter == nil {

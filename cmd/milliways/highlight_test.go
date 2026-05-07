@@ -55,7 +55,7 @@ func TestCodeHighlighter_PlainTextPassthrough(t *testing.T) {
 // ```go ... ``` block is syntax-highlighted and the output contains at least
 // one ANSI escape code (ESC = 0x1b).
 func TestCodeHighlighter_CompleteGoFenceProducesANSI(t *testing.T) {
-	t.Parallel()
+	withoutNoColor(t)
 
 	var out bytes.Buffer
 	h := newCodeHighlighter(&out)
@@ -86,7 +86,7 @@ func TestCodeHighlighter_CompleteGoFenceProducesANSI(t *testing.T) {
 // before and after a code block is passed through correctly alongside
 // the highlighted block.
 func TestCodeHighlighter_TextBeforeAndAfterFence(t *testing.T) {
-	t.Parallel()
+	withoutNoColor(t)
 
 	var out bytes.Buffer
 	h := newCodeHighlighter(&out)
@@ -199,7 +199,7 @@ func TestCodeHighlighter_PartialLineNotWrittenUntilNewline(t *testing.T) {
 // Write call containing multiple code blocks (and plain text between them)
 // is processed correctly end-to-end.
 func TestCodeHighlighter_MultipleBlocksInSingleWrite(t *testing.T) {
-	t.Parallel()
+	withoutNoColor(t)
 
 	var out bytes.Buffer
 	h := newCodeHighlighter(&out)
@@ -324,6 +324,8 @@ func TestHighlighterLinkifiesPlainTextURLs(t *testing.T) {
 }
 
 func TestHighlighterDoesNotLinkifyInsideFence(t *testing.T) {
+	withoutNoColor(t)
+
 	// URLs inside code fences are already ANSI-highlighted — linkifyURLs must not
 	// re-process them (the ANSI guard prevents double-wrapping).
 	var out bytes.Buffer
@@ -408,6 +410,8 @@ func TestHighlighterRendersEditedFileActionLine(t *testing.T) {
 }
 
 func TestHighlighterRendersRanCommandActionLine(t *testing.T) {
+	withoutNoColor(t)
+
 	var out bytes.Buffer
 	h := newCodeHighlighter(&out)
 	_, _ = h.Write([]byte("• Ran `go test ./cmd/milliways`\n"))
@@ -422,7 +426,7 @@ func TestHighlighterRendersRanCommandActionLine(t *testing.T) {
 }
 
 func TestRenderMarkdownForTerminalBoxesAndHighlightsCode(t *testing.T) {
-	t.Parallel()
+	withoutNoColor(t)
 
 	got := renderMarkdownForTerminal("Summary:\n```go\nfmt.Println(\"ok\")\n```\n")
 	for _, want := range []string{"Summary:", "code · go", "fmt", "Println", "╭", "│", "╰", "\x1b["} {
@@ -432,5 +436,65 @@ func TestRenderMarkdownForTerminalBoxesAndHighlightsCode(t *testing.T) {
 	}
 	if strings.Contains(got, "```") {
 		t.Errorf("markdown fences should be rendered, not shown raw; got:\n%q", got)
+	}
+}
+
+func TestHighlightStyleNamePrefersNewEnv(t *testing.T) {
+	env := map[string]string{
+		"MILLIWAYS_HIGHLIGHT_STYLE": "github",
+		"MILLIWAYS_CHROMA_STYLE":    "monokai",
+	}
+
+	got := highlightStyleNameFromEnv(func(key string) string { return env[key] })
+	if got != "github" {
+		t.Fatalf("highlight style = %q, want github", got)
+	}
+}
+
+func TestHighlightStyleNameSupportsLegacyEnv(t *testing.T) {
+	env := map[string]string{
+		"MILLIWAYS_CHROMA_STYLE": "github-dark",
+	}
+
+	got := highlightStyleNameFromEnv(func(key string) string { return env[key] })
+	if got != "github-dark" {
+		t.Fatalf("highlight style = %q, want github-dark", got)
+	}
+}
+
+func TestHighlightStyleNameAutoUsesLightTerminalHint(t *testing.T) {
+	env := map[string]string{
+		"MILLIWAYS_HIGHLIGHT_STYLE": "auto",
+		"COLORFGBG":                 "0;15",
+	}
+
+	got := highlightStyleNameFromEnv(func(key string) string { return env[key] })
+	if got != defaultLightHighlightStyle {
+		t.Fatalf("auto highlight style = %q, want %q", got, defaultLightHighlightStyle)
+	}
+}
+
+func TestHighlightStyleNameDefaultsDark(t *testing.T) {
+	got := highlightStyleNameFromEnv(func(string) string { return "" })
+	if got != defaultDarkHighlightStyle {
+		t.Fatalf("default highlight style = %q, want %q", got, defaultDarkHighlightStyle)
+	}
+}
+
+func TestResolveHighlightStyleFallsBackForUnknownName(t *testing.T) {
+	got := resolveHighlightStyle("definitely-not-a-style")
+	if got == nil || got.Name != defaultDarkHighlightStyle {
+		t.Fatalf("unknown style resolved to %#v, want %q", got, defaultDarkHighlightStyle)
+	}
+}
+
+func TestSyntaxHighlightUsesConfiguredStyle(t *testing.T) {
+	withoutNoColor(t)
+	t.Setenv("MILLIWAYS_HIGHLIGHT_STYLE", "github")
+	t.Setenv("MILLIWAYS_CHROMA_STYLE", "")
+
+	got := syntaxHighlight("package main\n", "go")
+	if !strings.Contains(got, "\x1b[") {
+		t.Fatalf("syntaxHighlight() with configured style missing ANSI:\n%q", got)
 	}
 }
