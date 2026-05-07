@@ -914,10 +914,14 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 		updated := make([]deckProviderInfo, 0, len(agents))
 		for _, a := range agents {
 			d := deckByAgent[a.ID]
+			model := a.Model
+			if d.Model != "" {
+				model = d.Model
+			}
 			updated = append(updated, deckProviderInfo{
 				ID:           a.ID,
 				AuthStatus:   a.AuthStatus,
-				Model:        a.Model,
+				Model:        model,
 				Handle:       d.Handle,
 				Status:       d.Status,
 				Turns:        d.TurnCount,

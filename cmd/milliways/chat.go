@@ -559,6 +559,9 @@ type chatSession struct {
 	streamCh     <-chan []byte
 	streamCancel func()
 	sendFn       func(string) error
+	modelMu      sync.Mutex
+	model        string
+	modelSource  string
 
 	// done is closed when the streaming goroutine exits (either the
 	// stream channel closed or the session was explicitly closed).
@@ -569,6 +572,29 @@ type chatSession struct {
 	// chunk_end signal to know when the next prompt can be issued.
 	busyMu sync.Mutex
 	busy   bool
+}
+
+func (s *chatSession) setModel(model, source string) {
+	if s == nil {
+		return
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return
+	}
+	s.modelMu.Lock()
+	s.model = model
+	s.modelSource = strings.TrimSpace(source)
+	s.modelMu.Unlock()
+}
+
+func (s *chatSession) modelInfo() (string, string) {
+	if s == nil {
+		return "", ""
+	}
+	s.modelMu.Lock()
+	defer s.modelMu.Unlock()
+	return s.model, s.modelSource
 }
 
 // openAgentForChat opens a new agent session via daemon RPC and starts
@@ -813,6 +839,14 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 		}
 		t, _ := ev["t"].(string)
 		switch t {
+		case "model":
+			if model, _ := ev["model"].(string); strings.TrimSpace(model) != "" {
+				source, _ := ev["source"].(string)
+				sess.setModel(model, source)
+				if l.sess == sess {
+					l.updateActiveTitle("")
+				}
+			}
 		case "thinking":
 			if b64, ok := ev["b64"].(string); ok {
 				if raw, err := base64.StdEncoding.DecodeString(b64); err == nil {
@@ -833,12 +867,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 						// active so the user sees the runner is responding.
 						if l.sess == sess {
 							l.setPromptState("streaming")
-							model, _ := runnerModelInfo(sess.agentID)
-							win := "● " + sess.agentID
-							if model != "" {
-								win += " · " + model
-							}
-							setTermTitle("milliways · "+sess.agentID+" · streaming…", win)
+							l.updateActiveTitle("streaming…")
 						}
 						firstData = false
 					}
@@ -891,12 +920,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			// the tab doesn't falsely advertise in-flight work after an error.
 			if l.sess == sess {
 				l.setPromptState("")
-				model, _ := runnerModelInfo(sess.agentID)
-				win := "● " + sess.agentID
-				if model != "" {
-					win += " · " + model
-				}
-				setTermTitle("milliways · "+sess.agentID, win)
+				l.updateActiveTitle("")
 			}
 			// Auto-rotate on session limit if a ring is configured.
 			if agent != "" && isSessionLimitMsg(msg) {
@@ -1086,7 +1110,7 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any, turnSaved bool) {
 	// spent this session?" at a glance. Per-response stats stay in the
 	// inline hint line printed to stderr below.
 	if l.sess != nil {
-		model, _ := runnerModelInfo(l.sess.agentID)
+		model, _ := l.displayModelInfo(l.sess.agentID)
 		win := "● " + l.sess.agentID
 		if model != "" {
 			win += " · " + model
@@ -1453,15 +1477,37 @@ func (l *chatLoop) activateSession(sess *chatSession) {
 	if l.rl != nil {
 		l.setPromptState("")
 	}
-	model, _ := runnerModelInfo(sess.agentID)
-	winTitle := "● " + sess.agentID
-	if model != "" {
-		winTitle += " · " + model
-	}
-	setTermTitle("milliways · "+sess.agentID, winTitle)
+	l.updateActiveTitle("")
 	if l.completer != nil {
 		l.completer.set(buildCompleter(sess.agentID))
 	}
+}
+
+func (l *chatLoop) displayModelInfo(agentID string) (string, string) {
+	if l != nil && l.sessions != nil {
+		if sess := l.sessions[agentID]; sess != nil {
+			if model, source := sess.modelInfo(); model != "" {
+				return model, source
+			}
+		}
+	}
+	return runnerModelInfo(agentID)
+}
+
+func (l *chatLoop) updateActiveTitle(state string) {
+	if l == nil || l.sess == nil {
+		return
+	}
+	model, _ := l.displayModelInfo(l.sess.agentID)
+	winTitle := "● " + l.sess.agentID
+	if model != "" {
+		winTitle += " · " + model
+	}
+	tabTitle := "milliways · " + l.sess.agentID
+	if state != "" {
+		tabTitle += " · " + state
+	}
+	setTermTitle(tabTitle, winTitle)
 }
 
 func (l *chatLoop) setPromptState(state string) {
@@ -1512,7 +1558,7 @@ func (l *chatLoop) handleTakeover(newID string) {
 	}
 	l.activateSession(sess)
 	if briefing, ok := l.buildBriefing(fromID, newID); ok {
-		m, ep := runnerModelInfo(newID)
+		m, ep := l.displayModelInfo(newID)
 		fmt.Fprintf(l.out, "→ %s  model: %s  (%s)\n", newID, m, ep)
 		l.printBriefingBlock(l.snapshotTurns(), fromID)
 		l.lastBriefingFrom = fromID
@@ -1550,7 +1596,7 @@ func (l *chatLoop) switchAgent(newID string) {
 	slog.Debug("runner switch", "from", fromID, "to", newID)
 
 	// Print the live model + endpoint so the user knows exactly what's active.
-	m, ep := runnerModelInfo(newID)
+	m, ep := l.displayModelInfo(newID)
 	fmt.Fprintf(l.out, "→ %s  model: %s  (%s)\n", newID, m, ep)
 
 	// Health-check the local runner endpoint immediately on switch so the
@@ -2495,12 +2541,7 @@ func (l *chatLoop) handlePrompt(prompt string) {
 	// Show "thinking…" in the window title while the runner is generating.
 	// drainStream will update to "streaming…" on the first data event, then
 	// refreshPromptHint will replace it with real stats on chunk_end.
-	model, _ := runnerModelInfo(l.sess.agentID)
-	win := "● " + l.sess.agentID
-	if model != "" {
-		win += " · " + model
-	}
-	setTermTitle("milliways · "+l.sess.agentID+" · thinking…", win)
+	l.updateActiveTitle("thinking…")
 	l.setPromptState("thinking")
 	if err := l.sess.send(enriched); err != nil {
 		l.setPromptState("")
@@ -2906,7 +2947,7 @@ func runnerModelSpec(agentID string) modelSpec {
 			cur = os.Getenv("CLAUDE_MODEL")
 		}
 		if cur == "" {
-			cur = "claude-opus-4-5"
+			cur = "claude CLI default"
 		}
 		return modelSpec{
 			envKey:   "ANTHROPIC_MODEL",
@@ -2920,7 +2961,7 @@ func runnerModelSpec(agentID string) modelSpec {
 			cur = os.Getenv("OPENAI_MODEL")
 		}
 		if cur == "" {
-			cur = "o4-mini"
+			cur = "codex CLI default"
 		}
 		return modelSpec{
 			envKey:   "CODEX_MODEL",
@@ -2945,7 +2986,7 @@ func runnerModelSpec(agentID string) modelSpec {
 			cur = os.Getenv("GOOGLE_MODEL")
 		}
 		if cur == "" {
-			cur = "gemini-2.5-pro"
+			cur = "gemini CLI default"
 		}
 		return modelSpec{
 			envKey:   "GEMINI_MODEL",
@@ -2982,6 +3023,10 @@ func (l *chatLoop) printModel(agentID string) {
 
 	if agentID == "pool" {
 		s := runnerModelSpec("pool")
+		current, _ := l.displayModelInfo("pool")
+		if current != "" {
+			s.current = current
+		}
 		color := agentColor("pool")
 		reset := "\033[0m"
 		fmt.Fprintf(l.out, "%spool%s  %s\n", color, reset, s.current)
@@ -2991,6 +3036,9 @@ func (l *chatLoop) printModel(agentID string) {
 	}
 
 	s := runnerModelSpec(agentID)
+	if current, _ := l.displayModelInfo(agentID); current != "" {
+		s.current = current
+	}
 	color := agentColor(agentID)
 	reset := "\033[0m"
 	fmt.Fprintf(l.out, "%s%s%s  current: %s\n", color, agentID, reset, s.current)

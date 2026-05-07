@@ -94,6 +94,8 @@ type AgentSession struct {
 	ttftMS       float64
 	tokenRate    float64
 	errorCount   int
+	model        string
+	modelSource  string
 	lastThinking string
 	lastError    string
 	lastPrompt   string
@@ -134,6 +136,8 @@ type DeckSessionSnapshot struct {
 	TokenRate    float64     `json:"token_rate,omitempty"`
 	ErrorCount   int         `json:"error_count,omitempty"`
 	QueueDepth   int         `json:"queue_depth,omitempty"`
+	Model        string      `json:"model,omitempty"`
+	ModelSource  string      `json:"model_source,omitempty"`
 	LastThinking string      `json:"last_thinking,omitempty"`
 	LastError    string      `json:"last_error,omitempty"`
 	LastPrompt   string      `json:"last_prompt,omitempty"`
@@ -170,6 +174,10 @@ func (p *recordingPusher) Push(event any) {
 	}
 	t, _ := m["t"].(string)
 	switch t {
+	case "model":
+		model, _ := m["model"].(string)
+		source, _ := m["source"].(string)
+		p.sess.recordModel(model, source)
 	case "thinking":
 		b64, _ := m["b64"].(string)
 		if b64 == "" {
@@ -702,6 +710,19 @@ func (s *AgentSession) appendDeckBlockLocked(kind, text string) {
 	}
 }
 
+func (s *AgentSession) recordModel(model, source string) {
+	model = strings.TrimSpace(model)
+	source = strings.TrimSpace(source)
+	if model == "" {
+		return
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.model = model
+	s.modelSource = source
+	s.lastUpdated = time.Now()
+}
+
 func (s *AgentSession) deckSnapshot() DeckSessionSnapshot {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
@@ -727,6 +748,8 @@ func (s *AgentSession) deckSnapshot() DeckSessionSnapshot {
 		TokenRate:    s.tokenRate,
 		ErrorCount:   s.errorCount,
 		QueueDepth:   len(s.input),
+		Model:        s.model,
+		ModelSource:  s.modelSource,
 		LastThinking: s.lastThinking,
 		LastError:    s.lastError,
 		LastPrompt:   s.lastPrompt,
@@ -753,6 +776,24 @@ func (r *AgentRegistry) DeckSnapshot(active string) DeckSnapshot {
 	out := DeckSnapshot{Active: active}
 	for _, sess := range sessions {
 		out.Sessions = append(out.Sessions, sess.deckSnapshot())
+	}
+	return out
+}
+
+func (r *AgentRegistry) SessionModels() map[string]string {
+	r.mu.Lock()
+	sessions := make([]*AgentSession, 0, len(r.sessions))
+	for _, sess := range r.sessions {
+		sessions = append(sessions, sess)
+	}
+	r.mu.Unlock()
+
+	out := make(map[string]string)
+	for _, sess := range sessions {
+		snap := sess.deckSnapshot()
+		if snap.Model != "" {
+			out[snap.AgentID] = snap.Model
+		}
 	}
 	return out
 }

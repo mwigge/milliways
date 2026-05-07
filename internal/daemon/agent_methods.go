@@ -265,3 +265,17 @@ func (s *Server) deckSnapshot(enc *json.Encoder, req *Request) {
 	s.statusMu.Unlock()
 	writeResult(enc, req.ID, s.agents.DeckSnapshot(active))
 }
+
+func (s *Server) agentList() []AgentInfo {
+	out := append([]AgentInfo(nil), s.agentsCache...)
+	if s.agents == nil {
+		return out
+	}
+	models := s.agents.SessionModels()
+	for i := range out {
+		if model := models[out[i].ID]; model != "" {
+			out[i].Model = model
+		}
+	}
+	return out
+}

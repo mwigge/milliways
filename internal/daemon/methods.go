@@ -268,7 +268,7 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 			stream.Push(map[string]any{"t": "data", "snapshot": s.buildStatus()})
 		}()
 	case "agent.list":
-		writeResult(enc, req.ID, s.agentsCache)
+		writeResult(enc, req.ID, s.agentList())
 	case "agent.open":
 		s.agentOpen(enc, req)
 	case "agent.set_active":
