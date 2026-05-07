@@ -16,7 +16,9 @@ package rpc
 
 import (
 	"net"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -195,6 +197,52 @@ func TestClient_Call_badJSON(t *testing.T) {
 	err = c.Call("test.method", nil, nil)
 	if err == nil {
 		t.Fatal("expected error for bad JSON")
+	}
+	if got := err.Error(); got != "decode test.method response: invalid character 'o' in literal null (expecting 'u')" {
+		t.Fatalf("bad JSON error = %q", got)
+	}
+}
+
+func TestClient_Call_resultDecodeIncludesMethod(t *testing.T) {
+	tmp, err := os.MkdirTemp("/tmp", "mw-rpc-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer os.RemoveAll(tmp)
+	sock := filepath.Join(tmp, "s")
+
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 1024)
+		conn.Read(buf)
+		conn.Write([]byte(`{"jsonrpc":"2.0","result":{"pong":"not-bool"},"id":1}` + "\n"))
+	}()
+
+	c, err := Dial(sock)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer c.Close()
+
+	var result struct {
+		Pong bool `json:"pong"`
+	}
+	err = c.Call("ping", nil, &result)
+	if err == nil {
+		t.Fatal("expected result decode error")
+	}
+	if got := err.Error(); !strings.Contains(got, "decode ping result") {
+		t.Fatalf("result decode error missing method context: %q", got)
 	}
 }
 

@@ -60,6 +60,32 @@ func TestDrainStreamRecordsModelEvent(t *testing.T) {
 	}
 }
 
+func TestFriendlyErrorRewritesRPCInternals(t *testing.T) {
+	got := friendlyError("✗ open codex: ", "", fmt.Errorf("rpc error -32601: no such method: agent.open"))
+	for _, bad := range []string{"rpc error", "no such method"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("friendlyError leaked %q in %q", bad, got)
+		}
+	}
+	for _, want := range []string{"daemon does not support that command", "milliwaysd"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("friendlyError missing %q in %q", want, got)
+		}
+	}
+}
+
+func TestFriendlyErrorRewritesDecodeInternals(t *testing.T) {
+	got := friendlyError("✗ agents: ", "", fmt.Errorf("decode agent.list result: json: cannot unmarshal object into Go value of type []main.agent"))
+	for _, bad := range []string{"json:", "cannot unmarshal", "Go value"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("friendlyError leaked %q in %q", bad, got)
+		}
+	}
+	if !strings.Contains(got, "unexpected daemon response") {
+		t.Fatalf("friendlyError missing response guidance in %q", got)
+	}
+}
+
 // chatLoopHelpsTest mirrors chatLoop but allows tests to inspect output
 // streams without spawning a real input reader / daemon connection.
 type chatLoopHelpsTest struct{ *chatLoop }
