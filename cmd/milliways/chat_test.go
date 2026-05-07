@@ -1159,7 +1159,7 @@ func TestRefreshPromptHint_SavedAlongCostAndTokens(t *testing.T) {
 		"output_tokens": float64(115),
 	}, true)
 	got := errw.String()
-	for _, want := range []string{"$0.0006", "1683→115 tok", "⊙ saved"} {
+	for _, want := range []string{"$0.0006", "in 1.7k / out 115 / total 1.8k tok", "⊙ saved"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("hint line missing %q; got: %q", want, got)
 		}

@@ -68,7 +68,7 @@ func TestSessionStatusPanelShowsActiveModelAndTotals(t *testing.T) {
 	deck.MarkChunkEnd("codex", 100, 25, 0.25, true)
 
 	rendered := renderSessionStatusPanel(deck.Snapshot(), 160)
-	for _, want := range []string{"session codex", "handle 99", "tok 125", "$0.2500", "saved"} {
+	for _, want := range []string{"session codex", "handle 99", "125 tok $0.25", "saved"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("status panel missing %q:\n%s", want, rendered)
 		}
