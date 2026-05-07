@@ -1518,11 +1518,23 @@ func (l *chatLoop) displayModelInfo(agentID string) (string, string) {
 	if l != nil && l.sessions != nil {
 		if sess := l.sessions[agentID]; sess != nil {
 			if model, source := sess.modelInfo(); model != "" {
-				return model, source
+				return model, modelDisplayEndpoint(agentID, source)
 			}
 		}
 	}
 	return runnerModelInfo(agentID)
+}
+
+func modelDisplayEndpoint(agentID, source string) string {
+	_, endpoint := runnerModelInfo(agentID)
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return endpoint
+	}
+	if endpoint == "" || endpoint == "unknown" {
+		return "model " + source
+	}
+	return endpoint + " · model " + source
 }
 
 func (l *chatLoop) updateActiveTitle(state string) {
@@ -3243,9 +3255,16 @@ func (l *chatLoop) printModel(agentID string) {
 		fmt.Fprintln(l.out, "Active models:")
 		for _, name := range chatSwitchableAgents {
 			s := runnerModelSpec(name)
+			current, endpoint := l.displayModelInfo(name)
+			if current != "" {
+				s.current = current
+			}
+			if endpoint != "" {
+				s.endpoint = endpoint
+			}
 			color := agentColor(name)
 			reset := "\033[0m"
-			fmt.Fprintf(l.out, "  %s%-8s%s  %s\n", color, name, reset, s.current)
+			fmt.Fprintf(l.out, "  %s%-8s%s  %s  (%s)\n", color, name, reset, s.current, s.endpoint)
 		}
 		fmt.Fprintln(l.out, "Switch into a runner first, then /model to list its models.")
 		return
@@ -3253,9 +3272,12 @@ func (l *chatLoop) printModel(agentID string) {
 
 	if agentID == "pool" {
 		s := runnerModelSpec("pool")
-		current, _ := l.displayModelInfo("pool")
+		current, endpoint := l.displayModelInfo("pool")
 		if current != "" {
 			s.current = current
+		}
+		if endpoint != "" {
+			s.endpoint = endpoint
 		}
 		color := agentColor("pool")
 		reset := "\033[0m"
@@ -3266,8 +3288,11 @@ func (l *chatLoop) printModel(agentID string) {
 	}
 
 	s := runnerModelSpec(agentID)
-	if current, _ := l.displayModelInfo(agentID); current != "" {
+	if current, endpoint := l.displayModelInfo(agentID); current != "" {
 		s.current = current
+		if endpoint != "" {
+			s.endpoint = endpoint
+		}
 	}
 	color := agentColor(agentID)
 	reset := "\033[0m"
