@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,6 +25,40 @@ import (
 
 	"github.com/mwigge/milliways/internal/rpc"
 )
+
+func TestDrainStreamRecordsModelEvent(t *testing.T) {
+	stream := make(chan []byte, 2)
+	sess := &chatSession{
+		agentID:      "codex",
+		streamCh:     stream,
+		done:         make(chan struct{}),
+		streamCancel: func() {},
+	}
+	var out bytes.Buffer
+	loop := &chatLoop{
+		out:      &out,
+		errw:     &out,
+		sess:     sess,
+		sessions: map[string]*chatSession{"codex": sess},
+	}
+
+	event, err := json.Marshal(map[string]any{"t": "model", "model": "gpt-5.5", "source": "observed"})
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+	stream <- event
+	stream <- []byte(`{"t":"end"}`)
+	close(stream)
+
+	loop.drainStream(sess)
+	model, source := sess.modelInfo()
+	if model != "gpt-5.5" {
+		t.Fatalf("model = %q, want gpt-5.5", model)
+	}
+	if source != "observed" {
+		t.Fatalf("source = %q, want observed", source)
+	}
+}
 
 // chatLoopHelpsTest mirrors chatLoop but allows tests to inspect output
 // streams without spawning a real input reader / daemon connection.

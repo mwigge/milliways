@@ -105,6 +105,7 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 		endDispatchSpan(span, 0, 0, 0, spanErr)
 		stream.Push(poolChunkEndEvent())
 	}()
+	pushModel(stream, AgentIDPool)
 
 	cwd, _ := os.Getwd()
 	cmd := exec.CommandContext(ctx, poolBinary, poolArgsBuilder(text, cwd)...)

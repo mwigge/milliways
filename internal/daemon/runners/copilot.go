@@ -91,6 +91,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		endDispatchSpan(span, 0, 0, 0, spanErr)
 		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
 	}()
+	pushModel(stream, AgentIDCopilot)
 
 	cwd, _ := os.Getwd()
 	cmd := exec.CommandContext(ctx, copilotBinary, copilotArgsBuilder(text, cwd)...)

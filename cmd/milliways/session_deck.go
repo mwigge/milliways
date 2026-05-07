@@ -104,6 +104,8 @@ type daemonDeckSessionStatus struct {
 	TokenRate    float64           `json:"token_rate"`
 	ErrorCount   int               `json:"error_count"`
 	QueueDepth   int               `json:"queue_depth"`
+	Model        string            `json:"model"`
+	ModelSource  string            `json:"model_source"`
 	LastThinking string            `json:"last_thinking"`
 	LastError    string            `json:"last_error"`
 	LastPrompt   string            `json:"last_prompt"`
