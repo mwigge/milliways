@@ -130,32 +130,43 @@ func TestCodeHighlighter_FenceWithNoLangFallsBackToPlainText(t *testing.T) {
 	}
 }
 
-// TestCodeHighlighter_UnclosedFenceFlushedAsPlain verifies that an open
-// fence (no closing ```) is written out as plain text when Flush() is called.
-// This covers streaming truncation where the model output ends mid-fence.
-func TestCodeHighlighter_UnclosedFenceFlushedAsPlain(t *testing.T) {
+// TestCodeHighlighter_OpenFenceStreamsCodeBeforeClose verifies that code
+// inside a streaming fence is visible before the closing ``` arrives.
+func TestCodeHighlighter_OpenFenceStreamsCodeBeforeClose(t *testing.T) {
 	t.Parallel()
 
 	var out bytes.Buffer
 	h := newCodeHighlighter(&out)
 
-	// Write an opening fence but no closing fence.
 	input := "```go\nfunc init() {}\n"
 	_, err := h.Write([]byte(input))
 	if err != nil {
 		t.Fatalf("Write returned error: %v", err)
 	}
 
-	// Nothing should have been written to out yet (still buffering).
-	// Flushing must emit the buffered content as plain text.
+	gotBeforeFlush := out.String()
+	plainBeforeFlush := stripANSISequences(gotBeforeFlush)
+	if !strings.Contains(plainBeforeFlush, "code · go") {
+		t.Fatalf("streamed code panel header missing before close; got: %q", gotBeforeFlush)
+	}
+	if !strings.Contains(plainBeforeFlush, "func init()") {
+		t.Fatalf("streamed code content missing before close; got: %q", gotBeforeFlush)
+	}
+	if strings.Contains(plainBeforeFlush, "```") {
+		t.Fatalf("raw markdown fence leaked into streamed output: %q", gotBeforeFlush)
+	}
+	if strings.Contains(plainBeforeFlush, "╰") {
+		t.Fatalf("panel bottom should wait for close/flush; got: %q", gotBeforeFlush)
+	}
+
 	if err := h.Flush(); err != nil {
 		t.Fatalf("Flush returned error: %v", err)
 	}
 
 	got := out.String()
 	plain := stripANSISequences(got)
-	if !strings.Contains(plain, "func init()") {
-		t.Errorf("Flush() did not emit buffered content; got: %q", got)
+	if !strings.Contains(plain, "╰") {
+		t.Errorf("Flush() did not close streamed code panel; got: %q", got)
 	}
 }
 
