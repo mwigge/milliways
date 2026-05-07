@@ -29,6 +29,7 @@ import (
 )
 
 var errLineInterrupt = errors.New("line input interrupted")
+var lineReaderTermWidth = termWidth
 
 type completionProvider interface {
 	Complete(line string, pos int) (suffixes []string, replace int)
@@ -56,6 +57,7 @@ type chatLineReader struct {
 	closed  bool
 	buf     []rune
 	cursor  int
+	rows    int
 	history []string
 	histPos int
 }
@@ -357,19 +359,81 @@ func commonPrefix(values []string) string {
 }
 
 func (r *chatLineReader) redrawLocked() {
-	fmt.Fprint(r.out, "\r\033[2K")
-	fmt.Fprint(r.out, r.prompt)
-	fmt.Fprint(r.out, string(r.buf))
 	if r.cursor < 0 {
 		r.cursor = 0
 	}
 	if r.cursor > len(r.buf) {
 		r.cursor = len(r.buf)
 	}
-	trailing := displayWidth(string(r.buf[r.cursor:]))
-	if trailing > 0 {
-		fmt.Fprintf(r.out, "\033[%dD", trailing)
+
+	width := lineReaderWidth()
+	if r.rows <= 0 {
+		r.rows = 1
 	}
+	fmt.Fprint(r.out, "\r")
+	if r.rows > 1 {
+		fmt.Fprintf(r.out, "\033[%dA", r.rows-1)
+	}
+	for i := 0; i < r.rows; i++ {
+		if i > 0 {
+			fmt.Fprint(r.out, "\033[1B")
+		}
+		fmt.Fprint(r.out, "\r\033[2K")
+	}
+	if r.rows > 1 {
+		fmt.Fprintf(r.out, "\033[%dA", r.rows-1)
+	}
+	fmt.Fprint(r.out, "\r")
+	fmt.Fprint(r.out, r.prompt)
+	fmt.Fprint(r.out, string(r.buf))
+
+	totalWidth := displayWidth(r.prompt) + displayWidth(string(r.buf))
+	r.rows = visualRows(totalWidth, width)
+	cursorWidth := displayWidth(r.prompt) + displayWidth(string(r.buf[:r.cursor]))
+	cursorRow, cursorCol := cursorPosition(cursorWidth, width)
+	endRow := r.rows - 1
+	if endRow > cursorRow {
+		fmt.Fprintf(r.out, "\033[%dA", endRow-cursorRow)
+	}
+	fmt.Fprint(r.out, "\r")
+	if cursorCol > 0 {
+		fmt.Fprintf(r.out, "\033[%dC", cursorCol)
+	}
+}
+
+func lineReaderWidth() int {
+	width := lineReaderTermWidth()
+	if width < 8 {
+		return 80
+	}
+	return width
+}
+
+func visualRows(visibleWidth, termWidth int) int {
+	if termWidth <= 0 {
+		termWidth = 80
+	}
+	if visibleWidth <= 0 {
+		return 1
+	}
+	rows := (visibleWidth / termWidth) + 1
+	if visibleWidth%termWidth == 0 {
+		rows--
+	}
+	if rows < 1 {
+		return 1
+	}
+	return rows
+}
+
+func cursorPosition(visibleWidth, termWidth int) (row, col int) {
+	if termWidth <= 0 {
+		termWidth = 80
+	}
+	if visibleWidth <= 0 {
+		return 0, 0
+	}
+	return visibleWidth / termWidth, visibleWidth % termWidth
 }
 
 func (r *chatLineReader) addHistory(line string) {
