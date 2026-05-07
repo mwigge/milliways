@@ -170,6 +170,47 @@ func TestCodeHighlighter_OpenFenceStreamsCodeBeforeClose(t *testing.T) {
 	}
 }
 
+func TestCodePanelWidthClampsEnvToTerminalWidth(t *testing.T) {
+	withoutNoColor(t)
+	t.Setenv("MILLIWAYS_CODE_PANEL_WIDTH", "200")
+	oldTermWidth := codePanelTermWidth
+	codePanelTermWidth = func() int { return 32 }
+	t.Cleanup(func() { codePanelTermWidth = oldTermWidth })
+
+	got := renderCodePanel(strings.Repeat("x", 120), "go")
+	assertRenderedLinesFit(t, got, 32)
+}
+
+func TestStreamingCodePanelLongLabelFitsNarrowTerminal(t *testing.T) {
+	withoutNoColor(t)
+	t.Setenv("MILLIWAYS_CODE_PANEL_WIDTH", "")
+	oldTermWidth := codePanelTermWidth
+	codePanelTermWidth = func() int { return 20 }
+	t.Cleanup(func() { codePanelTermWidth = oldTermWidth })
+
+	var out bytes.Buffer
+	h := newCodeHighlighter(&out)
+	_, err := h.Write([]byte("```verylonglanguageidentifier\nfmt.Println(\"hello\")\n"))
+	if err != nil {
+		t.Fatalf("Write returned error: %v", err)
+	}
+	if err := h.Flush(); err != nil {
+		t.Fatalf("Flush returned error: %v", err)
+	}
+
+	assertRenderedLinesFit(t, out.String(), 20)
+}
+
+func assertRenderedLinesFit(t *testing.T, rendered string, width int) {
+	t.Helper()
+	for _, line := range strings.Split(strings.TrimRight(rendered, "\n"), "\n") {
+		plain := stripANSISequences(line)
+		if w := displayWidth(plain); w > width {
+			t.Fatalf("rendered line width = %d, want <= %d:\n%s\nfull:\n%s", w, width, plain, stripANSISequences(rendered))
+		}
+	}
+}
+
 // TestCodeHighlighter_PartialLineNotWrittenUntilNewline verifies that a
 // partial line (no trailing newline) is held in the pending buffer and not
 // prematurely flushed to the underlying writer.
