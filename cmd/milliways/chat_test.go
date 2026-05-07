@@ -881,6 +881,15 @@ func TestChatHistoryFileCanBeOverriddenOrDisabled(t *testing.T) {
 	}
 }
 
+func TestChatHistoryFileExpandsOverrideHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("MILLIWAYS_HISTORY_FILE", "~/.milliways-history")
+	if got, want := chatHistoryFile(), filepath.Join(home, ".milliways-history"); got != want {
+		t.Fatalf("chatHistoryFile expanded override = %q, want %q", got, want)
+	}
+}
+
 // TestChatHistoryFileFallsBackToHomeLocalState
 func TestChatHistoryFileFallsBackToHomeLocalState(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "")
@@ -888,6 +897,19 @@ func TestChatHistoryFileFallsBackToHomeLocalState(t *testing.T) {
 	got := chatHistoryFile()
 	if want := "/tmp/example-home/.local/state/milliways/chat_history"; got != want {
 		t.Errorf("chatHistoryFile() with HOME = %q, want %q", got, want)
+	}
+}
+
+func TestChatHistoryFileUsesExistingLegacyHistory(t *testing.T) {
+	home := t.TempDir()
+	legacy := filepath.Join(home, ".chat_history")
+	if err := os.WriteFile(legacy, []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", home)
+	if got := chatHistoryFile(); got != legacy {
+		t.Fatalf("chatHistoryFile legacy fallback = %q, want %q", got, legacy)
 	}
 }
 
