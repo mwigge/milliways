@@ -31,8 +31,8 @@ package main
 //       /  → slash command (switch / help / exit / quota / agents)
 //       !  → shell escape via $SHELL -c "<cmd>"
 //       …  → agent.send the line to the active runner
-//   - Ctrl+C cancels the current dispatch (best-effort: we close + reopen
-//     the agent stream). Ctrl+D exits cleanly.
+//   - Ctrl+C clears the current input and cancels the active stream if one
+//     is open. Ctrl+D exits cleanly.
 
 import (
 	"bufio"
@@ -382,7 +382,7 @@ func runChat(ctx context.Context) error {
 	rl, err := newChatLineReader(chatLineReaderConfig{
 		Prompt:          chatPrompt(""),
 		HistoryFile:     chatHistoryFile(),
-		InterruptPrompt: "^C (use /cancel for active stream, /exit to quit)",
+		InterruptPrompt: chatInterruptPrompt,
 		EOFPrompt:       "exit",
 		AutoComplete:    sc,
 	})
@@ -800,6 +800,8 @@ const chatTurnLogCap = 12
 // runner's context window.
 const chatBriefingMaxBytes = 4096
 
+const chatInterruptPrompt = "Interrupted. Use /cancel to stop an active stream, or /exit to quit."
+
 func (l *chatLoop) run(ctx context.Context) error {
 	// drainStream is started per-session inside switchAgent; do NOT start
 	// it here because l.sess is nil in the landing zone.
@@ -824,8 +826,9 @@ func (l *chatLoop) run(ctx context.Context) error {
 
 		line, err := l.rl.Readline()
 		if errors.Is(err, errLineInterrupt) {
-			// Ctrl+C — abort current dispatch (best-effort) but stay in loop.
-			fmt.Fprintln(l.errw, "^C  (Ctrl+D to exit)")
+			if l.cancelActiveSession() {
+				fmt.Fprintln(l.errw, "Active stream cancelled. Use /switch <client> to start again, or /exit to quit.")
+			}
 			continue
 		}
 		if err == io.EOF {
@@ -1304,8 +1307,7 @@ func (l *chatLoop) handleSlash(line string) {
 	case "exit!", "quit!", "bye!":
 		l.exitNow()
 	case "cancel":
-		if l.sess != nil {
-			_ = l.sess.close()
+		if l.cancelActiveSession() {
 			fmt.Fprintln(l.out, "cancelled active stream")
 			return
 		}
@@ -1327,6 +1329,23 @@ func (l *chatLoop) handleSlash(line string) {
 		}
 		l.runCtl(append([]string{verb}, splitFields(rest)...))
 	}
+}
+
+func (l *chatLoop) cancelActiveSession() bool {
+	if l == nil || l.sess == nil {
+		return false
+	}
+	agentID := l.sess.agentID
+	_ = l.sess.close()
+	delete(l.sessions, agentID)
+	l.sess = nil
+	if l.rl != nil {
+		l.rl.SetPrompt(chatPrompt(""))
+	}
+	if l.completer != nil {
+		l.completer.set(buildCompleter(""))
+	}
+	return true
 }
 
 func (l *chatLoop) exitNow() {
