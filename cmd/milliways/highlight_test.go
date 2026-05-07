@@ -425,6 +425,35 @@ func TestHighlighterLeavesNonTablePipesAlone(t *testing.T) {
 	}
 }
 
+func TestHighlighterNormalizesOverIndentedMarkdown(t *testing.T) {
+	oldTermWidth := codePanelTermWidth
+	codePanelTermWidth = func() int { return 64 }
+	t.Cleanup(func() { codePanelTermWidth = oldTermWidth })
+
+	var out bytes.Buffer
+	h := newCodeHighlighter(&out)
+	input := strings.Join([]string{
+		"        **Issues:**",
+		"                                           - Completely disconnected from Quick Start — users must manually navigate to the Learning Centre before they know what to read",
+		"        - No \"After reading this module, try this experiment\" CTA",
+		"",
+	}, "\n")
+	_, _ = h.Write([]byte(input))
+	_ = h.Flush()
+
+	got := stripANSISequences(out.String())
+	for _, bad := range []string{"        **Issues:**", "                                           - Completely"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("markdown indentation was not normalized; found %q in:\n%s", bad, got)
+		}
+	}
+	for _, want := range []string{"**Issues:**", "- Completely disconnected", "  manually navigate to the Learning", "- No \"After reading"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("normalized markdown missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestHighlighterFlushPartialLineWithoutNewline(t *testing.T) {
 	var out bytes.Buffer
 	h := newCodeHighlighter(&out)
