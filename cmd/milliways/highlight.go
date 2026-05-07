@@ -33,6 +33,7 @@ import (
 // urlRe matches http and https URLs in plain text.
 var urlRe = regexp.MustCompile(`https?://[^\s\x1b<>"]+`)
 var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+var codePanelTermWidth = termWidth
 
 func ansiEnabled() bool {
 	return termcolor.Enabled()
@@ -662,7 +663,8 @@ func renderCodePanel(code, lang string) string {
 			contentWidth = w
 		}
 	}
-	if maxWidth := codePanelMaxContentWidth(); maxWidth > 0 && contentWidth > maxWidth {
+	maxWidth := codePanelMaxContentWidth()
+	if maxWidth > 0 && contentWidth > maxWidth {
 		contentWidth = maxWidth
 	}
 
@@ -670,7 +672,7 @@ func renderCodePanel(code, lang string) string {
 	if lang = strings.TrimSpace(lang); lang != "" {
 		label = " code · " + lang + " "
 	}
-	if minWidth := displayWidth(label) - 2; contentWidth < minWidth {
+	if minWidth := displayWidth(label) - 2; contentWidth < minWidth && minWidth <= maxWidth {
 		contentWidth = minWidth
 	}
 
@@ -686,9 +688,9 @@ func renderCodePanel(code, lang string) string {
 func streamingCodePanelWidth(lang string) int {
 	contentWidth := codePanelMaxContentWidth()
 	if contentWidth <= 0 {
-		contentWidth = 100
+		contentWidth = codePanelTerminalContentWidth()
 	}
-	if minWidth := displayWidth(codePanelLabel(lang)) - 2; contentWidth < minWidth {
+	if minWidth := displayWidth(codePanelLabel(lang)) - 2; contentWidth < minWidth && minWidth <= codePanelMaxContentWidth() {
 		contentWidth = minWidth
 	}
 	return contentWidth
@@ -703,7 +705,7 @@ func codePanelLabel(lang string) string {
 }
 
 func renderCodePanelTop(lang string, contentWidth int) string {
-	label := codePanelLabel(lang)
+	label := truncateCodePanelLabel(codePanelLabel(lang), contentWidth+2)
 	const (
 		border = "\033[38;5;238m"
 		title  = "\033[2;38;5;250m"
@@ -770,15 +772,48 @@ func renderCodePanelBottom(contentWidth int) string {
 }
 
 func codePanelMaxContentWidth() int {
+	terminalMax := codePanelTerminalContentWidth()
 	if v := strings.TrimSpace(os.Getenv("MILLIWAYS_CODE_PANEL_WIDTH")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 20 {
-			return n
+			if n < terminalMax {
+				return n
+			}
+			return terminalMax
 		}
 	}
-	if cols := termWidth(); cols > 24 {
+	return terminalMax
+}
+
+func codePanelTerminalContentWidth() int {
+	if cols := codePanelTermWidth(); cols > 24 {
 		return cols - 6
+	} else if cols > 8 {
+		return cols - 4
 	}
-	return 100
+	return 4
+}
+
+func truncateCodePanelLabel(label string, max int) string {
+	if displayWidth(label) <= max {
+		return label
+	}
+	if max <= 0 {
+		return ""
+	}
+	if max <= 1 {
+		return "…"
+	}
+	var b strings.Builder
+	visible := 0
+	for _, r := range label {
+		if visible+1 > max-1 {
+			break
+		}
+		b.WriteRune(r)
+		visible++
+	}
+	b.WriteString("…")
+	return b.String()
 }
 
 func truncateANSIVisible(s string, max int) string {
