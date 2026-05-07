@@ -388,14 +388,14 @@ func watchStatus(socket, stateDir string, debounceMs int) {
 }
 
 // observeConfig holds the static list of available agents shown in the status bar.
-var observeAgents = []string{"claude", "codex", "copilot", "minimax", "local"}
+var observeAgents = []string{"claude", "codex", "copilot", "minimax", "gemini", "local", "pool"}
 
 // runObserve writes a compact JSON status to ${stateDir}/observe.cur every debounceMs.
-// Format: {"v":"<version>","p":"<cwd>","c":"<current_agent>","a":["claude","codex","copilot","minimax"]}
+// Format: {"v":"<version>","p":"<cwd>","c":"<current_agent>","a":["claude","codex","copilot","minimax","gemini","local","pool"]}
 //
 // This file is read by the wezterm Lua sidecar to render the full status bar:
 //
-//	[≈≈ MW v0.x] [path] [●claude] [1:C 2:X 3:G 4:M 5:L]
+//	[≈≈ MW v0.x] [path] [●claude] [1:C 2:X 3:Cp 4:M 5:G 6:L 7:P]
 //
 // Also writes a heartbeat file every 30s. On startup, if the heartbeat is
 // stale by more than 60s, the system was asleep — a "woke_ago" field is

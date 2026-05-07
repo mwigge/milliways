@@ -31,6 +31,15 @@ import (
 	"strings"
 )
 
+var runnerSystemPathFallbacks = []string{
+	"/opt/homebrew/bin",
+	"/usr/local/bin",
+	"/usr/bin",
+	"/bin",
+	"/usr/sbin",
+	"/sbin",
+}
+
 // safeRunnerEnvKeys is the set of environment variables passed to runner
 // subprocess execution. Mirrors the kitchen adapter list with the same
 // trade-offs:
@@ -91,7 +100,44 @@ func safeRunnerEnv() []string {
 				filtered = append(filtered, e)
 			}
 		}
-		env = append(filtered, "PATH="+p)
+		env = append(filtered, "PATH="+ensureRunnerSystemPath(p))
+	} else {
+		for i, e := range env {
+			if strings.HasPrefix(e, "PATH=") {
+				env[i] = "PATH=" + ensureRunnerSystemPath(strings.TrimPrefix(e, "PATH="))
+				return env
+			}
+		}
+		env = append(env, "PATH="+ensureRunnerSystemPath(""))
 	}
 	return env
+}
+
+func ensureRunnerSystemPath(path string) string {
+	parts := splitPath(path)
+	seen := make(map[string]bool, len(parts)+len(runnerSystemPathFallbacks))
+	for _, part := range parts {
+		seen[part] = true
+	}
+	for _, fallback := range runnerSystemPathFallbacks {
+		if !seen[fallback] {
+			parts = append(parts, fallback)
+			seen[fallback] = true
+		}
+	}
+	return strings.Join(parts, string(os.PathListSeparator))
+}
+
+func splitPath(path string) []string {
+	if path == "" {
+		return nil
+	}
+	raw := strings.Split(path, string(os.PathListSeparator))
+	parts := make([]string, 0, len(raw))
+	for _, part := range raw {
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	return parts
 }

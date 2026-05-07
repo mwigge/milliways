@@ -545,7 +545,7 @@ func dispatch(opts dispatchOpts) error {
 		case adapter.EventCost:
 			costInfo = evt.Cost
 			if opts.verbose {
-				fmt.Fprintf(os.Stderr, "[cost] $%.4f\n", evt.Cost.USD)
+				fmt.Fprintf(os.Stderr, "[cost] %s\n", formatCostVerbose(evt.Cost.USD))
 			}
 		case adapter.EventRateLimit:
 			if opts.verbose {
@@ -564,6 +564,9 @@ func dispatch(opts dispatchOpts) error {
 		}
 	})
 	if runErr != nil {
+		if errors.Is(runErr, context.DeadlineExceeded) {
+			return fmt.Errorf("dispatch timed out after %s — increase --timeout or continue with --session", opts.timeout)
+		}
 		return runErr
 	}
 

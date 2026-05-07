@@ -70,6 +70,11 @@ func TestCodeHighlighter_CompleteGoFenceProducesANSI(t *testing.T) {
 	if !strings.Contains(got, "\x1b") {
 		t.Errorf("expected ANSI escape codes in highlighted output, got: %q", got)
 	}
+	for _, want := range []string{"╭", "code · go", "│", "╰"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("highlighted code panel missing %q; got: %q", want, got)
+		}
+	}
 	// The code content must survive highlighting (at minimum the identifier
 	// "main" must appear somewhere in the output).
 	if !strings.Contains(got, "main") {
@@ -148,7 +153,8 @@ func TestCodeHighlighter_UnclosedFenceFlushedAsPlain(t *testing.T) {
 	}
 
 	got := out.String()
-	if !strings.Contains(got, "func init()") {
+	plain := stripANSISequences(got)
+	if !strings.Contains(plain, "func init()") {
 		t.Errorf("Flush() did not emit buffered content; got: %q", got)
 	}
 }
@@ -397,9 +403,23 @@ func TestHighlighterRendersRanCommandActionLine(t *testing.T) {
 	_ = h.Flush()
 
 	result := out.String()
-	for _, want := range []string{"Ran", "go", "test", "\x1b["} {
+	for _, want := range []string{"Ran", "go", "test", "code · bash", "╭", "╰", "\x1b["} {
 		if !strings.Contains(result, want) {
 			t.Errorf("ran action line missing %q; got:\n%q", want, result)
 		}
+	}
+}
+
+func TestRenderMarkdownForTerminalBoxesAndHighlightsCode(t *testing.T) {
+	t.Parallel()
+
+	got := renderMarkdownForTerminal("Summary:\n```go\nfmt.Println(\"ok\")\n```\n")
+	for _, want := range []string{"Summary:", "code · go", "fmt", "Println", "╭", "│", "╰", "\x1b["} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered markdown missing %q; got:\n%q", want, got)
+		}
+	}
+	if strings.Contains(got, "```") {
+		t.Errorf("markdown fences should be rendered, not shown raw; got:\n%q", got)
 	}
 }

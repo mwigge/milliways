@@ -254,10 +254,11 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	}
 
 	result, err := RunAgenticLoop(ctx, client, registry, &messages, LoopOptions{
-		SessionID:   AgentIDLocal,
-		Logger:      slog.Default(),
-		XMLToolMode: xmlMode,
-		Compaction:  CompactionOptions{CtxTokens: ctxTokens},
+		SessionID:              AgentIDLocal,
+		Logger:                 slog.Default(),
+		XMLToolMode:            xmlMode,
+		Compaction:             CompactionOptions{CtxTokens: ctxTokens},
+		StopOnUserInputRequest: true,
 	})
 	if err != nil {
 		observeError(metrics, AgentIDLocal)
@@ -283,6 +284,9 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	}
 	if result.StoppedAt == StopReasonMaxTurns {
 		push["max_turns_hit"] = true
+	}
+	if result.StoppedAt == StopReasonNeedsInput {
+		push["needs_input"] = true
 	}
 	stream.Push(push)
 }

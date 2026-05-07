@@ -75,6 +75,16 @@ detect_pkg_mgr() {
   command -v pacman &>/dev/null && echo "pacman" && return
 }
 
+package_version() {
+  local pkg_ver="${1#v}"
+  pkg_ver="${pkg_ver%%-dirty}"
+  pkg_ver="$(printf '%s' "$pkg_ver" | sed 's/-/~/g')"
+  case "$pkg_ver" in
+    [0-9]*) printf '%s' "$pkg_ver" ;;
+    *)      printf '0.0.0~%s' "$pkg_ver" ;;
+  esac
+}
+
 # ── Detect whether milliways was installed by a package manager ──────────────
 # Returns the package manager name if milliways is a managed package, else "".
 detect_managed_install() {
@@ -97,7 +107,7 @@ upgrade_native_pkg() {
   [ "$GOARCH" = "amd64" ] || { warn "native packages are amd64-only; falling back to binary upgrade"; return 1; }
 
   local base_url="${RELEASE_BASE_URL:-https://github.com/${REPO}/releases/download/${version}}"
-  local pkg_ver="${version#v}"
+  local pkg_ver; pkg_ver="$(package_version "$version")"
   local url pkg tmp
 
   case "$mgr" in

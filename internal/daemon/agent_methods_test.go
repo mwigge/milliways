@@ -79,14 +79,14 @@ func (m *stubMPClient) addedKeysCopy() []string {
 // The test infrastructure then reads stream events from the _echo sidecar
 // to assert what bytes reached the session input channel.
 type agentMethodsHarness struct {
-	t       *testing.T
-	srv     *Server
+	t        *testing.T
+	srv      *Server
 	stateDir string
-	conn    net.Conn
-	sidecar net.Conn
-	enc     *json.Encoder
-	reader  *bufio.Reader
-	handle  int64
+	conn     net.Conn
+	sidecar  net.Conn
+	enc      *json.Encoder
+	reader   *bufio.Reader
+	handle   int64
 }
 
 // newAgentMethodsHarness creates a test server with the stub MP wired in.
@@ -205,12 +205,17 @@ func (h *agentMethodsHarness) readResp() map[string]any {
 // timeout. Returns all decoded text concatenated.
 func (h *agentMethodsHarness) readStreamText(timeout time.Duration) string {
 	h.t.Helper()
-	if err := h.sidecar.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-		h.t.Fatalf("SetReadDeadline: %v", err)
-	}
-	defer func() { _ = h.sidecar.SetReadDeadline(time.Time{}) }()
+	return readTextFromSidecar(h.t, h.sidecar, timeout)
+}
 
-	sidecarReader := bufio.NewReader(h.sidecar)
+func readTextFromSidecar(t *testing.T, sidecar net.Conn, timeout time.Duration) string {
+	t.Helper()
+	if err := sidecar.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	defer func() { _ = sidecar.SetReadDeadline(time.Time{}) }()
+
+	sidecarReader := bufio.NewReader(sidecar)
 	var sb strings.Builder
 	for {
 		line, err := sidecarReader.ReadBytes('\n')
@@ -229,6 +234,101 @@ func (h *agentMethodsHarness) readStreamText(timeout time.Duration) string {
 		}
 	}
 	return sb.String()
+}
+
+func (h *agentMethodsHarness) attachAdditionalStream(id any) net.Conn {
+	h.t.Helper()
+	h.send("agent.stream", map[string]any{"handle": h.handle}, id)
+	resp := h.readResp()
+	sresult, ok := resp["result"].(map[string]any)
+	if !ok {
+		h.t.Fatalf("agent.stream result: %v", resp)
+	}
+	streamID := int64(sresult["stream_id"].(float64))
+	sidecar, err := net.Dial("unix", h.srv.socket)
+	if err != nil {
+		h.t.Fatalf("dial sidecar: %v", err)
+	}
+	if _, err := sidecar.Write([]byte("STREAM " + itoa(streamID) + " 0\n")); err != nil {
+		sidecar.Close()
+		h.t.Fatalf("write sidecar preamble: %v", err)
+	}
+	h.t.Cleanup(func() { sidecar.Close() })
+	return sidecar
+}
+
+func TestAgentStream_FansOutToMultipleSubscribers(t *testing.T) {
+	h := newAgentMethodsHarness(t, nil)
+	h.openEcho()
+	second := h.attachAdditionalStream(20)
+
+	const prompt = "hello fanout"
+	h.send("agent.send", map[string]any{"handle": h.handle, "bytes": prompt}, 21)
+	_ = h.readResp()
+
+	firstText := h.readStreamText(400 * time.Millisecond)
+	secondText := readTextFromSidecar(t, second, 400*time.Millisecond)
+	if !strings.Contains(firstText, prompt) {
+		t.Fatalf("first subscriber missing prompt %q in %q", prompt, firstText)
+	}
+	if !strings.Contains(secondText, prompt) {
+		t.Fatalf("second subscriber missing prompt %q in %q", prompt, secondText)
+	}
+}
+
+func TestDeckSnapshotReportsSessionStateAndBuffer(t *testing.T) {
+	h := newAgentMethodsHarness(t, nil)
+	h.openEcho()
+
+	const prompt = "show deck state"
+	h.send("agent.send", map[string]any{"handle": h.handle, "bytes": prompt}, 30)
+	_ = h.readResp()
+	_ = h.readStreamText(200 * time.Millisecond)
+
+	h.send("deck.snapshot", nil, 31)
+	resp := h.readResp()
+	raw, err := json.Marshal(resp["result"])
+	if err != nil {
+		t.Fatalf("marshal deck snapshot: %v", err)
+	}
+	var snap DeckSnapshot
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		t.Fatalf("unmarshal deck snapshot: %v", err)
+	}
+	if snap.Active != "_echo" {
+		t.Fatalf("active = %q, want _echo", snap.Active)
+	}
+	if len(snap.Sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1: %#v", len(snap.Sessions), snap.Sessions)
+	}
+	sess := snap.Sessions[0]
+	if sess.Handle != h.handle {
+		t.Fatalf("handle = %d, want %d", sess.Handle, h.handle)
+	}
+	if sess.Status != "streaming" {
+		t.Fatalf("status = %q, want streaming", sess.Status)
+	}
+	if sess.PromptCount != 1 {
+		t.Fatalf("prompt count = %d, want 1", sess.PromptCount)
+	}
+	if sess.CurrentTrace == "" {
+		t.Fatalf("current trace empty in deck snapshot: %#v", sess)
+	}
+	if sess.TTFTMS <= 0 {
+		t.Fatalf("ttft_ms = %f, want > 0", sess.TTFTMS)
+	}
+	var sawPrompt, sawResponse bool
+	for _, block := range sess.Buffer {
+		if block.Kind == "prompt" && strings.Contains(block.Text, prompt) {
+			sawPrompt = true
+		}
+		if block.Kind == "response" && strings.Contains(block.Text, prompt) {
+			sawResponse = true
+		}
+	}
+	if !sawPrompt || !sawResponse {
+		t.Fatalf("buffer missing prompt/response blocks: %#v", sess.Buffer)
+	}
 }
 
 // TestAgentSend_MemPalaceBaselineInjectedOnFirstSend verifies that when

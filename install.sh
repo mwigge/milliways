@@ -65,6 +65,16 @@ detect_pkg_mgr() {
   command -v pacman &>/dev/null && echo "pacman" && return
 }
 
+package_version() {
+  local pkg_ver="${VERSION#v}"
+  pkg_ver="${pkg_ver%%-dirty}"
+  pkg_ver="$(printf '%s' "$pkg_ver" | sed 's/-/~/g')"
+  case "$pkg_ver" in
+    [0-9]*) printf '%s' "$pkg_ver" ;;
+    *)      printf '0.0.0~%s' "$pkg_ver" ;;
+  esac
+}
+
 # ── Install mode: native Linux package (tier 1) ───────────────────────────────
 # Tries to download and install the distro-native package (.deb / .rpm / .zst).
 # Returns 0 on success, 1 if the package is unavailable or install fails.
@@ -73,7 +83,7 @@ install_native_pkg() {
   [ "$GOARCH" = "amd64" ]   || return 1   # packages are amd64-only today
 
   local base_url="${RELEASE_BASE_URL:-https://github.com/${REPO}/releases/download/${VERSION}}"
-  local pkg_ver="${VERSION#v}"
+  local pkg_ver; pkg_ver="$(package_version)"
   local mgr; mgr="$(detect_pkg_mgr)"
   local url pkg tmp
 

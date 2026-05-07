@@ -1,10 +1,16 @@
 FROM debian:bookworm
 
-ARG GO_VERSION=1.25.0
+ARG GO_VERSION=1.26.2
 ARG TARGETARCH
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH=/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
+
+RUN printf '%s\n' \
+        'Acquire::Retries "5";' \
+        'Acquire::http::Timeout "45";' \
+        'Acquire::https::Timeout "45";' \
+        > /etc/apt/apt.conf.d/80-retries
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
