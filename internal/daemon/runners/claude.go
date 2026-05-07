@@ -136,6 +136,7 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	ctx, cancel := context.WithTimeout(spanCtx, claudeTimeout)
 	defer cancel()
 	defer func() { stream.Push(chunkEnd) }()
+	pushModel(stream, AgentIDClaude)
 
 	cwd, _ := os.Getwd()
 	args := []string{
@@ -204,6 +205,9 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		line := scanner.Text()
 		if line == "" {
 			continue
+		}
+		if model := extractModelFromJSONLine(line); model != "" {
+			pushObservedModel(stream, model)
 		}
 		if text, ok := extractAssistantText(line); ok {
 			stream.Push(encodeData(text))

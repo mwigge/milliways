@@ -170,6 +170,7 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	if model == "" {
 		model = minimaxDefaultModel
 	}
+	stream.Push(modelEvent(model, "configured"))
 	timeout := runnerRequestTimeout("MINIMAX_TIMEOUT")
 
 	spanCtx, span := startDispatchSpan(parent, AgentIDMiniMax, model)
