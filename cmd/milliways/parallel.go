@@ -17,6 +17,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mwigge/milliways/internal/parallel"
 	"github.com/mwigge/milliways/internal/rpc"
@@ -148,4 +149,88 @@ func (l *chatLoop) handleParallel(rest string) {
 			fmt.Fprintf(l.out, "  milliways attach %d  (%s)\n", s.Handle, s.Provider)
 		}
 	}
+	fmt.Fprintf(l.out, "[parallel] group %s — /parallel-view %s for side-by-side comparison\n", result.GroupID, result.GroupID)
+}
+
+func parseParallelViewArgs(rest string) (watch bool, groupID string) {
+	fields := strings.Fields(rest)
+	for _, field := range fields {
+		switch field {
+		case "--watch", "-w":
+			watch = true
+		default:
+			if groupID == "" {
+				groupID = field
+			}
+		}
+	}
+	return watch, groupID
+}
+
+func (l *chatLoop) handleParallelView(rest string) {
+	watch, groupID := parseParallelViewArgs(rest)
+	if groupID == "" {
+		fmt.Fprintln(l.errw, "usage: /parallel-view [--watch] <group-id>")
+		return
+	}
+	if l.client == nil {
+		fmt.Fprintln(l.errw, "[parallel] not connected to daemon")
+		return
+	}
+	if !watch {
+		l.printParallelView(groupID, false)
+		return
+	}
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	deadline := time.After(2 * time.Minute)
+	for {
+		done := l.printParallelView(groupID, true)
+		if done {
+			return
+		}
+		select {
+		case <-deadline:
+			fmt.Fprintln(l.errw, "[parallel] watch timed out; run /parallel-view --watch "+groupID+" to continue")
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (l *chatLoop) printParallelView(groupID string, clear bool) bool {
+	status, consensus, err := l.fetchParallelView(groupID)
+	if err != nil {
+		fmt.Fprintln(l.errw, "[parallel] view error: "+err.Error())
+		return true
+	}
+	if clear {
+		fmt.Fprint(l.out, "\033[2J\033[H")
+	}
+	writeParallelComparison(l.out, status, consensus, 110)
+	return parallelGroupDone(status)
+}
+
+func (l *chatLoop) fetchParallelView(groupID string) (rpc.GroupStatusResult, string, error) {
+	var status rpc.GroupStatusResult
+	if err := l.client.Call("group.status", rpc.GroupStatusParams{GroupID: groupID}, &status); err != nil {
+		return rpc.GroupStatusResult{}, "", err
+	}
+	var consensus rpc.ConsensusAggregateResult
+	_ = l.client.Call("consensus.aggregate", rpc.ConsensusAggregateParams{GroupID: groupID}, &consensus)
+	return status, consensus.Summary, nil
+}
+
+func parallelGroupDone(status rpc.GroupStatusResult) bool {
+	if len(status.Slots) == 0 {
+		return true
+	}
+	for _, slot := range status.Slots {
+		switch slot.Status {
+		case "running", "thinking", "streaming":
+			return false
+		}
+	}
+	return true
 }

@@ -47,13 +47,17 @@ type GroupStatusParams struct {
 
 // GroupSlotStatus holds per-slot status in a group.status response.
 type GroupSlotStatus struct {
-	Handle      int64  `json:"handle"`
-	Provider    string `json:"provider"`
-	Status      string `json:"status"`
-	StartedAt   string `json:"started_at,omitempty"`
-	CompletedAt string `json:"completed_at,omitempty"`
-	TokensIn    int    `json:"tokens_in"`
-	TokensOut   int    `json:"tokens_out"`
+	Handle       int64  `json:"handle"`
+	Provider     string `json:"provider"`
+	Status       string `json:"status"`
+	StartedAt    string `json:"started_at,omitempty"`
+	CompletedAt  string `json:"completed_at,omitempty"`
+	TokensIn     int    `json:"tokens_in"`
+	TokensOut    int    `json:"tokens_out"`
+	Model        string `json:"model,omitempty"`
+	Text         string `json:"text,omitempty"`
+	LastError    string `json:"last_error,omitempty"`
+	LastThinking string `json:"last_thinking,omitempty"`
 }
 
 // GroupStatusResult is the response for group.status.
