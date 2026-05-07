@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -290,7 +291,7 @@ func dispatchAsync(prompt, kitchenForce string, verbose bool, configPath string)
 		return err
 	}
 
-	fmt.Printf("Dispatched: %s\nKitchen:    %s\nStatus:     running\nWatch:      milliways ticket %s\n", ticketID, decision.Kitchen, ticketID)
+	fmt.Printf("Dispatched: %s\nKitchen:    %s\nStatus:     running\nWatch:      milliways ticket watch %s\n", ticketID, decision.Kitchen, ticketID)
 	fmt.Println("Waiting for completion...")
 
 	ad.Wait()
@@ -306,7 +307,8 @@ func dispatchDetach(_, _ string, _ bool, _ string) error {
 }
 
 func ticketCmd() *cobra.Command {
-	return &cobra.Command{
+	var watchInterval time.Duration
+	cmd := &cobra.Command{
 		Use:   "ticket <id>",
 		Short: "Show status of an async/detached dispatch",
 		Args:  cobra.ExactArgs(1),
@@ -325,16 +327,97 @@ func ticketCmd() *cobra.Command {
 				return fmt.Errorf("ticket %q not found", args[0])
 			}
 
-			fmt.Printf("Ticket:     %s\nKitchen:    %s\nMode:       %s\nStatus:     %s\nStarted:    %s\n",
-				ticket.ID, ticket.Kitchen, ticket.Mode, ticket.Status, ticket.StartedAt)
-			if ticket.CompletedAt != "" {
-				fmt.Printf("Completed:  %s\n", ticket.CompletedAt)
-			}
-			if ticket.ExitCode != 0 {
-				fmt.Printf("Exit Code:  %d\n", ticket.ExitCode)
-			}
+			printTicket(os.Stdout, ticket)
 			return nil
 		},
+	}
+	watch := &cobra.Command{
+		Use:   "watch <id>",
+		Short: "Watch an async/detached dispatch until it finishes",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pdb, err := openPantryDB()
+			if err != nil {
+				return err
+			}
+			defer func() { _ = pdb.Close() }()
+
+			return watchTicketStatus(cmd.Context(), os.Stdout, pdb.Tickets(), args[0], watchInterval)
+		},
+	}
+	watch.Flags().DurationVar(&watchInterval, "interval", 2*time.Second, "Polling interval")
+	cmd.AddCommand(watch)
+	return cmd
+}
+
+type ticketReader interface {
+	Get(id string) (*pantry.Ticket, error)
+}
+
+func printTicket(out io.Writer, ticket *pantry.Ticket) {
+	fmt.Fprintf(out, "Ticket:     %s\nKitchen:    %s\nMode:       %s\nStatus:     %s\nStarted:    %s\n",
+		ticket.ID, ticket.Kitchen, ticket.Mode, ticket.Status, ticket.StartedAt)
+	if ticket.CompletedAt != "" {
+		fmt.Fprintf(out, "Completed:  %s\n", ticket.CompletedAt)
+	}
+	if ticket.ExitCode != 0 {
+		fmt.Fprintf(out, "Exit Code:  %d\n", ticket.ExitCode)
+	}
+	if ticket.OutputPath != "" {
+		fmt.Fprintf(out, "Output:     %s\n", ticket.OutputPath)
+	}
+}
+
+func watchTicketStatus(ctx context.Context, out io.Writer, tickets ticketReader, id string, interval time.Duration) error {
+	if interval <= 0 {
+		return fmt.Errorf("--interval must be greater than zero")
+	}
+	ticket, err := tickets.Get(id)
+	if err != nil {
+		return err
+	}
+	if ticket == nil {
+		return fmt.Errorf("ticket %q not found", id)
+	}
+	fmt.Fprintf(out, "Watching:   %s\n", id)
+	printTicket(out, ticket)
+	lastStatus := ticket.Status
+	if ticketStatusDone(ticket.Status) {
+		return nil
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			ticket, err := tickets.Get(id)
+			if err != nil {
+				return err
+			}
+			if ticket == nil {
+				return fmt.Errorf("ticket %q not found", id)
+			}
+			if ticket.Status != lastStatus || ticketStatusDone(ticket.Status) {
+				fmt.Fprintln(out)
+				printTicket(out, ticket)
+				lastStatus = ticket.Status
+			}
+			if ticketStatusDone(ticket.Status) {
+				return nil
+			}
+		}
+	}
+}
+
+func ticketStatusDone(status string) bool {
+	switch status {
+	case "complete", "failed", "cancelled", "timeout", "panicked":
+		return true
+	default:
+		return false
 	}
 }
 

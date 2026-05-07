@@ -234,7 +234,7 @@ based on what each tool does best.
 	cmd.PersistentFlags().StringVarP(&configPath, "config", "c", maitre.DefaultConfigPath(), "Path to carte.yaml")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Print sommelier reasoning to stderr")
 	cmd.Flags().StringVarP(&recipeFlag, "recipe", "r", "", "Execute a multi-course recipe")
-	cmd.Flags().BoolVar(&asyncFlag, "async", false, "Dispatch asynchronously, return ticket ID")
+	cmd.Flags().BoolVar(&asyncFlag, "async", false, "Dispatch asynchronously and show ticket watch instructions")
 	cmd.Flags().BoolVar(&detachFlag, "detach", false, "Dispatch detached (survives exit)")
 	cmd.Flags().BoolVar(&keepContext, "keep-context", false, "Keep recipe context files")
 	cmd.Flags().StringVar(&projectRoot, "project-root", "", "Override project repository root")
