@@ -106,40 +106,20 @@ func printWelcome() {
 	}
 	fmt.Fprintln(out)
 
-	const body = `Switch agent (Ctrl+Space = Leader):
-  Leader + 1   → claude     Leader + 2   → codex
-  Leader + 3   → copilot    Leader + 4   → minimax
-  Leader + a   → claude     (split pane below current tab)
+	const body = `Start:
+  milliways chat                 interactive chat
+  milliways "explain this repo"  one-shot prompt
+  /help                          full command palette
 
-One-shot prompt (no UI; just dispatch):
-  milliways "explain the auth flow"
-  milliways -k claude "review this PR"
-  milliways -j "summarise this in JSON"
-  milliways --recipe <name> "<prompt>"
+Switch:
+  /1 claude   /2 codex   /3 copilot   /4 minimax
+  /5 gemini   /6 local   /7 pool
 
-Parallel dispatch — fan same prompt to N providers simultaneously:
-  /parallel review internal/server/          all pool providers, live panes
-  /parallel --providers claude,codex <prompt>
-
-Security scanning:
-  /scan                                      scan workspace for CVEs (requires osv-scanner)
-  milliwaysctl security install-scanner      install osv-scanner
-  milliwaysctl security list                 list active findings
-  milliwaysctl security enable/disable       toggle scanning on/off
-
-Slash command palette — Ctrl+Space then / opens a fuzzy filter:
-  /install-local-server         install llama.cpp + default coder model
-  /list-local-models            show models the active backend serves
-  /setup-local-model <repo>     download GGUF + register in llama-swap
-  /switch-local-server <kind>   llama-server | llama-swap | ollama | vllm | lmstudio
-  /opsx-list                    list openspec changes
-  /opsx-status <change>         show change progress
-  …                             type Tab through the picker for the full list
-
-Discover everything:
-  milliways --help              full command + flag reference
-
-Tip: pasting a multi-line prompt? Wrap in quotes so the shell keeps it whole.
+Daily commands:
+  /parallel <prompt>             fan out to providers
+  /scan                          security scan
+  /install-local-server          local model server
+  !<cmd>                         shell escape with guardrails
 `
 	fmt.Fprint(out, body)
 }
@@ -382,8 +362,10 @@ func detectWeztermCurrentPaneIDWith(
 	return "", fmt.Sprintf("myTTY=%q not in panes %v", myTTY, ttyNames)
 }
 
-// runDeck opens the home-hero-dashboard layout: left navigator (30%) plus
-// the calling pane as the main chat session on the right (70%).
+const deckNavigatorPanePercent = 18
+
+// runDeck opens the home-hero-dashboard layout: left navigator plus
+// the calling pane as the main chat session on the right.
 //
 // The navigator is an interactive provider browser — arrow keys to browse,
 // Enter to switch the right pane to that provider via /switch. No separate
@@ -395,9 +377,9 @@ func runDeck(_ context.Context, _ string, rightPaneID string) error {
 		milliwaysBin = "milliways"
 	}
 
-	// Split LEFT 20%: narrow navigator pane. The current pane stays as the chat.
+	// Split LEFT: narrow navigator pane. The current pane stays as the chat.
 	navArgs := []string{
-		"cli", "split-pane", "--left", "--percent", "20",
+		"cli", "split-pane", "--left", "--percent", strconv.Itoa(deckNavigatorPanePercent),
 		"--",
 		milliwaysBin, "attach", "--deck", "--right-pane", rightPaneID,
 	}
@@ -500,6 +482,9 @@ func tailFile(path string, max int) string {
 // maybePrintCockpitHint shows a one-time hint on stderr the first time the
 // milliways-term launcher runs, pointing at the wezterm sample config.
 func maybePrintCockpitHint(state string) {
+	if !isTTYStderr() || os.Getenv("MILLIWAYS_QUIET_HINTS") == "1" {
+		return
+	}
 	marker := filepath.Join(state, "cockpit-hint-shown")
 	if _, err := os.Stat(marker); err == nil {
 		return

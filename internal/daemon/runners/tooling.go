@@ -58,8 +58,9 @@ const (
 type StopReason string
 
 const (
-	StopReasonStop     StopReason = "stop"
-	StopReasonMaxTurns StopReason = "max_turns"
+	StopReasonStop       StopReason = "stop"
+	StopReasonMaxTurns   StopReason = "max_turns"
+	StopReasonNeedsInput StopReason = "needs_input"
 )
 
 // Message is one entry in the conversation passed between runner and model.
@@ -127,6 +128,9 @@ type LoopOptions struct {
 	// approaches the model's context window limit.
 	// Zero-value (CtxTokens=0) disables compaction entirely.
 	Compaction CompactionOptions
+	// StopOnUserInputRequest prevents the loop from executing tool calls when
+	// the assistant's same turn asks the user for confirmation or missing input.
+	StopOnUserInputRequest bool
 }
 
 // LoopResult summarises one RunAgenticLoop invocation.
@@ -225,6 +229,13 @@ func RunAgenticLoop(ctx context.Context, client Client, registry *tools.Registry
 			}
 		}
 
+		if opts.StopOnUserInputRequest && len(t.ToolCalls) > 0 && assistantRequestsUserInput(t.Content) {
+			*messages = append(*messages, Message{Role: RoleAssistant, Content: t.Content})
+			result.StoppedAt = StopReasonNeedsInput
+			result.FinalContent = t.Content
+			return result, nil
+		}
+
 		// Append the assistant turn so the model can see its own past output
 		// when it issues follow-up tool calls in the next turn.
 		// XMLToolMode: store content only — ToolCalls are XML-parsed and
@@ -294,6 +305,44 @@ func RunAgenticLoop(ctx context.Context, client Client, registry *tools.Registry
 		}
 	}
 	return result, nil
+}
+
+func assistantRequestsUserInput(content string) bool {
+	text := strings.ToLower(strings.Join(strings.Fields(content), " "))
+	if text == "" {
+		return false
+	}
+	patterns := []string{
+		"please confirm",
+		"confirm before",
+		"confirm that",
+		"confirm whether",
+		"do you want me to",
+		"would you like me to",
+		"should i proceed",
+		"should i continue",
+		"shall i proceed",
+		"shall i continue",
+		"may i proceed",
+		"can i proceed",
+		"before i proceed",
+		"before continuing",
+		"need your confirmation",
+		"needs your confirmation",
+		"waiting for confirmation",
+		"awaiting confirmation",
+		"requires confirmation",
+		"requires your confirmation",
+		"i need you to choose",
+		"which option",
+		"which one",
+	}
+	for _, pattern := range patterns {
+		if strings.Contains(text, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // jsonStringOrQuote returns s as a JSON value: if s is already valid JSON it

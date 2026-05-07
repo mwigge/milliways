@@ -195,8 +195,9 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	}
 
 	result, err := RunAgenticLoop(ctx, client, registry, &messages, LoopOptions{
-		SessionID: AgentIDMiniMax,
-		Logger:    slog.Default(),
+		SessionID:              AgentIDMiniMax,
+		Logger:                 slog.Default(),
+		StopOnUserInputRequest: true,
 	})
 	if err != nil {
 		observeError(metrics, AgentIDMiniMax)
@@ -226,6 +227,9 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	}
 	if result.StoppedAt == StopReasonMaxTurns {
 		push["max_turns_hit"] = true
+	}
+	if result.StoppedAt == StopReasonNeedsInput {
+		push["needs_input"] = true
 	}
 	stream.Push(push)
 }

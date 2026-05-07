@@ -17,7 +17,9 @@ package main
 import (
 	"bytes"
 	"io"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -29,6 +31,15 @@ import (
 
 // urlRe matches http and https URLs in plain text.
 var urlRe = regexp.MustCompile(`https?://[^\s\x1b<>"]+`)
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+
+func ansiEnabled() bool {
+	if _, ok := os.LookupEnv("NO_COLOR"); ok {
+		return false
+	}
+	term := strings.ToLower(strings.TrimSpace(os.Getenv("TERM")))
+	return term != "dumb"
+}
 
 // linkifyURLs wraps bare URLs in OSC 8 terminal hyperlink sequences so
 // wezterm (and any OSC-8-capable terminal) renders them as clickable links
@@ -127,8 +138,7 @@ func (h *codeHighlighter) processLine(line string) {
 	if line == "```" {
 		// Closing fence — highlight and flush the accumulated buffer.
 		h.inFence = false
-		highlighted := syntaxHighlight(h.buf.String(), h.lang)
-		_, _ = io.WriteString(h.out, highlighted)
+		_, _ = io.WriteString(h.out, renderCodePanel(h.buf.String(), h.lang))
 		h.buf.Reset()
 		h.lang = ""
 		return
@@ -167,9 +177,11 @@ func (h *codeHighlighter) Flush() error {
 	}
 	h.flushTable()
 
-	// If we are inside an open fence, emit buffered code as plain text.
+	// If we are inside an open fence, emit buffered code as a best-effort
+	// panel. This keeps truncated streams readable instead of dropping back
+	// to raw fences.
 	if h.inFence && h.buf.Len() > 0 {
-		_, err := h.out.Write(h.buf.Bytes())
+		_, err := io.WriteString(h.out, renderCodePanel(h.buf.String(), h.lang))
 		h.buf.Reset()
 		h.inFence = false
 		h.lang = ""
@@ -371,7 +383,12 @@ func alignedCell(cell string, width int, align string) string {
 }
 
 func displayWidth(s string) int {
+	s = stripANSISequences(s)
 	return utf8.RuneCountInString(s)
+}
+
+func stripANSISequences(s string) string {
+	return ansiRe.ReplaceAllString(s, "")
 }
 
 func renderActionLine(line string) (string, bool) {
@@ -470,16 +487,16 @@ func renderCommandAction(prefix, rest string) string {
 	)
 	cmd := strings.TrimSpace(rest)
 	cmd = strings.Trim(cmd, "`")
-	highlighted := strings.TrimRight(syntaxHighlight(cmd, "bash"), "\n")
 	var b strings.Builder
 	b.WriteString(dim)
 	b.WriteString("▶ ")
 	b.WriteString(action)
 	b.WriteString(titleWord(prefix))
 	b.WriteString(reset)
-	if highlighted != "" {
-		b.WriteByte(' ')
-		b.WriteString(highlighted)
+	if cmd != "" {
+		b.WriteByte('\n')
+		b.WriteString(renderCodePanel(cmd, "bash"))
+		return b.String()
 	}
 	b.WriteByte('\n')
 	return b.String()
@@ -520,6 +537,9 @@ var langAliases = map[string]string{
 // during formatting fall back to the raw source so highlighting never breaks
 // the stream.
 func syntaxHighlight(code, lang string) string {
+	if !ansiEnabled() {
+		return code
+	}
 	canonical := strings.ToLower(strings.TrimSpace(lang))
 	if alias, ok := langAliases[canonical]; ok {
 		canonical = alias
@@ -533,7 +553,14 @@ func syntaxHighlight(code, lang string) string {
 	}
 	lexer = chroma.Coalesce(lexer)
 
-	style := styles.Get("monokai")
+	styleName := strings.TrimSpace(os.Getenv("MILLIWAYS_CHROMA_STYLE"))
+	if styleName == "" {
+		styleName = "monokai"
+	}
+	style := styles.Get(styleName)
+	if style == nil {
+		style = styles.Get("monokai")
+	}
 	if style == nil {
 		style = styles.Fallback
 	}
@@ -558,4 +585,156 @@ func syntaxHighlight(code, lang string) string {
 		return code
 	}
 	return result
+}
+
+func renderCodePanel(code, lang string) string {
+	code = strings.TrimRight(code, "\n")
+	if code == "" {
+		return ""
+	}
+	highlighted := strings.TrimRight(syntaxHighlight(code, lang), "\n")
+	if highlighted == "" {
+		highlighted = code
+	}
+	lines := strings.Split(highlighted, "\n")
+	contentWidth := 0
+	for _, line := range lines {
+		if w := displayWidth(line); w > contentWidth {
+			contentWidth = w
+		}
+	}
+	if maxWidth := codePanelMaxContentWidth(); maxWidth > 0 && contentWidth > maxWidth {
+		contentWidth = maxWidth
+	}
+
+	label := " code "
+	if lang = strings.TrimSpace(lang); lang != "" {
+		label = " code · " + lang + " "
+	}
+	if minWidth := displayWidth(label) - 2; contentWidth < minWidth {
+		contentWidth = minWidth
+	}
+
+	const (
+		border = "\033[38;5;238m"
+		title  = "\033[2;38;5;250m"
+		reset  = "\033[0m"
+	)
+	var b strings.Builder
+	b.WriteString(border)
+	b.WriteString("╭")
+	b.WriteString(title)
+	b.WriteString(label)
+	b.WriteString(border)
+	b.WriteString(strings.Repeat("─", contentWidth+2-displayWidth(label)))
+	b.WriteString("╮")
+	b.WriteString(reset)
+	b.WriteByte('\n')
+	for _, line := range lines {
+		line = truncateANSIVisible(line, contentWidth)
+		pad := contentWidth - displayWidth(line)
+		b.WriteString(border)
+		b.WriteString("│")
+		b.WriteString(reset)
+		b.WriteByte(' ')
+		b.WriteString(line)
+		if pad > 0 {
+			b.WriteString(strings.Repeat(" ", pad))
+		}
+		b.WriteByte(' ')
+		b.WriteString(border)
+		b.WriteString("│")
+		b.WriteString(reset)
+		b.WriteByte('\n')
+	}
+	b.WriteString(border)
+	b.WriteString("╰")
+	b.WriteString(strings.Repeat("─", contentWidth+2))
+	b.WriteString("╯")
+	b.WriteString(reset)
+	b.WriteByte('\n')
+	return b.String()
+}
+
+func codePanelMaxContentWidth() int {
+	if v := strings.TrimSpace(os.Getenv("MILLIWAYS_CODE_PANEL_WIDTH")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 20 {
+			return n
+		}
+	}
+	if cols := termWidth(); cols > 24 {
+		return cols - 6
+	}
+	return 100
+}
+
+func truncateANSIVisible(s string, max int) string {
+	if max <= 0 || displayWidth(s) <= max {
+		return s
+	}
+	var b strings.Builder
+	visible := 0
+	for i := 0; i < len(s); {
+		if s[i] == '\x1b' {
+			j := i + 1
+			for j < len(s) && (s[j] < '@' || s[j] > '~') {
+				j++
+			}
+			if j < len(s) {
+				j++
+			}
+			b.WriteString(s[i:j])
+			i = j
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if visible+1 > max {
+			break
+		}
+		b.WriteRune(r)
+		visible++
+		i += size
+	}
+	b.WriteString("\033[0m")
+	return b.String()
+}
+
+func renderMarkdownForTerminal(text string) string {
+	var out strings.Builder
+	h := newCodeHighlighter(&out)
+	_, _ = h.Write([]byte(text))
+	_ = h.Flush()
+	return out.String()
+}
+
+func writeRenderedMarkdown(out io.Writer, text string) {
+	rendered := renderMarkdownForTerminal(text)
+	if rendered == "" {
+		return
+	}
+	_, _ = io.WriteString(out, rendered)
+	if !strings.HasSuffix(rendered, "\n") {
+		_, _ = io.WriteString(out, "\n")
+	}
+}
+
+func writePrefixedRenderedMarkdown(out io.Writer, text, prefix string) {
+	rendered := strings.TrimRight(renderMarkdownForTerminal(text), "\n")
+	if rendered == "" {
+		return
+	}
+	for _, line := range strings.Split(rendered, "\n") {
+		_, _ = io.WriteString(out, prefix+line+"\n")
+	}
+}
+
+func writeTerminalStatus(out io.Writer, line string) {
+	if line == "" {
+		return
+	}
+	if h, ok := out.(*codeHighlighter); ok {
+		_, _ = io.WriteString(h.out, line+"\n")
+		return
+	}
+	_, _ = io.WriteString(out, line+"\n")
 }

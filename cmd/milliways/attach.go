@@ -35,6 +35,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -52,6 +53,7 @@ func attachCmd() *cobra.Command {
 	var navGroupID string
 	var deckMode bool
 	var rightPaneID string
+	var plainMode bool
 
 	cmd := &cobra.Command{
 		Use:   "attach <handle>",
@@ -79,7 +81,7 @@ Navigator mode (parallel panel):
 				if len(args) > 0 {
 					return fmt.Errorf("--nav and positional handle are mutually exclusive")
 				}
-				return runNavigator(ctx, navGroupID)
+				return runNavigator(ctx, navGroupID, plainMode || !ansiEnabled())
 			}
 			if len(args) != 1 {
 				return fmt.Errorf("attach requires a session handle (integer), --deck, or --nav <group-id>")
@@ -94,6 +96,7 @@ Navigator mode (parallel panel):
 
 	cmd.Flags().BoolVar(&jsonMode, "json", false, "Emit one NDJSON event per delta/done")
 	cmd.Flags().StringVar(&navGroupID, "nav", "", "Run navigator mode for the given parallel group ID")
+	cmd.Flags().BoolVar(&plainMode, "plain", false, "Render navigator output without ANSI or box drawing")
 	cmd.Flags().BoolVar(&deckMode, "deck", false, "Run interactive deck provider navigator")
 	cmd.Flags().StringVar(&rightPaneID, "right-pane", "", "WezTerm pane ID of the chat pane (used with --deck)")
 
@@ -110,8 +113,8 @@ func runAttach(ctx context.Context, handle int64, jsonMode bool, out io.Writer, 
 	}
 	client, err := rpc.Dial(sock)
 	if err != nil {
-		fmt.Fprintf(errw, "unknown handle: %d\n", handle)
-		return fmt.Errorf("dial milliwaysd: %w", err)
+		fmt.Fprintln(errw, friendlyError("attach: ", "", err))
+		return fmt.Errorf("%s", friendlyError("attach: ", "", err))
 	}
 	defer func() { _ = client.Close() }()
 
@@ -119,7 +122,7 @@ func runAttach(ctx context.Context, handle int64, jsonMode bool, out io.Writer, 
 	if err != nil {
 		// Handle not found — check if the error message suggests an unknown handle.
 		fmt.Fprintf(errw, "unknown handle: %d\n", handle)
-		return err
+		return fmt.Errorf("%s", friendlyError("attach stream: ", "", err))
 	}
 
 	// Context cancellation closes the subscription.
@@ -248,13 +251,28 @@ func termWidth() int {
 //   - Tab: cycle to next slot
 //   - c: print consensus hint
 //   - q or Ctrl+D: exit
-func runNavigator(ctx context.Context, groupID string) error {
+func runNavigator(ctx context.Context, groupID string, plain bool) error {
 	sock := daemonSocket()
 	client, err := rpc.Dial(sock)
 	if err != nil {
-		return fmt.Errorf("dial milliwaysd for navigator: %w", err)
+		return fmt.Errorf("%s", friendlyError("navigator: ", "", err))
 	}
 	defer func() { _ = client.Close() }()
+
+	if plain {
+		var resp struct {
+			Slots []parallel.SlotRecord `json:"slots"`
+		}
+		if err := client.Call("group.status", map[string]any{"group_id": groupID}, &resp); err != nil {
+			return fmt.Errorf("%s", friendlyError("navigator status: ", "", err))
+		}
+		fmt.Printf("milliways parallel %s\n", groupID)
+		fmt.Println("0 main full chat")
+		for _, s := range resp.Slots {
+			fmt.Printf("%d %s %s %s tokens\n", s.SlotN, s.Provider, s.Status, formatNavTokens(s.TokensOut))
+		}
+		return nil
+	}
 
 	// Switch stdin to raw mode so we can read single keystrokes.
 	fd := int(os.Stdin.Fd())
@@ -414,9 +432,400 @@ func formatNavTokens(n int) string {
 
 // deckProviderInfo holds the data shown per row in the deck navigator.
 type deckProviderInfo struct {
-	ID         string
-	AuthStatus string
-	Model      string
+	ID           string
+	AuthStatus   string
+	Model        string
+	Handle       int64
+	Status       string
+	Turns        int
+	Tokens       int
+	CostUSD      float64
+	CurrentTrace string
+	LastTrace    string
+	LatencyMS    float64
+	TTFTMS       float64
+	TokenRate    float64
+	ErrorCount   int
+	QueueDepth   int
+	LastError    string
+	LastThink    string
+}
+
+func renderDeckNavigator(w int, providers []deckProviderInfo, selected int, active string, polled bool, quotas map[string]parallel.QuotaSummary) string {
+	return renderDeckNavigatorSized(w, 0, providers, selected, active, polled, quotas)
+}
+
+func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected int, active string, polled bool, quotas map[string]parallel.QuotaSummary) string {
+	if w <= 0 {
+		w = 36
+	}
+	if w < 18 {
+		w = 18
+	}
+	if h <= 0 {
+		h = 40
+	}
+
+	const reset = "\033[0m"
+	const dim = "\033[2m"
+
+	var b strings.Builder
+	lines := 0
+	ln := func(format string, args ...any) {
+		if lines >= h {
+			return
+		}
+		fmt.Fprintf(&b, format+"\r\n", args...)
+		lines++
+	}
+	section := func(name string) {
+		ln("%s%s %s %s%s", dim, strings.Repeat("─", 2), name, strings.Repeat("─", max(1, w-len(name)-5)), reset)
+	}
+	truncate := func(s string, maxLen int) string {
+		if maxLen < 1 {
+			return ""
+		}
+		if len(s) <= maxLen {
+			return s
+		}
+		if maxLen == 1 {
+			return "…"
+		}
+		return s[:maxLen-1] + "…"
+	}
+	padPlain := func(s string, width int) string {
+		if len(s) > width {
+			s = truncate(s, width)
+		}
+		return s + strings.Repeat(" ", max(0, width-len(s)))
+	}
+	clientLine := func(i int, p deckProviderInfo) string {
+		auth := "auth?"
+		switch p.AuthStatus {
+		case "ok":
+			auth = "auth ok"
+		case "missing_credentials":
+			auth = "auth miss"
+		}
+		status := fallbackStatus(p.Status)
+		if p.ID == active && status == deckStatusIdle {
+			status = "active"
+		}
+		prefix := fmt.Sprintf("%d", i+1)
+		if i == selected {
+			prefix = "▶ " + prefix
+		}
+		meta := fmt.Sprintf("t%d k%d", p.Turns, p.Tokens/1000)
+		if p.LastError != "" {
+			meta = "err"
+		} else if p.LastThink != "" {
+			meta = "think"
+		}
+		return fmt.Sprintf("%s %s %s %s %s", prefix, p.ID, status, auth, meta)
+	}
+	card := func(selected bool, provider, line string) {
+		edgeColor := dim
+		if selected {
+			edgeColor = agentColor(provider)
+			if edgeColor == "" {
+				edgeColor = "\033[38;5;75m"
+			}
+		}
+		labelColor := agentColor(provider)
+		inner := max(8, w-2)
+		ln("%s┌%s┐%s", edgeColor, strings.Repeat("─", inner), reset)
+		if labelColor == "" {
+			ln("%s│%s│%s", edgeColor, padPlain(" "+line, inner), reset)
+		} else {
+			ln("%s│%s%s%s%s│%s", edgeColor, labelColor, padPlain(" "+line, inner), reset, edgeColor, reset)
+		}
+		ln("%s└%s┘%s", edgeColor, strings.Repeat("─", inner), reset)
+	}
+
+	// Keep the lower panels visible and the left deck predictable. Milliways has
+	// seven clients, so render up to seven choices when the pane has room; users
+	// can still switch directly with
+	// /switch, /<client>, /next, and /prev in the main pane.
+	clientBudget := max(3, h-16)
+	maxCards := min(7, max(1, clientBudget/3))
+	if maxCards > len(providers) || len(providers) == 0 {
+		maxCards = len(providers)
+	}
+	start := 0
+	if len(providers) > maxCards {
+		start = selected - maxCards/2
+		if start < 0 {
+			start = 0
+		}
+		if start+maxCards > len(providers) {
+			start = len(providers) - maxCards
+		}
+	}
+	end := start + maxCards
+	clientSection := "Clients"
+	if len(providers) > 0 && maxCards < len(providers) {
+		clientSection = fmt.Sprintf("Clients %d-%d/%d", start+1, end, len(providers))
+	}
+	section(clientSection)
+	if len(providers) == 0 {
+		if polled {
+			ln("  %sno clients%s", dim, reset)
+		} else {
+			ln("  %sconnecting...%s", dim, reset)
+		}
+	}
+	for i := start; i < end; i++ {
+		card(i == selected, providers[i].ID, clientLine(i, providers[i]))
+	}
+
+	section("Active")
+	if active != "" {
+		provColor := agentColor(active)
+		activeModel := "—"
+		for _, p := range providers {
+			if p.ID == active {
+				if p.Model != "" {
+					activeModel = p.Model
+				}
+				break
+			}
+		}
+		ln("%s● %s%s%s active%s", dim, provColor, active, dim, reset)
+		ln("  %s%s%s", dim, truncate(activeModel, w-4), reset)
+	} else {
+		ln("%sno active client%s", dim, reset)
+	}
+
+	section("Status")
+	if polled {
+		ln("%sdaemon connected%s", dim, reset)
+		ln("%s%d clients%s", dim, len(providers), reset)
+	} else {
+		ln("%sdaemon connecting%s", dim, reset)
+	}
+	ln("%s↑↓ move  ↩ switch  q quit%s", dim, reset)
+
+	section("Observability")
+	// Fleet status bar: aggregate live state + auth + total cost
+	var obsThink, obsStream, obsRun, obsErr, obsOk int
+	var obsTotalCost float64
+	for _, p := range providers {
+		if p.AuthStatus == "ok" {
+			obsOk++
+		}
+		obsTotalCost += p.CostUSD
+		switch fallbackStatus(p.Status) {
+		case deckStatusThinking:
+			obsThink++
+		case deckStatusStreaming:
+			obsStream++
+		case deckStatusRunning:
+			obsRun++
+		case deckStatusError:
+			obsErr++
+		}
+	}
+	fleetParts := make([]string, 0, 4)
+	if obsThink > 0 {
+		fleetParts = append(fleetParts, fmt.Sprintf("%d●", obsThink))
+	}
+	if obsStream > 0 {
+		fleetParts = append(fleetParts, fmt.Sprintf("%d⟳", obsStream))
+	}
+	if obsRun > 0 {
+		fleetParts = append(fleetParts, fmt.Sprintf("%d▶", obsRun))
+	}
+	if obsErr > 0 {
+		fleetParts = append(fleetParts, fmt.Sprintf("%d✗", obsErr))
+	}
+	obsAuthStr := fmt.Sprintf("auth %d/%d", obsOk, len(providers))
+	obsCostStr := "$0.00"
+	if obsTotalCost >= 0.005 {
+		obsCostStr = fmt.Sprintf("$%.2f", obsTotalCost)
+	}
+	if len(fleetParts) == 0 {
+		ln("%s◌ all idle  │%s  %s%s", dim, obsAuthStr, obsCostStr, reset)
+	} else {
+		ln("%s  │%s  %s%s", strings.Join(fleetParts, " "), obsAuthStr, obsCostStr, reset)
+	}
+	// Per-agent rows: one row per non-idle provider
+	var obsIdleShorts []string
+	var obsAlerts []string
+	for _, p := range providers {
+		st := fallbackStatus(p.Status)
+		if st == deckStatusIdle {
+			obsIdleShorts = append(obsIdleShorts, obsProviderShort(p.ID))
+			continue
+		}
+		glyph, stLabel := obsStatusRow(st, p.LastError)
+		tokStr := obsTokensK(p.Tokens)
+		costStr := obsCostFmt(p.CostUSD)
+		row := obsProviderShort(p.ID) + " " + glyph + stLabel
+		if tokStr != "" {
+			row += " " + tokStr
+		}
+		if costStr != "" {
+			row += " " + costStr
+		}
+		if p.LatencyMS > 0 {
+			row += " lat" + formatDurationMS(p.LatencyMS)
+		}
+		if p.TTFTMS > 0 {
+			row += " ttft" + formatDurationMS(p.TTFTMS)
+		}
+		if p.TokenRate > 0 {
+			row += fmt.Sprintf(" %.0ft/s", p.TokenRate)
+		}
+		if p.QueueDepth > 0 {
+			row += fmt.Sprintf(" q%d", p.QueueDepth)
+		}
+		if trace := shortTraceID(p.CurrentTrace, p.LastTrace); trace != "" {
+			row += " tr" + trace
+		}
+		ln("  %s", truncate(row, w-4))
+		if st == deckStatusError && p.LastError != "" {
+			obsAlerts = append(obsAlerts, "✗ "+obsProviderShort(p.ID)+" "+truncate(p.LastError, 18))
+		}
+	}
+	// Idle summary
+	if len(obsIdleShorts) > 0 {
+		idleLine := "◌ idle: " + strings.Join(obsIdleShorts, " ")
+		if len(obsIdleShorts) > 4 {
+			idleLine = fmt.Sprintf("◌ idle: %s +%d", strings.Join(obsIdleShorts[:4], " "), len(obsIdleShorts)-4)
+		}
+		ln("%s%s%s", dim, truncate(idleLine, w-2), reset)
+	}
+	// Alert block — only when there are error events
+	if len(obsAlerts) > 0 {
+		alertHdr := "┄ " + strings.Repeat("┄", max(1, w-4))
+		ln("%s%s%s", dim, truncate(alertHdr, w-2), reset)
+		for _, alert := range obsAlerts {
+			ln("\033[31m  %s%s", alert, reset)
+		}
+	}
+	// Footer: quota for the active client
+	obsQuotaStr := "quota --"
+	if active != "" {
+		if q, ok := quotas[active]; ok && q.LimitDay > 0 {
+			obsQuotaStr = fmt.Sprintf("quota %d%%", int(q.UsedPct()))
+		}
+	}
+	ln("%s%s%s", dim, obsQuotaStr, reset)
+
+	return b.String()
+}
+
+// obsProviderShort returns a 4-char abbreviation used in the Observability panel rows.
+func obsProviderShort(id string) string {
+	switch id {
+	case "claude":
+		return "clde"
+	case "codex":
+		return "cdex"
+	case "copilot":
+		return "cplt"
+	case "gemini":
+		return "gemi"
+	case "minimax":
+		return "mnmx"
+	case "local":
+		return "lcal"
+	case "pool":
+		return "pool"
+	default:
+		if len(id) >= 4 {
+			return id[:4]
+		}
+		return id + strings.Repeat(" ", 4-len(id))
+	}
+}
+
+// obsStatusRow returns the status glyph and a short label for an agent row in
+// the Observability panel.
+func obsStatusRow(status, lastError string) (glyph, label string) {
+	switch status {
+	case deckStatusThinking:
+		return "●", "think"
+	case deckStatusStreaming:
+		return "⟳", "stream"
+	case deckStatusRunning:
+		return "▶", "tool"
+	case deckStatusError:
+		reason := lastError
+		if len(reason) > 8 {
+			reason = reason[:8]
+		}
+		return "✗", "err:" + reason
+	default:
+		return "◌", "idle"
+	}
+}
+
+// obsTokensK formats a token count as an abbreviated k-unit string.
+func obsTokensK(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	return fmt.Sprintf("%dk", n/1000)
+}
+
+// obsCostFmt formats a cost in dollars; returns "" for negligible amounts.
+func obsCostFmt(f float64) string {
+	if f < 0.005 {
+		return ""
+	}
+	return fmt.Sprintf("$%.2f", f)
+}
+
+func formatDurationMS(ms float64) string {
+	switch {
+	case ms <= 0:
+		return ""
+	case ms < 1000:
+		return fmt.Sprintf("%.0fms", ms)
+	default:
+		return fmt.Sprintf("%.1fs", ms/1000)
+	}
+}
+
+func shortTraceID(ids ...string) string {
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if len(id) <= 8 {
+			return id
+		}
+		return id[:8]
+	}
+	return ""
+}
+
+func orderDeckProviders(providers []deckProviderInfo) []deckProviderInfo {
+	ordered := append([]deckProviderInfo(nil), providers...)
+	rank := make(map[string]int, len(chatSwitchableAgents))
+	for i, id := range chatSwitchableAgents {
+		rank[id] = i
+	}
+	sort.SliceStable(ordered, func(i, j int) bool {
+		ri, iok := rank[ordered[i].ID]
+		rj, jok := rank[ordered[j].ID]
+		switch {
+		case iok && jok:
+			return ri < rj
+		case iok:
+			return true
+		case jok:
+			return false
+		default:
+			return ordered[i].ID < ordered[j].ID
+		}
+	})
+	return ordered
 }
 
 // runDeckNavigator is the interactive provider browser for deck mode.
@@ -463,9 +872,9 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 	}
 	defer func() {
 		_ = term.Restore(fd, oldState)
-		fmt.Print("\033[?25h\033[0m\n")
+		fmt.Print("\033[?25h\033[?1049l\033[0m\n")
 	}()
-	fmt.Print("\033[?25l") // hide cursor while navigating
+	fmt.Print("\033[?1049h\033[?25l") // alternate screen + hidden cursor
 
 	var providers []deckProviderInfo
 	var quotas map[string]parallel.QuotaSummary
@@ -486,18 +895,47 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 		if err := client.Call("agent.list", nil, &agents); err != nil {
 			return
 		}
+		var deck daemonDeckSnapshot
+		deckByAgent := map[string]daemonDeckSessionStatus{}
+		if err := client.Call("deck.snapshot", nil, &deck); err == nil {
+			if deck.Active != "" {
+				active = deck.Active
+			}
+			for _, sess := range deck.Sessions {
+				if sess.AgentID != "" {
+					deckByAgent[sess.AgentID] = sess
+				}
+			}
+		}
 		// Always update providers from any successful response, even an empty
 		// one. An empty list means no runners are configured, not that we are
 		// still connecting — Bug 3.
 		polled = true
 		updated := make([]deckProviderInfo, 0, len(agents))
 		for _, a := range agents {
+			d := deckByAgent[a.ID]
 			updated = append(updated, deckProviderInfo{
-				ID:         a.ID,
-				AuthStatus: a.AuthStatus,
-				Model:      a.Model,
+				ID:           a.ID,
+				AuthStatus:   a.AuthStatus,
+				Model:        a.Model,
+				Handle:       d.Handle,
+				Status:       d.Status,
+				Turns:        d.TurnCount,
+				Tokens:       d.TotalTokens,
+				CostUSD:      d.CostUSD,
+				CurrentTrace: d.CurrentTrace,
+				LastTrace:    d.LastTrace,
+				LatencyMS:    d.LatencyMS,
+				TTFTMS:       d.TTFTMS,
+				TokenRate:    d.TokenRate,
+				ErrorCount:   d.ErrorCount,
+				QueueDepth:   d.QueueDepth,
+				LastError:    d.LastError,
+				LastThink:    d.LastThinking,
 			})
 		}
+		updated = orderDeckProviders(updated)
+
 		// Clamp the cursor regardless of whether the new list is empty or
 		// shrunk — Bug 5.
 		if len(updated) == 0 {
@@ -514,104 +952,16 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 		}
 	}
 
-	// ln prints a line in raw-mode-safe way: \r\n instead of \n so the
-	// cursor returns to column 0 on each new line.
-	ln := func(format string, args ...any) {
-		fmt.Printf(format+"\r\n", args...)
-	}
-
 	render := func() {
-		w, _, _ := term.GetSize(fd)
-		if w <= 0 {
-			w = 36
-		}
-		const reset = "\033[0m"
-		const dim = "\033[2m"
-		const bold = "\033[1m"
-
+		w, h, _ := term.GetSize(fd)
 		fmt.Print("\033[2J\033[H") // clear + cursor home
-
-		// Title bar — guard against negative repeat count when the pane is
-		// narrower than the title string (13 chars).
-		title := " milliways "
-		padN := (w - len(title)) / 2
-		if padN < 0 {
-			padN = 0
-		}
-		pad := strings.Repeat("─", padN)
-		ln("%s%s%s", dim, pad+title+pad, reset)
-		ln("")
-
-		if len(providers) == 0 {
-			if polled {
-				ln("  %sno providers%s", dim, reset)
-			} else {
-				ln("  %sconnecting...%s", dim, reset)
-			}
-		}
-
-		for i, p := range providers {
-			// Auth indicator
-			authMark := "?"
-			authColor := "\033[33m"
-			switch p.AuthStatus {
-			case "ok":
-				authMark = "✓"
-				authColor = "\033[32m"
-			case "missing_credentials":
-				authMark = "✗"
-				authColor = "\033[2m"
-			}
-
-			provColor := parallel.ProviderColor(p.ID)
-			model := p.Model
-			if model == "" {
-				model = "—"
-			}
-			// Trim model name to fit: pane width minus fixed columns
-			maxModel := w - 16
-			if maxModel < 4 {
-				maxModel = 4
-			}
-			if len(model) > maxModel {
-				model = model[:maxModel-1] + "…"
-			}
-
-			if i == selected {
-				ln("%s▶ %s%-9s%s %s%s%s  %s%s\033[K",
-					bold,
-					provColor, p.ID, reset+bold,
-					authColor, authMark, reset+bold,
-					model, reset)
-			} else {
-				ln("  %s%-9s%s %s%s%s  %s%s\033[K",
-					provColor, p.ID, reset,
-					authColor, authMark, reset,
-					dim+model, reset)
-			}
-		}
-
-		// ── Status bar ──────────────────────────────────────
-		ln("%s%s%s", dim, strings.Repeat("─", w), reset)
-		if active != "" {
-			provColor := parallel.ProviderColor(active)
-			// Show quota if we have it for the active provider.
-			quotaLine := ""
-			if q, ok := quotas[active]; ok && q.LimitDay > 0 {
-				pct := int(q.UsedPct())
-				quotaLine = fmt.Sprintf("  %d%% quota", pct)
-			}
-			ln("%s● %s%s%s active%s%s", dim, provColor, active, dim, quotaLine, reset)
-		} else {
-			ln("%sno active provider%s", dim, reset)
-		}
-		ln("%s↑↓ move  ↩ switch  q quit%s", dim, reset)
+		fmt.Print(renderDeckNavigatorSized(w, h, providers, selected, active, polled, quotas))
 	}
 
 	// Key event reader — handles single bytes and 3-byte arrow sequences.
 	type keyKind int
 	const (
-		keyRune  keyKind = iota
+		keyRune keyKind = iota
 		keyUp
 		keyDown
 		keyEnter

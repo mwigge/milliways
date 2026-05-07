@@ -19,17 +19,19 @@ package parallel
 func ProviderColor(provider string) string {
 	switch provider {
 	case "claude":
-		return "\033[34m" // blue
+		return "\033[97m" // pearl white
 	case "codex":
-		return "\033[33m" // yellow
+		return "\033[38;5;214m" // amber
 	case "copilot":
-		return "\033[36m" // cyan
+		return "\033[38;5;69m" // cornflower blue
 	case "gemini":
-		return "\033[35m" // magenta
+		return "\033[38;5;208m" // orange
 	case "local":
-		return "\033[32m" // green
+		return "\033[38;5;160m" // red
 	case "minimax":
-		return "\033[95m" // bright magenta
+		return "\033[38;5;141m" // soft purple
+	case "pool":
+		return "\033[38;5;117m" // light blue
 	default:
 		return ""
 	}

@@ -37,8 +37,10 @@ dist_dir="${DIST_DIR:-$repo_root/dist}"
 [ -x "$upgrade_script" ] || chmod +x "$upgrade_script"
 
 # ── Per-run temp dir ──────────────────────────────────────────────────────────
-tmp_base="${TMPDIR:-/tmp}"; tmp_base="${tmp_base%/}"
-run_dir="$(mktemp -d "$tmp_base/mw-upgrade-smoke-XXXXXX")"
+# Keep the Docker-mounted release fixtures under the repo. On macOS/Colima,
+# /var/folders is not necessarily shared with Docker, so containers can see an
+# empty /release even though the host files exist.
+run_dir="$(mktemp -d "$repo_root/.mw-upgrade-smoke-XXXXXX")"
 
 cleanup() {
   if [ -n "${SMOKE_KEEP:-}" ]; then
@@ -183,41 +185,55 @@ run_docker_upgrade_case() {
     fi
   done
 
-  local host_arch
-  host_arch="$(docker version --format '{{.Server.Arch}}' 2>/dev/null || uname -m)"
-  case "$host_arch" in
-    amd64|x86_64) ;;
-    *)
-      skip "$label (linux/amd64 Docker requires an amd64 host; current server arch: $host_arch)"
-      return 0
-      ;;
-  esac
-
   local release_dir="$run_dir/docker-release-${pkg_mgr}"
+  local smoke_version="v1.2.0-smoke"
+  local smoke_pkg_version="1.2.0~smoke"
   mkdir -p "$release_dir"
   for _b in milliways milliwaysd milliwaysctl; do
     cp "$dist_dir/${_b}_linux_amd64" "$release_dir/${_b}_linux_amd64"
   done
   case "$pkg_mgr" in
-    deb)    touch "$release_dir/milliways_1.2.0_amd64.deb" ;;
-    rpm)    touch "$release_dir/milliways-1.2.0-1.x86_64.rpm" ;;
-    pacman) touch "$release_dir/milliways-1.2.0-1-x86_64.pkg.tar.zst" ;;
+    deb)    touch "$release_dir/milliways_${smoke_pkg_version}_amd64.deb" ;;
+    rpm)    touch "$release_dir/milliways-${smoke_pkg_version}-1.x86_64.rpm" ;;
+    pacman) touch "$release_dir/milliways-${smoke_pkg_version}-1-x86_64.pkg.tar.zst" ;;
   esac
 
   printf '\n==> %s: %s\n' "$label" "$image"
   local docker_log="$run_dir/docker-${pkg_mgr}.log"
 
-  docker run --rm --platform linux/amd64 \
+  docker run --rm --platform linux/amd64 --security-opt seccomp=unconfined \
     -v "$upgrade_script:/tmp/upgrade.sh:ro" \
     -v "$release_dir:/release:ro" \
     "$image" \
     bash -lc "
 set -euo pipefail
+trap 'rc=\$?; if [ \$rc -ne 0 ]; then
+  cat /tmp/upgrade.log >&2 2>/dev/null || true
+  cat /tmp/pkg-install.log >&2 2>/dev/null || true
+fi; exit \$rc' EXIT
 PREFIX=/tmp/mw-prefix
 BIN_DIR=\$PREFIX/bin
 FAKE_BIN=/tmp/fake-bin
 INSTALL_LOG=/tmp/pkg-install.log
 mkdir -p \"\$BIN_DIR\" \"\$FAKE_BIN\"
+
+cat >\"\$FAKE_BIN/curl\" <<'CURL'
+#!/usr/bin/env bash
+out=
+url=
+while [ \"\$#\" -gt 0 ]; do
+  case \"\$1\" in
+    -o) out=\"\$2\"; shift 2 ;;
+    -*) shift ;;
+    *) url=\"\$1\"; shift ;;
+  esac
+done
+case \"\$url\" in
+  file://*) cp \"\${url#file://}\" \"\$out\" ;;
+  *) exit 22 ;;
+esac
+CURL
+chmod +x \"\$FAKE_BIN/curl\"
 
 for _b in milliways milliwaysd milliwaysctl; do
   printf '#!/usr/bin/env bash\n[ \"\${1:-}\" = \"--version\" ] && printf \"%s\\n\" v1.1.0 && exit 0\nexit 0\n' \
@@ -257,7 +273,7 @@ PACMAN
 esac
 
 export PATH=\"\$FAKE_BIN:\$BIN_DIR:\$PATH\"
-export PREFIX MILLIWAYS_VERSION=v1.2.0 MILLIWAYS_RELEASE_BASE_URL=file:///release UPGRADE_YES=1
+export PREFIX MILLIWAYS_VERSION='$smoke_version' MILLIWAYS_RELEASE_BASE_URL=file:///release UPGRADE_YES=1
 bash /tmp/upgrade.sh >/tmp/upgrade.log 2>&1
 test -f /tmp/pkg-install.log || { echo 'FAIL: package manager stub not invoked'; exit 1; }
 echo 'PASS: package manager stub invoked'

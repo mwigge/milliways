@@ -129,3 +129,11 @@ func TestDetectWeztermCurrentPaneID_PaneIDZero(t *testing.T) {
 		t.Errorf("expected pane 0, got %q reason=%q", id, reason)
 	}
 }
+
+func TestDeckNavigatorPanePercentIsThin(t *testing.T) {
+	t.Parallel()
+
+	if deckNavigatorPanePercent > 18 {
+		t.Fatalf("deckNavigatorPanePercent = %d, want <= 18", deckNavigatorPanePercent)
+	}
+}
