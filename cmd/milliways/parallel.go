@@ -23,6 +23,12 @@ import (
 	"github.com/mwigge/milliways/internal/rpc"
 )
 
+type parallelCommandOptions struct {
+	Providers []string
+	Prompt    string
+	Watch     bool
+}
+
 // parseParallelArgs extracts an optional --providers <list> flag and the
 // remaining prompt text from the rest of a /parallel command line.
 //
@@ -30,52 +36,67 @@ import (
 //
 // Returns (providers, prompt). providers is nil if the flag is absent.
 func parseParallelArgs(rest string) (providers []string, prompt string) {
-	rest = strings.TrimSpace(rest)
-	if strings.HasPrefix(rest, "--providers ") || strings.HasPrefix(rest, "--providers\t") {
-		// Consume the flag name.
-		rest = strings.TrimPrefix(rest, "--providers")
-		rest = strings.TrimLeft(rest, " \t")
+	opts := parseParallelCommand(rest)
+	return opts.Providers, opts.Prompt
+}
 
-		// Find the end of the providers value (first whitespace after the
-		// comma-separated list marks the start of the prompt).
-		idx := strings.IndexAny(rest, " \t")
-		if idx < 0 {
-			// providers flag with no following prompt.
-			rawList := rest
-			for _, p := range strings.Split(rawList, ",") {
-				if p = strings.TrimSpace(p); p != "" {
-					providers = append(providers, p)
-				}
-			}
-			return providers, ""
+func parseParallelCommand(rest string) parallelCommandOptions {
+	var opts parallelCommandOptions
+	rest = strings.TrimSpace(rest)
+	for rest != "" {
+		field, tail := splitLeadingField(rest)
+		switch field {
+		case "--watch", "-w":
+			opts.Watch = true
+			rest = strings.TrimSpace(tail)
+		case "--providers":
+			rawList, next := splitLeadingField(tail)
+			opts.Providers = parseProviderList(rawList)
+			rest = strings.TrimSpace(next)
+		default:
+			opts.Prompt = rest
+			return opts
 		}
-		rawList := rest[:idx]
-		for _, p := range strings.Split(rawList, ",") {
-			if p = strings.TrimSpace(p); p != "" {
-				providers = append(providers, p)
-			}
-		}
-		prompt = strings.TrimSpace(rest[idx+1:])
-		return providers, prompt
 	}
-	return nil, rest
+	return opts
+}
+
+func splitLeadingField(s string) (field, rest string) {
+	s = strings.TrimLeft(s, " \t")
+	idx := strings.IndexAny(s, " \t")
+	if idx < 0 {
+		return s, ""
+	}
+	return s[:idx], s[idx+1:]
+}
+
+func parseProviderList(rawList string) []string {
+	var providers []string
+	for _, p := range strings.Split(rawList, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			providers = append(providers, p)
+		}
+	}
+	return providers
 }
 
 // handleParallel is the /parallel slash-command handler.
 //
-// Usage: /parallel [--providers p1,p2,...] <prompt>
+// Usage: /parallel [--watch] [--providers p1,p2,...] <prompt>
 //
 // Steps:
-//  1. Parse --providers flag (optional).
+//  1. Parse --watch and --providers flags.
 //  2. If providers list is empty, use agent.list to discover available providers.
 //  3. Validate prompt is non-empty.
 //  4. Call parallel.dispatch RPC.
 //  5. Print result or stub note if layout is not yet available.
+//  6. With --watch, render the live grouped comparison in the chat REPL.
 func (l *chatLoop) handleParallel(rest string) {
-	providers, prompt := parseParallelArgs(rest)
+	opts := parseParallelCommand(rest)
+	providers, prompt := opts.Providers, opts.Prompt
 
 	if prompt == "" {
-		fmt.Fprintln(l.errw, "usage: /parallel [--providers p1,p2,...] <prompt>")
+		fmt.Fprintln(l.errw, "usage: /parallel [--watch] [--providers p1,p2,...] <prompt>")
 		return
 	}
 
@@ -149,7 +170,11 @@ func (l *chatLoop) handleParallel(rest string) {
 			fmt.Fprintf(l.out, "  milliways attach %d  (%s)\n", s.Handle, s.Provider)
 		}
 	}
-	fmt.Fprintf(l.out, "[parallel] group %s — /parallel-view %s for side-by-side comparison\n", result.GroupID, result.GroupID)
+	fmt.Fprintf(l.out, "[parallel] group %s — /parallel-view --watch %s for live comparison\n", result.GroupID, result.GroupID)
+	if opts.Watch {
+		fmt.Fprintf(l.out, "[parallel] watching %s — Ctrl+C to stop\n", result.GroupID)
+		l.handleParallelView("--watch " + result.GroupID)
+	}
 }
 
 func parseParallelViewArgs(rest string) (watch bool, groupID string) {
