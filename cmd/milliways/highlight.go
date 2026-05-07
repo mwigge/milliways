@@ -57,16 +57,17 @@ func linkifyURLs(text string) string {
 
 // codeHighlighter wraps an io.Writer and intercepts markdown code fences.
 // Text outside fences is passed through immediately. Text inside fences
-// is buffered; when the closing fence arrives the buffer is syntax-highlighted
-// and written as a single ANSI-colored block.
+// is syntax-highlighted and written as boxed lines as soon as complete
+// lines arrive, so streamed responses do not hide code until the closing
+// fence arrives.
 //
 // Thread-safety: not safe for concurrent use — drainStream is single-goroutine.
 type codeHighlighter struct {
 	out        io.Writer
 	pending    bytes.Buffer // holds incomplete (no trailing newline) input
-	buf        bytes.Buffer // accumulates lines inside an open code fence
 	tableLines []string     // accumulates a possible markdown table outside fences
 	lang       string       // language extracted from the opening fence line
+	codeWidth  int          // content width for the currently open code panel
 	inFence    bool
 }
 
@@ -116,8 +117,8 @@ func (h *codeHighlighter) processLine(line string) {
 			h.flushTable()
 			h.inFence = true
 			h.lang = strings.TrimSpace(strings.TrimPrefix(line, "```"))
-			h.buf.Reset()
-			// Do not emit the opening fence to the output.
+			h.codeWidth = streamingCodePanelWidth(h.lang)
+			_, _ = io.WriteString(h.out, renderCodePanelTop(h.lang, h.codeWidth))
 			return
 		}
 		if isMarkdownTableCandidate(line) {
@@ -136,19 +137,18 @@ func (h *codeHighlighter) processLine(line string) {
 
 	// Inside a fence.
 	if line == "```" {
-		// Closing fence — highlight and flush the accumulated buffer.
+		// Closing fence — close the streaming code panel.
 		h.inFence = false
-		_, _ = io.WriteString(h.out, renderCodePanel(h.buf.String(), h.lang))
-		h.buf.Reset()
+		_, _ = io.WriteString(h.out, renderCodePanelBottom(h.codeWidth))
 		h.lang = ""
+		h.codeWidth = 0
 		return
 	}
 
-	// Accumulate within-fence content.
-	h.buf.WriteString(line + "\n")
+	_, _ = io.WriteString(h.out, renderCodePanelLine(line, h.lang, h.codeWidth))
 }
 
-// Flush writes any content buffered inside an unclosed fence as plain text.
+// Flush writes any pending line and closes any unclosed streaming code panel.
 // This handles streaming truncation where the model output ends before the
 // closing fence arrives.
 func (h *codeHighlighter) Flush() error {
@@ -157,7 +157,9 @@ func (h *codeHighlighter) Flush() error {
 		line := h.pending.String()
 		h.pending.Reset()
 		if h.inFence {
-			h.buf.WriteString(line)
+			if _, err := io.WriteString(h.out, renderCodePanelLine(line, h.lang, h.codeWidth)); err != nil {
+				return err
+			}
 		} else if isMarkdownTableCandidate(line) {
 			h.tableLines = append(h.tableLines, line)
 		} else {
@@ -177,14 +179,11 @@ func (h *codeHighlighter) Flush() error {
 	}
 	h.flushTable()
 
-	// If we are inside an open fence, emit buffered code as a best-effort
-	// panel. This keeps truncated streams readable instead of dropping back
-	// to raw fences.
-	if h.inFence && h.buf.Len() > 0 {
-		_, err := io.WriteString(h.out, renderCodePanel(h.buf.String(), h.lang))
-		h.buf.Reset()
+	if h.inFence {
+		_, err := io.WriteString(h.out, renderCodePanelBottom(h.codeWidth))
 		h.inFence = false
 		h.lang = ""
+		h.codeWidth = 0
 		return err
 	}
 
@@ -615,6 +614,36 @@ func renderCodePanel(code, lang string) string {
 		contentWidth = minWidth
 	}
 
+	var b strings.Builder
+	b.WriteString(renderCodePanelTop(lang, contentWidth))
+	for _, line := range lines {
+		b.WriteString(renderHighlightedCodePanelLine(line, contentWidth))
+	}
+	b.WriteString(renderCodePanelBottom(contentWidth))
+	return b.String()
+}
+
+func streamingCodePanelWidth(lang string) int {
+	contentWidth := codePanelMaxContentWidth()
+	if contentWidth <= 0 {
+		contentWidth = 100
+	}
+	if minWidth := displayWidth(codePanelLabel(lang)) - 2; contentWidth < minWidth {
+		contentWidth = minWidth
+	}
+	return contentWidth
+}
+
+func codePanelLabel(lang string) string {
+	label := " code "
+	if lang = strings.TrimSpace(lang); lang != "" {
+		label = " code · " + lang + " "
+	}
+	return label
+}
+
+func renderCodePanelTop(lang string, contentWidth int) string {
+	label := codePanelLabel(lang)
 	const (
 		border = "\033[38;5;238m"
 		title  = "\033[2;38;5;250m"
@@ -630,23 +659,47 @@ func renderCodePanel(code, lang string) string {
 	b.WriteString("╮")
 	b.WriteString(reset)
 	b.WriteByte('\n')
-	for _, line := range lines {
-		line = truncateANSIVisible(line, contentWidth)
-		pad := contentWidth - displayWidth(line)
-		b.WriteString(border)
-		b.WriteString("│")
-		b.WriteString(reset)
-		b.WriteByte(' ')
-		b.WriteString(line)
-		if pad > 0 {
-			b.WriteString(strings.Repeat(" ", pad))
-		}
-		b.WriteByte(' ')
-		b.WriteString(border)
-		b.WriteString("│")
-		b.WriteString(reset)
-		b.WriteByte('\n')
+	return b.String()
+}
+
+func renderCodePanelLine(line, lang string, contentWidth int) string {
+	highlighted := strings.TrimRight(syntaxHighlight(line, lang), "\n")
+	if highlighted == "" && line != "" {
+		highlighted = line
 	}
+	return renderHighlightedCodePanelLine(highlighted, contentWidth)
+}
+
+func renderHighlightedCodePanelLine(line string, contentWidth int) string {
+	line = truncateANSIVisible(line, contentWidth)
+	pad := contentWidth - displayWidth(line)
+	const (
+		border = "\033[38;5;238m"
+		reset  = "\033[0m"
+	)
+	var b strings.Builder
+	b.WriteString(border)
+	b.WriteString("│")
+	b.WriteString(reset)
+	b.WriteByte(' ')
+	b.WriteString(line)
+	if pad > 0 {
+		b.WriteString(strings.Repeat(" ", pad))
+	}
+	b.WriteByte(' ')
+	b.WriteString(border)
+	b.WriteString("│")
+	b.WriteString(reset)
+	b.WriteByte('\n')
+	return b.String()
+}
+
+func renderCodePanelBottom(contentWidth int) string {
+	const (
+		border = "\033[38;5;238m"
+		reset  = "\033[0m"
+	)
+	var b strings.Builder
 	b.WriteString(border)
 	b.WriteString("╰")
 	b.WriteString(strings.Repeat("─", contentWidth+2))
