@@ -623,6 +623,8 @@ type chatSession struct {
 	modelMu      sync.Mutex
 	model        string
 	modelSource  string
+	outputMu     sync.Mutex
+	outputHidden bool
 
 	// done is closed when the streaming goroutine exits (either the
 	// stream channel closed or the session was explicitly closed).
@@ -1011,13 +1013,25 @@ func (l *chatLoop) beginStreamOutput(sess *chatSession) {
 	if l == nil || l.rl == nil || sess == nil || l.sess != sess {
 		return
 	}
+	sess.outputMu.Lock()
+	defer sess.outputMu.Unlock()
+	if sess.outputHidden {
+		return
+	}
+	sess.outputHidden = true
 	l.rl.BeginExternalOutput()
 }
 
 func (l *chatLoop) endStreamOutput(sess *chatSession) {
-	if l == nil || l.rl == nil || sess == nil || l.sess != sess {
+	if l == nil || l.rl == nil || sess == nil {
 		return
 	}
+	sess.outputMu.Lock()
+	defer sess.outputMu.Unlock()
+	if !sess.outputHidden {
+		return
+	}
+	sess.outputHidden = false
 	l.rl.EndExternalOutput()
 }
 

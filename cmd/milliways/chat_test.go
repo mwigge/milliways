@@ -137,6 +137,59 @@ func TestDrainStreamWritesThinkingToOutputStream(t *testing.T) {
 	}
 }
 
+func TestDrainStreamKeepsPromptHiddenAcrossThinkingEvents(t *testing.T) {
+	stream := make(chan []byte, 4)
+	sess := &chatSession{
+		agentID:      "minimax",
+		streamCh:     stream,
+		done:         make(chan struct{}),
+		streamCancel: func() {},
+	}
+	var out bytes.Buffer
+	rl := &chatLineReader{
+		out:    &out,
+		prompt: chatPrompt("minimax"),
+		active: true,
+		rows:   1,
+	}
+	loop := &chatLoop{
+		out:      &out,
+		errw:     &bytes.Buffer{},
+		rl:       rl,
+		sess:     sess,
+		sessions: map[string]*chatSession{"minimax": sess},
+	}
+
+	for _, msg := range []string{"first thought", "second thought"} {
+		event, err := json.Marshal(map[string]any{
+			"t":   "thinking",
+			"b64": base64.StdEncoding.EncodeToString([]byte(msg)),
+		})
+		if err != nil {
+			t.Fatalf("marshal event: %v", err)
+		}
+		stream <- event
+	}
+	stream <- []byte(`{"t":"chunk_end"}`)
+	stream <- []byte(`{"t":"end"}`)
+	close(stream)
+
+	loop.drainStream(sess)
+	got := stripANSISequences(out.String())
+	first := strings.Index(got, "first thought")
+	second := strings.Index(got, "second thought")
+	if first < 0 || second < 0 || second < first {
+		t.Fatalf("thinking feedback missing or out of order:\n%s", got)
+	}
+	between := got[first:second]
+	if strings.Contains(between, "▶") {
+		t.Fatalf("prompt redrawn between thinking fragments:\n%s", got)
+	}
+	if count := strings.Count(got, "[minimax] ▶"); count > 1 {
+		t.Fatalf("prompt redrawn too often during one stream; count=%d\n%s", count, got)
+	}
+}
+
 func TestDrainStreamClearsPromptBeforeStreamingData(t *testing.T) {
 	stream := make(chan []byte, 3)
 	sess := &chatSession{
