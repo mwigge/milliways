@@ -919,16 +919,18 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 				if raw, err := base64.StdEncoding.DecodeString(b64); err == nil {
 					if msg := formatThinkingFragment(string(raw)); msg != "" {
 						agent := sess.agentID
+						l.beginStreamOutput(sess)
 						if l.sess == sess {
 							l.setPromptState("thinking")
 						}
-						l.writeStreamStatus(formatThinkingLine(agent, msg))
+						l.writeStreamStatus(formatThinkingLineWidth(agent, msg, streamTextWidth()))
 					}
 				}
 			}
 		case "data":
 			if b64, ok := ev["b64"].(string); ok {
 				if raw, err := base64.StdEncoding.DecodeString(b64); err == nil {
+					l.beginStreamOutput(sess)
 					if firstData {
 						// First token arrived — update title from "thinking…" to
 						// active so the user sees the runner is responding.
@@ -969,13 +971,11 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			if l.sess == sess {
 				l.setPromptState("")
 			}
-			// Refresh the prompt so the user sees ▶ ready to type.
-			if l.rl != nil && l.sess == sess {
-				l.rl.Refresh()
-			}
+			l.endStreamOutput(sess)
 		case "err":
 			msg, _ := ev["msg"].(string)
 			agent, _ := ev["agent"].(string)
+			l.beginStreamOutput(sess)
 			fmt.Fprintln(l.errw, "✗ "+msg)
 			if strings.Contains(msg, "not set") || strings.Contains(msg, "API_KEY") {
 				fmt.Fprintln(l.errw, "  → /login  for auth setup")
@@ -991,19 +991,34 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			}
 			// Auto-rotate on session limit if a ring is configured.
 			if agent != "" && isSessionLimitMsg(msg) {
+				l.endStreamOutput(sess)
 				go l.autoRotate(agent)
 				return
 			}
-			if l.rl != nil && l.sess == sess {
-				l.rl.Refresh()
-			}
+			l.endStreamOutput(sess)
 		case "rate_limit":
 			status, _ := ev["status"].(string)
+			l.beginStreamOutput(sess)
 			fmt.Fprintln(l.errw, "⚠ rate limit: "+status)
 		case "end":
+			l.endStreamOutput(sess)
 			return
 		}
 	}
+}
+
+func (l *chatLoop) beginStreamOutput(sess *chatSession) {
+	if l == nil || l.rl == nil || sess == nil || l.sess != sess {
+		return
+	}
+	l.rl.BeginExternalOutput()
+}
+
+func (l *chatLoop) endStreamOutput(sess *chatSession) {
+	if l == nil || l.rl == nil || sess == nil || l.sess != sess {
+		return
+	}
+	l.rl.EndExternalOutput()
 }
 
 func formatThinkingFragment(text string) string {
@@ -1018,7 +1033,15 @@ func formatThinkingFragment(text string) string {
 // Uses the agent's bright color for the badge and a few shades darker for
 // the message text, so it's visible without competing with the final response.
 func formatThinkingLine(agentID, msg string) string {
-	return formatThinkingLineWidth(agentID, msg, 104)
+	return formatThinkingLineWidth(agentID, msg, streamTextWidth())
+}
+
+func streamTextWidth() int {
+	width := termWidth()
+	if width > 8 {
+		return width - 2
+	}
+	return 78
 }
 
 func formatThinkingLineWidth(agentID, msg string, width int) string {

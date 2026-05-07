@@ -137,6 +137,51 @@ func TestDrainStreamWritesThinkingToOutputStream(t *testing.T) {
 	}
 }
 
+func TestDrainStreamClearsPromptBeforeStreamingData(t *testing.T) {
+	stream := make(chan []byte, 3)
+	sess := &chatSession{
+		agentID:      "pool",
+		streamCh:     stream,
+		done:         make(chan struct{}),
+		streamCancel: func() {},
+	}
+	var out bytes.Buffer
+	rl := &chatLineReader{
+		out:    &out,
+		prompt: chatPrompt("pool"),
+		active: true,
+		rows:   1,
+	}
+	loop := &chatLoop{
+		out:      newCodeHighlighter(&out),
+		errw:     &bytes.Buffer{},
+		rl:       rl,
+		sess:     sess,
+		sessions: map[string]*chatSession{"pool": sess},
+	}
+
+	data, err := json.Marshal(map[string]any{
+		"t":   "data",
+		"b64": base64.StdEncoding.EncodeToString([]byte("Thinking...\nI'll review the journey.\n")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream <- data
+	stream <- []byte(`{"t":"chunk_end"}`)
+	stream <- []byte(`{"t":"end"}`)
+	close(stream)
+
+	loop.drainStream(sess)
+	got := stripANSISequences(out.String())
+	if strings.Contains(got, "[pool ↯streaming] ▶ Thinking") || strings.Contains(got, "[pool] ▶ Thinking") {
+		t.Fatalf("streaming data started on prompt line:\n%s", got)
+	}
+	if !strings.Contains(got, "Thinking...\nI'll review the journey.") {
+		t.Fatalf("streaming data missing or out of order:\n%s", got)
+	}
+}
+
 func TestFriendlyErrorRewritesRPCInternals(t *testing.T) {
 	got := friendlyError("✗ open codex: ", "", fmt.Errorf("rpc error -32601: no such method: agent.open"))
 	for _, bad := range []string{"rpc error", "no such method"} {

@@ -167,3 +167,33 @@ func TestLineReaderRedrawClearsPreviousWrappedRows(t *testing.T) {
 		t.Fatalf("redraw should clear every previous wrapped row; got %q", got)
 	}
 }
+
+func TestLineReaderExternalOutputHidesAndRestoresPrompt(t *testing.T) {
+	var out bytes.Buffer
+	r := &chatLineReader{
+		out:    &out,
+		prompt: "> ",
+		buf:    []rune("draft"),
+		cursor: len("draft"),
+		active: true,
+	}
+	r.redrawLocked()
+	out.Reset()
+
+	r.BeginExternalOutput()
+	if !r.promptHidden {
+		t.Fatal("BeginExternalOutput did not hide prompt")
+	}
+	if !strings.Contains(out.String(), "\033[2K") {
+		t.Fatalf("BeginExternalOutput should clear active prompt, got %q", out.String())
+	}
+
+	out.Reset()
+	r.EndExternalOutput()
+	if r.promptHidden {
+		t.Fatal("EndExternalOutput left prompt hidden")
+	}
+	if got := out.String(); !strings.Contains(got, "> draft") {
+		t.Fatalf("EndExternalOutput should redraw prompt and buffer, got %q", got)
+	}
+}
