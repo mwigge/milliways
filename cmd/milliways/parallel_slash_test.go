@@ -100,6 +100,21 @@ func TestParallelSlash_ProvidersFlagParsed(t *testing.T) {
 	}
 }
 
+func TestParallelSlash_WatchFlagParsed(t *testing.T) {
+	t.Parallel()
+
+	opts := parseParallelCommand("--watch --providers claude,codex compare options")
+	if !opts.Watch {
+		t.Fatal("parseParallelCommand did not enable watch")
+	}
+	if got := strings.Join(opts.Providers, ","); got != "claude,codex" {
+		t.Fatalf("providers = %q, want claude,codex", got)
+	}
+	if opts.Prompt != "compare options" {
+		t.Fatalf("prompt = %q, want compare options", opts.Prompt)
+	}
+}
+
 // TestParallelSlash_HelpIsInHelp verifies that /parallel appears in the
 // help output.
 func TestParallelSlash_HelpIsInHelp(t *testing.T) {
