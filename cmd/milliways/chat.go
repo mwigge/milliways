@@ -1261,7 +1261,7 @@ func (l *chatLoop) handleSlash(line string) {
 	case "copy-last":
 		l.handleCopyLast(rest)
 	case "history":
-		l.printHistory()
+		l.printHistory(rest)
 	case "cost", "spend":
 		l.printCost()
 	case "trace", "traces":
@@ -1888,12 +1888,22 @@ func shellCommandNeedsConfirmation(cmd string) bool {
 	return false
 }
 
-// printHistory shows the current in-memory turn log.
-func (l *chatLoop) printHistory() {
+// printHistory shows the current in-memory turn log and, when connected, the
+// active agent's persisted daemon history in a readable inline form.
+func (l *chatLoop) printHistory(rest string) {
+	agentID, limit, err := parseHistoryArgs(rest, l.activeAgentID())
+	if err != nil {
+		fmt.Fprintln(l.errw, err)
+		return
+	}
 	turns := l.snapshotTurns()
 	if len(turns) > 0 {
 		fmt.Fprintln(l.out, "Session history:")
-		for i, t := range turns {
+		start := 0
+		if limit > 0 && len(turns) > limit {
+			start = len(turns) - limit
+		}
+		for i, t := range turns[start:] {
 			role := t.Role
 			if t.AgentID != "" {
 				role = t.AgentID
@@ -1902,17 +1912,17 @@ func (l *chatLoop) printHistory() {
 			if len(preview) > 120 {
 				preview = preview[:120] + "…"
 			}
-			fmt.Fprintf(l.out, "  [%d] %s: %s\n", i+1, role, preview)
+			fmt.Fprintf(l.out, "  [%d] %s: %s\n", start+i+1, role, preview)
 		}
 	}
-	if l.sess == nil || l.client == nil {
+	if agentID == "" || l.client == nil {
 		if len(turns) == 0 {
 			fmt.Fprintln(l.out, "  (no history — start a conversation first)")
 		}
 		return
 	}
 	var entries []map[string]any
-	if err := l.client.Call("history.get", map[string]any{"agent_id": l.sess.agentID, "limit": 8}, &entries); err != nil {
+	if err := l.client.Call("history.get", map[string]any{"agent_id": agentID, "limit": limit}, &entries); err != nil {
 		if len(turns) == 0 {
 			fmt.Fprintln(l.errw, friendlyError("✗ history: ", "", err))
 		}
@@ -1920,18 +1930,123 @@ func (l *chatLoop) printHistory() {
 	}
 	if len(entries) == 0 {
 		if len(turns) == 0 {
-			fmt.Fprintf(l.out, "  (no daemon history for %s)\n", l.sess.agentID)
+			fmt.Fprintf(l.out, "  (no daemon history for %s)\n", agentID)
 		}
 		return
 	}
-	fmt.Fprintf(l.out, "\nDaemon history · %s:\n", l.sess.agentID)
+	fmt.Fprintf(l.out, "\nSaved history · %s:\n", agentID)
 	for i, entry := range entries {
-		raw, _ := json.Marshal(entry)
-		line := string(raw)
-		if len(line) > 160 {
-			line = line[:157] + "…"
+		fmt.Fprintf(l.out, "  [%d] %s\n", i+1, renderHistoryEntry(entry))
+	}
+}
+
+func (l *chatLoop) activeAgentID() string {
+	if l.sess == nil {
+		return ""
+	}
+	return l.sess.agentID
+}
+
+func parseHistoryArgs(rest, defaultAgent string) (agentID string, limit int, err error) {
+	agentID = strings.TrimSpace(defaultAgent)
+	limit = 8
+	for _, field := range splitFields(rest) {
+		if n, convErr := strconv.Atoi(field); convErr == nil {
+			if n <= 0 {
+				return "", 0, fmt.Errorf("usage: /history [limit] [agent]")
+			}
+			limit = n
+			continue
 		}
-		fmt.Fprintf(l.out, "  [%d] %s\n", i+1, line)
+		field = strings.TrimPrefix(field, "client:")
+		field = strings.TrimPrefix(field, "agent:")
+		if !isKnownChatAgent(field) {
+			return "", 0, fmt.Errorf("unknown history agent %q — valid: %s", field, strings.Join(chatSwitchableAgents, ", "))
+		}
+		agentID = field
+	}
+	return agentID, limit, nil
+}
+
+func isKnownChatAgent(agent string) bool {
+	for _, known := range chatSwitchableAgents {
+		if agent == known {
+			return true
+		}
+	}
+	return false
+}
+
+func renderHistoryEntry(entry map[string]any) string {
+	payload, _ := entry["v"].(map[string]any)
+	if payload == nil {
+		payload = entry
+	}
+	eventType, _ := payload["t"].(string)
+	switch eventType {
+	case "data":
+		text, _ := payload["text"].(string)
+		return "response: " + truncateHistoryText(text, 140)
+	case "thinking":
+		text, _ := payload["text"].(string)
+		return "thinking: " + truncateHistoryText(text, 140)
+	case "chunk_end":
+		usage := formatUsageInline(usageStats{
+			InputTokens:  intFromAny(payload["input_tokens"]),
+			OutputTokens: intFromAny(payload["output_tokens"]),
+			CostUSD:      floatFromAny(payload["cost_usd"]),
+		})
+		if usage == "" {
+			return "done"
+		}
+		return "done: " + usage
+	case "err":
+		msg, _ := payload["msg"].(string)
+		return "error: " + truncateHistoryText(msg, 140)
+	case "end":
+		return "end"
+	default:
+		raw, _ := json.Marshal(payload)
+		return truncateHistoryText(string(raw), 160)
+	}
+}
+
+func truncateHistoryText(text string, max int) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) <= max {
+		return text
+	}
+	if max <= 1 {
+		return "…"
+	}
+	return text[:max-1] + "…"
+}
+
+func intFromAny(v any) int {
+	switch x := v.(type) {
+	case int:
+		return x
+	case float64:
+		return int(x)
+	case json.Number:
+		n, _ := x.Int64()
+		return int(n)
+	default:
+		return 0
+	}
+}
+
+func floatFromAny(v any) float64 {
+	switch x := v.(type) {
+	case float64:
+		return x
+	case int:
+		return float64(x)
+	case json.Number:
+		n, _ := x.Float64()
+		return n
+	default:
+		return 0
 	}
 }
 
@@ -2896,7 +3011,7 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /jump <id>                    open a full block")
 	fmt.Fprintln(l.out, "  /search <text> [client:<name>] search blocks")
 	fmt.Fprintln(l.out, "  /copy-last [response|prompt|block|code] copy last block via terminal clipboard")
-	fmt.Fprintln(l.out, "  /history                      show the current turn log (read-only)")
+	fmt.Fprintln(l.out, "  /history [limit] [client]      show session and saved runner history")
 	fmt.Fprintln(l.out, "  /cost                         token usage per runner (last hour)")
 	fmt.Fprintln(l.out, "  /trace [limit]                show recent daemon/agent spans")
 	fmt.Fprintln(l.out, "  /retry                        re-send the last user prompt")

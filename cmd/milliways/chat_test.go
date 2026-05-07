@@ -663,6 +663,102 @@ func TestChatHistoryFileFallsBackToHomeLocalState(t *testing.T) {
 	}
 }
 
+func TestParseHistoryArgs(t *testing.T) {
+	agent, limit, err := parseHistoryArgs("12 minimax", "codex")
+	if err != nil {
+		t.Fatalf("parseHistoryArgs returned error: %v", err)
+	}
+	if agent != "minimax" || limit != 12 {
+		t.Fatalf("parseHistoryArgs = (%q, %d), want (minimax, 12)", agent, limit)
+	}
+
+	agent, limit, err = parseHistoryArgs("client:gemini", "codex")
+	if err != nil {
+		t.Fatalf("parseHistoryArgs client prefix returned error: %v", err)
+	}
+	if agent != "gemini" || limit != 8 {
+		t.Fatalf("parseHistoryArgs client prefix = (%q, %d), want (gemini, 8)", agent, limit)
+	}
+
+	if _, _, err := parseHistoryArgs("0", "codex"); err == nil {
+		t.Fatal("parseHistoryArgs accepted zero limit")
+	}
+	if _, _, err := parseHistoryArgs("unknown", "codex"); err == nil {
+		t.Fatal("parseHistoryArgs accepted unknown agent")
+	}
+}
+
+func TestPrintHistoryShowsLimitedSessionTurnsInline(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	loop := &chatLoop{
+		out:  &stdout,
+		errw: &stderr,
+	}
+	loop.appendTurn(chatTurn{Role: "user", Text: "first"})
+	loop.appendTurn(chatTurn{Role: "assistant", AgentID: "minimax", Text: "second"})
+	loop.appendTurn(chatTurn{Role: "user", Text: "third"})
+
+	loop.printHistory("2")
+
+	got := stdout.String()
+	if strings.Contains(got, "first") {
+		t.Fatalf("history ignored limit; got:\n%s", got)
+	}
+	for _, want := range []string{
+		"Session history:",
+		"[2] minimax: second",
+		"[3] user: third",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("history output missing %q; got:\n%s", want, got)
+		}
+	}
+	if got := stderr.String(); got != "" {
+		t.Fatalf("history wrote stderr: %q", got)
+	}
+}
+
+func TestRenderHistoryEntryReadableDaemonEvents(t *testing.T) {
+	cases := []struct {
+		name  string
+		entry map[string]any
+		want  []string
+	}{
+		{
+			name:  "data",
+			entry: map[string]any{"v": map[string]any{"t": "data", "text": "hello from daemon history"}},
+			want:  []string{"response:", "hello from daemon history"},
+		},
+		{
+			name: "chunk_end",
+			entry: map[string]any{"v": map[string]any{
+				"t":             "chunk_end",
+				"input_tokens":  float64(120),
+				"output_tokens": float64(80),
+				"cost_usd":      0.0042,
+			}},
+			want: []string{"done:", "in 120", "out 80", "total 200 tok", "$0.0042"},
+		},
+		{
+			name:  "err",
+			entry: map[string]any{"v": map[string]any{"t": "err", "msg": "rate limited"}},
+			want:  []string{"error:", "rate limited"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := renderHistoryEntry(tc.entry)
+			for _, want := range tc.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("renderHistoryEntry missing %q in %q", want, got)
+				}
+			}
+		})
+	}
+}
+
 // TestHandleSlash_Smoke exercises every slash command the chat exposes.
 // Passed a nil client so no daemon is needed. Commands that open sessions
 // (/<runner>) will error — we just verify they don't panic and that
