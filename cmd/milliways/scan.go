@@ -38,7 +38,7 @@ func (l *chatLoop) handleScan(_ string) {
 
 	var result map[string]any
 	if err := l.client.Call("security.scan", map[string]any{}, &result); err != nil {
-		fmt.Fprintln(l.errw, "[scan] scan error: "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("[scan] scan: ", "", err))
 		return
 	}
 	fmt.Fprintln(l.out, renderScanResult(result))
