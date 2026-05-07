@@ -55,6 +55,7 @@ type chatLineReader struct {
 	mu      sync.Mutex
 	closed  bool
 	buf     []rune
+	cursor  int
 	history []string
 	histPos int
 }
@@ -119,6 +120,7 @@ func (r *chatLineReader) Readline() (string, error) {
 		return "", io.EOF
 	}
 	r.buf = nil
+	r.cursor = 0
 	r.histPos = len(r.history)
 	r.redrawLocked()
 	r.mu.Unlock()
@@ -167,18 +169,10 @@ func (r *chatLineReader) Readline() (string, error) {
 		case 27:
 			r.handleEscape(br)
 		case 8, 127:
-			r.mu.Lock()
-			if len(r.buf) > 0 {
-				r.buf = r.buf[:len(r.buf)-1]
-				r.redrawLocked()
-			}
-			r.mu.Unlock()
+			r.backspace()
 		default:
 			if ch >= 32 && ch != utf8.RuneError {
-				r.mu.Lock()
-				r.buf = append(r.buf, ch)
-				fmt.Fprint(r.out, string(ch))
-				r.mu.Unlock()
+				r.insertRune(ch)
 			}
 		}
 	}
@@ -198,6 +192,18 @@ func (r *chatLineReader) handleEscape(br *bufio.Reader) {
 		r.historyMove(-1)
 	case 'B':
 		r.historyMove(1)
+	case 'C':
+		r.moveCursor(1)
+	case 'D':
+		r.moveCursor(-1)
+	case 'H':
+		r.moveCursorTo(0)
+	case 'F':
+		r.moveCursorToEnd()
+	case '3':
+		if tilde, _, err := br.ReadRune(); err == nil && tilde == '~' {
+			r.deleteAtCursor()
+		}
 	}
 }
 
@@ -220,6 +226,7 @@ func (r *chatLineReader) historyMove(delta int) {
 	} else {
 		r.buf = []rune(r.history[r.histPos])
 	}
+	r.cursor = len(r.buf)
 	r.redrawLocked()
 }
 
@@ -229,14 +236,15 @@ func (r *chatLineReader) applyCompletion() {
 	}
 	r.mu.Lock()
 	line := string(r.buf)
+	pos := r.cursor
 	r.mu.Unlock()
-	suffixes, _ := r.completer.Complete(line, utf8.RuneCountInString(line))
+	suffixes, _ := r.completer.Complete(line, pos)
 	if len(suffixes) == 0 {
 		return
 	}
 	if len(suffixes) == 1 {
 		r.mu.Lock()
-		r.buf = append(r.buf, []rune(suffixes[0])...)
+		r.insertRunesLocked([]rune(suffixes[0]))
 		r.redrawLocked()
 		r.mu.Unlock()
 		return
@@ -244,7 +252,7 @@ func (r *chatLineReader) applyCompletion() {
 	common := commonPrefix(suffixes)
 	if common != "" {
 		r.mu.Lock()
-		r.buf = append(r.buf, []rune(common)...)
+		r.insertRunesLocked([]rune(common))
 		r.redrawLocked()
 		r.mu.Unlock()
 		return
@@ -256,6 +264,83 @@ func (r *chatLineReader) applyCompletion() {
 	}
 	r.redrawLocked()
 	r.mu.Unlock()
+}
+
+func (r *chatLineReader) insertRune(ch rune) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.insertRunesLocked([]rune{ch})
+	r.redrawLocked()
+}
+
+func (r *chatLineReader) insertRunesLocked(values []rune) {
+	if len(values) == 0 {
+		return
+	}
+	if r.cursor < 0 {
+		r.cursor = 0
+	}
+	if r.cursor > len(r.buf) {
+		r.cursor = len(r.buf)
+	}
+	next := make([]rune, 0, len(r.buf)+len(values))
+	next = append(next, r.buf[:r.cursor]...)
+	next = append(next, values...)
+	next = append(next, r.buf[r.cursor:]...)
+	r.buf = next
+	r.cursor += len(values)
+}
+
+func (r *chatLineReader) backspace() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cursor <= 0 || len(r.buf) == 0 {
+		return
+	}
+	r.buf = append(r.buf[:r.cursor-1], r.buf[r.cursor:]...)
+	r.cursor--
+	r.redrawLocked()
+}
+
+func (r *chatLineReader) deleteAtCursor() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cursor < 0 || r.cursor >= len(r.buf) {
+		return
+	}
+	r.buf = append(r.buf[:r.cursor], r.buf[r.cursor+1:]...)
+	r.redrawLocked()
+}
+
+func (r *chatLineReader) moveCursor(delta int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.moveCursorToLocked(r.cursor + delta)
+	r.redrawLocked()
+}
+
+func (r *chatLineReader) moveCursorTo(pos int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.moveCursorToLocked(pos)
+	r.redrawLocked()
+}
+
+func (r *chatLineReader) moveCursorToEnd() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.moveCursorToLocked(len(r.buf))
+	r.redrawLocked()
+}
+
+func (r *chatLineReader) moveCursorToLocked(pos int) {
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > len(r.buf) {
+		pos = len(r.buf)
+	}
+	r.cursor = pos
 }
 
 func commonPrefix(values []string) string {
@@ -275,6 +360,16 @@ func (r *chatLineReader) redrawLocked() {
 	fmt.Fprint(r.out, "\r\033[2K")
 	fmt.Fprint(r.out, r.prompt)
 	fmt.Fprint(r.out, string(r.buf))
+	if r.cursor < 0 {
+		r.cursor = 0
+	}
+	if r.cursor > len(r.buf) {
+		r.cursor = len(r.buf)
+	}
+	trailing := displayWidth(string(r.buf[r.cursor:]))
+	if trailing > 0 {
+		fmt.Fprintf(r.out, "\033[%dD", trailing)
+	}
 }
 
 func (r *chatLineReader) addHistory(line string) {
