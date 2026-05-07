@@ -112,6 +112,50 @@ func TestPrintLandingSuppressesMainBannerInDeckMode(t *testing.T) {
 	}
 }
 
+func TestChooseStartProviderPrefersExplicitThenDefaultThenAuthOK(t *testing.T) {
+	statuses := map[string]agentStatus{
+		"claude":  {mark: "✗"},
+		"codex":   {mark: "✓"},
+		"minimax": {mark: "✓"},
+	}
+	if got := chooseStartProvider("gemini", "", "codex", statuses); got != "gemini" {
+		t.Fatalf("explicit start provider = %q, want gemini", got)
+	}
+	if got := chooseStartProvider("", "", "minimax", statuses); got != "minimax" {
+		t.Fatalf("default start provider = %q, want minimax", got)
+	}
+	if got := chooseStartProvider("", "", "", statuses); got != "codex" {
+		t.Fatalf("auth-ok start provider = %q, want first auth-ok codex", got)
+	}
+}
+
+func TestChooseStartProviderCanDisableAutoSelection(t *testing.T) {
+	statuses := map[string]agentStatus{"codex": {mark: "✓"}}
+	if got := chooseStartProvider("", "true", "codex", statuses); got != "" {
+		t.Fatalf("disabled auto provider = %q, want empty", got)
+	}
+	if got := chooseStartProvider("claude", "true", "codex", statuses); got != "claude" {
+		t.Fatalf("explicit provider with auto disabled = %q, want claude", got)
+	}
+}
+
+func TestApplyAgentStatusesConsumesFlatAgentList(t *testing.T) {
+	statuses := map[string]agentStatus{}
+	for _, name := range chatSwitchableAgents {
+		statuses[name] = agentStatus{mark: "?", model: ""}
+	}
+	applyAgentStatuses(statuses, []agentListEntry{
+		{ID: "claude", AuthStatus: "missing_credentials", Model: "claude CLI default"},
+		{ID: "codex", AuthStatus: "ok", Model: "gpt-5.5"},
+	})
+	if got := statuses["codex"]; got.mark != "✓" || got.model != "gpt-5.5" {
+		t.Fatalf("codex status = %#v, want ok model gpt-5.5", got)
+	}
+	if got := statuses["claude"]; got.mark != "✗" || got.model != "claude CLI default" {
+		t.Fatalf("claude status = %#v, want missing credentials with model", got)
+	}
+}
+
 // TestChatPromptFormat — the prompt header reflects the active agent so
 // users always see which runner their next typed line goes to. The
 // empty-string case is the landing zone (no client picked yet).
