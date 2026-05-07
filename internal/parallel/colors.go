@@ -14,12 +14,12 @@
 
 package parallel
 
-import "os"
+import "github.com/mwigge/milliways/internal/termcolor"
 
 // ProviderColor returns the ANSI escape prefix for a provider label.
 // Reset with "\033[0m" after use.
 func ProviderColor(provider string) string {
-	if _, ok := os.LookupEnv("NO_COLOR"); ok {
+	if !ColorEnabled() {
 		return ""
 	}
 	switch provider {
@@ -40,6 +40,11 @@ func ProviderColor(provider string) string {
 	default:
 		return ""
 	}
+}
+
+// ColorEnabled reports whether provider labels should emit ANSI color.
+func ColorEnabled() bool {
+	return termcolor.Enabled()
 }
 
 // ColorProvider wraps provider name in its color + reset.

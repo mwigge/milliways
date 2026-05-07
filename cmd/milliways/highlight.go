@@ -27,6 +27,7 @@ import (
 	chromaFmt "github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
+	"github.com/mwigge/milliways/internal/termcolor"
 )
 
 // urlRe matches http and https URLs in plain text.
@@ -34,11 +35,7 @@ var urlRe = regexp.MustCompile(`https?://[^\s\x1b<>"]+`)
 var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
 func ansiEnabled() bool {
-	if _, ok := os.LookupEnv("NO_COLOR"); ok {
-		return false
-	}
-	term := strings.ToLower(strings.TrimSpace(os.Getenv("TERM")))
-	return term != "dumb"
+	return termcolor.Enabled()
 }
 
 // linkifyURLs wraps bare URLs in OSC 8 terminal hyperlink sequences so
