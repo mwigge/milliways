@@ -379,6 +379,18 @@ func TestAgentListOverlaysObservedSessionModel(t *testing.T) {
 	}
 }
 
+func TestTextFromDeckBlocksUsesResponseBlocksOnly(t *testing.T) {
+	got := textFromDeckBlocks([]DeckBlock{
+		{Kind: "prompt", Text: "ignore prompt"},
+		{Kind: "thinking", Text: "ignore thinking"},
+		{Kind: "response", Text: "first line\n"},
+		{Kind: "response", Text: "second line"},
+	}, 0)
+	if got != "first line\nsecond line" {
+		t.Fatalf("textFromDeckBlocks = %q", got)
+	}
+}
+
 // TestAgentSend_MemPalaceBaselineInjectedOnFirstSend verifies that when
 // MemPalace has a prior finding for a file path referenced in the prompt,
 // the baseline block is sent to the session BEFORE the user's bytes on
