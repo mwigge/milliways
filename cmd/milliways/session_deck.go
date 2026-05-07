@@ -41,6 +41,7 @@ type sessionDeck struct {
 type sessionDeckState struct {
 	Provider    string
 	Model       string
+	ModelSource string
 	Handle      int64
 	Status      string
 	PromptCount int
@@ -146,6 +147,10 @@ func (d *sessionDeck) ApplyDaemonSnapshot(s daemonDeckSnapshot) {
 		st := d.stateLocked(src.AgentID)
 		st.Handle = src.Handle
 		st.Status = fallbackStatus(src.Status)
+		if strings.TrimSpace(src.Model) != "" {
+			st.Model = src.Model
+		}
+		st.ModelSource = src.ModelSource
 		st.PromptCount = src.PromptCount
 		st.TurnCount = src.TurnCount
 		st.InputTokens = src.InputTokens
@@ -210,7 +215,9 @@ func (d *sessionDeck) SetActive(provider string) {
 	defer d.mu.Unlock()
 	st := d.stateLocked(provider)
 	st.Unread = 0
-	st.Model = runnerModelSpec(provider).current
+	if st.Model == "" {
+		st.Model = runnerModelSpec(provider).current
+	}
 	d.active = provider
 }
 
@@ -222,7 +229,9 @@ func (d *sessionDeck) BindSession(provider string, handle int64) {
 	defer d.mu.Unlock()
 	st := d.stateLocked(provider)
 	st.Handle = handle
-	st.Model = runnerModelSpec(provider).current
+	if st.Model == "" {
+		st.Model = runnerModelSpec(provider).current
+	}
 	st.Status = deckStatusIdle
 	st.LastUpdated = time.Now()
 }
@@ -439,7 +448,7 @@ func renderSessionStatusPanel(s sessionDeckSnapshot, width int) string {
 	}
 	parts := []string{
 		"session " + active,
-		"model " + fallbackDash(current.Model),
+		"model " + modelLabel(current.Model, current.ModelSource),
 		"status " + fallbackDash(current.Status),
 		"project " + fallbackDash(project),
 	}
@@ -457,6 +466,15 @@ func renderSessionStatusPanel(s sessionDeckSnapshot, width int) string {
 		return out[:width-1] + "…"
 	}
 	return out
+}
+
+func modelLabel(model, source string) string {
+	model = fallbackDash(strings.TrimSpace(model))
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return model
+	}
+	return model + " (" + source + ")"
 }
 
 func renderObservabilityPanel(s sessionDeckSnapshot, width int) string {

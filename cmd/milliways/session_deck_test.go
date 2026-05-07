@@ -75,6 +75,38 @@ func TestSessionStatusPanelShowsActiveModelAndTotals(t *testing.T) {
 	}
 }
 
+func TestSessionDeckPreservesObservedModelAcrossActivation(t *testing.T) {
+	deck := newSessionDeck([]string{"codex"})
+	deck.ApplyDaemonSnapshot(daemonDeckSnapshot{
+		Active: "codex",
+		Sessions: []daemonDeckSessionStatus{{
+			AgentID:     "codex",
+			Handle:      99,
+			Status:      deckStatusIdle,
+			Model:       "gpt-5.5",
+			ModelSource: "observed",
+		}},
+	})
+
+	deck.SetActive("codex")
+	deck.BindSession("codex", 99)
+
+	snap := deck.Snapshot()
+	if len(snap.States) != 1 {
+		t.Fatalf("states = %d, want 1", len(snap.States))
+	}
+	if got := snap.States[0].Model; got != "gpt-5.5" {
+		t.Fatalf("model after activation = %q, want observed gpt-5.5", got)
+	}
+	if got := snap.States[0].ModelSource; got != "observed" {
+		t.Fatalf("model source after activation = %q, want observed", got)
+	}
+	rendered := renderSessionStatusPanel(snap, 160)
+	if !strings.Contains(rendered, "model gpt-5.5 (observed)") {
+		t.Fatalf("status panel missing observed model source:\n%s", rendered)
+	}
+}
+
 func TestSessionDeckNextPrevious(t *testing.T) {
 	deck := newSessionDeck([]string{"claude", "codex", "gemini"})
 	deck.SetActive("claude")
