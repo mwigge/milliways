@@ -474,9 +474,44 @@ func tailFile(path string, max int) string {
 	return strings.TrimSpace(string(buf))
 }
 
-// maybePrintCockpitHint shows a one-time hint on stderr the first time the
-// milliways-term launcher runs, pointing at the wezterm sample config.
+const cockpitHintFileName = "cockpit-hint.txt"
+
+func cockpitHintPath(state string) string {
+	return filepath.Join(state, cockpitHintFileName)
+}
+
+func cockpitHintText(state string) string {
+	return fmt.Sprintf(`Milliways terminal setup
+
+The full terminal deck uses the bundled WezTerm config:
+  ~/.local/share/milliways/wezterm.lua
+
+If your WezTerm config is not linked, run:
+  mkdir -p ~/.config/wezterm
+  ln -sf ~/.local/share/milliways/wezterm.lua ~/.config/wezterm/wezterm.lua
+
+Upgrade refreshes the bundled config:
+  milliways chat
+  /upgrade
+
+This reminder is saved at:
+  %s
+`, cockpitHintPath(state))
+}
+
+func ensureCockpitHintFile(state string) error {
+	path := cockpitHintPath(state)
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	return os.WriteFile(path, []byte(cockpitHintText(state)), 0o600)
+}
+
+// maybePrintCockpitHint writes a durable setup note and prints a short first-run
+// reminder on interactive stderr. The reminder remains discoverable via /help
+// and the state file even after the first-run marker suppresses stderr output.
 func maybePrintCockpitHint(state string) {
+	_ = ensureCockpitHintFile(state)
 	if !isTTYStderr() || os.Getenv("MILLIWAYS_QUIET_HINTS") == "1" {
 		return
 	}
@@ -484,7 +519,7 @@ func maybePrintCockpitHint(state string) {
 	if _, err := os.Stat(marker); err == nil {
 		return
 	}
-	fmt.Fprintln(os.Stderr, "milliways starting. Set up wezterm config: see ~/.local/share/milliways/sample-wezterm.lua")
+	fmt.Fprintf(os.Stderr, "milliways starting. Terminal setup note: %s\n", cockpitHintPath(state))
 	if f, err := os.OpenFile(marker, os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
 		_ = f.Close()
 	}

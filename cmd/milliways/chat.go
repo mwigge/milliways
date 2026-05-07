@@ -3092,6 +3092,12 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /upgrade --version <tag>      upgrade to a specific version (e.g. v1.3.0)")
 	fmt.Fprintln(l.out)
 
+	fmt.Fprintln(l.out, "Terminal setup:")
+	fmt.Fprintln(l.out, "  wezterm config                ~/.local/share/milliways/wezterm.lua")
+	fmt.Fprintf(l.out, "  setup note                    %s\n", cockpitHintPath(stateDir()))
+	fmt.Fprintln(l.out, "  relink config                 ln -sf ~/.local/share/milliways/wezterm.lua ~/.config/wezterm/wezterm.lua")
+	fmt.Fprintln(l.out)
+
 	fmt.Fprintln(l.out, "Local-model bootstrap:")
 	fmt.Fprintln(l.out, "  /install-local-server         install llama.cpp + default coder model")
 	fmt.Fprintln(l.out, "  /install-local-swap           install llama-swap (hot model swap)")

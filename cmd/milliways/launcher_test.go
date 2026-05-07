@@ -16,6 +16,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -127,6 +129,49 @@ func TestDetectWeztermCurrentPaneID_PaneIDZero(t *testing.T) {
 	)
 	if id != "0" {
 		t.Errorf("expected pane 0, got %q reason=%q", id, reason)
+	}
+}
+
+func TestEnsureCockpitHintFileWritesDurableHint(t *testing.T) {
+	state := t.TempDir()
+
+	if err := ensureCockpitHintFile(state); err != nil {
+		t.Fatalf("ensureCockpitHintFile: %v", err)
+	}
+	got, err := os.ReadFile(cockpitHintPath(state))
+	if err != nil {
+		t.Fatalf("read cockpit hint: %v", err)
+	}
+	for _, want := range []string{"Milliways terminal setup", "wezterm.lua", "cockpit-hint.txt"} {
+		if !strings.Contains(string(got), want) {
+			t.Fatalf("durable hint missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestEnsureCockpitHintFileDoesNotOverwrite(t *testing.T) {
+	state := t.TempDir()
+	path := cockpitHintPath(state)
+	if err := os.WriteFile(path, []byte("custom note\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ensureCockpitHintFile(state); err != nil {
+		t.Fatalf("ensureCockpitHintFile: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "custom note\n" {
+		t.Fatalf("hint file overwritten: %q", got)
+	}
+}
+
+func TestCockpitHintPathUsesStateDir(t *testing.T) {
+	state := t.TempDir()
+	if got, want := cockpitHintPath(state), filepath.Join(state, "cockpit-hint.txt"); got != want {
+		t.Fatalf("cockpitHintPath = %q, want %q", got, want)
 	}
 }
 
