@@ -71,7 +71,7 @@ func (l *chatLoop) handleCompact() {
 	fmt.Fprintln(l.out, "  compacting context…")
 	if err := l.sess.send(l.enrichWithPalace(context.Background(), sb.String())); err != nil {
 		l.artifact.set(nil)
-		fmt.Fprintln(l.errw, "✗ send: "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 		return
 	}
 	go func() {
@@ -144,7 +144,7 @@ func (l *chatLoop) handlePptx(topic string) {
 	l.artifact.set(ch)
 	if err := l.sess.send(l.enrichWithPalace(context.Background(), pptxPrompt(topic, outFile))); err != nil {
 		l.artifact.set(nil)
-		fmt.Fprintln(l.errw, "✗ send: "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 		return
 	}
 	// Progress ticker while waiting for the LLM response.
@@ -243,7 +243,7 @@ func (l *chatLoop) handleDrawio(topic string) {
 	l.artifact.set(ch)
 	if err := l.sess.send(l.enrichWithPalace(context.Background(), drawioPrompt(topic))); err != nil {
 		l.artifact.set(nil)
-		fmt.Fprintln(l.errw, "✗ send: "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 		return
 	}
 	go func() {

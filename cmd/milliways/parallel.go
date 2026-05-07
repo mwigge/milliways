@@ -111,7 +111,7 @@ func (l *chatLoop) handleParallel(rest string) {
 		Providers: providers,
 	}, &result)
 	if err != nil {
-		fmt.Fprintln(l.errw, "[parallel] dispatch error: "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("[parallel] dispatch: ", "", err))
 		return
 	}
 
@@ -144,7 +144,7 @@ func (l *chatLoop) handleParallel(rest string) {
 	// Launch split-pane layout. In non-WezTerm environments this prints a
 	// headless fallback with per-slot attach hints.
 	if err := parallel.Launch(dispatchResult, result.GroupID); err != nil {
-		fmt.Fprintln(l.errw, "[parallel] layout error: "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("[parallel] layout: ", "", err))
 		for _, s := range result.Slots {
 			fmt.Fprintf(l.out, "  milliways attach %d  (%s)\n", s.Handle, s.Provider)
 		}
@@ -202,7 +202,7 @@ func (l *chatLoop) handleParallelView(rest string) {
 func (l *chatLoop) printParallelView(groupID string, clear bool) bool {
 	status, consensus, err := l.fetchParallelView(groupID)
 	if err != nil {
-		fmt.Fprintln(l.errw, "[parallel] view error: "+err.Error())
+		fmt.Fprintln(l.errw, friendlyError("[parallel] view: ", "", err))
 		return true
 	}
 	if clear {

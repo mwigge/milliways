@@ -149,13 +149,15 @@ func (c *Client) Call(method string, params any, result any) error {
 	}
 	var resp clientResponse
 	if err := json.Unmarshal(c.scan.Bytes(), &resp); err != nil {
-		return fmt.Errorf("decode: %w", err)
+		return fmt.Errorf("decode %s response: %w", method, err)
 	}
 	if resp.Error != nil {
 		return resp.Error
 	}
 	if result != nil && len(resp.Result) > 0 {
-		return json.Unmarshal(resp.Result, result)
+		if err := json.Unmarshal(resp.Result, result); err != nil {
+			return fmt.Errorf("decode %s result: %w", method, err)
+		}
 	}
 	return nil
 }
