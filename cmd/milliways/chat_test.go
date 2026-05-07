@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -432,6 +433,56 @@ func TestAgentColorsRespectNoColor(t *testing.T) {
 	}
 	if got := formatThinkingLine("claude", "checking status"); strings.Contains(got, "\x1b[") {
 		t.Fatalf("formatThinkingLine() emitted ANSI with NO_COLOR:\n%q", got)
+	}
+}
+
+func TestInterruptPromptIsPlainLanguage(t *testing.T) {
+	for _, bad := range []string{"^C", "Ctrl+C"} {
+		if strings.Contains(chatInterruptPrompt, bad) {
+			t.Fatalf("interrupt prompt should avoid raw control notation %q: %q", bad, chatInterruptPrompt)
+		}
+	}
+	for _, want := range []string{"Interrupted", "/cancel", "/exit"} {
+		if !strings.Contains(chatInterruptPrompt, want) {
+			t.Fatalf("interrupt prompt missing %q: %q", want, chatInterruptPrompt)
+		}
+	}
+}
+
+func TestCancelActiveSessionClosesAndResetsPrompt(t *testing.T) {
+	closed := false
+	sess := &chatSession{
+		agentID:      "minimax",
+		streamCancel: func() { closed = true },
+	}
+	completer := &switchableCompleter{}
+	completer.set(buildCompleter("minimax"))
+	reader := &chatLineReader{prompt: chatPrompt("minimax")}
+	loop := &chatLoop{
+		sess:      sess,
+		sessions:  map[string]*chatSession{"minimax": sess},
+		rl:        reader,
+		completer: completer,
+	}
+
+	if !loop.cancelActiveSession() {
+		t.Fatal("cancelActiveSession() = false, want true")
+	}
+	if !closed {
+		t.Fatal("cancelActiveSession did not close the stream")
+	}
+	if loop.sess != nil {
+		t.Fatalf("active session after cancel = %#v, want nil", loop.sess)
+	}
+	if _, ok := loop.sessions["minimax"]; ok {
+		t.Fatal("cancelled session still present in session map")
+	}
+	if got := stripANSISequences(reader.prompt); !strings.Contains(got, "select:") {
+		t.Fatalf("prompt after cancel = %q, want picker prompt", got)
+	}
+	suffixes, _ := completer.Complete("/co", len("/co"))
+	if !slices.Contains(suffixes, "dex") {
+		t.Fatalf("completion after cancel = %#v, want base chat commands", suffixes)
 	}
 }
 
