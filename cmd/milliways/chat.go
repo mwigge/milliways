@@ -416,16 +416,24 @@ func runChat(ctx context.Context) error {
 }
 
 func (l *chatLoop) startProvider() string {
-	if provider := strings.TrimSpace(os.Getenv("MILLIWAYS_START_PROVIDER")); provider != "" {
+	return chooseStartProvider(
+		os.Getenv("MILLIWAYS_START_PROVIDER"),
+		os.Getenv("MILLIWAYS_NO_AUTO_PROVIDER"),
+		os.Getenv("MILLIWAYS_DEFAULT_PROVIDER"),
+		l.fetchAgentStatuses(),
+	)
+}
+
+func chooseStartProvider(startProvider, noAutoProvider, defaultProvider string, statuses map[string]agentStatus) string {
+	if provider := strings.TrimSpace(startProvider); provider != "" {
 		return provider
 	}
-	if strings.TrimSpace(os.Getenv("MILLIWAYS_NO_AUTO_PROVIDER")) == "1" {
+	if autoProviderDisabled(noAutoProvider) {
 		return ""
 	}
-	if provider := strings.TrimSpace(os.Getenv("MILLIWAYS_DEFAULT_PROVIDER")); provider != "" {
+	if provider := strings.TrimSpace(defaultProvider); provider != "" {
 		return provider
 	}
-	statuses := l.fetchAgentStatuses()
 	for _, name := range chatSwitchableAgents {
 		if statuses[name].mark == "✓" {
 			return name
@@ -435,6 +443,15 @@ func (l *chatLoop) startProvider() string {
 		return chatSwitchableAgents[0]
 	}
 	return ""
+}
+
+func autoProviderDisabled(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // chatCmd returns the cobra subcommand `milliways chat`. Wires runChat
@@ -2596,6 +2613,13 @@ type agentStatus struct {
 	model string
 }
 
+type agentListEntry struct {
+	ID         string `json:"id"`
+	Available  bool   `json:"available"`
+	AuthStatus string `json:"auth_status"`
+	Model      string `json:"model"`
+}
+
 // fetchAgentStatuses queries agent.list and returns a map keyed by
 // runner name, falling back to "?" / "" if the call fails so the
 // landing zone always renders something rather than blocking on the
@@ -2608,18 +2632,16 @@ func (l *chatLoop) fetchAgentStatuses() map[string]agentStatus {
 	if l.client == nil {
 		return out
 	}
-	var resp struct {
-		Agents []struct {
-			ID         string `json:"id"`
-			Available  bool   `json:"available"`
-			AuthStatus string `json:"auth_status"`
-			Model      string `json:"model"`
-		} `json:"agents"`
-	}
-	if err := l.client.Call("agent.list", nil, &resp); err != nil {
+	var agents []agentListEntry
+	if err := l.client.Call("agent.list", nil, &agents); err != nil {
 		return out
 	}
-	for _, a := range resp.Agents {
+	applyAgentStatuses(out, agents)
+	return out
+}
+
+func applyAgentStatuses(out map[string]agentStatus, agents []agentListEntry) {
+	for _, a := range agents {
 		mark := "✗"
 		switch a.AuthStatus {
 		case "ok":
@@ -2629,7 +2651,6 @@ func (l *chatLoop) fetchAgentStatuses() map[string]agentStatus {
 		}
 		out[a.ID] = agentStatus{mark: mark, model: a.Model}
 	}
-	return out
 }
 
 // setTermTitle updates the terminal tab title and window title using OSC escape
