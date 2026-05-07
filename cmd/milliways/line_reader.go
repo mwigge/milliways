@@ -53,13 +53,15 @@ type chatLineReader struct {
 	completer       completionProvider
 	pipeReader      *bufio.Reader
 
-	mu      sync.Mutex
-	closed  bool
-	buf     []rune
-	cursor  int
-	rows    int
-	history []string
-	histPos int
+	mu           sync.Mutex
+	closed       bool
+	active       bool
+	buf          []rune
+	cursor       int
+	rows         int
+	promptHidden bool
+	history      []string
+	histPos      int
 }
 
 func newChatLineReader(cfg chatLineReaderConfig) (*chatLineReader, error) {
@@ -124,6 +126,8 @@ func (r *chatLineReader) Readline() (string, error) {
 	r.buf = nil
 	r.cursor = 0
 	r.histPos = len(r.history)
+	r.active = true
+	r.promptHidden = false
 	r.redrawLocked()
 	r.mu.Unlock()
 
@@ -143,12 +147,16 @@ func (r *chatLineReader) Readline() (string, error) {
 		case '\r', '\n':
 			r.mu.Lock()
 			line := string(r.buf)
+			r.active = false
+			r.promptHidden = false
 			fmt.Fprint(r.out, "\r\n")
 			r.mu.Unlock()
 			r.addHistory(line)
 			return line, nil
 		case 3:
 			r.mu.Lock()
+			r.active = false
+			r.promptHidden = false
 			if r.interruptPrompt != "" {
 				fmt.Fprint(r.out, "\r\n"+r.interruptPrompt+"\r\n")
 			} else {
@@ -164,6 +172,10 @@ func (r *chatLineReader) Readline() (string, error) {
 			}
 			r.mu.Unlock()
 			if empty {
+				r.mu.Lock()
+				r.active = false
+				r.promptHidden = false
+				r.mu.Unlock()
 				return "", io.EOF
 			}
 		case 9:
@@ -268,6 +280,26 @@ func (r *chatLineReader) applyCompletion() {
 	r.mu.Unlock()
 }
 
+func (r *chatLineReader) BeginExternalOutput() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || !r.active || r.promptHidden {
+		return
+	}
+	r.clearPromptLocked()
+	r.promptHidden = true
+}
+
+func (r *chatLineReader) EndExternalOutput() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || !r.active {
+		return
+	}
+	r.promptHidden = false
+	r.redrawLocked()
+}
+
 func (r *chatLineReader) insertRune(ch rune) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -365,25 +397,15 @@ func (r *chatLineReader) redrawLocked() {
 	if r.cursor > len(r.buf) {
 		r.cursor = len(r.buf)
 	}
+	if r.promptHidden {
+		return
+	}
 
 	width := lineReaderWidth()
 	if r.rows <= 0 {
 		r.rows = 1
 	}
-	fmt.Fprint(r.out, "\r")
-	if r.rows > 1 {
-		fmt.Fprintf(r.out, "\033[%dA", r.rows-1)
-	}
-	for i := 0; i < r.rows; i++ {
-		if i > 0 {
-			fmt.Fprint(r.out, "\033[1B")
-		}
-		fmt.Fprint(r.out, "\r\033[2K")
-	}
-	if r.rows > 1 {
-		fmt.Fprintf(r.out, "\033[%dA", r.rows-1)
-	}
-	fmt.Fprint(r.out, "\r")
+	r.clearPromptLocked()
 	fmt.Fprint(r.out, r.prompt)
 	fmt.Fprint(r.out, string(r.buf))
 
@@ -399,6 +421,29 @@ func (r *chatLineReader) redrawLocked() {
 	if cursorCol > 0 {
 		fmt.Fprintf(r.out, "\033[%dC", cursorCol)
 	}
+}
+
+func (r *chatLineReader) clearPromptLocked() {
+	width := lineReaderWidth()
+	if r.rows <= 0 {
+		r.rows = 1
+	}
+	cursorWidth := displayWidth(r.prompt) + displayWidth(string(r.buf[:r.cursor]))
+	cursorRow, _ := cursorPosition(cursorWidth, width)
+	fmt.Fprint(r.out, "\r")
+	if cursorRow > 0 {
+		fmt.Fprintf(r.out, "\033[%dA", cursorRow)
+	}
+	for i := 0; i < r.rows; i++ {
+		if i > 0 {
+			fmt.Fprint(r.out, "\033[1B")
+		}
+		fmt.Fprint(r.out, "\r\033[2K")
+	}
+	if r.rows > 1 {
+		fmt.Fprintf(r.out, "\033[%dA", r.rows-1)
+	}
+	fmt.Fprint(r.out, "\r")
 }
 
 func lineReaderWidth() int {
