@@ -360,6 +360,7 @@ func TestThinkingLineUsesDarkerClientColor(t *testing.T) {
 		"minimax": "\033[38;5;98m",
 		"local":   "\033[38;5;124m",
 		"pool":    "\033[38;5;75m",
+		"custom":  unknownAgentThinkingColor,
 	}
 	for agent, color := range want {
 		line := formatThinkingLine(agent, "planning next step")
@@ -372,6 +373,9 @@ func TestThinkingLineUsesDarkerClientColor(t *testing.T) {
 		if agentThinkingColor(agent) == agentColor(agent) {
 			t.Fatalf("%s thinking color should be darker than main color", agent)
 		}
+	}
+	if agentThinkingColor("custom") == agentThinkingColor("claude") {
+		t.Fatal("unknown provider thinking color should not reuse claude")
 	}
 }
 
@@ -405,11 +409,15 @@ func TestAgentMainColorContract(t *testing.T) {
 		"gemini":  "\033[38;5;208m",
 		"minimax": "\033[38;5;141m",
 		"pool":    "\033[38;5;117m",
+		"custom":  unknownAgentColor,
 	}
 	for agent, color := range want {
 		if got := agentColor(agent); got != color {
 			t.Fatalf("agentColor(%q) = %q, want %q", agent, got, color)
 		}
+	}
+	if agentColor("custom") == agentColor("claude") {
+		t.Fatal("unknown provider main color should not reuse claude")
 	}
 }
 
