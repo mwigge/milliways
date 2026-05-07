@@ -145,7 +145,7 @@ func runAttach(ctx context.Context, handle int64, jsonMode bool, out io.Writer, 
 // The function returns when the events channel is closed or an "end" event is
 // received.
 func drainStreamToWriter(events <-chan []byte, w io.Writer, jsonMode bool) {
-	var tokensIn, tokensOut int
+	var usage usageStats
 	for line := range events {
 		var ev streamEvent
 		if err := json.Unmarshal(line, &ev); err != nil {
@@ -163,10 +163,14 @@ func drainStreamToWriter(events <-chan []byte, w io.Writer, jsonMode bool) {
 				_, _ = w.Write(decoded)
 			}
 		case "chunk_end":
-			tokensIn += ev.TokensIn
-			tokensOut += ev.TokensOut
+			usage.InputTokens += firstNonZero(ev.InputTokens, ev.TokensIn)
+			usage.OutputTokens += firstNonZero(ev.OutputTokens, ev.TokensOut)
+			if ev.TotalTokens > 0 {
+				usage.TotalTokens += ev.TotalTokens
+			}
+			usage.CostUSD += ev.CostUSD
 			if jsonMode {
-				fmt.Fprintln(w, formatDoneEvent(tokensIn, tokensOut, time.Now().UTC()))
+				fmt.Fprintln(w, formatDoneEventWithUsage(usage, time.Now().UTC()))
 			}
 		case "end":
 			return
@@ -176,11 +180,15 @@ func drainStreamToWriter(events <-chan []byte, w io.Writer, jsonMode bool) {
 
 // streamEvent is the minimal subset of daemon stream event fields we need.
 type streamEvent struct {
-	T         string `json:"t"`
-	B64       string `json:"b64,omitempty"`
-	Status    string `json:"status,omitempty"`
-	TokensIn  int    `json:"tokens_in,omitempty"`
-	TokensOut int    `json:"tokens_out,omitempty"`
+	T            string  `json:"t"`
+	B64          string  `json:"b64,omitempty"`
+	Status       string  `json:"status,omitempty"`
+	TokensIn     int     `json:"tokens_in,omitempty"`
+	TokensOut    int     `json:"tokens_out,omitempty"`
+	InputTokens  int     `json:"input_tokens,omitempty"`
+	OutputTokens int     `json:"output_tokens,omitempty"`
+	TotalTokens  int     `json:"total_tokens,omitempty"`
+	CostUSD      float64 `json:"cost_usd,omitempty"`
 }
 
 // formatDeltaEvent returns a JSON line for a delta event.
@@ -195,13 +203,29 @@ func formatDeltaEvent(content string, ts time.Time) string {
 
 // formatDoneEvent returns a JSON line for a done event.
 func formatDoneEvent(tokensIn, tokensOut int, ts time.Time) string {
+	return formatDoneEventWithUsage(usageStats{InputTokens: tokensIn, OutputTokens: tokensOut}, ts)
+}
+
+func formatDoneEventWithUsage(usage usageStats, ts time.Time) string {
 	b, _ := json.Marshal(map[string]any{
-		"type":       "done",
-		"tokens_in":  tokensIn,
-		"tokens_out": tokensOut,
-		"ts":         ts.UTC().Format(time.RFC3339),
+		"type":          "done",
+		"tokens_in":     usage.InputTokens,
+		"tokens_out":    usage.OutputTokens,
+		"total_tokens":  usage.total(),
+		"cost_usd":      usage.CostUSD,
+		"usage_display": formatUsageInline(usage),
+		"ts":            ts.UTC().Format(time.RFC3339),
 	})
 	return string(b)
+}
+
+func firstNonZero(values ...int) int {
+	for _, v := range values {
+		if v != 0 {
+			return v
+		}
+	}
+	return 0
 }
 
 // buildQuotasFromSnapshots converts a quota.get response slice into a
@@ -540,7 +564,10 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 		if i == selected {
 			prefix = "▶ " + prefix
 		}
-		meta := fmt.Sprintf("t%d k%d", p.Turns, p.Tokens/1000)
+		meta := fmt.Sprintf("turns %d", p.Turns)
+		if usage := formatUsageCompact(usageStats{TotalTokens: p.Tokens, CostUSD: p.CostUSD}); usage != "" {
+			meta += " " + usage
+		}
 		if p.LastError != "" {
 			meta = "err"
 		} else if p.LastThink != "" {
@@ -664,10 +691,7 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 		fleetParts = append(fleetParts, fmt.Sprintf("%d✗", obsErr))
 	}
 	obsAuthStr := fmt.Sprintf("auth %d/%d", obsOk, len(providers))
-	obsCostStr := "$0.00"
-	if obsTotalCost >= 0.005 {
-		obsCostStr = fmt.Sprintf("$%.2f", obsTotalCost)
-	}
+	obsCostStr := formatCost(obsTotalCost)
 	if len(fleetParts) == 0 {
 		ln("%s◌ all idle  │%s  %s%s", dim, obsAuthStr, obsCostStr, reset)
 	} else {
@@ -683,14 +707,9 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 			continue
 		}
 		glyph, stLabel := obsStatusRow(st, p.LastError)
-		tokStr := obsTokensK(p.Tokens)
-		costStr := obsCostFmt(p.CostUSD)
 		row := obsProviderShort(p.ID) + " " + glyph + stLabel
-		if tokStr != "" {
-			row += " " + tokStr
-		}
-		if costStr != "" {
-			row += " " + costStr
+		if usage := formatUsageCompact(usageStats{TotalTokens: p.Tokens, CostUSD: p.CostUSD}); usage != "" {
+			row += " " + usage
 		}
 		if p.LatencyMS > 0 {
 			row += " lat" + formatDurationMS(p.LatencyMS)
@@ -786,25 +805,6 @@ func obsStatusRow(status, lastError string) (glyph, label string) {
 	}
 }
 
-// obsTokensK formats a token count as an abbreviated k-unit string.
-func obsTokensK(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
-	}
-	return fmt.Sprintf("%dk", n/1000)
-}
-
-// obsCostFmt formats a cost in dollars; returns "" for negligible amounts.
-func obsCostFmt(f float64) string {
-	if f < 0.005 {
-		return ""
-	}
-	return fmt.Sprintf("$%.2f", f)
-}
-
 func formatDurationMS(ms float64) string {
 	switch {
 	case ms <= 0:
@@ -880,7 +880,11 @@ func renderDeckNavigatorPlain(providers []deckProviderInfo, active string, polle
 		if model == "" {
 			model = "-"
 		}
-		fmt.Fprintf(&b, "  %d %s %s %s model %s turns %d tokens %d\n", i+1, p.ID, status, auth, model, p.Turns, p.Tokens)
+		usage := formatUsageCompact(usageStats{TotalTokens: p.Tokens, CostUSD: p.CostUSD})
+		if usage == "" {
+			usage = "0 tok"
+		}
+		fmt.Fprintf(&b, "  %d %s %s %s model %s turns %d usage %s\n", i+1, p.ID, status, auth, model, p.Turns, usage)
 	}
 	fmt.Fprintln(&b, "Active")
 	if active == "" {
