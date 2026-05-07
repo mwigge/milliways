@@ -75,6 +75,9 @@ Navigator mode (parallel panel):
 			defer stop()
 
 			if deckMode {
+				if plainMode || !ansiEnabled() {
+					return runDeckNavigatorPlain(ctx)
+				}
 				return runDeckNavigator(ctx, rightPaneID)
 			}
 			if navGroupID != "" {
@@ -260,15 +263,13 @@ func runNavigator(ctx context.Context, groupID string, plain bool) error {
 	defer func() { _ = client.Close() }()
 
 	if plain {
-		var resp struct {
-			Slots []parallel.SlotRecord `json:"slots"`
-		}
-		if err := client.Call("group.status", map[string]any{"group_id": groupID}, &resp); err != nil {
+		slots, err := fetchNavigatorSlots(client, groupID)
+		if err != nil {
 			return fmt.Errorf("%s", friendlyError("navigator status: ", "", err))
 		}
 		fmt.Printf("milliways parallel %s\n", groupID)
 		fmt.Println("0 main full chat")
-		for _, s := range resp.Slots {
+		for _, s := range slots {
 			fmt.Printf("%d %s %s %s tokens\n", s.SlotN, s.Provider, s.Status, formatNavTokens(s.TokensOut))
 		}
 		return nil
@@ -362,14 +363,12 @@ func runNavigator(ctx context.Context, groupID string, plain bool) error {
 	}
 
 	pollSlots := func() {
-		var resp struct {
-			Slots []parallel.SlotRecord `json:"slots"`
-		}
-		if err := client.Call("group.status", map[string]any{"group_id": groupID}, &resp); err != nil {
+		got, err := fetchNavigatorSlots(client, groupID)
+		if err != nil {
 			lastErr = err
 			return
 		}
-		slots = resp.Slots
+		slots = got
 		lastErr = nil
 
 		// Best-effort quota poll: errors are silently swallowed so a missing
@@ -420,6 +419,25 @@ func runNavigator(ctx context.Context, groupID string, plain bool) error {
 	}
 }
 
+func fetchNavigatorSlots(client *rpc.Client, groupID string) ([]parallel.SlotRecord, error) {
+	var resp rpc.GroupStatusResult
+	if err := client.Call("group.status", map[string]any{"group_id": groupID}, &resp); err != nil {
+		return nil, err
+	}
+	slots := make([]parallel.SlotRecord, 0, len(resp.Slots))
+	for i, s := range resp.Slots {
+		slots = append(slots, parallel.SlotRecord{
+			SlotN:     i + 1,
+			Handle:    s.Handle,
+			Provider:  s.Provider,
+			Status:    parallel.SlotStatus(s.Status),
+			TokensIn:  s.TokensIn,
+			TokensOut: s.TokensOut,
+		})
+	}
+	return slots, nil
+}
+
 // formatNavTokens is a local helper identical to parallel.formatTokens but
 // inlined here to avoid an import cycle between cmd and internal packages at
 // test time. It will always delegate to the canonical implementation.
@@ -466,8 +484,15 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 		h = 40
 	}
 
-	const reset = "\033[0m"
-	const dim = "\033[2m"
+	colorEnabled := ansiEnabled()
+	reset := "\033[0m"
+	dim := "\033[2m"
+	red := "\033[31m"
+	if !colorEnabled {
+		reset = ""
+		dim = ""
+		red = ""
+	}
 
 	var b strings.Builder
 	lines := 0
@@ -527,7 +552,7 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 		edgeColor := dim
 		if selected {
 			edgeColor = agentColor(provider)
-			if edgeColor == "" {
+			if edgeColor == "" && colorEnabled {
 				edgeColor = "\033[38;5;75m"
 			}
 		}
@@ -700,7 +725,7 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 		alertHdr := "┄ " + strings.Repeat("┄", max(1, w-4))
 		ln("%s%s%s", dim, truncate(alertHdr, w-2), reset)
 		for _, alert := range obsAlerts {
-			ln("\033[31m  %s%s", alert, reset)
+			ln("%s  %s%s", red, alert, reset)
 		}
 	}
 	// Footer: quota for the active client
@@ -826,6 +851,75 @@ func orderDeckProviders(providers []deckProviderInfo) []deckProviderInfo {
 		}
 	})
 	return ordered
+}
+
+func renderDeckNavigatorPlain(providers []deckProviderInfo, active string, polled bool, quotas map[string]parallel.QuotaSummary) string {
+	var b strings.Builder
+	fmt.Fprintln(&b, "milliways deck")
+	fmt.Fprintln(&b, "Clients")
+	if len(providers) == 0 {
+		if polled {
+			fmt.Fprintln(&b, "  no clients")
+		} else {
+			fmt.Fprintln(&b, "  connecting")
+		}
+	}
+	for i, p := range providers {
+		status := fallbackStatus(p.Status)
+		if p.ID == active && status == deckStatusIdle {
+			status = "active"
+		}
+		auth := "auth?"
+		switch p.AuthStatus {
+		case "ok":
+			auth = "auth ok"
+		case "missing_credentials":
+			auth = "auth missing"
+		}
+		model := p.Model
+		if model == "" {
+			model = "-"
+		}
+		fmt.Fprintf(&b, "  %d %s %s %s model %s turns %d tokens %d\n", i+1, p.ID, status, auth, model, p.Turns, p.Tokens)
+	}
+	fmt.Fprintln(&b, "Active")
+	if active == "" {
+		fmt.Fprintln(&b, "  none")
+	} else {
+		fmt.Fprintf(&b, "  %s\n", active)
+	}
+	fmt.Fprintln(&b, "Status")
+	if polled {
+		fmt.Fprintf(&b, "  daemon connected; %d clients\n", len(providers))
+	} else {
+		fmt.Fprintln(&b, "  daemon connecting")
+	}
+	fmt.Fprintln(&b, "Observability")
+	authOK := 0
+	for _, p := range providers {
+		if p.AuthStatus == "ok" {
+			authOK++
+		}
+	}
+	fmt.Fprintf(&b, "  auth %d/%d ok\n", authOK, len(providers))
+	if active != "" {
+		if q, ok := quotas[active]; ok && q.LimitDay > 0 {
+			fmt.Fprintf(&b, "  quota %d%%\n", int(q.UsedPct()))
+		}
+	}
+	return b.String()
+}
+
+func runDeckNavigatorPlain(ctx context.Context) error {
+	client, err := rpc.Dial(daemonSocket())
+	if err != nil {
+		return fmt.Errorf("%s", friendlyError("deck: ", "", err))
+	}
+	defer func() { _ = client.Close() }()
+
+	providers, active, polled, quotas := pollDeckNavigatorSnapshot(ctx, client)
+	fmt.Print(renderDeckNavigatorPlain(providers, active, polled, quotas))
+	return nil
 }
 
 // runDeckNavigator is the interactive provider browser for deck mode.
@@ -1070,4 +1164,60 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 			}
 		}
 	}
+}
+
+func pollDeckNavigatorSnapshot(ctx context.Context, client *rpc.Client) ([]deckProviderInfo, string, bool, map[string]parallel.QuotaSummary) {
+	_ = ctx
+	var agents []struct {
+		ID         string `json:"id"`
+		AuthStatus string `json:"auth_status"`
+		Model      string `json:"model"`
+	}
+	if err := client.Call("agent.list", nil, &agents); err != nil {
+		return nil, "", false, nil
+	}
+	active := ""
+	var deck daemonDeckSnapshot
+	deckByAgent := map[string]daemonDeckSessionStatus{}
+	if err := client.Call("deck.snapshot", nil, &deck); err == nil {
+		active = deck.Active
+		for _, sess := range deck.Sessions {
+			if sess.AgentID != "" {
+				deckByAgent[sess.AgentID] = sess
+			}
+		}
+	}
+	updated := make([]deckProviderInfo, 0, len(agents))
+	for _, a := range agents {
+		d := deckByAgent[a.ID]
+		model := a.Model
+		if d.Model != "" {
+			model = d.Model
+		}
+		updated = append(updated, deckProviderInfo{
+			ID:           a.ID,
+			AuthStatus:   a.AuthStatus,
+			Model:        model,
+			Handle:       d.Handle,
+			Status:       d.Status,
+			Turns:        d.TurnCount,
+			Tokens:       d.TotalTokens,
+			CostUSD:      d.CostUSD,
+			CurrentTrace: d.CurrentTrace,
+			LastTrace:    d.LastTrace,
+			LatencyMS:    d.LatencyMS,
+			TTFTMS:       d.TTFTMS,
+			TokenRate:    d.TokenRate,
+			ErrorCount:   d.ErrorCount,
+			QueueDepth:   d.QueueDepth,
+			LastError:    d.LastError,
+			LastThink:    d.LastThinking,
+		})
+	}
+	var quotas map[string]parallel.QuotaSummary
+	var snapshots []rpc.QuotaSnapshot
+	if err := client.Call("quota.get", nil, &snapshots); err == nil {
+		quotas = buildQuotasFromSnapshots(snapshots)
+	}
+	return orderDeckProviders(updated), active, true, quotas
 }

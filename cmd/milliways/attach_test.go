@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -445,7 +446,7 @@ func TestRenderDeckNavigatorSizedShowsSevenWhenThereIsRoom(t *testing.T) {
 }
 
 func TestRenderDeckNavigatorUsesAgentIdentityColors(t *testing.T) {
-	t.Parallel()
+	withoutNoColor(t)
 
 	got := renderDeckNavigatorSized(44, 30, []deckProviderInfo{
 		{ID: "claude", AuthStatus: "ok", Status: "idle"},
@@ -461,6 +462,73 @@ func TestRenderDeckNavigatorUsesAgentIdentityColors(t *testing.T) {
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("render missing client color %q:\n%q", want, got)
+		}
+	}
+}
+
+func withoutNoColor(t *testing.T) {
+	t.Helper()
+	oldNoColor, hadNoColor := os.LookupEnv("NO_COLOR")
+	oldTerm, hadTerm := os.LookupEnv("TERM")
+	if err := os.Unsetenv("NO_COLOR"); err != nil {
+		t.Fatalf("unset NO_COLOR: %v", err)
+	}
+	if err := os.Setenv("TERM", "xterm-256color"); err != nil {
+		t.Fatalf("set TERM: %v", err)
+	}
+	t.Cleanup(func() {
+		if hadNoColor {
+			_ = os.Setenv("NO_COLOR", oldNoColor)
+		} else {
+			_ = os.Unsetenv("NO_COLOR")
+		}
+		if hadTerm {
+			_ = os.Setenv("TERM", oldTerm)
+		} else {
+			_ = os.Unsetenv("TERM")
+		}
+	})
+}
+
+func TestRenderDeckNavigatorRespectsNoColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+
+	got := renderDeckNavigatorSized(44, 30, []deckProviderInfo{
+		{ID: "claude", AuthStatus: "ok", Status: "idle"},
+		{ID: "codex", AuthStatus: "ok", Status: "error", LastError: "rate limited"},
+	}, 0, "claude", true, nil)
+	if strings.Contains(got, "\x1b[") {
+		t.Fatalf("renderDeckNavigatorSized() emitted ANSI with NO_COLOR:\n%q", got)
+	}
+}
+
+func TestRenderDeckNavigatorPlainHasNoANSIOrBoxDrawing(t *testing.T) {
+	got := renderDeckNavigatorPlain([]deckProviderInfo{
+		{ID: "claude", AuthStatus: "ok", Model: "sonnet", Status: "idle", Turns: 2, Tokens: 1200},
+		{ID: "codex", AuthStatus: "missing_credentials", Status: "thinking"},
+	}, "claude", true, map[string]parallel.QuotaSummary{
+		"claude": {UsedToday: 25, LimitDay: 100},
+	})
+
+	if strings.Contains(got, "\x1b[") {
+		t.Fatalf("plain deck output emitted ANSI:\n%q", got)
+	}
+	for _, box := range []string{"┌", "┐", "└", "┘", "─", "│"} {
+		if strings.Contains(got, box) {
+			t.Fatalf("plain deck output emitted box drawing %q:\n%s", box, got)
+		}
+	}
+	for _, want := range []string{
+		"milliways deck",
+		"Clients",
+		"1 claude active auth ok model sonnet",
+		"2 codex thinking auth missing",
+		"daemon connected; 2 clients",
+		"auth 1/2 ok",
+		"quota 25%",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("plain deck output missing %q:\n%s", want, got)
 		}
 	}
 }

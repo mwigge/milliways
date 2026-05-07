@@ -993,8 +993,13 @@ func formatThinkingLine(agentID, msg string) string {
 
 func formatThinkingLineWidth(agentID, msg string, width int) string {
 	dim := agentThinkingColor(agentID)
-	if dim == "" {
+	colorEnabled := ansiEnabled()
+	reset := "\033[0m"
+	if dim == "" && colorEnabled {
 		dim = "\033[38;5;250m"
+	}
+	if !colorEnabled {
+		reset = ""
 	}
 	msg = strings.TrimSpace(msg)
 	if msg == "" {
@@ -1023,7 +1028,7 @@ func formatThinkingLineWidth(agentID, msg string, width int) string {
 			b.WriteString(continuation)
 		}
 		b.WriteString(line)
-		b.WriteString("\033[0m")
+		b.WriteString(reset)
 	}
 	return b.String()
 }
@@ -2742,6 +2747,9 @@ func isTTYStderr() bool {
 // Each runner has a stable identity colour so they're visually distinct
 // in the landing zone and in the prompt header.
 func agentColor(name string) string {
+	if !ansiEnabled() {
+		return ""
+	}
 	switch name {
 	case "claude":
 		return "\033[97m" // pearl white (bright white)
@@ -2765,6 +2773,9 @@ func agentColor(name string) string {
 // It follows the same hue family as agentColor, but darker so reasoning/status
 // lines are visible without competing with the final response.
 func agentThinkingColor(name string) string {
+	if !ansiEnabled() {
+		return ""
+	}
 	switch name {
 	case "claude":
 		return "\033[38;5;250m" // muted pearl

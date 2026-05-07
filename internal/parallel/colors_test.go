@@ -15,12 +15,13 @@
 package parallel
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
 
 func TestProviderColor_KnownProviders(t *testing.T) {
-	t.Parallel()
+	withoutNoColor(t)
 
 	tests := []struct {
 		provider  string
@@ -36,9 +37,7 @@ func TestProviderColor_KnownProviders(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.provider, func(t *testing.T) {
-			t.Parallel()
 			got := ProviderColor(tt.provider)
 			if got == "" {
 				t.Errorf("ProviderColor(%q) = %q, want non-empty color code", tt.provider, got)
@@ -51,8 +50,6 @@ func TestProviderColor_KnownProviders(t *testing.T) {
 }
 
 func TestProviderColor_UnknownProvider(t *testing.T) {
-	t.Parallel()
-
 	got := ProviderColor("unknown-provider")
 	if got != "" {
 		t.Errorf("ProviderColor(%q) = %q, want empty string", "unknown-provider", got)
@@ -60,8 +57,6 @@ func TestProviderColor_UnknownProvider(t *testing.T) {
 }
 
 func TestColorProvider_ContainsProviderName(t *testing.T) {
-	t.Parallel()
-
 	got := ColorProvider("claude")
 	if !strings.Contains(got, "claude") {
 		t.Errorf("ColorProvider(%q) = %q, does not contain provider name", "claude", got)
@@ -69,7 +64,7 @@ func TestColorProvider_ContainsProviderName(t *testing.T) {
 }
 
 func TestColorProvider_ContainsColorCode(t *testing.T) {
-	t.Parallel()
+	withoutNoColor(t)
 
 	got := ColorProvider("claude")
 	if !strings.Contains(got, "\033[97m") {
@@ -78,7 +73,7 @@ func TestColorProvider_ContainsColorCode(t *testing.T) {
 }
 
 func TestColorProvider_ContainsReset(t *testing.T) {
-	t.Parallel()
+	withoutNoColor(t)
 
 	got := ColorProvider("claude")
 	if !strings.Contains(got, "\033[0m") {
@@ -87,11 +82,35 @@ func TestColorProvider_ContainsReset(t *testing.T) {
 }
 
 func TestColorProvider_UnknownReturnsNameUndecorated(t *testing.T) {
-	t.Parallel()
-
 	provider := "unknown-xyz"
 	got := ColorProvider(provider)
 	if got != provider {
 		t.Errorf("ColorProvider(%q) = %q, want undecorated name %q", provider, got, provider)
 	}
+}
+
+func TestColorProvider_RespectsNoColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+
+	if got := ProviderColor("claude"); got != "" {
+		t.Fatalf("ProviderColor() with NO_COLOR = %q, want empty", got)
+	}
+	if got := ColorProvider("claude"); got != "claude" {
+		t.Fatalf("ColorProvider() with NO_COLOR = %q, want undecorated provider", got)
+	}
+}
+
+func withoutNoColor(t *testing.T) {
+	t.Helper()
+	old, ok := os.LookupEnv("NO_COLOR")
+	if err := os.Unsetenv("NO_COLOR"); err != nil {
+		t.Fatalf("unset NO_COLOR: %v", err)
+	}
+	t.Cleanup(func() {
+		if ok {
+			_ = os.Setenv("NO_COLOR", old)
+		} else {
+			_ = os.Unsetenv("NO_COLOR")
+		}
+	})
 }

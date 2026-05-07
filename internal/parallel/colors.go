@@ -14,9 +14,14 @@
 
 package parallel
 
+import "os"
+
 // ProviderColor returns the ANSI escape prefix for a provider label.
 // Reset with "\033[0m" after use.
 func ProviderColor(provider string) string {
+	if _, ok := os.LookupEnv("NO_COLOR"); ok {
+		return ""
+	}
 	switch provider {
 	case "claude":
 		return "\033[97m" // pearl white

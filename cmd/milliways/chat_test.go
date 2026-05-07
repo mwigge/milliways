@@ -240,7 +240,7 @@ func TestShellCommandNeedsConfirmation(t *testing.T) {
 }
 
 func TestThinkingLineUsesDarkerClientColor(t *testing.T) {
-	t.Parallel()
+	withoutNoColor(t)
 
 	want := map[string]string{
 		"claude":  "\033[38;5;250m",
@@ -288,7 +288,7 @@ func TestThinkingLineWrapsLongFeedbackInsteadOfChopping(t *testing.T) {
 }
 
 func TestAgentMainColorContract(t *testing.T) {
-	t.Parallel()
+	withoutNoColor(t)
 
 	want := map[string]string{
 		"claude":  "\033[97m",
@@ -300,6 +300,20 @@ func TestAgentMainColorContract(t *testing.T) {
 		if got := agentColor(agent); got != color {
 			t.Fatalf("agentColor(%q) = %q, want %q", agent, got, color)
 		}
+	}
+}
+
+func TestAgentColorsRespectNoColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+
+	if got := agentColor("claude"); got != "" {
+		t.Fatalf("agentColor() with NO_COLOR = %q, want empty", got)
+	}
+	if got := agentThinkingColor("claude"); got != "" {
+		t.Fatalf("agentThinkingColor() with NO_COLOR = %q, want empty", got)
+	}
+	if got := formatThinkingLine("claude", "checking status"); strings.Contains(got, "\x1b[") {
+		t.Fatalf("formatThinkingLine() emitted ANSI with NO_COLOR:\n%q", got)
 	}
 }
 
