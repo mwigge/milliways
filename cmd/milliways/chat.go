@@ -24,7 +24,7 @@ package main
 //   - One rpc.Client per chat session (daemon UDS).
 //   - One agent.open + agent.stream subscription per active runner.
 //     Switching runner closes the current session and opens the new one.
-//   - chzyer/readline for the input line (history, basic editing).
+//   - local x/term line reader for the input line (history, basic editing).
 //   - Stream events drained in a goroutine, content deltas decoded from
 //     base64 and printed to stdout in real time.
 //   - The reader loop blocks on user input, dispatches by first char:
@@ -39,6 +39,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -50,8 +51,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
-	"github.com/chzyer/readline"
 	"github.com/mwigge/milliways/internal/daemon"
 	"github.com/mwigge/milliways/internal/mempalace"
 	"github.com/mwigge/milliways/internal/project"
@@ -200,31 +201,39 @@ var clientSlashCommands = map[string][]string{
 	"minimax": {},
 }
 
-// switchableCompleter wraps an AutoCompleter behind a mutex so it can be
-// swapped live when the active runner changes without rebuilding readline.
+// switchableCompleter wraps completion candidates behind a mutex so they can
+// be swapped live when the active runner changes.
 type switchableCompleter struct {
 	mu sync.RWMutex
-	ac readline.AutoCompleter
+	ac []string
 }
 
-func (s *switchableCompleter) Do(line []rune, pos int) ([][]rune, int) {
+func (s *switchableCompleter) Complete(line string, pos int) ([]string, int) {
 	// For ! shell commands, provide filesystem path completion on the last word.
-	if pos > 0 && line[0] == '!' {
-		return shellPathComplete(string(line[:pos]))
+	if pos > 0 && strings.HasPrefix(line, "!") {
+		return shellPathComplete(line[:pos])
 	}
 	s.mu.RLock()
 	ac := s.ac
 	s.mu.RUnlock()
-	if ac == nil {
+	if len(ac) == 0 {
 		return nil, 0
 	}
-	return ac.Do(line, pos)
+	prefixStart := strings.LastIndexAny(line[:pos], " \t") + 1
+	prefix := line[prefixStart:pos]
+	var out []string
+	for _, item := range ac {
+		if strings.HasPrefix(item, prefix) {
+			out = append(out, strings.TrimPrefix(item, prefix))
+		}
+	}
+	return out, utf8.RuneCountInString(prefix)
 }
 
 // shellPathComplete provides path completion for ! shell commands.
 // It completes the last whitespace-delimited word as a filesystem path,
 // expanding ~ to the home directory.
-func shellPathComplete(line string) ([][]rune, int) {
+func shellPathComplete(line string) ([]string, int) {
 	// Find the last word (the path being completed).
 	lastSpace := strings.LastIndexAny(line, " \t")
 	prefix := line[lastSpace+1:] // everything after the last space
@@ -248,7 +257,7 @@ func shellPathComplete(line string) ([][]rune, int) {
 		return nil, 0
 	}
 
-	completions := make([][]rune, 0, len(matches))
+	completions := make([]string, 0, len(matches))
 	for _, m := range matches {
 		// Restore ~ if the user typed it.
 		display := m
@@ -263,136 +272,63 @@ func shellPathComplete(line string) ([][]rune, int) {
 		}
 		// Completion is the suffix to append to what the user already typed.
 		suffix := display[len(prefix):]
-		completions = append(completions, []rune(suffix))
+		completions = append(completions, suffix)
 	}
 
 	return completions, len([]rune(prefix))
 }
 
-func (s *switchableCompleter) set(ac readline.AutoCompleter) {
+func (s *switchableCompleter) set(ac []string) {
 	s.mu.Lock()
 	s.ac = ac
 	s.mu.Unlock()
 }
 
-// buildCompleter returns a readline AutoCompleter for all slash commands.
+// buildCompleter returns completion candidates for all slash commands.
 // agentID, when non-empty, appends the client's native slash commands so
 // they appear in tab completion while that runner is active.
 // Agent shortcuts (/claude, /gemini, …) and numbered aliases (/1..7) are
 // derived from chatSwitchableAgents; ctl aliases from chatCtlAliases.
-func buildCompleter(agentID string) readline.AutoCompleter {
-	installClients := []readline.PrefixCompleterInterface{
-		readline.PcItem("claude"),
-		readline.PcItem("codex"),
-		readline.PcItem("copilot"),
-		readline.PcItem("gemini"),
-		readline.PcItem("local"),
-	}
-	switchRunners := make([]readline.PrefixCompleterInterface, len(chatSwitchableAgents))
-	for i, name := range chatSwitchableAgents {
-		switchRunners[i] = readline.PcItem(name)
-	}
-
-	items := []readline.PrefixCompleterInterface{
+func buildCompleter(agentID string) []string {
+	items := []string{
 		// Numbered shortcuts /1../7
-		readline.PcItem("/1"), readline.PcItem("/2"), readline.PcItem("/3"),
-		readline.PcItem("/4"), readline.PcItem("/5"), readline.PcItem("/6"),
-		readline.PcItem("/7"),
+		"/1", "/2", "/3", "/4", "/5", "/6", "/7",
 		// Agent name shortcuts
 	}
 	for _, name := range chatSwitchableAgents {
-		items = append(items, readline.PcItem("/"+name))
+		items = append(items, "/"+name)
 	}
 	// Session commands
 	items = append(items,
-		readline.PcItem("/switch", switchRunners...),
-		readline.PcItem("/takeover", switchRunners...),
-		readline.PcItem("/login", switchRunners...),
-		readline.PcItem("/briefing"),
-		readline.PcItem("/model"),
-		readline.PcItem("/agents"),
-		readline.PcItem("/quota"),
-		readline.PcItem("/parallel",
-			readline.PcItem("--providers"),
-		),
-		readline.PcItem("/scan"),
-		readline.PcItem("/help"),
-		readline.PcItem("/exit"),
+		"/switch", "/takeover", "/login", "/briefing", "/model", "/agents", "/quota",
+		"/parallel", "/parallel --providers", "/scan", "/help", "/exit",
 		// Install / Upgrade
-		readline.PcItem("/install", installClients...),
-		readline.PcItem("/install-local-server"),
-		readline.PcItem("/install-local-swap"),
-		readline.PcItem("/upgrade",
-			readline.PcItem("--check"),
-			readline.PcItem("--yes"),
-			readline.PcItem("--version"),
-		),
-		readline.PcItem("/list-local-models"),
-		readline.PcItem("/switch-local-server",
-			readline.PcItem("llama-server"),
-			readline.PcItem("llama-swap"),
-			readline.PcItem("ollama"),
-			readline.PcItem("vllm"),
-			readline.PcItem("lmstudio"),
-		),
-		readline.PcItem("/download-local-model"),
-		readline.PcItem("/download-model"),
-		readline.PcItem("/setup-local-model"),
-		readline.PcItem("/setup-model",
-			readline.PcItem("list"),
-			readline.PcItem("refresh"),
-		),
-		readline.PcItem("/list-models-catalog"),
-		readline.PcItem("/refresh-model-catalog"),
-		readline.PcItem("/swap",
-			readline.PcItem("hot"),
-			readline.PcItem("cold"),
-		),
+		"/install", "/install claude", "/install codex", "/install copilot", "/install gemini", "/install local",
+		"/install-local-server", "/install-local-swap",
+		"/upgrade", "/upgrade --check", "/upgrade --yes", "/upgrade --version",
+		"/list-local-models", "/switch-local-server", "/switch-local-server llama-server",
+		"/switch-local-server llama-swap", "/switch-local-server ollama", "/switch-local-server vllm",
+		"/switch-local-server lmstudio", "/download-local-model", "/download-model", "/setup-local-model",
+		"/setup-model", "/setup-model list", "/setup-model refresh", "/list-models-catalog",
+		"/refresh-model-catalog", "/swap", "/swap hot", "/swap cold",
 		// PATH override for runner subprocesses
-		readline.PcItem("/path"),
+		"/path",
 		// Local-runner runtime tuning
-		readline.PcItem("/local-endpoint"),
-		readline.PcItem("/local-temp"),
-		readline.PcItem("/local-max-tokens"),
-		readline.PcItem("/local-hot",
-			readline.PcItem("on"),
-			readline.PcItem("off"),
-		),
+		"/local-endpoint", "/local-temp", "/local-max-tokens", "/local-hot", "/local-hot on", "/local-hot off",
 		// OpenSpec
-		readline.PcItem("/opsx-list"),
-		readline.PcItem("/opsx-status"),
-		readline.PcItem("/opsx-show"),
-		readline.PcItem("/opsx-archive"),
-		readline.PcItem("/opsx-validate"),
+		"/opsx-list", "/opsx-status", "/opsx-show", "/opsx-archive", "/opsx-validate",
 		// CodeGraph
-		readline.PcItem("/repoindex"),
+		"/repoindex",
 		// Artifact + context commands (milliways-level, work for all runners).
-		readline.PcItem("/ring"),
-		readline.PcItem("/blocks"),
-		readline.PcItem("/search"),
-		readline.PcItem("/jump"),
-		readline.PcItem("/copy-last",
-			readline.PcItem("response"),
-			readline.PcItem("prompt"),
-			readline.PcItem("block"),
-			readline.PcItem("code"),
-		),
-		readline.PcItem("/history"),
-		readline.PcItem("/cost"),
-		readline.PcItem("/trace"),
-		readline.PcItem("/retry"),
-		readline.PcItem("/undo"),
-		readline.PcItem("/compact"),
-		readline.PcItem("/clear"),
-		readline.PcItem("/review"),
-		readline.PcItem("/pptx"),
-		readline.PcItem("/drawio"),
+		"/ring", "/blocks", "/search", "/jump", "/copy-last", "/copy-last response",
+		"/copy-last prompt", "/copy-last block", "/copy-last code", "/history", "/cost",
+		"/trace", "/retry", "/undo", "/compact", "/clear", "/review", "/pptx", "/drawio",
 	)
 	// Append the active client's native slash commands.
 	for _, cmd := range clientSlashCommands[agentID] {
-		items = append(items, readline.PcItem(cmd))
+		items = append(items, cmd)
 	}
-	return readline.NewPrefixCompleter(items...)
+	return items
 }
 
 // runChat is the entry point invoked by the cobra `chat` subcommand AND
@@ -423,7 +359,7 @@ func runChat(ctx context.Context) error {
 	sc := &switchableCompleter{}
 	sc.set(buildCompleter(""))
 
-	rl, err := readline.NewEx(&readline.Config{
+	rl, err := newChatLineReader(chatLineReaderConfig{
 		Prompt:          chatPrompt(""),
 		HistoryFile:     chatHistoryFile(),
 		InterruptPrompt: "^C (use /cancel for active stream, /exit to quit)",
@@ -431,7 +367,7 @@ func runChat(ctx context.Context) error {
 		AutoComplete:    sc,
 	})
 	if err != nil {
-		return fmt.Errorf("readline init: %w", err)
+		return fmt.Errorf("line reader init: %w", err)
 	}
 	defer rl.Close()
 
@@ -531,7 +467,7 @@ Anything else is sent to the active runner as a prompt.`,
 	}
 }
 
-// chatHistoryFile returns the path for readline history, or "" to
+// chatHistoryFile returns the path for chat input history, or "" to
 // disable history (when the user has no resolvable home dir).
 func chatHistoryFile() string {
 	if p := strings.TrimSpace(os.Getenv("MILLIWAYS_HISTORY_FILE")); p != "" {
@@ -549,7 +485,7 @@ func chatHistoryFile() string {
 	return ""
 }
 
-// chatPrompt renders the readline prompt header for the active agent.
+// chatPrompt renders the chat prompt header for the active agent.
 // The active runner name is coloured with its identity colour; the
 // reset brings everything back to default before the ▶ cursor.
 // The empty-string case is the plain landing-zone prompt.
@@ -709,7 +645,7 @@ func (s *chatSession) send(prompt string) error {
 	return nil
 }
 
-// chatLoop ties the readline input + the daemon stream + slash dispatch
+// chatLoop ties the chat input + the daemon stream + slash dispatch
 // into one foreground loop.
 //
 // Memory bridge (v0.7.0): the loop accumulates per-runner turns in
@@ -722,7 +658,7 @@ type chatLoop struct {
 	sess      *chatSession
 	sessions  map[string]*chatSession
 	openAgent func(*rpc.Client, string) (*chatSession, error)
-	rl        *readline.Instance
+	rl        *chatLineReader
 	completer *switchableCompleter
 	out       io.Writer
 	errw      io.Writer
@@ -741,12 +677,12 @@ type chatLoop struct {
 	// session limits. Defaults to chatSwitchableAgents order. Can be
 	// reconfigured with /ring <r1,r2,...>. Empty = auto-rotation disabled.
 	// ringMu protects ring and exhausted which are read by drainStream's
-	// goroutine and written by the main readline goroutine.
+	// goroutine and written by the main input goroutine.
 	ringMu    sync.Mutex
 	ring      []string
 	exhausted map[string]bool // runners that hit session limit this session
 	// rotateCh carries auto-rotation requests from drainStream to the main
-	// readline goroutine so switchAgent is always called from one goroutine.
+	// input goroutine so switchAgent is always called from one goroutine.
 	rotateCh chan string
 
 	// turnLog is the rolling exchange across whichever runners the user
@@ -824,7 +760,7 @@ func (l *chatLoop) run(ctx context.Context) error {
 		}
 
 		line, err := l.rl.Readline()
-		if err == readline.ErrInterrupt {
+		if errors.Is(err, errLineInterrupt) {
 			// Ctrl+C — abort current dispatch (best-effort) but stay in loop.
 			fmt.Fprintln(l.errw, "^C  (Ctrl+D to exit)")
 			continue
@@ -833,7 +769,7 @@ func (l *chatLoop) run(ctx context.Context) error {
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("readline: %w", err)
+			return fmt.Errorf("line input: %w", err)
 		}
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -937,7 +873,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			if l.sess == sess {
 				l.setPromptState("")
 			}
-			// Refresh the readline prompt so the user sees ▶ ready to type.
+			// Refresh the prompt so the user sees ▶ ready to type.
 			if l.rl != nil && l.sess == sess {
 				l.rl.Refresh()
 			}
@@ -2336,7 +2272,7 @@ func isSessionLimitMsg(msg string) bool {
 
 // autoRotate is called from drainStream's goroutine when a session limit fires.
 // It marks the runner as exhausted (under ringMu) and sends the next runner
-// name to rotateCh. The main readline goroutine picks it up in run() and
+// name to rotateCh. The main input goroutine picks it up in run() and
 // calls switchAgent safely from the correct goroutine.
 func (l *chatLoop) autoRotate(exhaustedAgent string) {
 	l.ringMu.Lock()
@@ -2572,7 +2508,7 @@ func (l *chatLoop) handlePrompt(prompt string) {
 		return
 	}
 	// We don't block here — the response streams async. The next
-	// readline cycle starts right after, but the user typically waits
+	// input cycle starts right after, but the user typically waits
 	// for the response visually before typing the next prompt.
 }
 
@@ -2655,7 +2591,7 @@ func (l *chatLoop) fetchAgentStatuses() map[string]agentStatus {
 
 // setTermTitle updates the terminal tab title and window title using OSC escape
 // sequences. Only emits when stderr is a real TTY. Writing to stderr (not
-// stdout) avoids races with readline, which holds an internal lock on stdout
+// stdout) avoids races with the active input prompt.
 // during prompt redraws; terminals process OSC sequences from either fd.
 //
 // Sequence strategy (widest compatibility):
@@ -3227,8 +3163,8 @@ func (l *chatLoop) printLogin(agent string) {
 	}
 
 	// API-key runner — prompt interactively then inject live via RPC.
-	// Use term.ReadPassword on the raw stdin fd rather than readline so
-	// we don't recurse into the readline event loop (which hangs).
+	// Use term.ReadPassword on the raw stdin fd so we don't recurse into
+	// the line reader event loop.
 	fmt.Fprintf(l.out, "%s API key: ", agent)
 	key, err := term.ReadPassword(int(os.Stdin.Fd()))
 	fmt.Fprintln(l.out) // newline after the hidden input
