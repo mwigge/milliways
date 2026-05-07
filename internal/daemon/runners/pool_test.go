@@ -25,15 +25,24 @@ import (
 
 func TestPoolArgsBuilder_DefaultCommand(t *testing.T) {
 	got := poolArgsBuilder("hello pool", "/tmp/project")
-	want := []string{"exec", "-p", "hello pool", "--unsafe-auto-allow", "--directory", "/tmp/project"}
+	want := []string{"exec", "-p", "hello pool", "--directory", "/tmp/project"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("poolArgsBuilder() = %v, want %v", got, want)
 	}
 
 	got = poolArgsBuilder("hello pool", "")
-	want = []string{"exec", "-p", "hello pool", "--unsafe-auto-allow"}
+	want = []string{"exec", "-p", "hello pool"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("poolArgsBuilder(empty dir) = %v, want %v", got, want)
+	}
+}
+
+func TestPoolArgsBuilder_DefaultRequiresApproval(t *testing.T) {
+	got := poolArgsBuilder("hello pool", "/tmp/project")
+	for _, arg := range got {
+		if arg == "--unsafe-auto-allow" {
+			t.Fatalf("poolArgsBuilder() must not bypass tool approval by default: %v", got)
+		}
 	}
 }
 
