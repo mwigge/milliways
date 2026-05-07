@@ -114,7 +114,7 @@ func printWelcomeTo(out io.Writer) {
 Inside chat:
   /help                          full command reference
   /agents                        auth and model status
-  /parallel <prompt>             fan out to providers
+  /parallel --watch <prompt>     live grouped provider comparison
 `
 	fmt.Fprint(out, body)
 }

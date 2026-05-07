@@ -274,7 +274,7 @@ func TestPrintWelcomeIsConciseLauncherSurface(t *testing.T) {
 			t.Fatalf("welcome should be concise; found %q in:\n%s", absent, got)
 		}
 	}
-	for _, want := range []string{"milliways ", "launcher", "daemon", "Start:", "Inside chat:", "/help", "/agents", "/parallel <prompt>"} {
+	for _, want := range []string{"milliways ", "launcher", "daemon", "Start:", "Inside chat:", "/help", "/agents", "/parallel --watch <prompt>"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("welcome missing %q; got:\n%s", want, got)
 		}

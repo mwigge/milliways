@@ -3125,10 +3125,11 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  !<cmd>                        run a shell command inline")
 	fmt.Fprintln(l.out)
 	fmt.Fprintln(l.out, "Parallel dispatch:")
-	fmt.Fprintln(l.out, "  /parallel [--providers list] <prompt>  run prompt across multiple providers concurrently")
+	fmt.Fprintln(l.out, "  /parallel [--watch] [--providers list] <prompt>  run prompt across multiple providers concurrently")
 	fmt.Fprintln(l.out, "    providers: comma-separated list, e.g. claude,codex,local")
 	fmt.Fprintln(l.out, "    omit --providers to use all available providers")
-	fmt.Fprintln(l.out, "  /parallel-view [--watch] <group-id>   side-by-side provider output + consensus")
+	fmt.Fprintln(l.out, "    --watch renders live grouped output, agreement, differences, and consensus")
+	fmt.Fprintln(l.out, "  /parallel-view [--watch] <group-id>  side-by-side provider output + consensus")
 	fmt.Fprintln(l.out)
 
 	fmt.Fprintln(l.out, "Context management:")
