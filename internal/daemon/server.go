@@ -139,11 +139,15 @@ func NewServer(socket string) (*Server, error) {
 	probeCtx, probeCancel := context.WithTimeout(bgCtx, 10*time.Second)
 	defer probeCancel()
 	for _, info := range runners.Probe(probeCtx) {
+		model := info.Model
+		if model == "" {
+			model, _ = runners.ModelHint(info.ID)
+		}
 		s.agentsCache = append(s.agentsCache, AgentInfo{
 			ID:         info.ID,
 			Available:  info.Available,
 			AuthStatus: info.AuthStatus,
-			Model:      info.Model,
+			Model:      model,
 		})
 	}
 	slog.Info("runners probed", "n", len(s.agentsCache))

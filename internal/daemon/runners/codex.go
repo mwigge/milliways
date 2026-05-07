@@ -116,6 +116,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		state.sessionID = ""
 	}
 	state.model = model
+	pushModel(stream, AgentIDCodex)
 
 	cwd, _ := os.Getwd()
 	cmd := exec.CommandContext(ctx, codexBinary, buildCodexCmdArgsWithSession(text, cwd, codexModelExtraArgs(model), state.sessionID)...)
@@ -198,6 +199,9 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		}
 		if sessionID := extractCodexSessionID(line); sessionID != "" {
 			state.sessionID = sessionID
+		}
+		if model := extractModelFromJSONLine(line); model != "" {
+			pushObservedModel(stream, model)
 		}
 		if codexLineLooksProxyBlocked(line) {
 			sawProxyBlock.Store(true)

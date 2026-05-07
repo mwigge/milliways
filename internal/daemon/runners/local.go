@@ -196,6 +196,7 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	if model == "" {
 		model = localDefaultModel
 	}
+	stream.Push(modelEvent(model, "configured"))
 	apiKey := strings.TrimSpace(os.Getenv("MILLIWAYS_LOCAL_API_KEY"))
 
 	// Optional tuning — set via /local-temp and /local-max-tokens slash commands.

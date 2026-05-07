@@ -114,6 +114,7 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		endDispatchSpan(span, 0, 0, 0, spanErr)
 		stream.Push(geminiChunkEndEvent())
 	}()
+	pushModel(stream, AgentIDGemini)
 
 	cwd, _ := os.Getwd()
 	cmd := exec.CommandContext(ctx, geminiBinary, geminiArgsBuilder(text)...)

@@ -331,6 +331,54 @@ func TestDeckSnapshotReportsSessionStateAndBuffer(t *testing.T) {
 	}
 }
 
+func TestRecordingPusherRecordsModelInDeckSnapshot(t *testing.T) {
+	sess := &AgentSession{
+		AgentID: "_echo",
+		Handle:  42,
+		input:   make(chan []byte, 1),
+	}
+	pusher := &recordingPusher{sess: sess}
+	pusher.Push(map[string]any{"t": "model", "model": "codex-resolved", "source": "observed"})
+
+	snap := sess.deckSnapshot()
+	if snap.Model != "codex-resolved" {
+		t.Fatalf("model = %q, want codex-resolved", snap.Model)
+	}
+	if snap.ModelSource != "observed" {
+		t.Fatalf("model source = %q, want observed", snap.ModelSource)
+	}
+}
+
+func TestAgentListOverlaysObservedSessionModel(t *testing.T) {
+	reg := NewAgentRegistry(nil)
+	sess := &AgentSession{
+		AgentID: "codex",
+		Handle:  7,
+		input:   make(chan []byte, 1),
+	}
+	sess.recordModel("gpt-5.5", "observed")
+	reg.mu.Lock()
+	reg.sessions[7] = sess
+	reg.mu.Unlock()
+
+	srv := &Server{
+		agents: reg,
+		agentsCache: []AgentInfo{{
+			ID:         "codex",
+			Available:  true,
+			AuthStatus: "ok",
+			Model:      "codex CLI default",
+		}},
+	}
+	agents := srv.agentList()
+	if len(agents) != 1 {
+		t.Fatalf("agentList len = %d, want 1", len(agents))
+	}
+	if agents[0].Model != "gpt-5.5" {
+		t.Fatalf("agent model = %q, want observed model", agents[0].Model)
+	}
+}
+
 // TestAgentSend_MemPalaceBaselineInjectedOnFirstSend verifies that when
 // MemPalace has a prior finding for a file path referenced in the prompt,
 // the baseline block is sent to the session BEFORE the user's bytes on
