@@ -135,7 +135,35 @@ func TestLineReaderRedrawRestoresCursorPosition(t *testing.T) {
 	if !strings.Contains(got, "\rabcd") && !strings.Contains(got, "> abcd") {
 		t.Fatalf("redraw missing buffer: %q", got)
 	}
-	if !strings.Contains(got, "\033[2D") {
-		t.Fatalf("redraw should move cursor left by trailing width; got %q", got)
+	if !strings.Contains(got, "\033[4C") {
+		t.Fatalf("redraw should restore cursor column after repaint; got %q", got)
+	}
+}
+
+func TestLineReaderRedrawClearsPreviousWrappedRows(t *testing.T) {
+	var out bytes.Buffer
+	oldTermWidth := lineReaderTermWidth
+	lineReaderTermWidth = func() int { return 20 }
+	t.Cleanup(func() { lineReaderTermWidth = oldTermWidth })
+
+	r := &chatLineReader{
+		out:    &out,
+		prompt: "> ",
+		buf:    []rune("this is a long prompt that wraps"),
+		cursor: len([]rune("this is a long prompt that wraps")),
+	}
+	r.redrawLocked()
+	out.Reset()
+
+	r.buf = []rune("short")
+	r.cursor = len(r.buf)
+	r.redrawLocked()
+
+	got := out.String()
+	if !strings.Contains(got, "\033[1A") {
+		t.Fatalf("redraw should move up to clear wrapped rows; got %q", got)
+	}
+	if strings.Count(got, "\033[2K") < 2 {
+		t.Fatalf("redraw should clear every previous wrapped row; got %q", got)
 	}
 }
