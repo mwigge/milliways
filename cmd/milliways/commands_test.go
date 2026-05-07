@@ -16,18 +16,40 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mwigge/milliways/internal/kitchen"
 	"github.com/mwigge/milliways/internal/kitchen/adapter"
 	"github.com/mwigge/milliways/internal/maitre"
 	"github.com/mwigge/milliways/internal/observability"
+	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/sommelier"
 )
+
+type ticketReaderStub struct {
+	tickets []*pantry.Ticket
+	calls   int
+}
+
+func (s *ticketReaderStub) Get(id string) (*pantry.Ticket, error) {
+	if len(s.tickets) == 0 {
+		return nil, nil
+	}
+	idx := s.calls
+	if idx >= len(s.tickets) {
+		idx = len(s.tickets) - 1
+	}
+	s.calls++
+	ticket := *s.tickets[idx]
+	ticket.ID = id
+	return &ticket, nil
+}
 
 func TestBestContinuationKitchen_PrefersResumeCapableProvider(t *testing.T) {
 	// Use Cmd: "echo" so Status() resolves to Ready on hosts that lack
@@ -124,6 +146,65 @@ func TestRootCmd_RegistersProjectRootFlag(t *testing.T) {
 	}
 	if flag.DefValue != "" {
 		t.Fatalf("expected empty default value, got %q", flag.DefValue)
+	}
+}
+
+func TestRootCmd_AsyncFlagMentionsWatchInstructions(t *testing.T) {
+	cmd := rootCmd()
+	flag := cmd.Flags().Lookup("async")
+	if flag == nil {
+		t.Fatal("expected async flag to be registered")
+	}
+	if !strings.Contains(flag.Usage, "watch") {
+		t.Fatalf("async usage = %q, want watch instructions", flag.Usage)
+	}
+}
+
+func TestWatchTicketStatusPrintsProgressUntilTerminalStatus(t *testing.T) {
+	reader := &ticketReaderStub{tickets: []*pantry.Ticket{
+		{
+			Kitchen:   "codex",
+			Mode:      "async",
+			Status:    "running",
+			StartedAt: "2026-05-07T12:00:00Z",
+		},
+		{
+			Kitchen:     "codex",
+			Mode:        "async",
+			Status:      "complete",
+			StartedAt:   "2026-05-07T12:00:00Z",
+			CompletedAt: "2026-05-07T12:00:01Z",
+			OutputPath:  "/tmp/milliways-async/mw-test.out",
+		},
+	}}
+	var out bytes.Buffer
+
+	err := watchTicketStatus(context.Background(), &out, reader, "mw-test", time.Nanosecond)
+	if err != nil {
+		t.Fatalf("watchTicketStatus() error = %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{
+		"Watching:   mw-test",
+		"Status:     running",
+		"Status:     complete",
+		"Completed:  2026-05-07T12:00:01Z",
+		"Output:     /tmp/milliways-async/mw-test.out",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("watch output missing %q:\n%s", want, got)
+		}
+	}
+	if reader.calls < 2 {
+		t.Fatalf("watchTicketStatus calls = %d, want at least 2", reader.calls)
+	}
+}
+
+func TestWatchTicketStatusRejectsInvalidInterval(t *testing.T) {
+	err := watchTicketStatus(context.Background(), io.Discard, &ticketReaderStub{}, "mw-test", 0)
+	if err == nil || !strings.Contains(err.Error(), "interval") {
+		t.Fatalf("watchTicketStatus invalid interval error = %v", err)
 	}
 }
 
