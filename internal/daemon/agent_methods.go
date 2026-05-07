@@ -165,10 +165,12 @@ func (s *Server) agentSend(enc *json.Encoder, req *Request) {
 	} else {
 		bytes = []byte(p.Bytes)
 	}
+	promptBytes := append([]byte(nil), bytes...)
 	// expand_context defaults to true; explicit false opts out.
 	if p.ExpandContext == nil || *p.ExpandContext {
 		bytes = textproc.ExpandContext(context.Background(), bytes)
 	}
+	sess.recordPrompt(string(promptBytes))
 
 	// On the first send in a session, inject MemPalace baseline context before
 	// the user's bytes. CompareAndSwap(0→1) ensures exactly one send injects.
@@ -255,4 +257,11 @@ func (s *Server) agentSetActive(enc *json.Encoder, req *Request) {
 	s.currentAgent = p.AgentID
 	s.statusMu.Unlock()
 	writeResult(enc, req.ID, map[string]any{"ok": true, "active_agent": p.AgentID})
+}
+
+func (s *Server) deckSnapshot(enc *json.Encoder, req *Request) {
+	s.statusMu.Lock()
+	active := s.currentAgent
+	s.statusMu.Unlock()
+	writeResult(enc, req.ID, s.agents.DeckSnapshot(active))
 }

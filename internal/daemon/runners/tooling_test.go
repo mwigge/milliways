@@ -121,6 +121,42 @@ func TestRunAgenticLoop_MultipleToolCallsExecutedInOrder(t *testing.T) {
 	}
 }
 
+func TestRunAgenticLoop_UserInputRequestStopsBeforeToolExecution(t *testing.T) {
+	t.Parallel()
+
+	client := &stubClient{turns: []TurnResult{
+		{
+			Content:      "This will edit files. Should I proceed?",
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "echo", Args: `{"text":"first"}`}},
+			FinishReason: FinishToolCalls,
+		},
+	}}
+	registry := newRegistryWithEcho()
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	result, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		StopOnUserInputRequest: true,
+	})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if result.StoppedAt != StopReasonNeedsInput {
+		t.Fatalf("stopped = %q, want %q", result.StoppedAt, StopReasonNeedsInput)
+	}
+	if result.FinalContent != "This will edit files. Should I proceed?" {
+		t.Fatalf("final content = %q", result.FinalContent)
+	}
+	if client.calls != 1 {
+		t.Fatalf("client calls = %d, want 1", client.calls)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("messages len = %d, want 2; got %+v", len(messages), messages)
+	}
+	if messages[1].Role != RoleAssistant || len(messages[1].ToolCalls) != 0 {
+		t.Fatalf("assistant confirmation should be stored without executable tool calls; got %+v", messages[1])
+	}
+}
+
 func TestRunAgenticLoop_MaxTurnsCap(t *testing.T) {
 	t.Parallel()
 

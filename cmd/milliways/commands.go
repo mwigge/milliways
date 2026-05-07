@@ -290,9 +290,13 @@ func dispatchAsync(prompt, kitchenForce string, verbose bool, configPath string)
 		return err
 	}
 
-	fmt.Printf("Dispatched: %s\nKitchen:    %s\nStatus:     running\nCheck:      milliways ticket %s\n", ticketID, decision.Kitchen, ticketID)
+	fmt.Printf("Dispatched: %s\nKitchen:    %s\nStatus:     running\nWatch:      milliways ticket %s\n", ticketID, decision.Kitchen, ticketID)
+	fmt.Println("Waiting for completion...")
 
 	ad.Wait()
+	if ticket, getErr := pdb.Tickets().Get(ticketID); getErr == nil && ticket != nil {
+		fmt.Printf("Final:      %s\n", ticket.Status)
+	}
 	_ = pdb.Close()
 	return nil
 }

@@ -96,9 +96,9 @@ var historyAgents = map[string]bool{
 }
 
 const (
-	historyRateWindow    = 1 * time.Minute
+	historyRateWindow        = 1 * time.Minute
 	historyMaxCallsPerWindow = 60
-	historyMaxFileBytes  = 10 << 20 // 10 MiB per agent history file
+	historyMaxFileBytes      = 10 << 20 // 10 MiB per agent history file
 )
 
 // HistoryQuota enforces per-agent rate and file-size limits on history.append.
@@ -279,6 +279,8 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		s.agentStream(enc, req)
 	case "agent.close":
 		s.agentClose(enc, req)
+	case "deck.snapshot":
+		s.deckSnapshot(enc, req)
 	case "apply.extract":
 		s.applyExtract(enc, req)
 	case "context.get":

@@ -20,10 +20,12 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/mwigge/milliways/internal/daemon/observability"
 	"github.com/mwigge/milliways/internal/daemon/runners"
 	"github.com/mwigge/milliways/internal/history"
 )
@@ -49,15 +51,17 @@ type AgentHandle int64
 type AgentSession struct {
 	Handle  AgentHandle
 	AgentID string
-	stream  *Stream // nil until agent.stream is called
+	stream  *Stream // first subscriber stream; nil until agent.stream is called
+	streams map[int64]*Stream
 	server  *Server
 
-	mu          sync.Mutex
-	ctx         context.Context
-	cancel      context.CancelFunc
-	input       chan []byte
-	closed      atomic.Bool
-	streamReady chan struct{} // closed by AttachStream when stream is set
+	mu              sync.Mutex
+	ctx             context.Context
+	cancel          context.CancelFunc
+	input           chan []byte
+	closed          atomic.Bool
+	streamReady     chan struct{} // closed when the first stream is attached
+	streamReadyOnce sync.Once
 
 	// responseBuf is a rolling buffer of the runner's most recent
 	// emitted text (decoded from `{"t":"data","b64":...}` events).
@@ -74,12 +78,74 @@ type AgentSession struct {
 	// arrives from the runner). The argument is the final response text.
 	// nil means no hook is installed.
 	onTurnComplete func(finalText string)
+
+	stateMu      sync.Mutex
+	status       string
+	promptCount  int
+	turnCount    int
+	inputTokens  int
+	outputTokens int
+	costUSD      float64
+	currentTrace string
+	lastTrace    string
+	startedAt    time.Time
+	firstTokenAt time.Time
+	latencyMS    float64
+	ttftMS       float64
+	tokenRate    float64
+	errorCount   int
+	lastThinking string
+	lastError    string
+	lastPrompt   string
+	lastUpdated  time.Time
+	buffer       []DeckBlock
 }
 
 // responseBufCap is the per-session response-buffer capacity. 64 KiB is
 // enough for several screens of typical agent output and keeps memory
 // bounded even with many concurrent sessions.
 const responseBufCap = 64 * 1024
+
+const deckBufferCap = 80
+
+// DeckBlock is one prompt/status/output block retained for deck and central
+// panel rendering clients.
+type DeckBlock struct {
+	Kind string    `json:"kind"`
+	Text string    `json:"text"`
+	At   time.Time `json:"at"`
+}
+
+// DeckSessionSnapshot is the daemon-backed status for one open agent session.
+type DeckSessionSnapshot struct {
+	AgentID      string      `json:"agent_id"`
+	Handle       int64       `json:"handle"`
+	Status       string      `json:"status"`
+	PromptCount  int         `json:"prompt_count"`
+	TurnCount    int         `json:"turn_count"`
+	InputTokens  int         `json:"input_tokens"`
+	OutputTokens int         `json:"output_tokens"`
+	TotalTokens  int         `json:"total_tokens"`
+	CostUSD      float64     `json:"cost_usd"`
+	CurrentTrace string      `json:"current_trace,omitempty"`
+	LastTrace    string      `json:"last_trace,omitempty"`
+	LatencyMS    float64     `json:"latency_ms,omitempty"`
+	TTFTMS       float64     `json:"ttft_ms,omitempty"`
+	TokenRate    float64     `json:"token_rate,omitempty"`
+	ErrorCount   int         `json:"error_count,omitempty"`
+	QueueDepth   int         `json:"queue_depth,omitempty"`
+	LastThinking string      `json:"last_thinking,omitempty"`
+	LastError    string      `json:"last_error,omitempty"`
+	LastPrompt   string      `json:"last_prompt,omitempty"`
+	LastUpdated  time.Time   `json:"last_updated,omitempty"`
+	Buffer       []DeckBlock `json:"buffer,omitempty"`
+}
+
+// DeckSnapshot is the daemon-backed deck state returned by deck.snapshot.
+type DeckSnapshot struct {
+	Active   string                `json:"active"`
+	Sessions []DeckSessionSnapshot `json:"sessions"`
+}
 
 // recordingPusher wraps a Stream so any `{"t":"data","b64":...}` event
 // pushed by a runner is also captured (decoded) into the session's
@@ -91,18 +157,29 @@ type recordingPusher struct {
 }
 
 func (p *recordingPusher) Push(event any) {
-	if p.stream != nil {
-		p.stream.Push(event)
-	}
 	if p.sess == nil {
+		if p.stream != nil {
+			p.stream.Push(event)
+		}
 		return
 	}
+	p.sess.pushEvent(event)
 	m, ok := event.(map[string]any)
 	if !ok {
 		return
 	}
 	t, _ := m["t"].(string)
 	switch t {
+	case "thinking":
+		b64, _ := m["b64"].(string)
+		if b64 == "" {
+			return
+		}
+		bs, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return
+		}
+		p.sess.recordThinking(string(bs))
 	case "data":
 		b64, _ := m["b64"].(string)
 		if b64 == "" {
@@ -113,6 +190,7 @@ func (p *recordingPusher) Push(event any) {
 			return
 		}
 		p.sess.recordResponse(bs)
+		p.sess.recordData(string(bs))
 		// Append to per-agent history asynchronously if we have a server/state dir.
 		if p.sess.server != nil {
 			stateDir := filepath.Dir(p.sess.server.socket)
@@ -138,6 +216,15 @@ func (p *recordingPusher) Push(event any) {
 		if v, ok := m["msg"]; ok {
 			payload["msg"] = v
 		}
+		switch t {
+		case "chunk_end":
+			p.sess.recordChunkEnd(intFromEvent(m["input_tokens"]), intFromEvent(m["output_tokens"]), floatFromEvent(m["cost_usd"]))
+		case "err":
+			msg, _ := m["msg"].(string)
+			p.sess.recordError(msg)
+		case "end":
+			p.sess.recordIdle()
+		}
 		if p.sess.server != nil {
 			stateDir := filepath.Dir(p.sess.server.socket)
 			go func(agent string, dir string, pl any) {
@@ -155,6 +242,34 @@ func (p *recordingPusher) Push(event any) {
 		}
 	default:
 		// ignore others
+	}
+}
+
+func intFromEvent(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	default:
+		return 0
+	}
+}
+
+func floatFromEvent(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case float32:
+		return float64(n)
+	case int:
+		return float64(n)
+	case int64:
+		return float64(n)
+	default:
+		return 0
 	}
 }
 
@@ -217,6 +332,8 @@ func (r *AgentRegistry) Open(agentID string) (*AgentSession, error) {
 		cancel:      cancel,
 		input:       make(chan []byte, 16),
 		streamReady: make(chan struct{}),
+		streams:     make(map[int64]*Stream),
+		status:      "idle",
 		// firstSendDone starts at zero (atomic.Uint32 zero value) — first send
 		// will CAS it to 1 and perform context injection exactly once.
 	}
@@ -265,7 +382,7 @@ func runClaude(sess *AgentSession, metrics runners.MetricsObserver) {
 		return
 	}
 	runners.RunClaude(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
-	stream.Close()
+	sess.closeStreams()
 	slog.Debug("claude session ended", "handle", sess.Handle)
 }
 
@@ -280,7 +397,7 @@ func runCodex(sess *AgentSession, metrics runners.MetricsObserver) {
 		return
 	}
 	runners.RunCodex(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
-	stream.Close()
+	sess.closeStreams()
 	slog.Debug("codex session ended", "handle", sess.Handle)
 }
 
@@ -295,7 +412,7 @@ func runCopilot(sess *AgentSession, metrics runners.MetricsObserver) {
 		return
 	}
 	runners.RunCopilot(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
-	stream.Close()
+	sess.closeStreams()
 	slog.Debug("copilot session ended", "handle", sess.Handle)
 }
 
@@ -310,7 +427,7 @@ func runMiniMax(sess *AgentSession, metrics runners.MetricsObserver) {
 		return
 	}
 	runners.RunMiniMax(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
-	stream.Close()
+	sess.closeStreams()
 	slog.Debug("minimax session ended", "handle", sess.Handle)
 }
 
@@ -320,7 +437,7 @@ func runLocal(sess *AgentSession, metrics runners.MetricsObserver) {
 		return
 	}
 	runners.RunLocal(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
-	stream.Close()
+	sess.closeStreams()
 	slog.Debug("local session ended", "handle", sess.Handle)
 }
 
@@ -335,7 +452,7 @@ func runGemini(sess *AgentSession, metrics runners.MetricsObserver) {
 		return
 	}
 	runners.RunGemini(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
-	stream.Close()
+	sess.closeStreams()
 	slog.Debug("gemini session ended", "handle", sess.Handle)
 }
 
@@ -350,7 +467,7 @@ func runPool(sess *AgentSession, metrics runners.MetricsObserver) {
 		return
 	}
 	runners.RunPool(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
-	stream.Close()
+	sess.closeStreams()
 	slog.Debug("pool session ended", "handle", sess.Handle)
 }
 
@@ -413,23 +530,55 @@ func (r *AgentRegistry) Close(handle AgentHandle) {
 		if s.closed.CompareAndSwap(false, true) {
 			s.cancel()
 			close(s.input)
+			s.closeStreams()
 		}
 		delete(r.sessions, handle)
 	}
 }
 
-// AttachStream allocates a Stream for the session if it does not have one,
-// or returns the existing one. Idempotent. The Server must be set on the
-// registry before calling. Closing streamReady unblocks waitForStream.
+// AttachStream allocates a fresh subscriber stream for the session. The first
+// subscriber unblocks the runner; later subscribers receive the same future
+// events via session fanout.
 func (s *AgentSession) AttachStream(srv *Server) *Stream {
+	stream := srv.streams.Allocate()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.stream == nil {
-		s.stream = srv.streams.Allocate()
+		s.stream = stream
 		s.server = srv
-		close(s.streamReady)
+		s.streamReadyOnce.Do(func() { close(s.streamReady) })
 	}
-	return s.stream
+	if s.streams == nil {
+		s.streams = make(map[int64]*Stream)
+	}
+	s.streams[stream.ID] = stream
+	return stream
+}
+
+func (s *AgentSession) pushEvent(event any) {
+	s.mu.Lock()
+	streams := make([]*Stream, 0, len(s.streams))
+	for _, stream := range s.streams {
+		streams = append(streams, stream)
+	}
+	s.mu.Unlock()
+	for _, stream := range streams {
+		stream.Push(event)
+	}
+}
+
+func (s *AgentSession) closeStreams() {
+	s.mu.Lock()
+	streams := make([]*Stream, 0, len(s.streams))
+	for _, stream := range s.streams {
+		streams = append(streams, stream)
+	}
+	s.streams = make(map[int64]*Stream)
+	s.stream = nil
+	s.mu.Unlock()
+	for _, stream := range streams {
+		stream.Close()
+	}
 }
 
 // recordResponse appends the runner's emitted bytes to the session's
@@ -447,11 +596,165 @@ func (s *AgentSession) recordResponse(b []byte) {
 	}
 }
 
+func (s *AgentSession) recordPrompt(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	now := time.Now()
+	s.status = "thinking"
+	s.promptCount++
+	s.currentTrace = observability.NewTraceID()
+	s.startedAt = now
+	s.firstTokenAt = time.Time{}
+	s.latencyMS = 0
+	s.ttftMS = 0
+	s.tokenRate = 0
+	s.lastPrompt = text
+	s.lastError = ""
+	s.lastUpdated = now
+	s.appendDeckBlockLocked("prompt", text)
+}
+
+func (s *AgentSession) recordThinking(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.status = "thinking"
+	s.lastThinking = text
+	s.lastUpdated = time.Now()
+	s.appendDeckBlockLocked("thinking", text)
+}
+
+func (s *AgentSession) recordData(text string) {
+	if text == "" {
+		return
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	now := time.Now()
+	if s.firstTokenAt.IsZero() {
+		s.firstTokenAt = now
+		if !s.startedAt.IsZero() {
+			s.ttftMS = float64(now.Sub(s.startedAt).Microseconds()) / 1000.0
+		}
+	}
+	s.status = "streaming"
+	s.lastUpdated = now
+	s.appendDeckBlockLocked("response", text)
+}
+
+func (s *AgentSession) recordChunkEnd(inputTokens, outputTokens int, costUSD float64) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	now := time.Now()
+	s.status = "idle"
+	s.inputTokens += inputTokens
+	s.outputTokens += outputTokens
+	s.costUSD += costUSD
+	s.turnCount++
+	if !s.startedAt.IsZero() {
+		duration := now.Sub(s.startedAt)
+		s.latencyMS = float64(duration.Microseconds()) / 1000.0
+		if outputTokens > 0 && duration > 0 {
+			s.tokenRate = float64(outputTokens) / duration.Seconds()
+		}
+	}
+	if s.currentTrace != "" {
+		s.lastTrace = s.currentTrace
+	}
+	s.lastUpdated = now
+}
+
+func (s *AgentSession) recordError(msg string) {
+	msg = strings.TrimSpace(msg)
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.status = "error"
+	s.errorCount++
+	s.lastError = msg
+	s.lastUpdated = time.Now()
+	s.appendDeckBlockLocked("error", msg)
+}
+
+func (s *AgentSession) recordIdle() {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.status != "error" {
+		s.status = "idle"
+	}
+	s.lastUpdated = time.Now()
+}
+
+func (s *AgentSession) appendDeckBlockLocked(kind, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	s.buffer = append(s.buffer, DeckBlock{Kind: kind, Text: text, At: time.Now()})
+	if over := len(s.buffer) - deckBufferCap; over > 0 {
+		s.buffer = s.buffer[over:]
+	}
+}
+
+func (s *AgentSession) deckSnapshot() DeckSessionSnapshot {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	status := s.status
+	if status == "" {
+		status = "idle"
+	}
+	buffer := append([]DeckBlock(nil), s.buffer...)
+	return DeckSessionSnapshot{
+		AgentID:      s.AgentID,
+		Handle:       int64(s.Handle),
+		Status:       status,
+		PromptCount:  s.promptCount,
+		TurnCount:    s.turnCount,
+		InputTokens:  s.inputTokens,
+		OutputTokens: s.outputTokens,
+		TotalTokens:  s.inputTokens + s.outputTokens,
+		CostUSD:      s.costUSD,
+		CurrentTrace: s.currentTrace,
+		LastTrace:    s.lastTrace,
+		LatencyMS:    s.latencyMS,
+		TTFTMS:       s.ttftMS,
+		TokenRate:    s.tokenRate,
+		ErrorCount:   s.errorCount,
+		QueueDepth:   len(s.input),
+		LastThinking: s.lastThinking,
+		LastError:    s.lastError,
+		LastPrompt:   s.lastPrompt,
+		LastUpdated:  s.lastUpdated,
+		Buffer:       buffer,
+	}
+}
+
 // snapshotResponse returns a copy of the rolling response buffer.
 func (s *AgentSession) snapshotResponse() string {
 	s.respMu.Lock()
 	defer s.respMu.Unlock()
 	return string(s.responseBuf)
+}
+
+func (r *AgentRegistry) DeckSnapshot(active string) DeckSnapshot {
+	r.mu.Lock()
+	sessions := make([]*AgentSession, 0, len(r.sessions))
+	for _, sess := range r.sessions {
+		sessions = append(sessions, sess)
+	}
+	r.mu.Unlock()
+
+	out := DeckSnapshot{Active: active}
+	for _, sess := range sessions {
+		out.Sessions = append(out.Sessions, sess.deckSnapshot())
+	}
+	return out
 }
 
 // Send writes bytes to the session's input channel. Returns an error if
@@ -491,6 +794,6 @@ func runEcho(sess *AgentSession) {
 		})
 	}
 	pusher.Push(map[string]any{"t": "end"})
-	stream.Close()
+	sess.closeStreams()
 	slog.Debug("echo session ended", "handle", sess.Handle)
 }

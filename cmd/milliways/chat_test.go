@@ -17,8 +17,12 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mwigge/milliways/internal/rpc"
 )
 
 // chatLoopHelpsTest mirrors chatLoop but allows tests to inspect output
@@ -58,6 +62,21 @@ func TestChatHelpEnumeratesKnownCommands(t *testing.T) {
 	}
 }
 
+func TestPrintLandingSuppressesMainBannerInDeckMode(t *testing.T) {
+	t.Setenv("MILLIWAYS_DECK_MODE", "1")
+	var stdout bytes.Buffer
+	loop := &chatLoop{
+		out:  &stdout,
+		errw: &bytes.Buffer{},
+	}
+
+	loop.printLanding()
+
+	if stdout.Len() != 0 {
+		t.Fatalf("deck mode landing output = %q, want empty", stdout.String())
+	}
+}
+
 // TestChatPromptFormat — the prompt header reflects the active agent so
 // users always see which runner their next typed line goes to. The
 // empty-string case is the landing zone (no client picked yet).
@@ -83,7 +102,7 @@ func TestChatPromptFormat(t *testing.T) {
 	}
 
 	cases := map[string]string{
-		"":        "[no client — pick one with /1../7 or /<name>] ▶ ",
+		"":        "[select: /1 claude · /2 codex · /4 minimax · /help] ▶ ",
 		"claude":  "[claude] ▶ ",
 		"local":   "[local] ▶ ",
 		"minimax": "[minimax] ▶ ",
@@ -95,19 +114,131 @@ func TestChatPromptFormat(t *testing.T) {
 	}
 }
 
+func TestChatPromptShowsInFlightState(t *testing.T) {
+	t.Parallel()
+
+	got := stripANSISequences(chatPromptState("minimax", "streaming"))
+	if !strings.Contains(got, "minimax") || !strings.Contains(got, "streaming") {
+		t.Fatalf("prompt state = %q, want provider and streaming state", got)
+	}
+}
+
+func TestShellCommandNeedsConfirmation(t *testing.T) {
+	t.Parallel()
+
+	if !shellCommandNeedsConfirmation("rm -rf /tmp/example") {
+		t.Fatal("rm -rf should require confirmation")
+	}
+	if shellCommandNeedsConfirmation("printf hello") {
+		t.Fatal("safe command should not require confirmation")
+	}
+}
+
 func TestThinkingLineUsesDarkerClientColor(t *testing.T) {
 	t.Parallel()
 
-	line := formatThinkingLine("minimax", "planning next step")
-	if !strings.HasPrefix(line, "\033[38;5;98m") {
-		t.Fatalf("thinking line uses %q, want minimax thinking color", line)
+	want := map[string]string{
+		"claude":  "\033[38;5;250m",
+		"codex":   "\033[38;5;172m",
+		"copilot": "\033[38;5;67m",
+		"gemini":  "\033[38;5;166m",
+		"minimax": "\033[38;5;98m",
+		"local":   "\033[38;5;124m",
+		"pool":    "\033[38;5;75m",
 	}
-	if !strings.Contains(line, "… planning next step") {
-		t.Fatalf("thinking line missing message: %q", line)
+	for agent, color := range want {
+		line := formatThinkingLine(agent, "planning next step")
+		if !strings.HasPrefix(line, color) {
+			t.Fatalf("%s thinking line uses %q, want prefix %q", agent, line, color)
+		}
+		if !strings.Contains(line, "… planning next step") {
+			t.Fatalf("%s thinking line missing message: %q", agent, line)
+		}
+		if agentThinkingColor(agent) == agentColor(agent) {
+			t.Fatalf("%s thinking color should be darker than main color", agent)
+		}
 	}
-	if strings.Contains(line, agentColor("minimax")) {
-		t.Fatalf("thinking line should use darker companion color, got main color in %q", line)
+}
+
+func TestThinkingLineWrapsLongFeedbackInsteadOfChopping(t *testing.T) {
+	t.Parallel()
+
+	msg := "The user wants me to review the terminal UX of a project located at the milliways repo. Let me start by exploring the project structure to understand the chat renderer and deck surfaces."
+	line := formatThinkingLineWidth("minimax", msg, 72)
+	plain := stripANSISequences(line)
+
+	for _, want := range []string{"project", "structure", "deck", "surfaces"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("thinking feedback lost %q; got:\n%s", want, plain)
+		}
 	}
+	if count := strings.Count(plain, "\n"); count < 1 {
+		t.Fatalf("thinking feedback should wrap to multiple lines; got:\n%s", plain)
+	}
+	for _, row := range strings.Split(plain, "\n") {
+		if len(row) > 88 {
+			t.Fatalf("wrapped row too wide (%d): %q\nfull:\n%s", len(row), row, plain)
+		}
+	}
+}
+
+func TestAgentMainColorContract(t *testing.T) {
+	t.Parallel()
+
+	want := map[string]string{
+		"claude":  "\033[97m",
+		"gemini":  "\033[38;5;208m",
+		"minimax": "\033[38;5;141m",
+		"pool":    "\033[38;5;117m",
+	}
+	for agent, color := range want {
+		if got := agentColor(agent); got != color {
+			t.Fatalf("agentColor(%q) = %q, want %q", agent, got, color)
+		}
+	}
+}
+
+func TestEffectiveLoginPathAddsSystemFallbacks(t *testing.T) {
+	t.Setenv("PATH", "/tmp/custom-bin")
+	t.Setenv("MILLIWAYS_PATH", "")
+
+	path := effectiveLoginPath()
+	if !pathListContains(path, "/tmp/custom-bin") {
+		t.Fatalf("custom PATH missing from %q", path)
+	}
+	if !pathListContains(path, "/bin") {
+		t.Fatalf("/bin missing from %q", path)
+	}
+	if !pathListContains(path, "/usr/bin") {
+		t.Fatalf("/usr/bin missing from %q", path)
+	}
+}
+
+func TestLookupLoginCommandUsesMILLIWAYSPath(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "gemini")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake gemini: %v", err)
+	}
+	t.Setenv("PATH", "/no/such/path")
+	t.Setenv("MILLIWAYS_PATH", dir)
+
+	got, err := lookupLoginCommand("gemini")
+	if err != nil {
+		t.Fatalf("lookupLoginCommand error: %v", err)
+	}
+	if got != bin {
+		t.Fatalf("lookupLoginCommand = %q, want %q", got, bin)
+	}
+}
+
+func pathListContains(path, want string) bool {
+	for _, part := range strings.Split(path, string(os.PathListSeparator)) {
+		if part == want {
+			return true
+		}
+	}
+	return false
 }
 
 // TestParseDigitInRange covers the /1../7 numeric shortcut parser.
@@ -351,6 +482,17 @@ func TestChatHistoryFileRespectsXDGStateHome(t *testing.T) {
 	}
 }
 
+func TestChatHistoryFileCanBeOverriddenOrDisabled(t *testing.T) {
+	t.Setenv("MILLIWAYS_HISTORY_FILE", "/tmp/mw-history")
+	if got := chatHistoryFile(); got != "/tmp/mw-history" {
+		t.Fatalf("chatHistoryFile override = %q", got)
+	}
+	t.Setenv("MILLIWAYS_HISTORY_FILE", "off")
+	if got := chatHistoryFile(); got != "" {
+		t.Fatalf("chatHistoryFile disabled = %q, want empty", got)
+	}
+}
+
 // TestChatHistoryFileFallsBackToHomeLocalState
 func TestChatHistoryFileFallsBackToHomeLocalState(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", "")
@@ -407,6 +549,169 @@ func TestHandleSlash_Smoke(t *testing.T) {
 				loop.handleSlash(cmd)
 			}()
 		})
+	}
+}
+
+func TestHandleSlashRunnerPromptStartsBackgroundJob(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	var sent []string
+	codex := &chatSession{agentID: "codex", done: make(chan struct{}), streamCancel: func() {}}
+	gemini := &chatSession{
+		agentID:      "gemini",
+		done:         make(chan struct{}),
+		streamCancel: func() {},
+		sendFn: func(prompt string) error {
+			sent = append(sent, prompt)
+			return nil
+		},
+	}
+	loop := &chatLoop{
+		sess:     codex,
+		deck:     newSessionDeck(chatSwitchableAgents),
+		sessions: map[string]*chatSession{"codex": codex, "gemini": gemini},
+		out:      &stdout,
+		errw:     &stderr,
+	}
+
+	loop.handleSlash("/gemini research market changes")
+
+	if loop.sess != codex {
+		t.Fatalf("active session changed; want codex active")
+	}
+	if len(sent) != 1 || sent[0] != "research market changes" {
+		t.Fatalf("gemini sent prompts = %#v", sent)
+	}
+	if !strings.Contains(stdout.String(), "gemini background started") {
+		t.Fatalf("missing background acknowledgement: stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	snap := loop.deck.Snapshot()
+	var geminiState sessionDeckState
+	for _, st := range snap.States {
+		if st.Provider == "gemini" {
+			geminiState = st
+			break
+		}
+	}
+	if geminiState.PromptCount != 1 || geminiState.Status != deckStatusThinking {
+		t.Fatalf("gemini deck state = %#v", geminiState)
+	}
+}
+
+func TestHandleSlashRunnerPromptActivatesWhenNoClientIsActive(t *testing.T) {
+	t.Parallel()
+
+	var sent []string
+	var stdout, stderr bytes.Buffer
+	loop := &chatLoop{
+		deck: newSessionDeck(chatSwitchableAgents),
+		out:  &stdout,
+		errw: &stderr,
+		openAgent: func(_ *rpc.Client, agentID string) (*chatSession, error) {
+			return &chatSession{
+				agentID:      agentID,
+				done:         make(chan struct{}),
+				streamCancel: func() {},
+				sendFn: func(prompt string) error {
+					sent = append(sent, prompt)
+					return nil
+				},
+			}, nil
+		},
+	}
+
+	loop.handleSlash("/minimax construct image")
+
+	if loop.sess == nil || loop.sess.agentID != "minimax" {
+		t.Fatalf("active session = %#v, want minimax", loop.sess)
+	}
+	if len(sent) != 1 || sent[0] != "construct image" {
+		t.Fatalf("sent prompts = %#v", sent)
+	}
+}
+
+func TestSwitchDoesNotSendTakeoverBriefing(t *testing.T) {
+	t.Parallel()
+
+	var sent []string
+	var stdout, stderr bytes.Buffer
+	claude := &chatSession{agentID: "claude", done: make(chan struct{}), streamCancel: func() {}}
+	codex := &chatSession{
+		agentID:      "codex",
+		done:         make(chan struct{}),
+		streamCancel: func() {},
+		sendFn: func(prompt string) error {
+			sent = append(sent, prompt)
+			return nil
+		},
+	}
+	loop := &chatLoop{
+		sess:      claude,
+		deck:      newSessionDeck(chatSwitchableAgents),
+		sessions:  map[string]*chatSession{"claude": claude, "codex": codex},
+		openAgent: func(_ *rpc.Client, _ string) (*chatSession, error) { return nil, nil },
+		out:       &stdout,
+		errw:      &stderr,
+		turnLog: []chatTurn{
+			{Role: "user", Text: "important workstream context"},
+			{Role: "assistant", AgentID: "claude", Text: "context retained"},
+		},
+	}
+
+	loop.handleSlash("/switch codex")
+
+	if loop.sess != codex {
+		t.Fatalf("active session changed to %#v, want codex", loop.sess)
+	}
+	if len(sent) != 0 {
+		t.Fatalf("/switch sent prompts = %#v, want none", sent)
+	}
+	if loop.lastBriefing != "" {
+		t.Fatalf("/switch stored briefing %q, want empty", loop.lastBriefing)
+	}
+}
+
+func TestTakeoverSendsBriefingExplicitly(t *testing.T) {
+	t.Parallel()
+
+	var sent []string
+	var stdout, stderr bytes.Buffer
+	claude := &chatSession{agentID: "claude", done: make(chan struct{}), streamCancel: func() {}}
+	codex := &chatSession{
+		agentID:      "codex",
+		done:         make(chan struct{}),
+		streamCancel: func() {},
+		sendFn: func(prompt string) error {
+			sent = append(sent, prompt)
+			return nil
+		},
+	}
+	loop := &chatLoop{
+		sess:     claude,
+		deck:     newSessionDeck(chatSwitchableAgents),
+		sessions: map[string]*chatSession{"claude": claude, "codex": codex},
+		out:      &stdout,
+		errw:     &stderr,
+		turnLog: []chatTurn{
+			{Role: "user", Text: "important workstream context"},
+			{Role: "assistant", AgentID: "claude", Text: "context retained"},
+		},
+	}
+
+	loop.handleSlash("/takeover codex")
+
+	if loop.sess != codex {
+		t.Fatalf("active session changed to %#v, want codex", loop.sess)
+	}
+	if len(sent) != 1 {
+		t.Fatalf("/takeover sent %d prompts, want 1: %#v", len(sent), sent)
+	}
+	if !strings.Contains(sent[0], "Context handoff") || !strings.Contains(sent[0], "important workstream context") {
+		t.Fatalf("takeover prompt missing handoff context: %q", sent[0])
+	}
+	if loop.lastBriefing == "" {
+		t.Fatal("/takeover did not store last briefing")
 	}
 }
 
@@ -596,11 +901,17 @@ func TestHandleSlash_BriefingShowsLastBriefing(t *testing.T) {
 		out:              &out,
 		errw:             &bytes.Buffer{},
 		lastBriefingFrom: "claude",
-		lastBriefing:     "handoff text from claude\n",
+		lastBriefing:     "handoff text from claude\n```go\nfmt.Println(\"ok\")\n```\n",
 	}
 	loop.handleSlash("/briefing")
-	if !strings.Contains(out.String(), "handoff text from claude") {
-		t.Errorf("expected briefing body; got: %q", out.String())
+	got := out.String()
+	for _, want := range []string{"Summary", "handoff text from claude", "code · go", "Println", "╭", "╰", "\x1b["} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected briefing output to contain %q; got: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "```") {
+		t.Errorf("briefing should render markdown fences, got: %q", got)
 	}
 }
 
@@ -674,7 +985,7 @@ func TestBriefingStoredAfterBuild(t *testing.T) {
 // newHintLoop builds the minimal chatLoop needed to exercise refreshPromptHint.
 func newHintLoop(errw *bytes.Buffer) *chatLoop {
 	return &chatLoop{
-		out:  &bytes.Buffer{},
+		out:  errw,
 		errw: errw,
 	}
 }
