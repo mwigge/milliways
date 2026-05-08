@@ -72,6 +72,9 @@ func main() {
 	if sub == "security" {
 		os.Exit(runSecurity(rest, os.Stdout, os.Stderr))
 	}
+	if sub == "daemon" {
+		os.Exit(runDaemon(rest, os.Stdout, os.Stderr))
+	}
 
 	fs := flag.NewFlagSet(sub, flag.ExitOnError)
 	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
@@ -763,6 +766,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  security list [--include-accepted]         — list active security findings (CVE/OSV)")
 	fmt.Fprintln(os.Stderr, "  security show <cve-id>                     — show full CVE detail")
 	fmt.Fprintln(os.Stderr, "  security accept <cve-id> --package <name> --reason <text> --expires <YYYY-MM-DD>")
+	fmt.Fprintln(os.Stderr, "  daemon stop                                — stop the running milliwaysd")
 }
 
 func die(f string, a ...any) {
