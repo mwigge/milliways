@@ -45,6 +45,10 @@ const (
 	ProtoMinor = 1
 )
 
+// Version is the daemon build version exposed via ping. cmd/milliwaysd sets
+// this from its link-time injected main.version value.
+var Version = "dev"
+
 // Server is the milliwaysd JSON-RPC 2.0 server. Newline-delimited framing.
 // One goroutine per connection. Sidecar connections (for streaming) are
 // detected by a `STREAM <id> <offset>` first line.
