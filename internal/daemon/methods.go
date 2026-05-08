@@ -249,7 +249,7 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 	case "ping":
 		writeResult(enc, req.ID, PingResult{
 			Pong:    true,
-			Version: "0.0.1",
+			Version: Version,
 			UptimeS: time.Since(startTime).Seconds(),
 			Proto:   ProtoVersion{Major: ProtoMajor, Minor: ProtoMinor},
 		})

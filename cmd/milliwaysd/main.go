@@ -30,13 +30,21 @@ import (
 	"github.com/mwigge/milliways/internal/daemon"
 )
 
+var version = "dev"
+
 func main() {
 	var (
-		socket   = flag.String("socket", "", "UDS path (default: ${state}/sock)")
-		stateDir = flag.String("state-dir", "", "state dir (default: ${XDG_RUNTIME_DIR:-$HOME/.local/state/milliways})")
-		logLevel = flag.String("log-level", "info", "debug|info|warn|error")
+		socket      = flag.String("socket", "", "UDS path (default: ${state}/sock)")
+		stateDir    = flag.String("state-dir", "", "state dir (default: ${XDG_RUNTIME_DIR:-$HOME/.local/state/milliways})")
+		logLevel    = flag.String("log-level", "info", "debug|info|warn|error")
+		showVersion = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
+	daemon.Version = version
+	if *showVersion {
+		fmt.Printf("milliwaysd version %s\n", version)
+		return
+	}
 
 	state, err := resolveStateDir(*stateDir)
 	if err != nil {

@@ -15,13 +15,39 @@
 package daemon
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/mwigge/milliways/internal/daemon/observability"
 	"github.com/mwigge/milliways/internal/history"
 )
+
+func TestPingReportsBuildVersion(t *testing.T) {
+	oldVersion := Version
+	Version = "v-test"
+	t.Cleanup(func() { Version = oldVersion })
+
+	var buf bytes.Buffer
+	srv := &Server{spans: observability.NewRing(10)}
+	srv.dispatch(json.NewEncoder(&buf), &Request{
+		JSONRPC: "2.0",
+		Method:  "ping",
+		ID:      json.RawMessage(`1`),
+	})
+
+	var resp struct {
+		Result PingResult `json:"result"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("decode ping response: %v", err)
+	}
+	if resp.Result.Version != "v-test" {
+		t.Fatalf("ping version = %q, want v-test", resp.Result.Version)
+	}
+}
 
 // TestHistoryRPC simulates appending history via history.append and reading
 // it back via history.get through the internal helpers. Uses a temp dir as
