@@ -35,8 +35,12 @@ var (
 		}
 		return proc.Signal(sig)
 	}
+	daemonProbeProcess = func(pid int) error {
+		return syscall.Kill(pid, 0)
+	}
 	daemonProcessAlive = func(pid int) bool {
-		return syscall.Kill(pid, 0) == nil
+		err := daemonProbeProcess(pid)
+		return err == nil || errors.Is(err, syscall.EPERM)
 	}
 )
 
