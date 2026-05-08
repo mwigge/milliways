@@ -71,6 +71,21 @@ func TestRunDaemonStopSignalsPid(t *testing.T) {
 	}
 }
 
+func TestDaemonProcessAliveTreatsPermissionDeniedAsAlive(t *testing.T) {
+	oldProbe := daemonProbeProcess
+	oldAlive := daemonProcessAlive
+	t.Cleanup(func() {
+		daemonProbeProcess = oldProbe
+		daemonProcessAlive = oldAlive
+	})
+
+	daemonProbeProcess = func(pid int) error { return syscall.EPERM }
+	daemonProcessAlive = oldAlive
+	if !daemonProcessAlive(12345) {
+		t.Fatal("permission-denied process probe should be treated as alive")
+	}
+}
+
 func TestRunDaemonStopInvalidPid(t *testing.T) {
 	state := t.TempDir()
 	if err := os.WriteFile(filepath.Join(state, "pid"), []byte("nope\n"), 0o600); err != nil {
