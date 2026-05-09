@@ -324,11 +324,12 @@ func normalizeMarkdownIndent(line string) string {
 	if strings.TrimSpace(line) == "" {
 		return ""
 	}
-	leading := len(line) - len(strings.TrimLeft(line, " \t"))
-	if leading >= 4 && looksLikeMarkdownStructure(strings.TrimSpace(line)) {
-		return strings.TrimSpace(line)
-	}
-	return strings.TrimRight(line, " \t")
+	// Always left-align: strip leading whitespace regardless of amount.
+	// Agents sometimes indent their output heavily (e.g. pool's thinking blocks);
+	// in a terminal stream left-alignment is always cleaner than preserving
+	// arbitrary agent-side indentation. Markdown structure (lists, quotes) is
+	// re-applied by markdownLinePrefix after this call.
+	return strings.TrimSpace(line)
 }
 
 func looksLikeMarkdownStructure(trimmed string) bool {
