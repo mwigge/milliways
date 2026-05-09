@@ -25,25 +25,28 @@ import (
 
 func TestPoolArgsBuilder_DefaultCommand(t *testing.T) {
 	got := poolArgsBuilder("hello pool", "/tmp/project")
-	want := []string{"exec", "-p", "hello pool", "--directory", "/tmp/project"}
+	want := []string{"exec", "--unsafe-auto-allow", "-p", "hello pool", "--directory", "/tmp/project"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("poolArgsBuilder() = %v, want %v", got, want)
 	}
 
 	got = poolArgsBuilder("hello pool", "")
-	want = []string{"exec", "-p", "hello pool"}
+	want = []string{"exec", "--unsafe-auto-allow", "-p", "hello pool"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("poolArgsBuilder(empty dir) = %v, want %v", got, want)
 	}
 }
 
-func TestPoolArgsBuilder_DefaultRequiresApproval(t *testing.T) {
+func TestPoolArgsBuilder_AutoAllowEnabled(t *testing.T) {
+	// milliways drives pool non-interactively, so --unsafe-auto-allow must
+	// always be present — pool refuses to execute tools otherwise.
 	got := poolArgsBuilder("hello pool", "/tmp/project")
 	for _, arg := range got {
 		if arg == "--unsafe-auto-allow" {
-			t.Fatalf("poolArgsBuilder() must not bypass tool approval by default: %v", got)
+			return
 		}
 	}
+	t.Fatalf("poolArgsBuilder() missing --unsafe-auto-allow: %v", got)
 }
 
 func TestPoolRequestTimeout_DefaultAndEnv(t *testing.T) {

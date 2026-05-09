@@ -4,6 +4,36 @@ All notable changes to milliways. Follows [Keep a Changelog](https://keepachange
 
 ---
 
+## [1.0.4] — 2026-05-09
+
+### Added
+- **Markdown heading hierarchy** — `#` through `####` headings now render with bold ANSI styling; H1 gets a `═` underline rule and H2 gets a `─` rule so document structure is immediately visible in the chat stream.
+- **Heading prefix** — `⏺` bullet used for all thinking status lines and action lines (Edited / Ran), matching Claude Code's visual idiom.
+
+### Changed
+- **Agent badge** — removed bracket wrapping; badges now render as filled colour pills (` minimax ▶`) using lighter, more vibrant 256-colour backgrounds against catppuccin-mocha.
+- **Thinking lines** — prefix changed from `[agent] … reasoning` to `⏺ reasoning`; one shared glyph with tool-call action lines for visual consistency.
+- **Code panel borders** — bumped from `238m` to `243m` so the box is visible against dark terminal backgrounds; panel label brightened from `2;250m` (dim) to `252m`.
+- **Response wrapping** — wrap width changed from `termWidth - 2` to `termWidth - 4`, adding a two-character breathing margin on each side.
+- **Quote prefix** — blockquote `>` markers now rendered in dim `244m` colour to distinguish them from body text.
+- **Action line glyphs** — `✎ Edited` and `▶ Ran` unified to `⏺ Edited` / `⏺ Ran`.
+
+### Fixed
+- **Thinking text display** — switched from in-place `\r` overwrite (which placed thinking on the wrong line after cursor advanced during agentic tool loops) to sequential `\n`-terminated status lines with a codeHighlighter flush before each write, ensuring thinking always starts at column 0.
+- **Secondary thinking clearing** — `thinkingActive` flag now checked before every data write, not only on `firstData`; thinking from subsequent tool-call turns no longer bleeds into the response stream.
+- **`chunk_end` state reset** — `firstData` and `thinkingActive` now reset on every `chunk_end` so multi-turn agentic sessions start each turn with a clean display state.
+- **Ghost prompt rows** — `clearPromptLocked` now uses `max(stored_rows, content_rows)` when deciding how many rows to clear, fixing double-display of the input prompt when the buffer grew between redraws.
+- **Post-submit prompt echo** — on Enter, the wrapped readline input area is cleared and reprinted as a single `\n`-terminated line, making the full submitted text selectable as one string in the scrollback.
+- **Deck card label truncation** — `padPlain` now uses `displayWidth()` + rune-aware truncation; multi-byte glyphs (`▶`, `…`) no longer cause overflow past the right card border.
+- **Table column overflow** — table renderer iteratively shrinks the widest column until the total table width fits `termWidth`; cells are truncated via `truncateANSIVisible` to match.
+- **Cost/token hint removed from chat stream** — `($0.0003 · ...)` inline hint removed; stats are in the observability panel and window title.
+- **Pool tool approval** — `--unsafe-auto-allow` added to `pool exec` args so tool calls proceed without interactive confirmation in headless mode.
+- **Truecolor syntax highlighting** — `terminal16m` formatter selected automatically when `COLORTERM=truecolor` or `TERM=xterm-kitty`; falls back to `terminal256`.
+- **Default highlight theme** — changed from `monokai` to `catppuccin-mocha`.
+- **`truncateANSIVisible` CSI parser** — fixed CSI sequence parsing that left `38;2;R;G;B` truecolor codes as visible text when the `[` introducer was mistaken for a final byte.
+
+---
+
 ## [1.0.3] — 2026-05-02
 
 ### Added

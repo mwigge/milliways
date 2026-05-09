@@ -126,7 +126,7 @@ func TestDrainStreamWritesThinkingToOutputStream(t *testing.T) {
 	close(stream)
 
 	loop.drainStream(sess)
-	if got := out.String(); !strings.Contains(got, "[minimax]") || !strings.Contains(got, "inspecting files") {
+	if got := out.String(); !strings.Contains(got, "⏺") || !strings.Contains(got, "inspecting files") {
 		t.Fatalf("thinking feedback missing from output stream:\nstdout=%q\nstderr=%q", got, errw.String())
 	}
 	if got := errw.String(); got != "" {
@@ -185,7 +185,7 @@ func TestDrainStreamKeepsPromptHiddenAcrossThinkingEvents(t *testing.T) {
 	if strings.Contains(between, "▶") {
 		t.Fatalf("prompt redrawn between thinking fragments:\n%s", got)
 	}
-	if count := strings.Count(got, "[minimax] ▶"); count > 1 {
+	if count := strings.Count(got, " minimax  ▶"); count > 1 {
 		t.Fatalf("prompt redrawn too often during one stream; count=%d\n%s", count, got)
 	}
 }
@@ -452,9 +452,9 @@ func TestChatPromptFormat(t *testing.T) {
 
 	cases := map[string]string{
 		"":        "[select: /1 claude · /2 codex · /4 minimax · /help] ▶ ",
-		"claude":  "[claude] ▶ ",
-		"local":   "[local] ▶ ",
-		"minimax": "[minimax] ▶ ",
+		"claude":  " claude  ▶ ",
+		"local":   " local  ▶ ",
+		"minimax": " minimax  ▶ ",
 	}
 	for agent, want := range cases {
 		if got := stripANSI(chatPrompt(agent)); got != want {
@@ -566,7 +566,7 @@ func TestThinkingLineUsesDarkerClientColor(t *testing.T) {
 		if !strings.HasPrefix(line, color) {
 			t.Fatalf("%s thinking line uses %q, want prefix %q", agent, line, color)
 		}
-		if !strings.Contains(line, "… planning next step") {
+		if !strings.Contains(line, "⏺") || !strings.Contains(line, "planning next step") {
 			t.Fatalf("%s thinking line missing message: %q", agent, line)
 		}
 		if agentThinkingColor(agent) == agentColor(agent) {
@@ -1617,7 +1617,8 @@ func TestBriefingStoredAfterBuild(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// refreshPromptHint — ⊙ saved indicator
+// refreshPromptHint — cost and token stats go to the observability panel and
+// window title; nothing is written to the chat stream.
 // ---------------------------------------------------------------------------
 
 // newHintLoop builds the minimal chatLoop needed to exercise refreshPromptHint.
@@ -1628,85 +1629,43 @@ func newHintLoop(errw *bytes.Buffer) *chatLoop {
 	}
 }
 
-// TestRefreshPromptHint_SavedIndicatorPresent — when turnSaved is true the
-// hint line contains the ⊙ saved marker (with ANSI green codes).
-func TestRefreshPromptHint_SavedIndicatorPresent(t *testing.T) {
+// TestRefreshPromptHint_NoInlineOutput — refreshPromptHint must not write
+// cost/token/saved info to the chat output stream; stats belong in the
+// observability panel and window title.
+func TestRefreshPromptHint_NoInlineOutput(t *testing.T) {
 	t.Parallel()
-	var errw bytes.Buffer
-	loop := newHintLoop(&errw)
-	loop.refreshPromptHint(map[string]any{
-		"cost_usd":      0.0041,
-		"input_tokens":  float64(100),
-		"output_tokens": float64(25),
-	}, true)
-	got := errw.String()
-	if !strings.Contains(got, "⊙ saved") {
-		t.Errorf("expected '⊙ saved' in hint line; got: %q", got)
+	cases := []struct {
+		name      string
+		chunkEnd  map[string]any
+		turnSaved bool
+	}{
+		{"cost and saved", map[string]any{"cost_usd": 0.0041, "input_tokens": float64(100), "output_tokens": float64(25)}, true},
+		{"cost no saved", map[string]any{"cost_usd": 0.0012, "input_tokens": float64(50), "output_tokens": float64(10)}, false},
+		{"no data saved", map[string]any{}, true},
+		{"nothing", map[string]any{}, false},
 	}
-	// ANSI green escape must wrap the marker.
-	if !strings.Contains(got, "\033[32m") {
-		t.Errorf("expected ANSI green escape in hint line; got: %q", got)
-	}
-}
-
-// TestRefreshPromptHint_SavedIndicatorAbsent — when turnSaved is false
-// (empty response, no turn recorded) ⊙ saved must not appear.
-func TestRefreshPromptHint_SavedIndicatorAbsent(t *testing.T) {
-	t.Parallel()
-	var errw bytes.Buffer
-	loop := newHintLoop(&errw)
-	loop.refreshPromptHint(map[string]any{
-		"cost_usd":      0.0012,
-		"input_tokens":  float64(50),
-		"output_tokens": float64(10),
-	}, false)
-	got := errw.String()
-	if strings.Contains(got, "⊙") {
-		t.Errorf("unexpected ⊙ in hint line when turnSaved=false; got: %q", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var out bytes.Buffer
+			loop := newHintLoop(&out)
+			loop.refreshPromptHint(tc.chunkEnd, tc.turnSaved)
+			if got := out.String(); strings.TrimSpace(got) != "" {
+				t.Errorf("refreshPromptHint wrote to chat output; got: %q", got)
+			}
+		})
 	}
 }
 
-// TestRefreshPromptHint_SavedAlongCostAndTokens — ⊙ saved appears together
-// with cost and token parts in a single hint line.
-func TestRefreshPromptHint_SavedAlongCostAndTokens(t *testing.T) {
+// TestRefreshPromptHint_SessionCostAccumulates — cost_usd values are added to
+// sessionCost across multiple calls (used for the window title).
+func TestRefreshPromptHint_SessionCostAccumulates(t *testing.T) {
 	t.Parallel()
-	var errw bytes.Buffer
-	loop := newHintLoop(&errw)
-	loop.refreshPromptHint(map[string]any{
-		"cost_usd":      0.0006,
-		"input_tokens":  float64(1683),
-		"output_tokens": float64(115),
-	}, true)
-	got := errw.String()
-	for _, want := range []string{"$0.0006", "in 1.7k / out 115 / total 1.8k tok", "⊙ saved"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("hint line missing %q; got: %q", want, got)
-		}
-	}
-}
-
-// TestRefreshPromptHint_NoCostNoTokens_SavedStillShown — ⊙ saved is emitted
-// even when there are no cost/token stats (e.g. local model or rate-limited).
-func TestRefreshPromptHint_NoCostNoTokens_SavedStillShown(t *testing.T) {
-	t.Parallel()
-	var errw bytes.Buffer
-	loop := newHintLoop(&errw)
-	loop.refreshPromptHint(map[string]any{}, true)
-	got := errw.String()
-	if !strings.Contains(got, "⊙ saved") {
-		t.Errorf("expected '⊙ saved' even with no cost/token data; got: %q", got)
-	}
-}
-
-// TestRefreshPromptHint_EmptyHintWhenNothingToShow — no cost, no tokens,
-// and turnSaved=false → hint line must be blank (no spurious output).
-func TestRefreshPromptHint_EmptyHintWhenNothingToShow(t *testing.T) {
-	t.Parallel()
-	var errw bytes.Buffer
-	loop := newHintLoop(&errw)
-	loop.refreshPromptHint(map[string]any{}, false)
-	got := errw.String()
-	if strings.TrimSpace(got) != "" {
-		t.Errorf("expected empty hint when no data; got: %q", got)
+	var out bytes.Buffer
+	loop := newHintLoop(&out)
+	loop.refreshPromptHint(map[string]any{"cost_usd": 0.001}, false)
+	loop.refreshPromptHint(map[string]any{"cost_usd": 0.002}, false)
+	if got := loop.sessionCost; got < 0.002 {
+		t.Errorf("sessionCost = %v, want >= 0.002", got)
 	}
 }

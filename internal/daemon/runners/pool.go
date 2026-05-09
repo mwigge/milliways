@@ -33,7 +33,7 @@ var poolBinary = "pool"
 // prompt and working directory. Default builds the headless invocation
 // `pool exec -p <prompt> --directory <dir>`. Tests can swap it.
 var poolArgsBuilder = func(prompt, dir string) []string {
-	args := []string{"exec", "-p", prompt}
+	args := []string{"exec", "--unsafe-auto-allow", "-p", prompt}
 	if dir != "" {
 		args = append(args, "--directory", dir)
 	}

@@ -543,10 +543,24 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 		return s[:maxLen-1] + "…"
 	}
 	padPlain := func(s string, width int) string {
-		if len(s) > width {
-			s = truncate(s, width)
+		dw := displayWidth(s)
+		if dw > width {
+			// Rune-aware truncation so multi-byte characters (▶, …, etc.)
+			// don't cause the content to overflow the right border.
+			var buf strings.Builder
+			visible := 0
+			for _, r := range s {
+				if visible >= width-1 {
+					buf.WriteRune('…')
+					break
+				}
+				buf.WriteRune(r)
+				visible++
+			}
+			s = buf.String()
+			dw = displayWidth(s)
 		}
-		return s + strings.Repeat(" ", max(0, width-len(s)))
+		return s + strings.Repeat(" ", max(0, width-dw))
 	}
 	clientLine := func(i int, p deckProviderInfo) string {
 		auth := "auth?"
