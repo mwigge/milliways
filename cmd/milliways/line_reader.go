@@ -149,7 +149,11 @@ func (r *chatLineReader) Readline() (string, error) {
 			line := string(r.buf)
 			r.active = false
 			r.promptHidden = false
-			fmt.Fprint(r.out, "\r\n")
+			// Clear the wrapped input display and reprint as a single
+			// newline-terminated line so the full submitted text is always
+			// selectable as one logical string in the terminal scrollback.
+			r.clearPromptLocked()
+			fmt.Fprintf(r.out, "%s%s\n", r.prompt, line)
 			r.mu.Unlock()
 			r.addHistory(line)
 			return line, nil
@@ -425,8 +429,18 @@ func (r *chatLineReader) redrawLocked() {
 
 func (r *chatLineReader) clearPromptLocked() {
 	width := lineReaderWidth()
-	if r.rows <= 0 {
-		r.rows = 1
+	// Use the greater of the stored row count and the row count derived from
+	// the current content. r.rows may be stale (too small) when the buffer
+	// grew since the last redraw, but we also need the stored value when the
+	// buffer shrank so we clear the extra rows the previous draw occupied.
+	totalWidth := displayWidth(r.prompt) + displayWidth(string(r.buf))
+	currentRows := visualRows(totalWidth, width)
+	rows := r.rows
+	if currentRows > rows {
+		rows = currentRows
+	}
+	if rows <= 0 {
+		rows = 1
 	}
 	cursorWidth := displayWidth(r.prompt) + displayWidth(string(r.buf[:r.cursor]))
 	cursorRow, _ := cursorPosition(cursorWidth, width)
@@ -434,14 +448,14 @@ func (r *chatLineReader) clearPromptLocked() {
 	if cursorRow > 0 {
 		fmt.Fprintf(r.out, "\033[%dA", cursorRow)
 	}
-	for i := 0; i < r.rows; i++ {
+	for i := 0; i < rows; i++ {
 		if i > 0 {
 			fmt.Fprint(r.out, "\033[1B")
 		}
 		fmt.Fprint(r.out, "\r\033[2K")
 	}
-	if r.rows > 1 {
-		fmt.Fprintf(r.out, "\033[%dA", r.rows-1)
+	if rows > 1 {
+		fmt.Fprintf(r.out, "\033[%dA", rows-1)
 	}
 	fmt.Fprint(r.out, "\r")
 }
