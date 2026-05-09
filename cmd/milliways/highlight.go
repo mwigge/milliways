@@ -210,6 +210,14 @@ func renderPlainMarkdownLine(line string, addNewline bool) string {
 		return ""
 	}
 	line = normalizeMarkdownIndent(line)
+
+	// Render ATX headings with bold styling and an underline rule for H1/H2.
+	if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "#") {
+		if rendered, ok := renderHeadingLine(trimmed, addNewline); ok {
+			return rendered
+		}
+	}
+
 	width := plainMarkdownWrapWidth()
 	if !looksLikeMarkdownStructure(strings.TrimSpace(line)) && displayWidth(line) <= width {
 		if addNewline {
@@ -218,13 +226,19 @@ func renderPlainMarkdownLine(line string, addNewline bool) string {
 		return linkifyURLs(line)
 	}
 	prefix, body, continuation := markdownLinePrefix(line)
+	isQuote := strings.HasPrefix(strings.TrimSpace(line), ">")
+	if isQuote && ansiEnabled() {
+		prefix = "\033[38;5;244m" + prefix + "\033[0m"
+		continuation = "\033[38;5;244m" + continuation + "\033[0m"
+	}
 	if body == "" {
 		if addNewline {
 			return linkifyURLs(prefix) + "\n"
 		}
 		return linkifyURLs(prefix)
 	}
-	bodyWidth := width - displayWidth(prefix)
+	rawPrefix, _, _ := markdownLinePrefix(line)
+	bodyWidth := width - displayWidth(rawPrefix)
 	if bodyWidth < 24 {
 		bodyWidth = 24
 	}
@@ -246,6 +260,64 @@ func renderPlainMarkdownLine(line string, addNewline bool) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
+}
+
+// renderHeadingLine renders ATX markdown headings (# H1 through #### H4) with
+// ANSI bold/colour styling. H1 and H2 get an underline rule below them.
+func renderHeadingLine(trimmed string, addNewline bool) (string, bool) {
+	level := 0
+	for level < len(trimmed) && trimmed[level] == '#' {
+		level++
+	}
+	if level == 0 || level > 4 {
+		return "", false
+	}
+	if level < len(trimmed) && trimmed[level] != ' ' {
+		return "", false // not a valid ATX heading (no space after #)
+	}
+	text := strings.TrimSpace(trimmed[level:])
+	if text == "" {
+		return "", false
+	}
+
+	var style, ruleChar string
+	width := plainMarkdownWrapWidth()
+	switch level {
+	case 1:
+		style = "\033[1;38;5;255m" // bold bright white
+		ruleChar = "═"
+	case 2:
+		style = "\033[1;38;5;252m" // bold light gray
+		ruleChar = "─"
+	case 3:
+		style = "\033[1;38;5;249m" // bold medium gray
+	default:
+		style = "\033[38;5;246m" // dim gray, no bold
+	}
+	reset := "\033[0m"
+	if !ansiEnabled() {
+		style, reset, ruleChar = "", "", ""
+	}
+
+	var b strings.Builder
+	b.WriteString(style)
+	b.WriteString(text)
+	b.WriteString(reset)
+	if ruleChar != "" {
+		ruleWidth := min(displayWidth(text), width)
+		b.WriteByte('\n')
+		if ansiEnabled() {
+			b.WriteString("\033[38;5;240m")
+		}
+		b.WriteString(strings.Repeat(ruleChar, ruleWidth))
+		if ansiEnabled() {
+			b.WriteString(reset)
+		}
+	}
+	if addNewline {
+		b.WriteByte('\n')
+	}
+	return b.String(), true
 }
 
 func normalizeMarkdownIndent(line string) string {
@@ -306,10 +378,19 @@ func splitOrderedListPrefix(line string) (marker, rest string, ok bool) {
 
 func plainMarkdownWrapWidth() int {
 	cols := codePanelTermWidth()
-	if cols > 12 {
-		return cols - 2
+	if cols > 4 {
+		w := cols - 4
+		if w < 76 {
+			// On narrow terminals keep a sensible minimum without
+			// exceeding what the terminal can display.
+			if cols > 76 {
+				return 76
+			}
+			return w
+		}
+		return w
 	}
-	return 80
+	return 76
 }
 
 func isMarkdownTableCandidate(line string) bool {
@@ -365,6 +446,45 @@ func renderMarkdownTable(lines []string) (string, bool) {
 		for i, cell := range row {
 			if w := displayWidth(cell); w > widths[i] {
 				widths[i] = w
+			}
+		}
+	}
+
+	// Cap column widths so the table fits within the terminal.
+	// Total width = 1 (left border) + Σ(width+2) + (cols-1) separators + 1 (right border).
+	termW := codePanelTermWidth()
+	if termW > 0 {
+		tableW := func() int {
+			t := 1
+			for _, w := range widths {
+				t += w + 3
+			}
+			return t
+		}
+		for tableW() > termW && len(widths) > 0 {
+			// Shrink the widest column by 1 until the table fits.
+			maxIdx := 0
+			for i, w := range widths {
+				if w > widths[maxIdx] {
+					maxIdx = i
+				}
+			}
+			if widths[maxIdx] <= 4 {
+				break
+			}
+			widths[maxIdx]--
+		}
+		// Truncate cell text to fit the capped widths.
+		for i, cell := range header {
+			if displayWidth(cell) > widths[i] {
+				header[i] = truncateANSIVisible(cell, widths[i])
+			}
+		}
+		for ri, row := range rows {
+			for i, cell := range row {
+				if displayWidth(cell) > widths[i] {
+					rows[ri][i] = truncateANSIVisible(cell, widths[i])
+				}
 			}
 		}
 	}
@@ -542,7 +662,7 @@ func renderEditedAction(rest string) string {
 	file, stats := splitTrailingStats(rest)
 	var b strings.Builder
 	b.WriteString(dim)
-	b.WriteString("✎ ")
+	b.WriteString("⏺ ")
 	b.WriteString(action)
 	b.WriteString("Edited ")
 	b.WriteString(path)
@@ -595,7 +715,7 @@ func renderCommandAction(prefix, rest string) string {
 	cmd = strings.Trim(cmd, "`")
 	var b strings.Builder
 	b.WriteString(dim)
-	b.WriteString("▶ ")
+	b.WriteString("⏺ ")
 	b.WriteString(action)
 	b.WriteString(titleWord(prefix))
 	b.WriteString(reset)
@@ -638,7 +758,7 @@ var langAliases = map[string]string{
 }
 
 const (
-	defaultDarkHighlightStyle  = "monokai"
+	defaultDarkHighlightStyle  = "catppuccin-mocha"
 	defaultLightHighlightStyle = "github"
 )
 
@@ -695,6 +815,21 @@ func terminalLooksLight(colorfgbg string) bool {
 	}
 }
 
+// resolveHighlightFormatter returns "terminal16m" (24-bit RGB) when the
+// terminal advertises truecolor support, falling back to "terminal256".
+// Kitty sets TERM=xterm-kitty; WezTerm and most modern terminals set
+// COLORTERM=truecolor (the canonical check).
+func resolveHighlightFormatter() string {
+	colorterm := strings.ToLower(strings.TrimSpace(os.Getenv("COLORTERM")))
+	if colorterm == "truecolor" || colorterm == "24bit" {
+		return "terminal16m"
+	}
+	if strings.ToLower(strings.TrimSpace(os.Getenv("TERM"))) == "xterm-kitty" {
+		return "terminal16m"
+	}
+	return "terminal256"
+}
+
 func resolveHighlightStyle(name string) *chroma.Style {
 	styleName := strings.TrimSpace(name)
 	if styleName == "" {
@@ -734,7 +869,7 @@ func syntaxHighlight(code, lang string) string {
 
 	style := resolveHighlightStyle(highlightStyleName())
 
-	formatter := chromaFmt.Get("terminal256")
+	formatter := chromaFmt.Get(resolveHighlightFormatter())
 	if formatter == nil {
 		return code
 	}
@@ -816,8 +951,8 @@ func codePanelLabel(lang string) string {
 func renderCodePanelTop(lang string, contentWidth int) string {
 	label := truncateCodePanelLabel(codePanelLabel(lang), contentWidth+2)
 	const (
-		border = "\033[38;5;238m"
-		title  = "\033[2;38;5;250m"
+		border = "\033[38;5;243m"
+		title  = "\033[38;5;252m"
 		reset  = "\033[0m"
 	)
 	var b strings.Builder
@@ -845,7 +980,7 @@ func renderHighlightedCodePanelLine(line string, contentWidth int) string {
 	line = truncateANSIVisible(line, contentWidth)
 	pad := contentWidth - displayWidth(line)
 	const (
-		border = "\033[38;5;238m"
+		border = "\033[38;5;243m"
 		reset  = "\033[0m"
 	)
 	var b strings.Builder
@@ -867,7 +1002,7 @@ func renderHighlightedCodePanelLine(line string, contentWidth int) string {
 
 func renderCodePanelBottom(contentWidth int) string {
 	const (
-		border = "\033[38;5;238m"
+		border = "\033[38;5;243m"
 		reset  = "\033[0m"
 	)
 	var b strings.Builder
@@ -934,6 +1069,13 @@ func truncateANSIVisible(s string, max int) string {
 	for i := 0; i < len(s); {
 		if s[i] == '\x1b' {
 			j := i + 1
+			// CSI sequence: ESC [ <params> <final-byte>
+			// Skip the '[' introducer before scanning for the final byte,
+			// because '[' (0x5B) is itself in the @–~ range and would be
+			// mistaken for a final byte, leaving the parameters as visible text.
+			if j < len(s) && s[j] == '[' {
+				j++
+			}
 			for j < len(s) && (s[j] < '@' || s[j] > '~') {
 				j++
 			}
@@ -994,4 +1136,33 @@ func writeTerminalStatus(out io.Writer, line string) {
 		return
 	}
 	_, _ = io.WriteString(out, line+"\n")
+}
+
+// writeThinkingInPlace overwrites the current terminal line with a thinking
+// status fragment. It uses \r to return to column 0 and \033[2K to erase the
+// line, then writes the text without a trailing newline. This means the line
+// is never committed to the scrollback buffer, so subsequent overwrites and
+// clearThinkingInPlace leave no visible trail. No-op when ANSI is unavailable.
+func writeThinkingInPlace(out io.Writer, line string) {
+	if line == "" || !ansiEnabled() {
+		return
+	}
+	w := out
+	if h, ok := out.(*codeHighlighter); ok {
+		w = h.out
+	}
+	_, _ = io.WriteString(w, "\r\033[2K"+line)
+}
+
+// clearThinkingInPlace erases the current thinking status line, leaving the
+// cursor at column 0 ready for response output. No-op when ANSI is unavailable.
+func clearThinkingInPlace(out io.Writer) {
+	if !ansiEnabled() {
+		return
+	}
+	w := out
+	if h, ok := out.(*codeHighlighter); ok {
+		w = h.out
+	}
+	_, _ = io.WriteString(w, "\r\033[2K")
 }

@@ -555,23 +555,18 @@ func chatPrompt(agentID string) string {
 }
 
 func chatPromptState(agentID, state string) string {
-	reset := "\033[0m"
 	arrow := "\033[1;38;5;82m▶\033[0m"
 	if !ansiEnabled() {
-		reset = ""
 		arrow = "▶"
 	}
 	if agentID == "" {
 		return "[select: /1 claude · /2 codex · /4 minimax · /help] " + arrow + " "
 	}
-	color := agentColor(agentID)
-	if !ansiEnabled() {
-		color = ""
-	}
+	badgePrefix, badgeReset := agentBadge(agentID)
 	if state = strings.TrimSpace(state); state != "" {
-		return "[" + color + agentID + reset + " " + promptStateGlyph(state) + "] " + arrow + " "
+		return badgePrefix + " " + agentID + " " + promptStateGlyph(state) + " " + badgeReset + " " + arrow + " "
 	}
-	return "[" + color + agentID + reset + "] " + arrow + " "
+	return badgePrefix + " " + agentID + " " + badgeReset + " " + arrow + " "
 }
 
 func promptStateGlyph(state string) string {
@@ -901,6 +896,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 	}
 	defer close(sess.done)
 	firstData := true
+	thinkingActive := false // true while a thinking status line is on screen
 	for line := range sess.streamCh {
 		var ev map[string]any
 		if err := json.Unmarshal(line, &ev); err != nil {
@@ -925,7 +921,17 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 						if l.sess == sess {
 							l.setPromptState("thinking")
 						}
-						l.writeStreamStatus(formatThinkingLineWidth(agent, msg, streamTextWidth()))
+						// Flush any partial response line so the cursor is at
+						// column 0 before writing the thinking status. This
+						// prevents thinking from landing mid-response-line when
+						// thinking events appear between agentic tool-call turns.
+						if h, ok := l.out.(*codeHighlighter); ok && h.pending.Len() > 0 {
+							_ = h.Flush()
+							_, _ = io.WriteString(h.out, "\n")
+						}
+						formatted := formatThinkingLineWidth(agent, msg, streamTextWidth())
+						l.writeStreamStatus(formatted)
+						thinkingActive = true
 					}
 				}
 			}
@@ -933,9 +939,13 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			if b64, ok := ev["b64"].(string); ok {
 				if raw, err := base64.StdEncoding.DecodeString(b64); err == nil {
 					l.beginStreamOutput(sess)
+					// Clear thinking active flag whenever data follows thinking,
+					// regardless of which turn we're on in the agentic loop.
+					if thinkingActive {
+						thinkingActive = false
+					}
 					if firstData {
-						// First token arrived — update title from "thinking…" to
-						// active so the user sees the runner is responding.
+						// First token of this response segment — update title.
 						if l.sess == sess {
 							l.setPromptState("streaming")
 							l.updateActiveTitle("streaming…")
@@ -973,6 +983,9 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			if l.sess == sess {
 				l.setPromptState("")
 			}
+			// Reset per-turn state so the next prompt starts clean.
+			firstData = true
+			thinkingActive = false
 			l.endStreamOutput(sess)
 		case "err":
 			msg, _ := ev["msg"].(string)
@@ -1070,8 +1083,8 @@ func formatThinkingLineWidth(agentID, msg string, width int) string {
 		return ""
 	}
 
-	prefix := fmt.Sprintf("[%s] … ", agentID)
-	continuation := strings.Repeat(" ", displayWidth("["+agentID+"] ")) + "… "
+	prefix := "⏺ "
+	continuation := "  " // 2 spaces to align under the text after ⏺
 	budget := width - displayWidth(prefix)
 	if budget < 24 {
 		budget = 24
@@ -1157,7 +1170,6 @@ If you cannot produce a markdown table for step 3, use the dash-list format show
 // When max_turns_hit is set, the terse flag is replaced by a visible break
 // separator and an automatic summarization turn that streams back to the user.
 func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any, turnSaved bool) {
-	var parts []string
 	cost, _ := chunkEnd["cost_usd"].(float64)
 	inTok, _ := chunkEnd["input_tokens"].(float64)
 	outTok, _ := chunkEnd["output_tokens"].(float64)
@@ -1170,12 +1182,6 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any, turnSaved bool) {
 	}
 	if cost > 0 {
 		l.sessionCost += cost
-	}
-	if usageText := formatUsageInline(usage); usageText != "" {
-		parts = append(parts, usageText)
-	}
-	if turnSaved {
-		parts = append(parts, "\033[32m⊙ saved\033[0m")
 	}
 
 	// Update the window title after each response. Show the running session
@@ -1209,15 +1215,10 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any, turnSaved bool) {
 			// Send a summarization prompt — the response streams back
 			// normally so the user gets a clean handoff summary.
 			_ = l.sess.send(maxTurnsSummaryPrompt)
-			if len(parts) > 0 {
-				l.writeStreamStatus("  (" + strings.Join(parts, " · ") + ")")
-			}
-			return
 		}
 	}
-	if len(parts) > 0 {
-		l.writeStreamStatus("  (" + strings.Join(parts, " · ") + ")")
-	}
+	// Cost/token stats are shown in the observability panel and window title;
+	// writing them inline here would clutter the response stream.
 }
 
 func (l *chatLoop) writeStreamStatus(line string) {
@@ -3035,6 +3036,38 @@ func agentColor(name string) string {
 		return "\033[38;5;117m" // light blue
 	}
 	return unknownAgentColor // unknown provider
+}
+
+// agentBadge returns the ANSI prefix and reset suffix that render the agent
+// name as a filled background badge in the prompt. Returns ("", "") when ANSI
+// is disabled so callers don't need to guard.
+func agentBadge(name string) (prefix, reset string) {
+	if !ansiEnabled() {
+		return "", ""
+	}
+	return agentBadgeBackground(name) + "\033[97m", "\033[0m"
+}
+
+// agentBadgeBackground returns the 256-colour background escape for a runner.
+// Hues mirror agentColor but as background fills for the prompt badge.
+func agentBadgeBackground(name string) string {
+	switch name {
+	case "claude":
+		return "\033[48;5;29m" // forest green (slightly lighter)
+	case "codex":
+		return "\033[48;5;136m" // amber (brighter)
+	case "copilot":
+		return "\033[48;5;26m" // cornflower blue (lighter)
+	case "minimax":
+		return "\033[48;5;61m" // medium purple
+	case "gemini":
+		return "\033[48;5;166m" // orange
+	case "local":
+		return "\033[48;5;124m" // dark red (stays same)
+	case "pool":
+		return "\033[48;5;37m" // teal (lighter)
+	}
+	return "\033[48;5;240m" // neutral gray
 }
 
 // agentThinkingColor returns the quieter companion colour for runner progress.
