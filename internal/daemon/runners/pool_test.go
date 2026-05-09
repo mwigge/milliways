@@ -25,13 +25,13 @@ import (
 
 func TestPoolArgsBuilder_DefaultCommand(t *testing.T) {
 	got := poolArgsBuilder("hello pool", "/tmp/project")
-	want := []string{"exec", "--unsafe-auto-allow", "-p", "hello pool", "--directory", "/tmp/project"}
+	want := []string{"exec", "--unsafe-auto-allow", "--output", "markdown", "-p", "hello pool", "--directory", "/tmp/project"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("poolArgsBuilder() = %v, want %v", got, want)
 	}
 
 	got = poolArgsBuilder("hello pool", "")
-	want = []string{"exec", "--unsafe-auto-allow", "-p", "hello pool"}
+	want = []string{"exec", "--unsafe-auto-allow", "--output", "markdown", "-p", "hello pool"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("poolArgsBuilder(empty dir) = %v, want %v", got, want)
 	}
