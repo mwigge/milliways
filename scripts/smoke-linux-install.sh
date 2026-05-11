@@ -275,6 +275,64 @@ EOF
     '
 }
 
+run_shadow_migration_case() {
+  local image="archlinux:latest"
+  local label="Arch native package shadows stale ~/.local/bin"
+  local pkg
+  pkg="$(find "$full_release" -maxdepth 1 -name 'milliways-*-x86_64.pkg.tar.zst' | head -1)"
+  if [ -z "$pkg" ]; then
+    printf 'SKIP %s: pacman package missing from %s\n' "$label" "$full_release"
+    return 0
+  fi
+  if [ -n "${MILLIWAYS_SMOKE_FILTER:-}" ] && [[ "$label" != *"$MILLIWAYS_SMOKE_FILTER"* ]]; then
+    return 0
+  fi
+
+  printf '\n==> %s: %s\n' "$label" "$image"
+  docker run --rm --platform linux/amd64 --security-opt seccomp=unconfined \
+    -v "$install_script:/tmp/install.sh:ro" \
+    -v "$full_release:/release:ro" \
+    -v "$support_release:/support:ro" \
+    "$image" \
+    bash -lc '
+      set -euo pipefail
+      trap '"'"'status=$?; if [ "$status" -ne 0 ]; then
+        for log in /tmp/install.log; do
+          [ -f "$log" ] && { echo "----- $log -----" >&2; cat "$log" >&2; }
+        done
+      fi; exit "$status"'"'"' EXIT
+      sed -i "s/^#DisableSandbox/DisableSandbox/" /etc/pacman.conf 2>/dev/null || true
+      command -v curl >/dev/null 2>&1 || pacman -Sy --noconfirm ca-certificates curl
+
+      export HOME=/tmp/mw-home
+      mkdir -p "$HOME/.local/bin"
+      for bin in milliways milliwaysd milliwaysctl; do
+        cat >"$HOME/.local/bin/$bin" <<'"'"'EOF'"'"'
+#!/usr/bin/env bash
+[ "${1:-}" = "--version" ] && echo "milliways version v1.0.6" && exit 0
+exit 0
+EOF
+        chmod +x "$HOME/.local/bin/$bin"
+      done
+      export PATH="$HOME/.local/bin:$PATH"
+      export MILLIWAYS_REPO="'"$repo"'"
+      export MILLIWAYS_VERSION="'"$version"'"
+      export MILLIWAYS_RELEASE_BASE_URL=file:///release
+      export MILLIWAYS_SUPPORT_BASE_URL=file:///support
+      export MILLIWAYS_WEZTERM_LUA_URL=file:///support/wezterm.lua
+      export SKIP_FEATURE_DEPS=1
+      bash /tmp/install.sh >/tmp/install.log 2>&1
+
+      got="$(milliways --version)"
+      echo "$got" | grep -q "'"$version"'"
+      test "$(readlink -f "$HOME/.local/bin/milliways")" = "/usr/bin/milliways"
+      test -f "$HOME/.local/share/milliways/wezterm.lua"
+      ! grep -q "default_prog = { local_bin .. '"'"'/milliways'"'"' }" "$HOME/.local/share/milliways/wezterm.lua"
+      grep -q "resolve_milliways_bin" "$HOME/.local/share/milliways/wezterm.lua"
+      printf "PASS %s\n" "'"$label"'"
+    '
+}
+
 tmp_root="$(mktemp -d "$repo_root/.mw-install-smoke-XXXXXX")"
 cleanup() {
   chmod -R u+w "$tmp_root" 2>/dev/null || true
@@ -306,6 +364,7 @@ done
 
 run_case "ubuntu:24.04" "Ubuntu full source fallback from remote repo" "$empty_release" "yes"
 run_case "fedora:41" "Fedora full source fallback from remote repo" "$empty_release" "yes"
+run_shadow_migration_case
 run_deep_case "ubuntu:24.04" "Ubuntu local server plus two CLI takeover smoke"
 run_deep_case "fedora:41" "Fedora local server plus two CLI takeover smoke"
 run_deep_case "archlinux:latest" "Arch local server plus two CLI takeover smoke"

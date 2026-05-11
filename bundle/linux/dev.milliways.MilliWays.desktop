@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MilliWays
+Comment=AI terminal for Claude, Codex, Gemini, Copilot, and local models
+Keywords=ai;terminal;shell;prompt;command;agent;
+Icon=dev.milliways.MilliWays
+StartupWMClass=MilliWays
+TryExec=milliways-term
+Exec=milliways-term
+Categories=System;TerminalEmulator;Utility;Development;
+Terminal=false

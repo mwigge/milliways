@@ -12,10 +12,12 @@ endif
 
 PREFIX ?= $(HOME)/.local
 BIN := $(PREFIX)/bin
+DATADIR := $(PREFIX)/share
 
 .PHONY: smoke plugin-test install mempalace-dev mempalace-test \
         all term daemon ctl repl gen-rpc clean-rpc \
-        bundle-macos build-linux-amd64 smoke-linux-install release
+        bundle-macos bundle-linux install-linux-app \
+        build-linux-amd64 smoke-linux-install release
 
 # ---------------------------------------------------------------------------
 # milliways-emulator-fork build targets
@@ -116,6 +118,9 @@ DIST_DIR    := $(CURDIR)/dist
 APP_NAME    := MilliWays.app
 APP_DIR     := $(DIST_DIR)/$(APP_NAME)
 WEZTERM_SRC ?= /Applications/MilliWays.app/Contents/MacOS
+LINUX_BUNDLE_DIR := $(CURDIR)/bundle/linux
+LINUX_APPDIR     := $(DIST_DIR)/MilliWays-linux-amd64
+LINUX_TERM_SRC  ?= $(WEZTERM_SRC)
 
 bundle-macos: repl
 	@echo "==> Assembling $(APP_NAME) ($(VERSION))"
@@ -152,6 +157,68 @@ bundle-macos: repl
 	# zip for upload
 	cd "$(DIST_DIR)" && zip -qr "$(APP_NAME).zip" "$(APP_NAME)"
 	@echo "==> $(DIST_DIR)/$(APP_NAME).zip"
+
+# ---------------------------------------------------------------------------
+# Linux desktop app bundle — the freedesktop.org equivalent of MilliWays.app.
+#
+# Requires patched terminal binaries:
+#   - milliways-term (or wezterm-gui, which is installed as milliways-term)
+#   - wezterm-mux-server
+#
+# Source priority:
+#   1. LINUX_TERM_SRC env var / make var
+#   2. WEZTERM_SRC env var / make var
+# ---------------------------------------------------------------------------
+bundle-linux: repl
+	@echo "==> Assembling MilliWays Linux desktop app ($(VERSION))"
+	@[ -d "$(LINUX_TERM_SRC)" ] || { \
+		echo "ERROR: terminal binaries not found."; \
+		echo "  Set LINUX_TERM_SRC=<dir containing milliways-term or wezterm-gui and wezterm-mux-server>"; \
+		exit 1; \
+	}
+	rm -rf "$(LINUX_APPDIR)"
+	mkdir -p "$(LINUX_APPDIR)/bin" \
+	         "$(LINUX_APPDIR)/share/applications" \
+	         "$(LINUX_APPDIR)/share/icons/hicolor/scalable/apps" \
+	         "$(LINUX_APPDIR)/share/milliways"
+	if [ -x "$(LINUX_TERM_SRC)/milliways-term" ]; then \
+		cp "$(LINUX_TERM_SRC)/milliways-term" "$(LINUX_APPDIR)/bin/milliways-term"; \
+	else \
+		cp "$(LINUX_TERM_SRC)/wezterm-gui" "$(LINUX_APPDIR)/bin/milliways-term"; \
+	fi
+	cp "$(LINUX_TERM_SRC)/wezterm-mux-server" "$(LINUX_APPDIR)/bin/"
+	cp "$(BIN)/milliways" "$(LINUX_APPDIR)/bin/"
+	cp "$(LINUX_BUNDLE_DIR)/dev.milliways.MilliWays.desktop" \
+	   "$(LINUX_APPDIR)/share/applications/"
+	cp "$(CURDIR)/assets/milliways.svg" \
+	   "$(LINUX_APPDIR)/share/icons/hicolor/scalable/apps/dev.milliways.MilliWays.svg"
+	cp "$(CURDIR)/cmd/milliwaysctl/milliways.lua" \
+	   "$(LINUX_APPDIR)/share/milliways/wezterm.lua"
+	chmod +x "$(LINUX_APPDIR)/bin/milliways-term" \
+	         "$(LINUX_APPDIR)/bin/wezterm-mux-server" \
+	         "$(LINUX_APPDIR)/bin/milliways"
+	cd "$(DIST_DIR)" && tar -czf "MilliWays-linux-amd64.tar.gz" "MilliWays-linux-amd64"
+	@echo "==> $(DIST_DIR)/MilliWays-linux-amd64.tar.gz"
+
+install-linux-app: bundle-linux
+	@echo "==> Installing MilliWays desktop app to $(PREFIX)"
+	install -Dm755 "$(LINUX_APPDIR)/bin/milliways-term" "$(BIN)/milliways-term"
+	install -Dm755 "$(LINUX_APPDIR)/bin/wezterm-mux-server" "$(BIN)/wezterm-mux-server"
+	sed -e "s|^Exec=.*|Exec=$(BIN)/milliways-term|" \
+	    -e "s|^TryExec=.*|TryExec=$(BIN)/milliways-term|" \
+	    "$(LINUX_APPDIR)/share/applications/dev.milliways.MilliWays.desktop" \
+	    > "$(LINUX_APPDIR)/share/applications/dev.milliways.MilliWays.local.desktop"
+	install -Dm644 "$(LINUX_APPDIR)/share/applications/dev.milliways.MilliWays.local.desktop" \
+		"$(DATADIR)/applications/dev.milliways.MilliWays.desktop"
+	install -Dm644 "$(LINUX_APPDIR)/share/icons/hicolor/scalable/apps/dev.milliways.MilliWays.svg" \
+		"$(DATADIR)/icons/hicolor/scalable/apps/dev.milliways.MilliWays.svg"
+	install -Dm644 "$(LINUX_APPDIR)/share/milliways/wezterm.lua" \
+		"$(DATADIR)/milliways/wezterm.lua"
+	@command -v update-desktop-database >/dev/null 2>&1 && \
+		update-desktop-database "$(DATADIR)/applications" || true
+	@command -v gtk-update-icon-cache >/dev/null 2>&1 && \
+		gtk-update-icon-cache -q "$(DATADIR)/icons/hicolor" || true
+	@echo "==> MilliWays desktop app installed"
 
 # install-macos: replace /Applications/MilliWays.app with the freshly-built
 # bundle. Uses a temp dir + atomic rename instead of `cp -R` / `ditto` over

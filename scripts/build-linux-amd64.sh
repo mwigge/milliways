@@ -8,6 +8,7 @@ image="${MILLIWAYS_BUILD_LINUX_IMAGE:-milliways-build-linux:bookworm}"
 version="${VERSION:-$(git -C "$repo_root" describe --tags --always --dirty 2>/dev/null || echo dev)}"
 out_dir="${OUT_DIR:-$repo_root/dist}"
 go_version="${GO_VERSION:-$(awk '/^go / { print $2; exit }' "$repo_root/go.mod")}"
+term_src="${MILLIWAYS_TERM_SRC:-${LINUX_TERM_SRC:-}}"
 
 docker build \
   -t "$image" \
@@ -27,6 +28,10 @@ for sibling in milliways-wezterm agent-toolkit-bundle; do
     mounts+=(-v "$sibling_dir:/src/$sibling:ro")
   fi
 done
+
+if [ -n "$term_src" ] && [ -d "$term_src" ]; then
+  mounts+=(-v "$term_src:/src/milliways-term-bin:ro")
+fi
 
 docker run --rm \
   --user "$(id -u):$(id -g)" \
@@ -100,6 +105,49 @@ docker run --rm \
     # Bundle llama-server when available — removes the need for brew/cmake on first use.
     [ -f dist/llama-server_linux_amd64 ] && \
       install -Dm755 dist/llama-server_linux_amd64 "$pkg_root/usr/bin/llama-server"
+
+    # Linux desktop app: include patched terminal GUI when the release/build
+    # environment provides it. The package remains CLI-capable if absent.
+    term_src=""
+    for candidate in /src/milliways-term-bin /src/milliways-wezterm/dist /src/milliways-wezterm/target/release /src/milliways-wezterm; do
+      if [ -x "$candidate/milliways-term" ] || [ -x "$candidate/wezterm-gui" ]; then
+        if [ -x "$candidate/wezterm-mux-server" ]; then
+          term_src="$candidate"
+          break
+        fi
+      fi
+    done
+    if [ -n "$term_src" ]; then
+      if [ -x "$term_src/milliways-term" ]; then
+        install -Dm755 "$term_src/milliways-term" "$pkg_root/usr/bin/milliways-term"
+        cp "$term_src/milliways-term" dist/milliways-term_linux_amd64
+      else
+        install -Dm755 "$term_src/wezterm-gui" "$pkg_root/usr/bin/milliways-term"
+        cp "$term_src/wezterm-gui" dist/milliways-term_linux_amd64
+      fi
+      install -Dm755 "$term_src/wezterm-mux-server" "$pkg_root/usr/bin/wezterm-mux-server"
+      cp "$term_src/wezterm-mux-server" dist/wezterm-mux-server_linux_amd64
+      chmod +x dist/milliways-term_linux_amd64 dist/wezterm-mux-server_linux_amd64
+      install -Dm644 bundle/linux/dev.milliways.MilliWays.desktop \
+        "$pkg_root/usr/share/applications/dev.milliways.MilliWays.desktop"
+      install -Dm644 assets/milliways.svg \
+        "$pkg_root/usr/share/icons/hicolor/scalable/apps/dev.milliways.MilliWays.svg"
+      app_dir=/tmp/mw-linux-app/MilliWays-linux-amd64
+      rm -rf /tmp/mw-linux-app
+      mkdir -p "$app_dir/bin" "$app_dir/share/applications" \
+        "$app_dir/share/icons/hicolor/scalable/apps" "$app_dir/share/milliways"
+      cp "$pkg_root/usr/bin/milliways" "$app_dir/bin/"
+      cp "$pkg_root/usr/bin/milliways-term" "$app_dir/bin/"
+      cp "$pkg_root/usr/bin/wezterm-mux-server" "$app_dir/bin/"
+      cp "$pkg_root/usr/share/applications/dev.milliways.MilliWays.desktop" "$app_dir/share/applications/"
+      cp "$pkg_root/usr/share/icons/hicolor/scalable/apps/dev.milliways.MilliWays.svg" "$app_dir/share/icons/hicolor/scalable/apps/"
+      cp cmd/milliwaysctl/milliways.lua "$app_dir/share/milliways/wezterm.lua"
+      tar -czf dist/MilliWays-linux-amd64.tar.gz -C /tmp/mw-linux-app MilliWays-linux-amd64
+      echo "Linux desktop app bundled from $term_src"
+    else
+      echo "WARNING: patched terminal binaries not found — Linux desktop app not bundled"
+    fi
+
     install -Dm755 scripts/install_local.sh         "$pkg_root/usr/share/milliways/scripts/install_local.sh"
     install -Dm755 scripts/install_local_swap.sh    "$pkg_root/usr/share/milliways/scripts/install_local_swap.sh"
     install -Dm755 scripts/install_feature_deps.sh  "$pkg_root/usr/share/milliways/scripts/install_feature_deps.sh"

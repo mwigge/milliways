@@ -204,6 +204,7 @@ run_docker_upgrade_case() {
   docker run --rm --platform linux/amd64 --security-opt seccomp=unconfined \
     -v "$upgrade_script:/tmp/upgrade.sh:ro" \
     -v "$release_dir:/release:ro" \
+    -v "$support_release:/support:ro" \
     "$image" \
     bash -lc "
 set -euo pipefail
@@ -211,11 +212,25 @@ trap 'rc=\$?; if [ \$rc -ne 0 ]; then
   cat /tmp/upgrade.log >&2 2>/dev/null || true
   cat /tmp/pkg-install.log >&2 2>/dev/null || true
 fi; exit \$rc' EXIT
-PREFIX=/tmp/mw-prefix
+HOME=/tmp/mw-home
+PREFIX=\$HOME/.local
 BIN_DIR=\$PREFIX/bin
 FAKE_BIN=/tmp/fake-bin
 INSTALL_LOG=/tmp/pkg-install.log
 mkdir -p \"\$BIN_DIR\" \"\$FAKE_BIN\"
+
+cat >\"\$FAKE_BIN/install-pkg-bins\" <<'PKGBINS'
+#!/usr/bin/env bash
+set -euo pipefail
+  for _b in milliways milliwaysd milliwaysctl; do
+    printf '#!/usr/bin/env bash\n[ "${1:-}" = "--version" ] && echo "%s version %s" && exit 0\nexit 0\n' \
+      \"\$_b\" '$smoke_version' >\"/usr/bin/\$_b\"
+    chmod +x \"/usr/bin/\$_b\"
+  done
+  mkdir -p /usr/share/milliways
+  cp /support/wezterm.lua /usr/share/milliways/wezterm.lua
+PKGBINS
+chmod +x \"\$FAKE_BIN/install-pkg-bins\"
 
 cat >\"\$FAKE_BIN/curl\" <<'CURL'
 #!/usr/bin/env bash
@@ -236,7 +251,7 @@ CURL
 chmod +x \"\$FAKE_BIN/curl\"
 
 for _b in milliways milliwaysd milliwaysctl; do
-  printf '#!/usr/bin/env bash\n[ \"\${1:-}\" = \"--version\" ] && printf \"%s\\n\" v1.1.0 && exit 0\nexit 0\n' \
+  printf '#!/usr/bin/env bash\n[ "${1:-}" = "--version" ] && echo "%s version v1.1.0" && exit 0\nexit 0\n' \"\$_b\" \
     >\"\$BIN_DIR/\$_b\" && chmod +x \"\$BIN_DIR/\$_b\"
 done
 
@@ -245,7 +260,7 @@ case '$pkg_mgr' in
     cat >\"\$FAKE_BIN/dpkg\" <<'DPKG'
 #!/usr/bin/env bash
 if [ \"\${1:-}\" = \"-l\" ] && [ \"\${2:-}\" = \"milliways\" ]; then exit 0; fi
-if [ \"\${1:-}\" = \"-i\" ]; then echo \"dpkg -i \$*\" >>/tmp/pkg-install.log; exit 0; fi
+if [ \"\${1:-}\" = \"-i\" ]; then echo \"dpkg -i \$*\" >>/tmp/pkg-install.log; install-pkg-bins; exit 0; fi
 exit 0
 DPKG
     chmod +x \"\$FAKE_BIN/dpkg\"
@@ -255,7 +270,7 @@ DPKG
     cat >\"\$FAKE_BIN/rpm\" <<'RPM'
 #!/usr/bin/env bash
 if [ \"\${1:-}\" = \"-q\" ] && [ \"\${2:-}\" = \"milliways\" ]; then exit 0; fi
-if [ \"\${1:-}\" = \"-U\" ]; then echo \"rpm -U \$*\" >>/tmp/pkg-install.log; exit 0; fi
+if [ \"\${1:-}\" = \"-U\" ]; then echo \"rpm -U \$*\" >>/tmp/pkg-install.log; install-pkg-bins; exit 0; fi
 exit 0
 RPM
     chmod +x \"\$FAKE_BIN/rpm\"
@@ -265,7 +280,7 @@ RPM
     cat >\"\$FAKE_BIN/pacman\" <<'PACMAN'
 #!/usr/bin/env bash
 if [ \"\${1:-}\" = \"-Q\" ] && [ \"\${2:-}\" = \"milliways\" ]; then exit 0; fi
-if [ \"\${1:-}\" = \"-U\" ]; then echo \"pacman -U \$*\" >>/tmp/pkg-install.log; exit 0; fi
+if [ \"\${1:-}\" = \"-U\" ]; then echo \"pacman -U \$*\" >>/tmp/pkg-install.log; install-pkg-bins; exit 0; fi
 exit 0
 PACMAN
     chmod +x \"\$FAKE_BIN/pacman\"
@@ -276,6 +291,11 @@ export PATH=\"\$FAKE_BIN:\$BIN_DIR:\$PATH\"
 export PREFIX MILLIWAYS_VERSION='$smoke_version' MILLIWAYS_RELEASE_BASE_URL=file:///release UPGRADE_YES=1
 bash /tmp/upgrade.sh >/tmp/upgrade.log 2>&1
 test -f /tmp/pkg-install.log || { echo 'FAIL: package manager stub not invoked'; exit 1; }
+milliways --version | grep -q '$smoke_version'
+test \"\$(readlink -f \"\$BIN_DIR/milliways\")\" = /usr/bin/milliways
+test -f /usr/share/milliways/wezterm.lua
+! grep -q \"default_prog = { local_bin .. '/milliways' }\" /usr/share/milliways/wezterm.lua
+grep -q \"resolve_milliways_bin\" /usr/share/milliways/wezterm.lua
 echo 'PASS: package manager stub invoked'
 cat /tmp/pkg-install.log
 " >"$docker_log" 2>&1 && _drc=0 || _drc=$?

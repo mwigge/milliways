@@ -20,6 +20,7 @@ SHARE_DIR="$PREFIX/share/milliways"
 VERSION="${MILLIWAYS_VERSION:-latest}"
 RELEASE_BASE_URL="${MILLIWAYS_RELEASE_BASE_URL:-}"
 SUPPORT_BASE_URL="${MILLIWAYS_SUPPORT_BASE_URL:-}"
+INSTALLED_NATIVE=0
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 if [ -t 1 ]; then
@@ -75,6 +76,18 @@ package_version() {
   esac
 }
 
+repair_shadowing_user_bins() {
+  [ "$PLATFORM" = "linux" ] || return 0
+  [ "$PREFIX" = "$HOME/.local" ] || return 0
+  for bin in milliways milliwaysd milliwaysctl; do
+    [ -x "/usr/bin/$bin" ] || continue
+    if [ -e "$BIN_DIR/$bin" ] && [ "$BIN_DIR/$bin" != "/usr/bin/$bin" ]; then
+      ln -sf "/usr/bin/$bin" "$BIN_DIR/$bin"
+      ok "Pointed $BIN_DIR/$bin → /usr/bin/$bin"
+    fi
+  done
+}
+
 # ── Install mode: native Linux package (tier 1) ───────────────────────────────
 # Tries to download and install the distro-native package (.deb / .rpm / .zst).
 # Returns 0 on success, 1 if the package is unavailable or install fails.
@@ -96,6 +109,8 @@ install_native_pkg() {
       if curl -sSfL "$url" -o "$tmp/$pkg"; then
         if dpkg -i "$tmp/$pkg" 2>/dev/null || sudo dpkg -i "$tmp/$pkg"; then
           ok "Installed via dpkg — binaries at /usr/bin"
+          INSTALLED_NATIVE=1
+          repair_shadowing_user_bins
           rm -rf "$tmp"
           return 0
         fi
@@ -112,6 +127,8 @@ install_native_pkg() {
       if curl -sSfL "$url" -o "$tmp/$pkg"; then
         if rpm -i "$tmp/$pkg" 2>/dev/null || sudo rpm -i "$tmp/$pkg"; then
           ok "Installed via rpm — binaries at /usr/bin"
+          INSTALLED_NATIVE=1
+          repair_shadowing_user_bins
           rm -rf "$tmp"
           return 0
         fi
@@ -129,6 +146,8 @@ install_native_pkg() {
         if pacman -U --noconfirm "$tmp/$pkg" 2>/dev/null \
            || sudo pacman -U --noconfirm "$tmp/$pkg"; then
           ok "Installed via pacman — binaries at /usr/bin"
+          INSTALLED_NATIVE=1
+          repair_shadowing_user_bins
           rm -rf "$tmp"
           return 0
         fi
@@ -270,6 +289,40 @@ install_macos_app() {
   rm -rf "$tmp"
 }
 
+# ── Linux desktop app: patched terminal GUI + .desktop entry ─────────────────
+install_linux_desktop_app() {
+  [ "$PLATFORM" = "linux" ] || return 0
+  [ "${SKIP_TERM:-0}" = "1" ] && return 0
+  [ "$INSTALLED_NATIVE" = "1" ] && [ -x /usr/bin/milliways-term ] && return 0
+  [ "$GOARCH" = "amd64" ] || { warn "Linux desktop app is amd64-only today"; return 0; }
+
+  local base_url="${RELEASE_BASE_URL:-https://github.com/${REPO}/releases/download/${VERSION}}"
+  local url="${base_url}/MilliWays-linux-amd64.tar.gz"
+  local tmp; tmp="$(mktemp -d)"
+  info "Downloading MilliWays Linux desktop app..."
+  if curl -sSfL "$url" -o "$tmp/MilliWays-linux-amd64.tar.gz" 2>/dev/null; then
+    tar -xzf "$tmp/MilliWays-linux-amd64.tar.gz" -C "$tmp"
+    local root="$tmp/MilliWays-linux-amd64"
+    install -Dm755 "$root/bin/milliways-term" "$BIN_DIR/milliways-term"
+    install -Dm755 "$root/bin/wezterm-mux-server" "$BIN_DIR/wezterm-mux-server"
+    sed -e "s|^Exec=.*|Exec=$BIN_DIR/milliways-term|" \
+        -e "s|^TryExec=.*|TryExec=$BIN_DIR/milliways-term|" \
+        "$root/share/applications/dev.milliways.MilliWays.desktop" > "$tmp/dev.milliways.MilliWays.desktop"
+    install -Dm644 "$tmp/dev.milliways.MilliWays.desktop" \
+      "$HOME/.local/share/applications/dev.milliways.MilliWays.desktop"
+    install -Dm644 "$root/share/icons/hicolor/scalable/apps/dev.milliways.MilliWays.svg" \
+      "$HOME/.local/share/icons/hicolor/scalable/apps/dev.milliways.MilliWays.svg"
+    command -v update-desktop-database >/dev/null 2>&1 \
+      && update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+    command -v gtk-update-icon-cache >/dev/null 2>&1 \
+      && gtk-update-icon-cache -q "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+    ok "Installed MilliWays desktop app → ~/.local/share/applications"
+  else
+    warn "MilliWays Linux desktop app not available in release"
+  fi
+  rm -rf "$tmp"
+}
+
 # ── Wezterm config ────────────────────────────────────────────────────────────
 setup_wezterm_config() {
   local wezterm_cfg="$HOME/.config/wezterm/wezterm.lua"
@@ -388,10 +441,14 @@ install_wezterm_lua
 install_support_scripts
 install_feature_dependencies
 
-if [ "$PLATFORM" = "darwin" ]; then
-  install_macos_app
+if [ "${SKIP_TERM:-0}" != "1" ]; then
   setup_wezterm_config
 fi
+
+if [ "$PLATFORM" = "darwin" ]; then
+  install_macos_app
+fi
+install_linux_desktop_app
 
 setup_path
 
@@ -405,6 +462,21 @@ verify_install() {
     fi
   done
   [ -z "$missing" ] || fatal "Install incomplete; missing executable(s):$missing"
+
+  local expected="${VERSION#v}"
+  expected="${expected%%-dirty}"
+  if [ -n "$expected" ] && [ "$expected" != "latest" ]; then
+    local mw_bin actual actual_norm
+    mw_bin="$(command -v milliways 2>/dev/null || echo "$BIN_DIR/milliways")"
+    actual="$("$mw_bin" --version 2>/dev/null | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*' | head -1 || true)"
+    actual_norm="${actual#v}"
+    if [ -z "$actual" ]; then
+      fatal "Install verification failed: $mw_bin did not report a version"
+    fi
+    if [ "$actual_norm" != "$expected" ]; then
+      fatal "Install verification failed: command resolves to $actual, expected ${VERSION}. Check PATH for stale milliways binaries."
+    fi
+  fi
 }
 
 verify_install

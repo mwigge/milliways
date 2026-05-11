@@ -133,20 +133,23 @@ func TestRunCodegraphIndex_NoBinaryReturnsError(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
-	// No MILLIWAYS_CODEGRAPH_MCP_CMD, no codegraph on PATH, no share dirs.
-	t.Setenv("MILLIWAYS_CODEGRAPH_MCP_CMD", "")
-	// Point share dirs to the empty tmp so all candidate paths miss.
-	// We achieve this by ensuring the executable-relative share doesn't
-	// exist (it won't in tests) and PATH has no codegraph.
-	t.Setenv("PATH", tmp) // only tmp on PATH; no codegraph there
+	// Force the resolver to use an explicit, missing override so the test
+	// is independent of any system-wide /usr/share/milliways install.
+	t.Setenv("MILLIWAYS_CODEGRAPH_MCP_CMD", filepath.Join(tmp, "missing-codegraph"))
+	// PATH still has no codegraph, guarding against accidental fallback.
+	pathDir := filepath.Join(tmp, "bin")
+	if err := os.Mkdir(pathDir, 0o700); err != nil {
+		t.Fatalf("mkdir PATH dir: %v", err)
+	}
+	t.Setenv("PATH", pathDir) // only empty dir on PATH; no codegraph there
 
 	var stdout, stderr bytes.Buffer
 	code := runCodegraph([]string{"index"}, &stdout, &stderr)
 	if code == 0 {
 		t.Errorf("exit = 0, want non-zero when binary not found")
 	}
-	if !strings.Contains(stderr.String(), "codegraph") {
-		t.Errorf("stderr = %q, want mention of codegraph", stderr.String())
+	if !strings.Contains(stderr.String(), "codegraph: binary not found") {
+		t.Errorf("stderr = %q, want missing-codegraph diagnostic", stderr.String())
 	}
 }
 

@@ -27,6 +27,7 @@ TARGET_VERSION="${MILLIWAYS_VERSION:-latest}"
 RELEASE_BASE_URL="${MILLIWAYS_RELEASE_BASE_URL:-}"
 CHECK_ONLY="${UPGRADE_CHECK:-0}"
 YES="${UPGRADE_YES:-0}"
+NATIVE_UPGRADED=0
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 if [ -t 1 ]; then
@@ -85,6 +86,18 @@ package_version() {
   esac
 }
 
+repair_shadowing_user_bins() {
+  [ "$PLATFORM" = "linux" ] || return 0
+  [ "$PREFIX" = "$HOME/.local" ] || return 0
+  for bin in milliways milliwaysd milliwaysctl; do
+    [ -x "/usr/bin/$bin" ] || continue
+    if [ -e "$BIN_DIR/$bin" ] && [ "$BIN_DIR/$bin" != "/usr/bin/$bin" ]; then
+      ln -sf "/usr/bin/$bin" "$BIN_DIR/$bin"
+      ok "Pointed $BIN_DIR/$bin → /usr/bin/$bin"
+    fi
+  done
+}
+
 # ── Detect whether milliways was installed by a package manager ──────────────
 # Returns the package manager name if milliways is a managed package, else "".
 detect_managed_install() {
@@ -119,6 +132,8 @@ upgrade_native_pkg() {
       if curl -sSfL "$url" -o "$tmp/$pkg"; then
         if dpkg -i "$tmp/$pkg" 2>/dev/null || sudo dpkg -i "$tmp/$pkg"; then
           ok "Upgraded via dpkg — binaries at /usr/bin"
+          NATIVE_UPGRADED=1
+          repair_shadowing_user_bins
           rm -rf "$tmp"; return 0
         fi
       fi
@@ -134,6 +149,8 @@ upgrade_native_pkg() {
       if curl -sSfL "$url" -o "$tmp/$pkg"; then
         if rpm -U "$tmp/$pkg" 2>/dev/null || sudo rpm -U "$tmp/$pkg"; then
           ok "Upgraded via rpm — binaries at /usr/bin"
+          NATIVE_UPGRADED=1
+          repair_shadowing_user_bins
           rm -rf "$tmp"; return 0
         fi
       fi
@@ -150,6 +167,8 @@ upgrade_native_pkg() {
         if pacman -U --noconfirm "$tmp/$pkg" 2>/dev/null \
            || sudo pacman -U --noconfirm "$tmp/$pkg"; then
           ok "Upgraded via pacman — binaries at /usr/bin"
+          NATIVE_UPGRADED=1
+          repair_shadowing_user_bins
           rm -rf "$tmp"; return 0
         fi
       fi
@@ -223,6 +242,42 @@ upgrade_macos_app() {
     ok "Upgraded MilliWays.app → /Applications"
   else
     warn "MilliWays.app not available in release ${version} — app not upgraded"
+  fi
+  rm -rf "$tmp"
+}
+
+upgrade_linux_desktop_app() {
+  [ "${SKIP_TERM:-0}" = "1" ] && return 0
+  [ "$PLATFORM" = "linux" ] || return 0
+  [ "$GOARCH" = "amd64" ] || { warn "Linux desktop app is amd64-only today"; return 0; }
+
+  # Native packages carry the desktop app files when the release has them.
+  [ "$NATIVE_UPGRADED" = "1" ] && [ -x /usr/bin/milliways-term ] && return 0
+
+  local version="$1"
+  local base_url="${RELEASE_BASE_URL:-https://github.com/${REPO}/releases/download/${version}}"
+  local url="${base_url}/MilliWays-linux-amd64.tar.gz"
+  local tmp; tmp="$(mktemp -d)"
+  info "Downloading MilliWays Linux desktop app ${version}..."
+  if curl -sSfL "$url" -o "$tmp/MilliWays-linux-amd64.tar.gz" 2>/dev/null; then
+    tar -xzf "$tmp/MilliWays-linux-amd64.tar.gz" -C "$tmp"
+    local root="$tmp/MilliWays-linux-amd64"
+    install -Dm755 "$root/bin/milliways-term" "$BIN_DIR/milliways-term"
+    install -Dm755 "$root/bin/wezterm-mux-server" "$BIN_DIR/wezterm-mux-server"
+    sed -e "s|^Exec=.*|Exec=$BIN_DIR/milliways-term|" \
+        -e "s|^TryExec=.*|TryExec=$BIN_DIR/milliways-term|" \
+        "$root/share/applications/dev.milliways.MilliWays.desktop" > "$tmp/dev.milliways.MilliWays.desktop"
+    install -Dm644 "$tmp/dev.milliways.MilliWays.desktop" \
+      "$HOME/.local/share/applications/dev.milliways.MilliWays.desktop"
+    install -Dm644 "$root/share/icons/hicolor/scalable/apps/dev.milliways.MilliWays.svg" \
+      "$HOME/.local/share/icons/hicolor/scalable/apps/dev.milliways.MilliWays.svg"
+    command -v update-desktop-database >/dev/null 2>&1 \
+      && update-desktop-database "$HOME/.local/share/applications" 2>/dev/null || true
+    command -v gtk-update-icon-cache >/dev/null 2>&1 \
+      && gtk-update-icon-cache -q "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+    ok "Upgraded MilliWays desktop app → ~/.local/share/applications"
+  else
+    warn "MilliWays Linux desktop app not available in release ${version}"
   fi
   rm -rf "$tmp"
 }
@@ -330,7 +385,18 @@ fi
 
 # macOS: always try to upgrade the app bundle regardless of install tier.
 upgrade_macos_app "$TARGET_VERSION"
+upgrade_linux_desktop_app "$TARGET_VERSION"
 
 printf '\n'
+mw_bin="$(command -v milliways 2>/dev/null || echo "$BIN_DIR/milliways")"
+got="$("$mw_bin" --version 2>/dev/null | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*' | head -1 || true)"
+got_norm="${got#v}"
+want_norm="${TARGET_VERSION#v}"
+if [ -z "$got" ]; then
+  fatal "Upgrade verification failed: $mw_bin did not report a version"
+fi
+if [ "$got_norm" != "$want_norm" ]; then
+  fatal "Upgrade verification failed: command resolves to $got, expected ${TARGET_VERSION}. Check PATH for stale milliways binaries."
+fi
 ok "milliways upgraded to ${TARGET_VERSION}"
 printf '  Run %bmilliways --version%b to confirm.\n\n' "$BOLD" "$NC"

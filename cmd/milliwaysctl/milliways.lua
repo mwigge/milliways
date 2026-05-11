@@ -85,11 +85,44 @@ config.mouse_bindings = {
   },
 }
 
--- Ensure ~/.local/bin is in PATH so wezterm can find milliways and milliwaysctl.
+-- Resolve MilliWays binaries. Linux package installs place binaries in /usr/bin,
+-- while binary/source installs use ~/.local/bin. Prefer the managed package
+-- path when present so stale user-local binaries cannot shadow package upgrades.
 local local_bin = (os.getenv('HOME') or '') .. '/.local/bin'
 local path_env  = os.getenv('PATH') or '/usr/bin:/bin:/usr/sbin:/sbin'
+
+local function file_exists(path)
+  local f = io.open(path, 'r')
+  if f then
+    f:close()
+    return true
+  end
+  return false
+end
+
+local function resolve_milliways_bin(name)
+  local override = os.getenv('MILLIWAYS_BIN_DIR')
+  if override and override ~= '' and file_exists(override .. '/' .. name) then
+    return override .. '/' .. name
+  end
+  if file_exists('/usr/bin/' .. name) then
+    return '/usr/bin/' .. name
+  end
+  if file_exists(local_bin .. '/' .. name) then
+    return local_bin .. '/' .. name
+  end
+  return name
+end
+
+local mw_bin      = resolve_milliways_bin('milliways')
+local mwctl_bin   = resolve_milliways_bin('milliwaysctl')
+local daemon_bin  = resolve_milliways_bin('milliwaysd')
+
+if not path_env:find('/usr/bin', 1, true) then
+  path_env = '/usr/bin:' .. path_env
+end
 if not path_env:find(local_bin, 1, true) then
-  path_env = local_bin .. ':' .. path_env
+  path_env = path_env .. ':' .. local_bin
 end
 config.set_environment_variables = { PATH = path_env }
 
@@ -99,7 +132,7 @@ config.set_environment_variables = { PATH = path_env }
 -- modeCockpit (which would have recursively re-execed milliways-term).
 --
 -- For a plain shell escape, use Leader + z (binds `os.getenv('SHELL')`).
-config.default_prog = { local_bin .. '/milliways' }
+config.default_prog = { mw_bin }
 
 -- ── State paths ──────────────────────────────────────────────────────────────
 
@@ -255,7 +288,7 @@ config.keys = {
     action = act.SplitPane {
       direction = 'Down',
       size = { Percent = 40 },
-      command = { args = { 'milliwaysctl', 'open', '--agent', 'claude' } },
+      command = { args = { mwctl_bin, 'open', '--agent', 'claude' } },
     },
   },
   -- Leader + z  →  plain shell tab (escape hatch)
@@ -266,31 +299,31 @@ config.keys = {
   -- Leader + 1..7  →  switch active runner
   {
     key = '1', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { 'milliwaysctl', 'open', '--agent', 'claude' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'claude' } },
   },
   {
     key = '2', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { 'milliwaysctl', 'open', '--agent', 'codex' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'codex' } },
   },
   {
     key = '3', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { 'milliwaysctl', 'open', '--agent', 'copilot' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'copilot' } },
   },
   {
     key = '4', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { 'milliwaysctl', 'open', '--agent', 'minimax' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'minimax' } },
   },
   {
     key = '5', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { 'milliwaysctl', 'open', '--agent', 'gemini' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'gemini' } },
   },
   {
     key = '6', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { 'milliwaysctl', 'open', '--agent', 'local' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'local' } },
   },
   {
     key = '7', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { 'milliwaysctl', 'open', '--agent', 'pool' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'pool' } },
   },
   -- Leader + r  →  resume modal after sleep/wake
   {
@@ -325,7 +358,7 @@ config.keys = {
             -- line == '' means Enter with no text (confirmed), nil means Esc
             if line ~= nil and cur ~= '' then
               win:perform_action(
-                act.SpawnCommandInNewTab { args = { 'milliwaysctl', 'open', '--agent', cur } },
+                act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', cur } },
                 pane
               )
             end
@@ -338,12 +371,12 @@ config.keys = {
   -- Leader + k  →  context overlay
   {
     key = 'k', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { 'milliwaysctl', 'context', '--all' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'context', '--all' } },
   },
   -- Leader + w  →  observability render overlay
   {
     key = 'w', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { 'milliwaysctl', 'observe-render' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'observe-render' } },
   },
   -- Leader + /  →  milliwaysctl command palette
   --
@@ -400,7 +433,7 @@ local ctl_choices = {
 -- and spawns it in a new tab. Returns nil if argv is empty.
 function dispatch_ctl_args(window, pane, argv)
   if #argv == 0 then return end
-  local args = { 'milliwaysctl' }
+  local args = { mwctl_bin }
   for _, w in ipairs(argv) do
     table.insert(args, w)
   end
@@ -511,9 +544,9 @@ wezterm.on('gui-startup', function(cmd)
   if f then
     f:close()
   else
-    wezterm.background_child_process({ local_bin .. '/milliwaysd' })
+    wezterm.background_child_process({ daemon_bin })
   end
-  wezterm.background_child_process({ local_bin .. '/milliwaysctl', 'observe', '--watch' })
+  wezterm.background_child_process({ mwctl_bin, 'observe', '--watch' })
 end)
 
 return config

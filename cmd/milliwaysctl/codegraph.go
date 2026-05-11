@@ -71,7 +71,7 @@ func printCodegraphUsage(w io.Writer) {
 //  5. exec.LookPath("codegraph")
 func findCodegraphBinary() (string, bool) {
 	if v := os.Getenv("MILLIWAYS_CODEGRAPH_MCP_CMD"); v != "" {
-		return v, true
+		return v, isExecutablePath(v)
 	}
 	home, _ := os.UserHomeDir()
 	if home != "" {
