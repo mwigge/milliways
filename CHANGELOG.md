@@ -4,6 +4,29 @@ All notable changes to milliways. Follows [Keep a Changelog](https://keepachange
 
 ---
 
+## [1.0.9] — 2026-05-11
+
+### Added
+- **Panel deck** — on WezTerm startup, milliways now opens a home-hero-dashboard layout: navigator pane on the left, per-provider content panes alongside; falls back to single-pane chat when not in WezTerm.
+- **Side panels** — TUI side-panel framework (SPS-1 through SPS-9): cost, routing, system, snippets, OpenSpec, diff/change-set, multi-model compare panels; toggled with `Ctrl+O`, cycled with `h`/`l` or `←`/`→`.
+- **/upgrade command** — `milliwaysctl upgrade` and `/upgrade` slash command; shell-level upgrade for deb, rpm, pacman, raw binary, and MilliWays.app tiers.
+- **OTLP HTTP exporter** — when `MILLIWAYS_OTEL_ENDPOINT` is set, traces and metrics are exported via `otlptracehttp`/`otlpmetrichttp` instead of stdout.
+- **Local model catalog** — `milliwaysctl local setup-model`, `download-model`, `list-models`, `install-server`, `install-swap`; Devstral-Small-2505 as default; HuggingFace mirror and HF_TOKEN support.
+- **Code review pipeline** — `ReviewRunner`: Go-orchestrated multi-model code review with git integration, CodeGraph injection, MemPalace transport, edit format, and lint.
+- **Parallel panels** — `/parallel` dispatches a prompt to multiple providers simultaneously; live comparison view with consensus rendering.
+- **Security scanner** — OSV-scanner integration behind `/security` toggle; schema V7 `SecurityStore`.
+- **Briefing block** — handed-off context rendered inline on runner switch.
+
+### Changed
+- **Version fallback** — local (non-release) builds now report `dev` instead of a stale hardcoded version number.
+- **WezTerm config** — updated provider abbreviations (Copilot → `Cp`, Gemini → `G`, Pool → `P`), refreshed per-client colour themes, `gui-startup` maximises the initial window.
+
+### Fixed
+- **Linux package version stamp** — the v1.0.8 Linux package incorrectly shipped a v1.0.6 binary; the build pipeline is now verified to stamp `$VERSION` via ldflags on every release.
+- Various chat stream, terminal editing, pool, daemon, and local-model fixes (see commits v1.0.5–v1.0.8).
+
+---
+
 ## [1.0.4] — 2026-05-09
 
 ### Added
