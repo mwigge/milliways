@@ -16,9 +16,11 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -49,11 +51,12 @@ type AgentHandle int64
 // AgentSession is one open agent. Bytes arrive on input via agent.send;
 // runner-emitted bytes are pushed to stream via Stream.Push().
 type AgentSession struct {
-	Handle  AgentHandle
-	AgentID string
-	stream  *Stream // first subscriber stream; nil until agent.stream is called
-	streams map[int64]*Stream
-	server  *Server
+	Handle    AgentHandle
+	AgentID   string
+	SessionID string
+	stream    *Stream // first subscriber stream; nil until agent.stream is called
+	streams   map[int64]*Stream
+	server    *Server
 
 	mu              sync.Mutex
 	ctx             context.Context
@@ -79,28 +82,30 @@ type AgentSession struct {
 	// nil means no hook is installed.
 	onTurnComplete func(finalText string)
 
-	stateMu      sync.Mutex
-	status       string
-	promptCount  int
-	turnCount    int
-	inputTokens  int
-	outputTokens int
-	costUSD      float64
-	currentTrace string
-	lastTrace    string
-	startedAt    time.Time
-	firstTokenAt time.Time
-	latencyMS    float64
-	ttftMS       float64
-	tokenRate    float64
-	errorCount   int
-	model        string
-	modelSource  string
-	lastThinking string
-	lastError    string
-	lastPrompt   string
-	lastUpdated  time.Time
-	buffer       []DeckBlock
+	stateMu        sync.Mutex
+	status         string
+	promptCount    int
+	turnCount      int
+	inputTokens    int
+	outputTokens   int
+	costUSD        float64
+	currentTrace   string
+	currentTurnID  string
+	turnSpanClosed bool
+	lastTrace      string
+	startedAt      time.Time
+	firstTokenAt   time.Time
+	latencyMS      float64
+	ttftMS         float64
+	tokenRate      float64
+	errorCount     int
+	model          string
+	modelSource    string
+	lastThinking   string
+	lastError      string
+	lastPrompt     string
+	lastUpdated    time.Time
+	buffer         []DeckBlock
 }
 
 // responseBufCap is the per-session response-buffer capacity. 64 KiB is
@@ -120,29 +125,31 @@ type DeckBlock struct {
 
 // DeckSessionSnapshot is the daemon-backed status for one open agent session.
 type DeckSessionSnapshot struct {
-	AgentID      string      `json:"agent_id"`
-	Handle       int64       `json:"handle"`
-	Status       string      `json:"status"`
-	PromptCount  int         `json:"prompt_count"`
-	TurnCount    int         `json:"turn_count"`
-	InputTokens  int         `json:"input_tokens"`
-	OutputTokens int         `json:"output_tokens"`
-	TotalTokens  int         `json:"total_tokens"`
-	CostUSD      float64     `json:"cost_usd"`
-	CurrentTrace string      `json:"current_trace,omitempty"`
-	LastTrace    string      `json:"last_trace,omitempty"`
-	LatencyMS    float64     `json:"latency_ms,omitempty"`
-	TTFTMS       float64     `json:"ttft_ms,omitempty"`
-	TokenRate    float64     `json:"token_rate,omitempty"`
-	ErrorCount   int         `json:"error_count,omitempty"`
-	QueueDepth   int         `json:"queue_depth,omitempty"`
-	Model        string      `json:"model,omitempty"`
-	ModelSource  string      `json:"model_source,omitempty"`
-	LastThinking string      `json:"last_thinking,omitempty"`
-	LastError    string      `json:"last_error,omitempty"`
-	LastPrompt   string      `json:"last_prompt,omitempty"`
-	LastUpdated  time.Time   `json:"last_updated,omitempty"`
-	Buffer       []DeckBlock `json:"buffer,omitempty"`
+	AgentID       string      `json:"agent_id"`
+	Handle        int64       `json:"handle"`
+	SessionID     string      `json:"session_id,omitempty"`
+	Status        string      `json:"status"`
+	PromptCount   int         `json:"prompt_count"`
+	TurnCount     int         `json:"turn_count"`
+	InputTokens   int         `json:"input_tokens"`
+	OutputTokens  int         `json:"output_tokens"`
+	TotalTokens   int         `json:"total_tokens"`
+	CostUSD       float64     `json:"cost_usd"`
+	CurrentTrace  string      `json:"current_trace,omitempty"`
+	CurrentTurnID string      `json:"current_turn_id,omitempty"`
+	LastTrace     string      `json:"last_trace,omitempty"`
+	LatencyMS     float64     `json:"latency_ms,omitempty"`
+	TTFTMS        float64     `json:"ttft_ms,omitempty"`
+	TokenRate     float64     `json:"token_rate,omitempty"`
+	ErrorCount    int         `json:"error_count,omitempty"`
+	QueueDepth    int         `json:"queue_depth,omitempty"`
+	Model         string      `json:"model,omitempty"`
+	ModelSource   string      `json:"model_source,omitempty"`
+	LastThinking  string      `json:"last_thinking,omitempty"`
+	LastError     string      `json:"last_error,omitempty"`
+	LastPrompt    string      `json:"last_prompt,omitempty"`
+	LastUpdated   time.Time   `json:"last_updated,omitempty"`
+	Buffer        []DeckBlock `json:"buffer,omitempty"`
 }
 
 // DeckSnapshot is the daemon-backed deck state returned by deck.snapshot.
@@ -199,16 +206,7 @@ func (p *recordingPusher) Push(event any) {
 		}
 		p.sess.recordResponse(bs)
 		p.sess.recordData(string(bs))
-		// Append to per-agent history asynchronously if we have a server/state dir.
-		if p.sess.server != nil {
-			stateDir := filepath.Dir(p.sess.server.socket)
-			payload := map[string]any{"t": "data", "text": string(bs)}
-			go func(agent string, dir string, pl any) {
-				if err := history.AppendAgentHistory(dir, agent, pl, history.DefaultMaxLines); err != nil {
-					slog.Debug("append history", "err", err, "agent", agent)
-				}
-			}(p.sess.AgentID, stateDir, payload)
-		}
+		p.sess.appendHistory(map[string]any{"t": "data", "text": string(bs)})
 	case "chunk_end", "end", "err":
 		payload := make(map[string]any)
 		payload["t"] = t
@@ -220,6 +218,9 @@ func (p *recordingPusher) Push(event any) {
 		}
 		if v, ok := m["output_tokens"]; ok {
 			payload["output_tokens"] = v
+		}
+		if v, ok := m["total_tokens"]; ok {
+			payload["total_tokens"] = v
 		}
 		if v, ok := m["msg"]; ok {
 			payload["msg"] = v
@@ -233,14 +234,7 @@ func (p *recordingPusher) Push(event any) {
 		case "end":
 			p.sess.recordIdle()
 		}
-		if p.sess.server != nil {
-			stateDir := filepath.Dir(p.sess.server.socket)
-			go func(agent string, dir string, pl any) {
-				if err := history.AppendAgentHistory(dir, agent, pl, history.DefaultMaxLines); err != nil {
-					slog.Debug("append history", "err", err, "agent", agent)
-				}
-			}(p.sess.AgentID, stateDir, payload)
-		}
+		p.sess.appendHistory(payload)
 		// Fire onTurnComplete once per completed turn when the runner signals "end".
 		if t == "end" {
 			if hook := p.sess.onTurnComplete; hook != nil {
@@ -336,6 +330,8 @@ func (r *AgentRegistry) Open(agentID string) (*AgentSession, error) {
 	sess := &AgentSession{
 		Handle:      handle,
 		AgentID:     agentID,
+		SessionID:   fmt.Sprintf("%s-%d", agentID, handle),
+		server:      r.server,
 		ctx:         ctx,
 		cancel:      cancel,
 		input:       make(chan []byte, 16),
@@ -615,6 +611,8 @@ func (s *AgentSession) recordPrompt(text string) {
 	s.status = "thinking"
 	s.promptCount++
 	s.currentTrace = observability.NewTraceID()
+	s.currentTurnID = fmt.Sprintf("%s-%d", s.SessionID, s.promptCount)
+	s.turnSpanClosed = false
 	s.startedAt = now
 	s.firstTokenAt = time.Time{}
 	s.latencyMS = 0
@@ -624,6 +622,92 @@ func (s *AgentSession) recordPrompt(text string) {
 	s.lastError = ""
 	s.lastUpdated = now
 	s.appendDeckBlockLocked("prompt", text)
+}
+
+func (s *AgentSession) appendHistory(payload map[string]any) {
+	if s == nil || s.server == nil || s.server.socket == "" || payload == nil {
+		return
+	}
+	payload = sanitizeHistoryPayload(payload)
+	s.stateMu.Lock()
+	payload["agent_id"] = s.AgentID
+	payload["session_id"] = s.SessionID
+	payload["turn_id"] = s.currentTurnID
+	payload["trace_id"] = s.currentTrace
+	payload["model"] = s.model
+	payload["model_source"] = s.modelSource
+	s.stateMu.Unlock()
+
+	stateDir := filepath.Dir(s.server.socket)
+	go func(agent string, dir string, pl any) {
+		if err := history.AppendAgentHistory(dir, agent, pl, history.DefaultMaxLines); err != nil {
+			slog.Debug("append history", "err", err, "agent", agent)
+		}
+	}(s.AgentID, stateDir, payload)
+}
+
+func sanitizeHistoryPayload(payload map[string]any) map[string]any {
+	out := make(map[string]any, len(payload)+4)
+	for k, v := range payload {
+		out[k] = v
+	}
+	if historyRawContentEnabled() {
+		return out
+	}
+	eventType, _ := out["t"].(string)
+	switch eventType {
+	case "prompt", "context":
+		text, ok := out["text"].(string)
+		if !ok || text == "" {
+			return out
+		}
+		sum := sha256.Sum256([]byte(text))
+		delete(out, "text")
+		out["text_redacted"] = true
+		out["text_bytes"] = len(text)
+		out["text_sha256"] = fmt.Sprintf("%x", sum[:])
+	}
+	return out
+}
+
+func historyRawContentEnabled() bool {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv("MILLIWAYS_HISTORY_RAW_CONTENT")))
+	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func (s *AgentSession) pushTurnSpanLocked(status, errMsg string, inputTokens, outputTokens int, costUSD float64) {
+	if s == nil || s.server == nil || s.currentTrace == "" || s.turnSpanClosed {
+		return
+	}
+	s.turnSpanClosed = true
+	durationMS := 0.0
+	if !s.startedAt.IsZero() {
+		durationMS = float64(time.Since(s.startedAt).Microseconds()) / 1000.0
+	}
+	attrs := map[string]any{
+		"agent_id":      s.AgentID,
+		"session_id":    s.SessionID,
+		"turn_id":       s.currentTurnID,
+		"input_tokens":  inputTokens,
+		"output_tokens": outputTokens,
+		"total_tokens":  inputTokens + outputTokens,
+		"cost_usd":      costUSD,
+	}
+	if s.model != "" {
+		attrs["model"] = s.model
+	}
+	if errMsg != "" {
+		attrs["error"] = errMsg
+	}
+	s.server.spans.Push(observability.Span{
+		TraceID:    s.currentTrace,
+		SpanID:     observability.NewSpanID(),
+		Name:       "agent.turn",
+		StartTS:    s.startedAt,
+		DurationMS: durationMS,
+		Status:     status,
+		Attributes: attrs,
+	})
 }
 
 func (s *AgentSession) recordThinking(text string) {
@@ -677,6 +761,7 @@ func (s *AgentSession) recordChunkEnd(inputTokens, outputTokens int, costUSD flo
 		s.lastTrace = s.currentTrace
 	}
 	s.lastUpdated = now
+	s.pushTurnSpanLocked("ok", "", inputTokens, outputTokens, costUSD)
 }
 
 func (s *AgentSession) recordError(msg string) {
@@ -688,6 +773,7 @@ func (s *AgentSession) recordError(msg string) {
 	s.lastError = msg
 	s.lastUpdated = time.Now()
 	s.appendDeckBlockLocked("error", msg)
+	s.pushTurnSpanLocked("error", msg, 0, 0, 0)
 }
 
 func (s *AgentSession) recordIdle() {
@@ -732,29 +818,31 @@ func (s *AgentSession) deckSnapshot() DeckSessionSnapshot {
 	}
 	buffer := append([]DeckBlock(nil), s.buffer...)
 	return DeckSessionSnapshot{
-		AgentID:      s.AgentID,
-		Handle:       int64(s.Handle),
-		Status:       status,
-		PromptCount:  s.promptCount,
-		TurnCount:    s.turnCount,
-		InputTokens:  s.inputTokens,
-		OutputTokens: s.outputTokens,
-		TotalTokens:  s.inputTokens + s.outputTokens,
-		CostUSD:      s.costUSD,
-		CurrentTrace: s.currentTrace,
-		LastTrace:    s.lastTrace,
-		LatencyMS:    s.latencyMS,
-		TTFTMS:       s.ttftMS,
-		TokenRate:    s.tokenRate,
-		ErrorCount:   s.errorCount,
-		QueueDepth:   len(s.input),
-		Model:        s.model,
-		ModelSource:  s.modelSource,
-		LastThinking: s.lastThinking,
-		LastError:    s.lastError,
-		LastPrompt:   s.lastPrompt,
-		LastUpdated:  s.lastUpdated,
-		Buffer:       buffer,
+		AgentID:       s.AgentID,
+		Handle:        int64(s.Handle),
+		SessionID:     s.SessionID,
+		Status:        status,
+		PromptCount:   s.promptCount,
+		TurnCount:     s.turnCount,
+		InputTokens:   s.inputTokens,
+		OutputTokens:  s.outputTokens,
+		TotalTokens:   s.inputTokens + s.outputTokens,
+		CostUSD:       s.costUSD,
+		CurrentTrace:  s.currentTrace,
+		CurrentTurnID: s.currentTurnID,
+		LastTrace:     s.lastTrace,
+		LatencyMS:     s.latencyMS,
+		TTFTMS:        s.ttftMS,
+		TokenRate:     s.tokenRate,
+		ErrorCount:    s.errorCount,
+		QueueDepth:    len(s.input),
+		Model:         s.model,
+		ModelSource:   s.modelSource,
+		LastThinking:  s.lastThinking,
+		LastError:     s.lastError,
+		LastPrompt:    s.lastPrompt,
+		LastUpdated:   s.lastUpdated,
+		Buffer:        buffer,
 	}
 }
 

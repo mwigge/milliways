@@ -4,9 +4,11 @@
 
 Milliways is an AI terminal for macOS and Linux — the restaurant at the end of the universe where Claude, Codex, Pool, Gemini, Copilot, and MiniMax all show up for dinner.
 
-Open a tab and you're talking to an AI agent. Switch runners mid-session without losing context. Hit a quota limit and milliways rotates to the next one automatically, briefing it on exactly where things left off. Don't Panic — the full transcript is always on disk.
+Open a tab and you're talking to a runner. Switch runners mid-session with a structured briefing from the active turn log. Hit a quota limit and milliways rotates to the next one automatically. Daemon event history, metrics, and project memory are persisted; the live REPL turn log is kept in memory until it is compacted, handed off, or written through the daemon.
 
 It wraps the CLIs and APIs you already have set up. It does not run models or manage credentials. Bring your own towel.
+
+Architecture update: [memory, persistence, and observability](docs/milliways-blog-2.md).
 
 ---
 
@@ -20,7 +22,7 @@ curl -sSf https://raw.githubusercontent.com/mwigge/milliways/master/install.sh |
 
 Auto-detects your distro and installs the right package. On macOS also installs **MilliWays.app** to `/Applications`.
 
-The installer also sets up all optional features in one shot: MemPalace (project memory), python-pptx (`/pptx`), CodeGraph (code intelligence), and the agent toolkit (20+ agents + 50+ skills). Verify everything installed correctly with:
+The installer attempts to set up optional features in one shot: MemPalace (project memory), python-pptx (`/pptx`), CodeGraph (code intelligence), and the agent toolkit (20+ agents + 50+ skills). Native packages can also auto-detect the app-managed tool locations under `/usr/share/milliways`. Verify the actual local state with:
 
 ```bash
 milliwaysctl check
@@ -125,6 +127,8 @@ Or use the slash command inside the REPL:
 ~/.local/state/milliways/
   sock                    # daemon Unix socket (milliwaysd creates this)
   metrics.db              # SQLite metrics store (OTel + cost tracking)
+  observe.cur             # latest compact UI/observability snapshot
+  history/<runner>.ndjson # bounded daemon event history per runner
 
 ~/.local/share/milliways/models/   # (after /install-local-server)
   *.gguf                  # downloaded model files
@@ -136,10 +140,16 @@ Or use the slash command inside the REPL:
 
 ## MilliWays.app — Native Terminal (macOS)
 
-MilliWays.app is a native macOS terminal built on a patched wezterm. Every new tab opens milliways instead of a plain shell. The status bar shows your active agent, working directory, and a live wake badge when the laptop resumes from sleep.
+MilliWays.app is a native macOS terminal built on a patched wezterm. Every new window opens a split workspace: the color-coded client navigator sits in the upper-left pane, the compact observability cockpit sits in the lower-left pane, and the main prompt stays on the right. The title bar is kept as `MilliWays:<current path>`.
 
 ```
-[⚡ woke 3m ago] [≈≈ MW v1.0.1] [~/project] [●claude] [1:C 2:X 3:G 4:M 5:L]
+┌ clients ───────────┐┌ prompt ───────────────────────────────────────┐
+│ ● claude   ready   ││ claude ▶                                      │
+│ ● minimax  active  ││                                                │
+├ observability ─────┤│                                                │
+│ span  ok  0.5ms    ││                                                │
+│ tok   1.2k/340     ││                                                │
+└────────────────────┘└────────────────────────────────────────────────┘
 ```
 
 ### Leader keybindings (`Ctrl+Space`)
@@ -147,7 +157,7 @@ MilliWays.app is a native macOS terminal built on a patched wezterm. Every new t
 | Key | Action |
 |-----|--------|
 | `a` | Open milliways pane split below |
-| `1` / `2` / `3` / `4` | Switch to claude / codex / copilot / minimax |
+| `1` … `7` | Switch to the corresponding runner |
 | `r` | Resume modal — shows wake summary, re-opens last agent |
 | `k` | Context overlay |
 | `w` | Observability render overlay |
@@ -155,7 +165,7 @@ MilliWays.app is a native macOS terminal built on a patched wezterm. Every new t
 
 ### Sleep/wake awareness
 
-When the laptop wakes from sleep, the status bar shows an orange **⚡ woke Xm ago** badge for 5 minutes. Press `Ctrl+Space r` to see a resume modal and optionally reopen the last agent session.
+When the laptop wakes from sleep, the status bar shows an orange **woke Xm ago** badge for 5 minutes. Press `Ctrl+Space r` to see a resume modal and optionally reopen the last runner session.
 
 ---
 
@@ -177,7 +187,18 @@ milliways v1.0.1
   ($0.02 · 1.2k→0.8k tok)
 ```
 
-Sessions are auto-saved per working directory and restored on the next `milliways` launch. Context fragments expand inline before dispatch: `@file`, `@git`, `@branch`, `@shell`.
+Session state is split deliberately:
+
+| State | Persistence |
+|---|---|
+| Current REPL turn log | In memory for the active `milliways` process |
+| `/history` daemon events | Persisted per runner in `~/.local/state/milliways/history/*.ndjson` with a bounded retention window |
+| Metrics, cost, latency, errors | Persisted in `~/.local/state/milliways/metrics.db` |
+| Login, model, path, and local settings | Persisted in `~/.config/milliways/local.env` |
+| Project memory and takeover handoff | Persisted through MemPalace when configured |
+| Legacy/headless named sessions | Persisted through the pantry/checkpoint path |
+
+Context fragments expand inline before dispatch: `@file`, `@git`, `@branch`, `@shell`.
 
 ### Commands
 
@@ -199,7 +220,7 @@ Tab completion is available for all commands. Type `/` and press Tab to see the 
 | Command | Description |
 |---------|-------------|
 | `/ring [r1,r2,...]` | Show or set the auto-rotation ring; `/ring off` disables |
-| `/history` | Show the current turn log |
+| `/history` | Show the current in-memory turn log and recent daemon history |
 | `/cost` | Token usage per runner (last hour) |
 | `/retry` | Re-send the last user prompt |
 | `/undo` | Drop the last user + assistant turn pair |
@@ -523,7 +544,7 @@ Kitchen: claude  Tier: learned  Risk: high
 
 ## Runner switching and takeover
 
-Type `/<runner>` or `/switch <runner>` to move to a different runner mid-session. Milliways builds a structured briefing from the recent turn log and injects it as the new runner's first prompt, so it picks up exactly where the previous one left off.
+Type `/<runner>` or `/switch <runner>` to move to a different runner mid-session. In the same REPL process, milliways builds a structured briefing from the recent turn log and injects it as the new runner's first prompt, so it picks up where the previous one left off. Cross-pane takeover uses MemPalace handoff when project memory is configured; without it, the switch still works but only has the context available in the current process.
 
 ```
 [briefing from claude → codex]
@@ -591,6 +612,20 @@ The window title shows **cumulative session cost** rather than per-response cost
 ---
 
 ## Observability
+
+### App cockpit
+
+MilliWays.app keeps the operational view visible in the lower-left pane while the right pane stays reserved for the prompt and streamed output. The cockpit is intentionally compact and refreshes in place:
+
+| Signal | Source |
+|---|---|
+| Latest span | `observability.subscribe` |
+| Tokens in/out | daemon status and quota snapshots |
+| Cost | persisted runner metrics |
+| Time to limit | quota burn rate when a quota cap is configured |
+| Latency | recent span durations |
+
+If no quota cap or burn rate exists yet, time-to-limit is shown as not available rather than guessed.
 
 ### Live metrics dashboard
 
@@ -685,7 +720,7 @@ Available metrics: `tokens_in`, `tokens_out`, `cost_usd`, `error_count`, `dispat
 ## Project memory (MemPalace + CodeGraph)
 
 The installer provisions fixed tool locations under the install share directory:
-`/usr/share/milliways` for native packages, or `~/.local/share/milliways` for the fallback one-liner install. MemPalace data stays in the user-writable `~/.mempalace` directory.
+`/usr/share/milliways` for native packages, or `~/.local/share/milliways` for the fallback one-liner install. MemPalace data stays in the user-writable `~/.mempalace` directory. Optional feature setup is best-effort during package install; run `milliwaysctl check` after installation to verify the local feature state.
 
 ```bash
 export MILLIWAYS_MEMPALACE_MCP_CMD="/usr/share/milliways/python/bin/python"
@@ -694,7 +729,7 @@ export MILLIWAYS_CODEGRAPH_MCP_CMD="/usr/share/milliways/node/bin/codegraph"
 export MILLIWAYS_CODEGRAPH_MCP_ARGS="serve"
 ```
 
-Those env vars are written automatically for one-liner installs. Native package installs can also be auto-detected from `/usr/share/milliways` without user config.
+Those env vars are written automatically for one-liner installs when feature setup completes. Native package installs can also be auto-detected from `/usr/share/milliways` without user config.
 
 ### Index your repo with CodeGraph
 
@@ -711,7 +746,7 @@ Or use the slash command inside the REPL:
 /repoindex
 ```
 
-The indexed path is written to `MILLIWAYS_CODEGRAPH_WORKSPACE` in `~/.config/milliways/local.env` and picked up automatically on the next prompt.
+The indexed path is written to `MILLIWAYS_CODEGRAPH_WORKSPACE` in `~/.config/milliways/local.env` and picked up automatically on the next prompt. If `.codegraph/` is missing, project startup marks CodeGraph as indexing/unavailable and continues without blocking the prompt.
 
 ---
 

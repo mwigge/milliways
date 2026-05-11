@@ -75,7 +75,7 @@ Navigator mode (parallel panel):
 			defer stop()
 
 			if deckMode {
-				if plainMode || !ansiEnabled() {
+				if plainMode || !term.IsTerminal(int(os.Stdin.Fd())) {
 					return runDeckNavigatorPlain(ctx)
 				}
 				return runDeckNavigator(ctx, rightPaneID)
@@ -497,7 +497,7 @@ func renderDeckNavigator(w int, providers []deckProviderInfo, selected int, acti
 	return renderDeckNavigatorSized(w, 0, providers, selected, active, polled, quotas)
 }
 
-func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected int, active string, polled bool, quotas map[string]parallel.QuotaSummary) string {
+func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected int, active string, polled bool, _ map[string]parallel.QuotaSummary) string {
 	if w <= 0 {
 		w = 36
 	}
@@ -511,11 +511,9 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 	colorEnabled := ansiEnabled()
 	reset := "\033[0m"
 	dim := "\033[2m"
-	red := "\033[31m"
 	if !colorEnabled {
 		reset = ""
 		dim = ""
-		red = ""
 	}
 
 	var b strings.Builder
@@ -529,18 +527,6 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 	}
 	section := func(name string) {
 		ln("%s%s %s %s%s", dim, strings.Repeat("─", 2), name, strings.Repeat("─", max(1, w-len(name)-5)), reset)
-	}
-	truncate := func(s string, maxLen int) string {
-		if maxLen < 1 {
-			return ""
-		}
-		if len(s) <= maxLen {
-			return s
-		}
-		if maxLen == 1 {
-			return "…"
-		}
-		return s[:maxLen-1] + "…"
 	}
 	padPlain := func(s string, width int) string {
 		dw := displayWidth(s)
@@ -579,9 +565,6 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 			prefix = "▶ " + prefix
 		}
 		meta := fmt.Sprintf("turns %d", p.Turns)
-		if usage := formatUsageCompact(usageStats{TotalTokens: p.Tokens, CostUSD: p.CostUSD}); usage != "" {
-			meta += " " + usage
-		}
 		if p.LastError != "" {
 			meta = "err"
 		} else if p.LastThink != "" {
@@ -608,11 +591,9 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 		ln("%s└%s┘%s", edgeColor, strings.Repeat("─", inner), reset)
 	}
 
-	// Keep the lower panels visible and the left deck predictable. Milliways has
-	// seven clients, so render up to seven choices when the pane has room; users
-	// can still switch directly with
-	// /switch, /<client>, /next, and /prev in the main pane.
-	clientBudget := max(3, h-16)
+	// The bottom-left observability pane owns status, quota, cost, and span
+	// details. Keep this pane focused on client selection and active context.
+	clientBudget := max(3, h-6)
 	maxCards := min(7, max(1, clientBudget/3))
 	if maxCards > len(providers) || len(providers) == 0 {
 		maxCards = len(providers)
@@ -644,131 +625,7 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 		card(i == selected, providers[i].ID, clientLine(i, providers[i]))
 	}
 
-	section("Active")
-	if active != "" {
-		provColor := agentColor(active)
-		activeModel := "—"
-		for _, p := range providers {
-			if p.ID == active {
-				if p.Model != "" {
-					activeModel = p.Model
-				}
-				break
-			}
-		}
-		ln("%s● %s%s%s active%s", dim, provColor, active, dim, reset)
-		ln("  %s%s%s", dim, truncate(activeModel, w-4), reset)
-	} else {
-		ln("%sno active client%s", dim, reset)
-	}
-
-	section("Status")
-	if polled {
-		ln("%sdaemon connected%s", dim, reset)
-		ln("%s%d clients%s", dim, len(providers), reset)
-	} else {
-		ln("%sdaemon connecting%s", dim, reset)
-	}
 	ln("%s↑↓ move  ↩ switch  q quit%s", dim, reset)
-
-	section("Observability")
-	// Fleet status bar: aggregate live state + auth + total cost
-	var obsThink, obsStream, obsRun, obsErr, obsOk int
-	var obsTotalCost float64
-	for _, p := range providers {
-		if p.AuthStatus == "ok" {
-			obsOk++
-		}
-		obsTotalCost += p.CostUSD
-		switch fallbackStatus(p.Status) {
-		case deckStatusThinking:
-			obsThink++
-		case deckStatusStreaming:
-			obsStream++
-		case deckStatusRunning:
-			obsRun++
-		case deckStatusError:
-			obsErr++
-		}
-	}
-	fleetParts := make([]string, 0, 4)
-	if obsThink > 0 {
-		fleetParts = append(fleetParts, fmt.Sprintf("%d●", obsThink))
-	}
-	if obsStream > 0 {
-		fleetParts = append(fleetParts, fmt.Sprintf("%d⟳", obsStream))
-	}
-	if obsRun > 0 {
-		fleetParts = append(fleetParts, fmt.Sprintf("%d▶", obsRun))
-	}
-	if obsErr > 0 {
-		fleetParts = append(fleetParts, fmt.Sprintf("%d✗", obsErr))
-	}
-	obsAuthStr := fmt.Sprintf("auth %d/%d", obsOk, len(providers))
-	obsCostStr := formatCost(obsTotalCost)
-	if len(fleetParts) == 0 {
-		ln("%s◌ all idle  │%s  %s%s", dim, obsAuthStr, obsCostStr, reset)
-	} else {
-		ln("%s  │%s  %s%s", strings.Join(fleetParts, " "), obsAuthStr, obsCostStr, reset)
-	}
-	// Per-agent rows: one row per non-idle provider
-	var obsIdleShorts []string
-	var obsAlerts []string
-	for _, p := range providers {
-		st := fallbackStatus(p.Status)
-		if st == deckStatusIdle {
-			obsIdleShorts = append(obsIdleShorts, obsProviderShort(p.ID))
-			continue
-		}
-		glyph, stLabel := obsStatusRow(st, p.LastError)
-		row := obsProviderShort(p.ID) + " " + glyph + stLabel
-		if usage := formatUsageCompact(usageStats{TotalTokens: p.Tokens, CostUSD: p.CostUSD}); usage != "" {
-			row += " " + usage
-		}
-		if p.LatencyMS > 0 {
-			row += " lat" + formatDurationMS(p.LatencyMS)
-		}
-		if p.TTFTMS > 0 {
-			row += " ttft" + formatDurationMS(p.TTFTMS)
-		}
-		if p.TokenRate > 0 {
-			row += fmt.Sprintf(" %.0ft/s", p.TokenRate)
-		}
-		if p.QueueDepth > 0 {
-			row += fmt.Sprintf(" q%d", p.QueueDepth)
-		}
-		if trace := shortTraceID(p.CurrentTrace, p.LastTrace); trace != "" {
-			row += " tr" + trace
-		}
-		ln("  %s", truncate(row, w-4))
-		if st == deckStatusError && p.LastError != "" {
-			obsAlerts = append(obsAlerts, "✗ "+obsProviderShort(p.ID)+" "+truncate(p.LastError, 18))
-		}
-	}
-	// Idle summary
-	if len(obsIdleShorts) > 0 {
-		idleLine := "◌ idle: " + strings.Join(obsIdleShorts, " ")
-		if len(obsIdleShorts) > 4 {
-			idleLine = fmt.Sprintf("◌ idle: %s +%d", strings.Join(obsIdleShorts[:4], " "), len(obsIdleShorts)-4)
-		}
-		ln("%s%s%s", dim, truncate(idleLine, w-2), reset)
-	}
-	// Alert block — only when there are error events
-	if len(obsAlerts) > 0 {
-		alertHdr := "┄ " + strings.Repeat("┄", max(1, w-4))
-		ln("%s%s%s", dim, truncate(alertHdr, w-2), reset)
-		for _, alert := range obsAlerts {
-			ln("%s  %s%s", red, alert, reset)
-		}
-	}
-	// Footer: quota for the active client
-	obsQuotaStr := "quota --"
-	if active != "" {
-		if q, ok := quotas[active]; ok && q.LimitDay > 0 {
-			obsQuotaStr = fmt.Sprintf("quota %d%%", int(q.UsedPct()))
-		}
-	}
-	ln("%s%s%s", dim, obsQuotaStr, reset)
 
 	return b.String()
 }
@@ -867,7 +724,7 @@ func orderDeckProviders(providers []deckProviderInfo) []deckProviderInfo {
 	return ordered
 }
 
-func renderDeckNavigatorPlain(providers []deckProviderInfo, active string, polled bool, quotas map[string]parallel.QuotaSummary) string {
+func renderDeckNavigatorPlain(providers []deckProviderInfo, active string, polled bool, _ map[string]parallel.QuotaSummary) string {
 	var b strings.Builder
 	fmt.Fprintln(&b, "milliways deck")
 	fmt.Fprintln(&b, "Clients")
@@ -894,37 +751,10 @@ func renderDeckNavigatorPlain(providers []deckProviderInfo, active string, polle
 		if model == "" {
 			model = "-"
 		}
-		usage := formatUsageCompact(usageStats{TotalTokens: p.Tokens, CostUSD: p.CostUSD})
-		if usage == "" {
-			usage = "0 tok"
-		}
-		fmt.Fprintf(&b, "  %d %s %s %s model %s turns %d usage %s\n", i+1, p.ID, status, auth, model, p.Turns, usage)
+		fmt.Fprintf(&b, "  %d %s %s %s model %s turns %d\n", i+1, p.ID, status, auth, model, p.Turns)
 	}
-	fmt.Fprintln(&b, "Active")
-	if active == "" {
-		fmt.Fprintln(&b, "  none")
-	} else {
-		fmt.Fprintf(&b, "  %s\n", active)
-	}
-	fmt.Fprintln(&b, "Status")
-	if polled {
-		fmt.Fprintf(&b, "  daemon connected; %d clients\n", len(providers))
-	} else {
-		fmt.Fprintln(&b, "  daemon connecting")
-	}
-	fmt.Fprintln(&b, "Observability")
-	authOK := 0
-	for _, p := range providers {
-		if p.AuthStatus == "ok" {
-			authOK++
-		}
-	}
-	fmt.Fprintf(&b, "  auth %d/%d ok\n", authOK, len(providers))
-	if active != "" {
-		if q, ok := quotas[active]; ok && q.LimitDay > 0 {
-			fmt.Fprintf(&b, "  quota %d%%\n", int(q.UsedPct()))
-		}
-	}
+	fmt.Fprintln(&b, "Controls")
+	fmt.Fprintln(&b, "  up/down move; enter switch; q quit")
 	return b.String()
 }
 

@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mwigge/milliways/internal/history"
 	"github.com/mwigge/milliways/internal/parallel"
 )
 
@@ -37,8 +38,9 @@ type stubMPClient struct {
 	seedSubject string
 	seedObject  string
 
-	mu        sync.Mutex
-	addedKeys []string
+	mu          sync.Mutex
+	addedKeys   []string
+	invalidated []string
 }
 
 func (m *stubMPClient) KGQuery(_ context.Context, subjectPrefix, _ string, _ map[string]string) ([]parallel.KGTriple, error) {
@@ -60,12 +62,55 @@ func (m *stubMPClient) KGAdd(_ context.Context, subject, _, _ string, _ map[stri
 	return nil
 }
 
+func (m *stubMPClient) KGInvalidate(_ context.Context, subject, predicate, object string) error {
+	m.mu.Lock()
+	m.invalidated = append(m.invalidated, subject+"|"+predicate+"|"+object)
+	m.mu.Unlock()
+	return nil
+}
+
 func (m *stubMPClient) addedKeysCopy() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cp := make([]string, len(m.addedKeys))
 	copy(cp, m.addedKeys)
 	return cp
+}
+
+func (m *stubMPClient) invalidatedCopy() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]string, len(m.invalidated))
+	copy(cp, m.invalidated)
+	return cp
+}
+
+type stubCGClient struct {
+	impact []string
+	delay  time.Duration
+}
+
+func (c *stubCGClient) Search(context.Context, string) ([]parallel.CodeGraphResult, error) {
+	return nil, nil
+}
+
+func (c *stubCGClient) Callers(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
+func (c *stubCGClient) Callees(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+
+func (c *stubCGClient) Impact(ctx context.Context, _ string) ([]string, error) {
+	if c.delay > 0 {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(c.delay):
+		}
+	}
+	return c.impact, nil
 }
 
 // agentMethodsHarness spins up a real Server, optionally wires a fake
@@ -419,6 +464,143 @@ func TestAgentSend_MemPalaceBaselineInjectedOnFirstSend(t *testing.T) {
 	// User's prompt must also arrive.
 	if !strings.Contains(combined, prompt) {
 		t.Errorf("expected user prompt in stream; got: %q", combined)
+	}
+}
+
+func TestAgentSend_PersistsPromptHistoryWithTurnMetadata(t *testing.T) {
+	h := newAgentMethodsHarness(t, nil)
+	h.openEcho()
+
+	prompt := "remember this prompt"
+	h.send("agent.send", map[string]any{"handle": h.handle, "bytes": prompt}, 3)
+	_ = h.readResp()
+
+	var entries []map[string]any
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		entries, err = history.ReadAgentHistory(h.stateDir, "_echo", 20)
+		if err == nil {
+			for _, entry := range entries {
+				payload, _ := entry["v"].(map[string]any)
+				if payload["t"] == "prompt" {
+					if _, ok := payload["text"]; ok {
+						t.Fatalf("prompt history stored raw text by default: %#v", payload)
+					}
+					if payload["text_redacted"] != true {
+						t.Fatalf("prompt history missing redaction marker: %#v", payload)
+					}
+					if payload["text_bytes"] != float64(len(prompt)) {
+						t.Fatalf("prompt history text_bytes = %v, want %d: %#v", payload["text_bytes"], len(prompt), payload)
+					}
+					if payload["text_sha256"] == "" {
+						t.Fatalf("prompt history missing text hash: %#v", payload)
+					}
+					if payload["turn_id"] == "" || payload["trace_id"] == "" || payload["session_id"] == "" {
+						t.Fatalf("prompt history missing metadata: %#v", payload)
+					}
+					return
+				}
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("prompt history entry not found: %#v", entries)
+}
+
+func TestAgentSend_PersistsRawPromptHistoryWhenExplicitlyEnabled(t *testing.T) {
+	t.Setenv("MILLIWAYS_HISTORY_RAW_CONTENT", "1")
+	h := newAgentMethodsHarness(t, nil)
+	h.openEcho()
+
+	prompt := "remember this prompt exactly"
+	h.send("agent.send", map[string]any{"handle": h.handle, "bytes": prompt}, 3)
+	_ = h.readResp()
+
+	var entries []map[string]any
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		var err error
+		entries, err = history.ReadAgentHistory(h.stateDir, "_echo", 20)
+		if err == nil {
+			for _, entry := range entries {
+				payload, _ := entry["v"].(map[string]any)
+				if payload["t"] == "prompt" && payload["text"] == prompt {
+					if payload["text_redacted"] == true {
+						t.Fatalf("raw history opt-in still marked text redacted: %#v", payload)
+					}
+					return
+				}
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("raw prompt history entry not found: %#v", entries)
+}
+
+func TestAgentSend_CodeGraphContextInjectedOnNormalSend(t *testing.T) {
+	h := newAgentMethodsHarness(t, nil)
+	h.srv.testCGClient = &stubCGClient{impact: []string{"AuthHandler (internal/server/auth.go:42)"}}
+	h.openEcho()
+
+	prompt := "review internal/server/auth.go"
+	h.send("agent.send", map[string]any{"handle": h.handle, "bytes": prompt}, 3)
+	_ = h.readResp()
+
+	combined := h.readStreamText(400 * time.Millisecond)
+	if !strings.Contains(combined, "[codegraph context: internal/server/auth.go]") {
+		t.Fatalf("expected CodeGraph context in stream; got %q", combined)
+	}
+	if !strings.Contains(combined, prompt) {
+		t.Fatalf("expected user prompt in stream; got %q", combined)
+	}
+}
+
+func TestAgentSend_CodeGraphContextTimeoutDoesNotBlockPrompt(t *testing.T) {
+	t.Setenv("MILLIWAYS_CODEGRAPH_TIMEOUT", "10ms")
+	h := newAgentMethodsHarness(t, nil)
+	h.srv.testCGClient = &stubCGClient{
+		impact: []string{"AuthHandler (internal/server/auth.go:42)"},
+		delay:  200 * time.Millisecond,
+	}
+	h.openEcho()
+
+	prompt := "review internal/server/auth.go"
+	start := time.Now()
+	h.send("agent.send", map[string]any{"handle": h.handle, "bytes": prompt}, 3)
+	_ = h.readResp()
+	elapsed := time.Since(start)
+
+	combined := h.readStreamText(400 * time.Millisecond)
+	if elapsed > 150*time.Millisecond {
+		t.Fatalf("agent.send blocked on slow CodeGraph lookup for %s", elapsed)
+	}
+	if strings.Contains(combined, "[codegraph context:") {
+		t.Fatalf("timed-out CodeGraph context should not be injected; got %q", combined)
+	}
+	if !strings.Contains(combined, prompt) {
+		t.Fatalf("expected user prompt in stream despite CodeGraph timeout; got %q", combined)
+	}
+}
+
+func TestAgentOpen_InvalidatesInjectedHandoff(t *testing.T) {
+	mp := &stubMPClient{
+		seedSubject: "handoff:_echo",
+		seedObject:  "take over with this briefing",
+	}
+	h := newAgentMethodsHarness(t, mp)
+	h.openEcho()
+
+	combined := h.readStreamText(400 * time.Millisecond)
+	if !strings.Contains(combined, "take over with this briefing") {
+		t.Fatalf("expected handoff briefing in stream; got %q", combined)
+	}
+	invalidated := mp.invalidatedCopy()
+	if len(invalidated) == 0 {
+		t.Fatal("expected delivered handoff to be invalidated")
+	}
+	if !strings.Contains(invalidated[0], "handoff:_echo|takeover_briefing|take over with this briefing") {
+		t.Fatalf("unexpected invalidation: %v", invalidated)
 	}
 }
 

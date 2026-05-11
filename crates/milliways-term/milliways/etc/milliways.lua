@@ -59,15 +59,28 @@ M.theme = {
 -- `milliwaysctl status --json` in the `active_agent` field.
 ------------------------------------------------------------------------
 M.client_themes = {
-  claude  = { accent='#e07840', cursor='#e07840', tab_bg='#2e1800', tab_fg='#f0a060', bar_bg='#1e1000' },
-  codex   = { accent='#3fb950', cursor='#3fb950', tab_bg='#001a08', tab_fg='#7ee88a', bar_bg='#001005' },
-  copilot = { accent='#58a6ff', cursor='#58a6ff', tab_bg='#001428', tab_fg='#90c8ff', bar_bg='#000d1a' },
-  minimax = { accent='#39d353', cursor='#39d353', tab_bg='#001a10', tab_fg='#80eaa0', bar_bg='#001008' },
-  gemini  = { accent='#4285f4', cursor='#4285f4', tab_bg='#001030', tab_fg='#80b4ff', bar_bg='#000820' },
-  ['local'] = { accent='#f0c040', cursor='#f0c040', tab_bg='#1e1600', tab_fg='#ffe080', bar_bg='#141000' },
-  pool    = { accent='#a8a8a8', cursor='#a8a8a8', tab_bg='#141414', tab_fg='#d0d0d0', bar_bg='#0c0c0c' },
+  claude  = { accent='#f4f1e8', cursor='#f4f1e8', tab_bg='#24231f', tab_fg='#fffaf0', bar_bg='#151410' },
+  codex   = { accent='#ffb454', cursor='#ffb454', tab_bg='#2b1a00', tab_fg='#ffd08a', bar_bg='#180f00' },
+  copilot = { accent='#5f8cff', cursor='#5f8cff', tab_bg='#071633', tab_fg='#a9c2ff', bar_bg='#040b1a' },
+  minimax = { accent='#af87d7', cursor='#af87d7', tab_bg='#21132f', tab_fg='#d7b8ff', bar_bg='#130a1c' },
+  gemini  = { accent='#ff8700', cursor='#ff8700', tab_bg='#2b1300', tab_fg='#ffbd66', bar_bg='#170a00' },
+  ['local'] = { accent='#d70000', cursor='#d70000', tab_bg='#2a0000', tab_fg='#ff8a8a', bar_bg='#150000' },
+  pool    = { accent='#87d7ff', cursor='#87d7ff', tab_bg='#061c2a', tab_fg='#b8e7ff', bar_bg='#031018' },
 }
 M.default_client_theme = { accent='#7aa2f7', cursor='#7aa2f7', tab_bg='#1d2021', tab_fg='#ebdbb2', bar_bg='#1d2021' }
+
+M.hyperlink_rules = {
+  { regex = '\\b(https?://[\\w\\-@:%.+~#=/?&]+)', highlight = 1, format = '$1' },
+  { regex = '\\b(?:issue|issues|pr|PR)[: ]#?(\\d+)\\b', highlight = 1,
+    format = 'https://github.com/mwigge/milliways/issues/$1' },
+  { regex = '(~/[\\w\\-./]+|/[\\w\\-./]+):(\\d+)\\b', highlight = 1, format = 'file://$1:$2' },
+  { regex = '(~/[\\w\\-./]+|/[\\w\\-./]+\\.[a-zA-Z0-9]+)', highlight = 1, format = 'file://$1' },
+  { regex = '\\b([a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+[#@][a-zA-Z0-9]+)\\b',
+    highlight = 1, format = 'https://github.com/$1' },
+  { regex = '\\b(github\\.com/[\\w\\-./]+)\\b', highlight = 1, format = 'https://$1' },
+  { regex = '#(\\d+)\\b', highlight = 0,
+    format = 'https://github.com/mwigge/milliways/issues/$1' },
+}
 
 -- Tracks the last seen active agent to avoid redundant override calls.
 local last_client = ''
@@ -252,9 +265,7 @@ end
 -- the user's wezterm config. Safe to call multiple times.
 ------------------------------------------------------------------------
 function M.apply_status_bar(config)
-  -- 1 Hz default; the spec's sub-second-during-dispatch story is the
-  -- watch sidecar's job, not this hook.
-  config.status_update_interval = config.status_update_interval or 1000
+  config.status_update_interval = config.status_update_interval or 500
 
   wezterm.on('update-status', function(window, _pane)
     local status, stale = refresh_cache()
@@ -321,7 +332,7 @@ end
 
 -- Built-in fallback list when `milliwaysctl agents` cannot be reached.
 -- These mirror the runner ids registered in internal/daemon/agents.go.
-local FALLBACK_AGENTS = { 'claude', 'codex', 'minimax', 'copilot', '_echo' }
+local FALLBACK_AGENTS = { 'claude', 'codex', 'copilot', 'minimax', 'gemini', 'local', 'pool' }
 
 -- fetch_agent_choices returns a list of `{ id = <agent_id>, label =
 -- <display> }` tables suitable for InputSelector.choices. Best-effort:
@@ -429,6 +440,16 @@ end
 -- by apply_keybindings.
 ------------------------------------------------------------------------
 function M.apply(config)
+  config.window_padding = config.window_padding or { left = 6, right = 6, top = 4, bottom = 4 }
+  config.check_for_updates = false
+  config.bypass_mouse_reporting_modifiers = config.bypass_mouse_reporting_modifiers or 'SHIFT'
+  config.set_environment_variables = config.set_environment_variables or {}
+  config.set_environment_variables.COLORTERM = config.set_environment_variables.COLORTERM or 'truecolor'
+  config.set_environment_variables.TERM = config.set_environment_variables.TERM or 'xterm-256color'
+  config.set_environment_variables.TERM_PROGRAM = config.set_environment_variables.TERM_PROGRAM or 'WezTerm'
+  config.set_environment_variables.MILLIWAYS_HIGHLIGHT_STYLE = config.set_environment_variables.MILLIWAYS_HIGHLIGHT_STYLE or 'catppuccin-mocha'
+  config.set_environment_variables.MILLIWAYS_FORCE_COLOR = config.set_environment_variables.MILLIWAYS_FORCE_COLOR or '1'
+  config.hyperlink_rules = config.hyperlink_rules or M.hyperlink_rules
   M.apply_status_bar(config)
   M.apply_keybindings(config)
 end

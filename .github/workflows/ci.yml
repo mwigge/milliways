@@ -93,7 +93,8 @@ jobs:
             ubuntu:24.04 \
             bash -c '
               set -e
-              dpkg -i /dist/milliways_*.deb
+              apt-get update
+              apt-get install -y /dist/milliways_*.deb
               milliways --version
               milliwaysctl --help >/dev/null
               test -f /usr/share/milliways/scripts/install_local.sh
@@ -107,7 +108,7 @@ jobs:
             fedora:41 \
             bash -c '
               set -e
-              rpm -i /dist/milliways-*.rpm
+              dnf install -y /dist/milliways-*.rpm
               milliways --version
               milliwaysctl --help >/dev/null
               test -f /usr/share/milliways/scripts/install_local.sh
@@ -121,6 +122,7 @@ jobs:
             archlinux:latest \
             bash -c '
               set -e
+              pacman -Sy --noconfirm
               pacman -U --noconfirm /dist/milliways-*.pkg.tar.zst
               milliways --version
               milliwaysctl --help >/dev/null
@@ -168,5 +170,7 @@ jobs:
 
       - name: Run feature smoke
         run: |
-          pip3 install mempalace python-pptx
-          MILLIWAYS_BIN=/tmp/smoke-bin bash scripts/smoke-features.sh
+          PREFIX=/tmp/milliways-feature bash scripts/install_feature_deps.sh
+          MILLIWAYS_BIN=/tmp/smoke-bin \
+          MILLIWAYS_SHARE_DIR=/tmp/milliways-feature/share/milliways \
+            bash scripts/smoke-features.sh

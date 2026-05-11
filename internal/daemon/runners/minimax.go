@@ -149,13 +149,13 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 			"code": -32005,
 			"msg":  "MiniMax API key not set — run /login minimax to set it (get a key at platform.minimax.io)",
 		})
-		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
+		stream.Push(zeroUsageChunkEnd())
 		return
 	}
 
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
-		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
+		stream.Push(zeroUsageChunkEnd())
 		return
 	}
 	if state == nil {
@@ -204,7 +204,7 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		observeError(metrics, AgentIDMiniMax)
 		endDispatchSpan(span, 0, 0, 0, err.Error())
 		stream.Push(classifyDispatchError(AgentIDMiniMax, err))
-		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
+		stream.Push(zeroUsageChunkEnd())
 		return
 	}
 	state.messages = messages

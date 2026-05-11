@@ -131,7 +131,7 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 
 	// chunkEnd is updated with real cost/tokens before the function returns;
 	// the defer guarantees it is pushed on every exit path including early errors.
-	chunkEnd := map[string]any{"t": "chunk_end", "cost_usd": 0.0}
+	chunkEnd := map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 	spanCtx, span := startDispatchSpan(parent, AgentIDClaude, "")
 	ctx, cancel := context.WithTimeout(spanCtx, claudeTimeout)
 	defer cancel()
@@ -253,6 +253,7 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	chunkEnd["cost_usd"] = lastResult.costUSD
 	chunkEnd["input_tokens"] = lastResult.inputTokens
 	chunkEnd["output_tokens"] = lastResult.outputTokens
+	chunkEnd["total_tokens"] = lastResult.inputTokens + lastResult.outputTokens
 	if lastResult.cacheReadTokens > 0 {
 		chunkEnd["cache_read_tokens"] = lastResult.cacheReadTokens
 	}

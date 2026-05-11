@@ -80,3 +80,13 @@ func observeError(m MetricsObserver, agentID string) {
 	}
 	m.ObserveCounter(MetricErrorCount, agentID, 1)
 }
+
+func zeroUsageChunkEnd() map[string]any {
+	return map[string]any{
+		"t":             "chunk_end",
+		"cost_usd":      0.0,
+		"input_tokens":  0,
+		"output_tokens": 0,
+		"total_tokens":  0,
+	}
+}

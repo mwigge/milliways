@@ -21,7 +21,9 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
+	"github.com/mwigge/milliways/internal/daemon/observability"
 	"github.com/mwigge/milliways/internal/daemon/textproc"
 	"github.com/mwigge/milliways/internal/parallel"
 	"github.com/mwigge/milliways/internal/security"
@@ -74,6 +76,9 @@ func (s *Server) agentOpen(enc *json.Encoder, req *Request) {
 		writeError(enc, req.ID, ErrInvalidParams, err.Error())
 		return
 	}
+	if strings.TrimSpace(p.SessionID) != "" {
+		sess.SessionID = strings.TrimSpace(p.SessionID)
+	}
 	// Track current agent for the status bar.
 	s.statusMu.Lock()
 	s.currentAgent = p.AgentID
@@ -125,6 +130,13 @@ func (s *Server) agentOpen(enc *json.Encoder, req *Request) {
 				if t.Object != "" {
 					from := t.Properties["from"]
 					_ = sess.Send([]byte("[handoff from " + from + "]\n" + t.Object))
+					if inv, ok := mp.(interface {
+						KGInvalidate(context.Context, string, string, string) error
+					}); ok {
+						if err := inv.KGInvalidate(context.Background(), "handoff:"+p.AgentID, "takeover_briefing", t.Object); err != nil {
+							slog.Debug("handoff: invalidate failed", "agent", p.AgentID, "err", err)
+						}
+					}
 				}
 			}
 		}
@@ -171,6 +183,10 @@ func (s *Server) agentSend(enc *json.Encoder, req *Request) {
 		bytes = textproc.ExpandContext(context.Background(), bytes)
 	}
 	sess.recordPrompt(string(promptBytes))
+	sess.appendHistory(map[string]any{
+		"t":    "prompt",
+		"text": string(promptBytes),
+	})
 
 	// On the first send in a session, inject MemPalace baseline context before
 	// the user's bytes. CompareAndSwap(0→1) ensures exactly one send injects.
@@ -181,10 +197,26 @@ func (s *Server) agentSend(enc *json.Encoder, req *Request) {
 		if baseline != "" {
 			if err := sess.Send([]byte(baseline)); err != nil {
 				slog.Debug("agentSend: baseline inject failed", "err", err)
+			} else {
+				sess.appendHistory(map[string]any{"t": "context", "source": "mempalace", "text": baseline})
+				s.recordContextSpan(sess, "mempalace", baseline, "")
 			}
 		}
-		// TODO: wire cg when CodeGraph MCP client is available on Server.
-		_ = parallel.InjectCodeGraph(ctx, string(bytes), nil)
+	}
+	if cg, closeCG := s.codeGraphClient(); cg != nil {
+		defer closeCG()
+		ctx, cancel := context.WithTimeout(context.Background(), codeGraphInjectTimeout())
+		codeContext := parallel.InjectCodeGraph(ctx, string(bytes), cg)
+		cancel()
+		if codeContext != "" {
+			if err := sess.Send([]byte(codeContext)); err != nil {
+				slog.Debug("agentSend: codegraph inject failed", "err", err)
+				s.recordContextSpan(sess, "codegraph", "", err.Error())
+			} else {
+				sess.appendHistory(map[string]any{"t": "context", "source": "codegraph", "text": codeContext})
+				s.recordContextSpan(sess, "codegraph", codeContext, "")
+			}
+		}
 	}
 
 	if err := sess.Send(bytes); err != nil {
@@ -192,6 +224,46 @@ func (s *Server) agentSend(enc *json.Encoder, req *Request) {
 		return
 	}
 	writeResult(enc, req.ID, map[string]any{"sent": len(bytes)})
+}
+
+func (s *Server) recordContextSpan(sess *AgentSession, source, content, errMsg string) {
+	if s == nil || s.spans == nil || sess == nil {
+		return
+	}
+	sess.stateMu.Lock()
+	traceID := sess.currentTrace
+	turnID := sess.currentTurnID
+	sessionID := sess.SessionID
+	agentID := sess.AgentID
+	sess.stateMu.Unlock()
+	if traceID == "" {
+		traceID = observability.NewTraceID()
+	}
+	status := "ok"
+	if errMsg != "" {
+		status = "error"
+	}
+	attrs := map[string]any{
+		"agent_id":   agentID,
+		"session_id": sessionID,
+		"turn_id":    turnID,
+		"source":     source,
+	}
+	if content != "" {
+		attrs["bytes"] = len(content)
+	}
+	if errMsg != "" {
+		attrs["error"] = errMsg
+	}
+	s.spans.Push(observability.Span{
+		TraceID:    traceID,
+		SpanID:     observability.NewSpanID(),
+		Name:       "agent.context",
+		StartTS:    time.Now(),
+		DurationMS: 0,
+		Status:     status,
+		Attributes: attrs,
+	})
 }
 
 type agentStreamParams struct {

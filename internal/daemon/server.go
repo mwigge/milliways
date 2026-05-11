@@ -99,6 +99,8 @@ type Server struct {
 
 	// testMPClient overrides mempalaceClient() in tests. nil in production.
 	testMPClient parallel.MPClient
+	// testCGClient overrides codeGraphClient() in tests. nil in production.
+	testCGClient parallel.CodeGraphClient
 }
 
 // NewServer binds a UDS at socket with mode 0600. Removes any stale socket

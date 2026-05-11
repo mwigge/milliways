@@ -94,7 +94,7 @@ func RunCodex(ctx context.Context, input <-chan []byte, stream Pusher, metrics M
 func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *codexSessionState) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
-		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+		stream.Push(zeroUsageChunkEnd())
 		return
 	}
 	if state == nil {
@@ -108,7 +108,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	spanErr := ""
 	defer func() {
 		endDispatchSpan(span, 0, 0, 0, spanErr)
-		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+		stream.Push(zeroUsageChunkEnd())
 	}()
 
 	model := codexModelFromEnv()

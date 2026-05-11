@@ -22,10 +22,18 @@ import (
 // Enabled reports whether terminal color should be emitted for the current
 // process environment.
 func Enabled() bool {
+	if forceColor(os.Getenv("MILLIWAYS_FORCE_COLOR")) || forceColor(os.Getenv("FORCE_COLOR")) {
+		return true
+	}
 	if _, ok := os.LookupEnv("NO_COLOR"); ok {
 		return false
 	}
 	return SupportsANSI(os.Getenv("TERM"), os.Getenv("COLORTERM"), os.Getenv("TERM_PROGRAM"))
+}
+
+func forceColor(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return value != "" && value != "0" && value != "false" && value != "no"
 }
 
 // SupportsANSI reports whether the provided terminal environment is known to

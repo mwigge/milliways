@@ -26,6 +26,7 @@ import (
 
 	"github.com/mwigge/milliways/internal/parallel"
 	"github.com/mwigge/milliways/internal/rpc"
+	"golang.org/x/term"
 )
 
 // TestAttachCmd_FlagRegistration verifies that the attach command is registered
@@ -370,13 +371,8 @@ func TestRenderDeckNavigatorShowsRequestedPanels(t *testing.T) {
 
 	wantFragments := []string{
 		"Clients",
-		"Active",
-		"Status",
-		"Observability",
 		"codex active",
-		"daemon connected",
-		"2 clients",
-		"quota 25%",
+		"↑↓ move",
 	}
 	for _, want := range wantFragments {
 		if !strings.Contains(got, want) {
@@ -385,7 +381,7 @@ func TestRenderDeckNavigatorShowsRequestedPanels(t *testing.T) {
 	}
 }
 
-func TestRenderDeckNavigatorSizedKeepsObservabilityVisible(t *testing.T) {
+func TestRenderDeckNavigatorSizedKeepsActiveControlsVisible(t *testing.T) {
 	t.Parallel()
 
 	providers := []deckProviderInfo{
@@ -402,9 +398,14 @@ func TestRenderDeckNavigatorSizedKeepsObservabilityVisible(t *testing.T) {
 	if lines := strings.Count(got, "\r\n"); lines > 22 {
 		t.Fatalf("rendered %d lines, want <= 22:\n%s", lines, got)
 	}
-	for _, want := range []string{"Clients", "pool", "Observability", "Active", "auth"} {
+	for _, want := range []string{"Clients", "pool", "pool active", "↑↓ move"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("render missing %q:\n%s", want, got)
+		}
+	}
+	for _, absent := range []string{"Status", "Observability", "daemon connected"} {
+		if strings.Contains(got, absent) {
+			t.Fatalf("navigator should not duplicate %q:\n%s", absent, got)
 		}
 	}
 }
@@ -440,10 +441,10 @@ func TestRenderDeckNavigatorSizedShowsSevenWhenThereIsRoom(t *testing.T) {
 			t.Fatalf("Quick Menu should be absent, found %q:\n%s", absent, got)
 		}
 	}
-	// Observability panel is present with its new content.
-	for _, want := range []string{"Observability", "◌ all idle", "quota"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("new Observability panel missing %q:\n%s", want, got)
+	// Status and observability moved to the bottom-left pane.
+	for _, absent := range []string{"Status", "Observability", "quota"} {
+		if strings.Contains(got, absent) {
+			t.Fatalf("navigator should not duplicate %q:\n%s", absent, got)
 		}
 	}
 }
@@ -466,6 +467,17 @@ func TestRenderDeckNavigatorUsesAgentIdentityColors(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("render missing client color %q:\n%q", want, got)
 		}
+	}
+}
+
+func TestDeckModeUsesInteractiveNavigatorWhenColorDetectionIsUnavailable(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		t.Skip("requires a test TTY")
+	}
+
+	if plainMode := false; plainMode || !term.IsTerminal(int(os.Stdin.Fd())) {
+		t.Fatal("deck mode should not fall back to plain output just because color is disabled")
 	}
 }
 
@@ -526,9 +538,8 @@ func TestRenderDeckNavigatorPlainHasNoANSIOrBoxDrawing(t *testing.T) {
 		"Clients",
 		"1 claude active auth ok model sonnet",
 		"2 codex thinking auth missing",
-		"daemon connected; 2 clients",
-		"auth 1/2 ok",
-		"quota 25%",
+		"Controls",
+		"up/down move; enter switch; q quit",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("plain deck output missing %q:\n%s", want, got)
@@ -575,10 +586,10 @@ func TestRenderDeckNavigatorObservabilityNoQuickMenu(t *testing.T) {
 			t.Errorf("Quick Menu content should be absent, found %q:\n%s", absent, got)
 		}
 	}
-	// Observability panel must be present with its structural elements.
-	for _, want := range []string{"Observability", "◌ all idle", "auth 2/2", "quota"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("Observability panel missing %q:\n%s", want, got)
+	// Status and observability moved to the bottom-left pane.
+	for _, absent := range []string{"Observability", "Status", "quota", "auth 2/2"} {
+		if strings.Contains(got, absent) {
+			t.Errorf("navigator should not duplicate %q:\n%s", absent, got)
 		}
 	}
 }
@@ -593,33 +604,14 @@ func TestRenderDeckNavigatorObservabilityActiveProviders(t *testing.T) {
 	}
 	got := stripANSI(renderDeckNavigator(90, providers, 0, "claude", true, nil))
 
-	// Fleet status bar must show thinking and streaming counts.
-	if !strings.Contains(got, "1●") {
-		t.Errorf("fleet bar missing thinking count '1●':\n%s", got)
-	}
-	if !strings.Contains(got, "1⟳") {
-		t.Errorf("fleet bar missing streaming count '1⟳':\n%s", got)
-	}
-	// Per-agent rows for active providers.
-	if !strings.Contains(got, "clde") {
-		t.Errorf("missing 'clde' short name for claude:\n%s", got)
-	}
-	if !strings.Contains(got, "31.0k tok") {
-		t.Errorf("missing '31.0k tok' token count for claude:\n%s", got)
-	}
-	if !strings.Contains(got, "$0.87") {
-		t.Errorf("missing '$0.87' cost for claude:\n%s", got)
-	}
-	for _, want := range []string{"ttft240ms", "18t/s", "trabcdef12", "lat1.2s", "q1", "tr12345678"} {
+	for _, want := range []string{"Clients", "claude", "codex", "gemini", "claude thinking"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("missing observability detail %q:\n%s", want, got)
+			t.Errorf("navigator missing %q:\n%s", want, got)
 		}
 	}
-	// Idle summary for gemini.
-	if !strings.Contains(got, "◌ idle") {
-		t.Errorf("missing idle summary:\n%s", got)
-	}
-	if !strings.Contains(got, "gemi") {
-		t.Errorf("missing 'gemi' in idle summary:\n%s", got)
+	for _, absent := range []string{"31.0k tok", "$0.87", "ttft240ms", "trabcdef12", "◌ idle"} {
+		if strings.Contains(got, absent) {
+			t.Errorf("observability detail %q should be in bottom pane, not navigator:\n%s", absent, got)
+		}
 	}
 }

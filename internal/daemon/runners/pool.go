@@ -198,7 +198,7 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 }
 
 func poolChunkEndEvent() map[string]any {
-	return map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+	return zeroUsageChunkEnd()
 }
 
 func poolRequestTimeout() time.Duration {

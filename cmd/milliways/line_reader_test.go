@@ -168,6 +168,41 @@ func TestLineReaderRedrawClearsPreviousWrappedRows(t *testing.T) {
 	}
 }
 
+func TestLineReaderCursorPositionAtWrapBoundary(t *testing.T) {
+	t.Parallel()
+	row, col := cursorPosition(20, 20)
+	if row != 0 || col != 20 {
+		t.Fatalf("cursor at boundary = row %d col %d, want row 0 col 20", row, col)
+	}
+	row, col = cursorPosition(21, 20)
+	if row != 1 || col != 1 {
+		t.Fatalf("cursor after boundary = row %d col %d, want row 1 col 1", row, col)
+	}
+}
+
+func TestLineReaderRedrawDoesNotMoveBelowExactWrappedLine(t *testing.T) {
+	var out bytes.Buffer
+	oldTermWidth := lineReaderTermWidth
+	lineReaderTermWidth = func() int { return 20 }
+	t.Cleanup(func() { lineReaderTermWidth = oldTermWidth })
+
+	r := &chatLineReader{
+		out:    &out,
+		prompt: "> ",
+		buf:    []rune(strings.Repeat("x", 18)),
+		cursor: 18,
+	}
+	r.redrawLocked()
+
+	got := out.String()
+	if strings.Contains(got, "\033[1A") {
+		t.Fatalf("exact-width redraw moved up from a phantom row: %q", got)
+	}
+	if !strings.Contains(got, "\033[20C") {
+		t.Fatalf("exact-width redraw should park cursor at end of row, got %q", got)
+	}
+}
+
 func TestLineReaderExternalOutputHidesAndRestoresPrompt(t *testing.T) {
 	var out bytes.Buffer
 	r := &chatLineReader{
@@ -195,5 +230,34 @@ func TestLineReaderExternalOutputHidesAndRestoresPrompt(t *testing.T) {
 	}
 	if got := out.String(); !strings.Contains(got, "> draft") {
 		t.Fatalf("EndExternalOutput should redraw prompt and buffer, got %q", got)
+	}
+}
+
+func TestLineReaderRefreshDoesNotPaintInactivePrompt(t *testing.T) {
+	var out bytes.Buffer
+	r := &chatLineReader{
+		out:    &out,
+		prompt: "pool …thinking ▶ ",
+		active: false,
+	}
+
+	r.Refresh()
+
+	if got := out.String(); got != "" {
+		t.Fatalf("inactive Refresh wrote prompt %q", got)
+	}
+}
+
+func TestLineReaderSubmittedLineReturnsToColumnZero(t *testing.T) {
+	var out bytes.Buffer
+	r := &chatLineReader{
+		out:    &out,
+		prompt: "pool ▶ ",
+	}
+
+	r.writeSubmittedLineLocked("/switch claude")
+
+	if got, want := out.String(), "pool ▶ /switch claude\r\n"; got != want {
+		t.Fatalf("submitted line = %q, want %q", got, want)
 	}
 }
