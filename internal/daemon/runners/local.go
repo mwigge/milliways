@@ -212,7 +212,7 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
-		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
+		stream.Push(zeroUsageChunkEnd())
 		return
 	}
 	if state == nil {
@@ -265,7 +265,7 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		observeError(metrics, AgentIDLocal)
 		endDispatchSpan(span, 0, 0, 0, err.Error())
 		stream.Push(classifyLocalDispatchError(err))
-		stream.Push(map[string]any{"t": "chunk_end", "cost_usd": 0.0})
+		stream.Push(zeroUsageChunkEnd())
 		return
 	}
 	state.messages = messages

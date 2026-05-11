@@ -539,6 +539,11 @@ func runObserve(socket, stateDir string, debounceMs int) {
 			Snapshot struct {
 				Proto       any     `json:"proto"`
 				ActiveAgent *string `json:"active_agent"`
+				TokensIn    int     `json:"tokens_in"`
+				TokensOut   int     `json:"tokens_out"`
+				CostUSD     float64 `json:"cost_usd"`
+				QuotaPct    float64 `json:"quota_pct"`
+				Errors5m    int     `json:"errors_5m"`
 			} `json:"snapshot"`
 		}
 		if err := json.Unmarshal(ev, &frame); err != nil {
@@ -554,10 +559,15 @@ func runObserve(socket, stateDir string, debounceMs int) {
 		}
 
 		status := map[string]any{
-			"v": version,
-			"p": cwd,
-			"c": cur,
-			"a": observeAgents,
+			"v":      version,
+			"p":      cwd,
+			"c":      cur,
+			"a":      observeAgents,
+			"tin":    frame.Snapshot.TokensIn,
+			"tout":   frame.Snapshot.TokensOut,
+			"cost":   frame.Snapshot.CostUSD,
+			"quota":  frame.Snapshot.QuotaPct,
+			"errors": frame.Snapshot.Errors5m,
 		}
 		// Include woke_ago (seconds) for 5 minutes after a detected wake.
 		if !wokeAt.IsZero() {

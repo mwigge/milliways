@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="404" viewBox="0 0 980 404">
+  <rect width="980" height="404" fill="#111827"/>
+  <style>
+    .title { font: 700 20px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #f9fafb; }
+    .label { font: 600 14px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #e5e7eb; }
+    .text { font: 13px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #cbd5e1; }
+    .mono { font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; fill: #d1d5db; }
+    .muted { fill: #94a3b8; }
+    .ok { fill: #34d399; }
+    .warn { fill: #fbbf24; }
+    .accent { fill: #8b5cf6; }
+    .cyan { fill: #38bdf8; }
+    .pearl { fill: #f5f5f4; }
+    .box { fill: #1f2937; stroke: #475569; stroke-width: 1.4; rx: 10; }
+    .box2 { fill: #172033; stroke: #64748b; stroke-width: 1.4; rx: 10; }
+    .store { fill: #0f172a; stroke: #38bdf8; stroke-width: 1.4; rx: 10; }
+    .line { stroke: #94a3b8; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    .line2 { stroke: #8b5cf6; stroke-width: 2; fill: none; marker-end: url(#arrow2); }
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L7,3 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrow2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L7,3 z" fill="#8b5cf6"/>
+    </marker>
+  </defs>
+<rect x="24" y="22" width="932" height="360" rx="14" fill="#020617" stroke="#334155"/>
+<circle cx="52" cy="48" r="6" fill="#ef4444"/><circle cx="74" cy="48" r="6" fill="#f59e0b"/><circle cx="96" cy="48" r="6" fill="#22c55e"/>
+<text x="124" y="53" class="mono muted">MilliWays.app lower-left observability cockpit</text>
+<text x="48" y="88" class="mono accent">milliways observability -- 10:42:18Z</text>
+<text x="48" y="110" class="mono pearl">latest: rpc:status.get             0.49ms  ok</text>
+<text x="48" y="132" class="mono muted"></text>
+<text x="48" y="154" class="mono label">summary</text>
+<text x="48" y="176" class="mono mono">  total spans:   18</text>
+<text x="48" y="198" class="mono mono">  error rate:    0/min</text>
+<text x="48" y="220" class="mono mono">  p50 latency:   0.50ms</text>
+<text x="48" y="242" class="mono mono">  p99 latency:   0.92ms</text>
+<text x="48" y="264" class="mono muted"></text>
+<text x="48" y="286" class="mono label">usage</text>
+<text x="48" y="308" class="mono mono">  tokens:        in 1.2k / out 340 / total 1.5k</text>
+<text x="48" y="330" class="mono mono">  cost:          $0.0041</text>
+<text x="48" y="352" class="mono mono">  time to limit: hosted-runner 6.4h</text>
+<text x="48" y="374" class="mono muted"></text>
+<text x="48" y="396" class="mono cyan">latency: p50 [====] p95 [=======] p99 [========]</text>
+</svg>

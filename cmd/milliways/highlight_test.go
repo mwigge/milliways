@@ -51,6 +51,21 @@ func TestCodeHighlighter_PlainTextPassthrough(t *testing.T) {
 	}
 }
 
+func TestCodeHighlighter_CollapsesRepeatedBlankLines(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	h := newCodeHighlighter(&out)
+
+	if _, err := h.Write([]byte("first\n\n\n\nsecond\n")); err != nil {
+		t.Fatalf("Write returned error: %v", err)
+	}
+
+	if got, want := out.String(), "first\n\nsecond\n"; got != want {
+		t.Fatalf("blank lines = %q, want %q", got, want)
+	}
+}
+
 // TestCodeHighlighter_CompleteGoFenceProducesANSI verifies that a complete
 // ```go ... ``` block is syntax-highlighted and the output contains at least
 // one ANSI escape code (ESC = 0x1b).
@@ -425,6 +440,35 @@ func TestHighlighterLeavesNonTablePipesAlone(t *testing.T) {
 	}
 }
 
+func TestHighlighterWrapsWideTableCellsInsteadOfTruncating(t *testing.T) {
+	oldTermWidth := codePanelTermWidth
+	codePanelTermWidth = func() int { return 82 }
+	t.Cleanup(func() { codePanelTermWidth = oldTermWidth })
+
+	var out bytes.Buffer
+	h := newCodeHighlighter(&out)
+	input := strings.Join([]string{
+		"| Issue | Location | Recommendation |",
+		"|---|---|---|",
+		"| No rate limiting specified | Router / Policy | Rate limits are mentioned but no per-tenant or per-service quota definition exists; add explicit quotas and burst limits. |",
+		"",
+	}, "\n")
+	_, _ = h.Write([]byte(input))
+	_ = h.Flush()
+
+	plain := stripANSISequences(out.String())
+	for _, want := range []string{"per-tenant", "per-service", "burst", "limits"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("wide table cell lost %q:\n%s", want, plain)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimRight(plain, "\n"), "\n") {
+		if w := displayWidth(line); w > 82 {
+			t.Fatalf("rendered table line width = %d, want <= 82:\n%s\nfull:\n%s", w, line, plain)
+		}
+	}
+}
+
 func TestHighlighterNormalizesOverIndentedMarkdown(t *testing.T) {
 	oldTermWidth := codePanelTermWidth
 	codePanelTermWidth = func() int { return 64 }
@@ -566,5 +610,23 @@ func TestSyntaxHighlightUsesConfiguredStyle(t *testing.T) {
 	got := syntaxHighlight("package main\n", "go")
 	if !strings.Contains(got, "\x1b[") {
 		t.Fatalf("syntaxHighlight() with configured style missing ANSI:\n%q", got)
+	}
+}
+
+func TestRenderPlainMarkdownLineHighlightsDiagnostics(t *testing.T) {
+	withoutNoColor(t)
+
+	got := renderPlainMarkdownLine("warning: see https://example.com retry failed: timeout", true)
+	if !strings.Contains(got, "\x1b[38;5;221m") {
+		t.Fatalf("warning line missing warning color:\n%q", got)
+	}
+	if !strings.Contains(got, "\x1b[38;5;203m") {
+		t.Fatalf("failed line missing error color:\n%q", got)
+	}
+	if !strings.Contains(got, "\x1b]8;;https://example.com") {
+		t.Fatalf("diagnostic line dropped URL hyperlink:\n%q", got)
+	}
+	if stripANSISequences(got) != "warning: see https://example.com retry failed: timeout\n" {
+		t.Fatalf("diagnostic highlighting changed text:\n%q", got)
 	}
 }

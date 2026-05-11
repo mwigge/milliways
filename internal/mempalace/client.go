@@ -94,6 +94,39 @@ func (c *Client) Write(ctx context.Context, wing, room, drawer string, content s
 	return nil
 }
 
+// DeleteDrawer removes a stored drawer by id.
+func (c *Client) DeleteDrawer(ctx context.Context, drawerID string) error {
+	if c == nil || c.rpc == nil {
+		return errors.New("nil mempalace client")
+	}
+	if strings.TrimSpace(drawerID) == "" {
+		return errors.New("drawer id is required")
+	}
+	_, err := c.rpc.CallTool(ctx, "mempalace_delete_drawer", map[string]any{"drawer_id": drawerID})
+	if err != nil {
+		return fmt.Errorf("mempalace_delete_drawer: %w", err)
+	}
+	return nil
+}
+
+// KGInvalidate invalidates a temporal fact when the backing palace supports
+// knowledge-graph invalidation.
+func (c *Client) KGInvalidate(ctx context.Context, subject, predicate, object string) error {
+	if c == nil || c.rpc == nil {
+		return errors.New("nil mempalace client")
+	}
+	args := map[string]any{
+		"subject":   subject,
+		"predicate": predicate,
+		"object":    object,
+	}
+	_, err := c.rpc.CallTool(ctx, "mempalace_kg_invalidate", args)
+	if err != nil {
+		return fmt.Errorf("mempalace_kg_invalidate: %w", err)
+	}
+	return nil
+}
+
 // ListWings lists available wings.
 func (c *Client) ListWings(ctx context.Context) ([]string, error) {
 	if c == nil || c.rpc == nil {

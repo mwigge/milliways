@@ -36,6 +36,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -390,6 +391,9 @@ func runChat(ctx context.Context) error {
 		return fmt.Errorf("line reader init: %w", err)
 	}
 	defer rl.Close()
+	stdout := &crlfWriter{w: os.Stdout}
+	stderr := &crlfWriter{w: os.Stderr}
+	rl.out = stdout
 
 	loop := &chatLoop{
 		client:        client,
@@ -399,8 +403,8 @@ func runChat(ctx context.Context) error {
 		openAgent:     openAgentForChat,
 		rl:            rl,
 		completer:     sc,
-		out:           newCodeHighlighter(os.Stdout),
-		errw:          os.Stderr,
+		out:           newCodeHighlighter(stdout),
+		errw:          stderr,
 		ring:          append([]string(nil), chatSwitchableAgents...), // default ring
 		rotateCh:      make(chan string, 1),
 	}
@@ -546,6 +550,37 @@ func fileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
+type crlfWriter struct {
+	mu     sync.Mutex
+	w      io.Writer
+	lastCR bool
+}
+
+func (w *crlfWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	var out strings.Builder
+	out.Grow(len(p) + bytes.Count(p, []byte{'\n'}))
+	for _, b := range p {
+		if b == '\n' && !w.lastCR {
+			out.WriteByte('\r')
+		}
+		out.WriteByte(b)
+		w.lastCR = b == '\r'
+		if b != '\r' {
+			w.lastCR = false
+		}
+	}
+	if _, err := io.WriteString(w.w, out.String()); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
 // chatPrompt renders the chat prompt header for the active agent.
 // The active runner name is coloured with its identity colour; the
 // reset brings everything back to default before the ▶ cursor.
@@ -562,11 +597,16 @@ func chatPromptState(agentID, state string) string {
 	if agentID == "" {
 		return "[select: /1 claude · /2 codex · /4 minimax · /help] " + arrow + " "
 	}
-	badgePrefix, badgeReset := agentBadge(agentID)
-	if state = strings.TrimSpace(state); state != "" {
-		return badgePrefix + " " + agentID + " " + promptStateGlyph(state) + " " + badgeReset + " " + arrow + " "
+	color := agentColor(agentID)
+	thinkColor := agentThinkingColor(agentID)
+	reset := "\033[0m"
+	if color == "" {
+		reset = ""
 	}
-	return badgePrefix + " " + agentID + " " + badgeReset + " " + arrow + " "
+	if state = strings.TrimSpace(state); state != "" {
+		return color + agentID + reset + " " + thinkColor + promptStateGlyph(state) + reset + " " + arrow + " "
+	}
+	return color + agentID + reset + " " + arrow + " "
 }
 
 func promptStateGlyph(state string) string {
@@ -897,6 +937,18 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 	defer close(sess.done)
 	firstData := true
 	thinkingActive := false // true while a thinking status line is on screen
+	var thinkingBuffer strings.Builder
+	flushThinking := func() {
+		msg := strings.TrimSpace(thinkingBuffer.String())
+		if msg == "" {
+			thinkingBuffer.Reset()
+			return
+		}
+		formatted := formatThinkingLineWidth(sess.agentID, msg, streamTextWidth())
+		l.writeStreamStatus(formatted)
+		thinkingBuffer.Reset()
+		thinkingActive = true
+	}
 	for line := range sess.streamCh {
 		var ev map[string]any
 		if err := json.Unmarshal(line, &ev); err != nil {
@@ -916,7 +968,6 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			if b64, ok := ev["b64"].(string); ok {
 				if raw, err := base64.StdEncoding.DecodeString(b64); err == nil {
 					if msg := formatThinkingFragment(string(raw)); msg != "" {
-						agent := sess.agentID
 						l.beginStreamOutput(sess)
 						if l.sess == sess {
 							l.setPromptState("thinking")
@@ -929,9 +980,10 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 							_ = h.Flush()
 							_, _ = io.WriteString(h.out, "\n")
 						}
-						formatted := formatThinkingLineWidth(agent, msg, streamTextWidth())
-						l.writeStreamStatus(formatted)
-						thinkingActive = true
+						appendThinkingFragment(&thinkingBuffer, msg)
+						if shouldFlushThinkingFragment(thinkingBuffer.String()) {
+							flushThinking()
+						}
 					}
 				}
 			}
@@ -939,6 +991,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			if b64, ok := ev["b64"].(string); ok {
 				if raw, err := base64.StdEncoding.DecodeString(b64); err == nil {
 					l.beginStreamOutput(sess)
+					flushThinking()
 					// Clear thinking active flag whenever data follows thinking,
 					// regardless of which turn we're on in the agentic loop.
 					if thinkingActive {
@@ -952,17 +1005,26 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 						}
 						firstData = false
 					}
-					_, _ = l.out.Write(raw)
+					if rendered, ok := renderProviderThinkingData(sess.agentID, string(raw)); ok {
+						writeTerminalStatus(l.out, rendered)
+					} else {
+						_, _ = l.out.Write(raw)
+					}
 					// Accumulate for the in-flight assistant turn so /switch
 					// can carry the response forward as part of the briefing.
 					l.pendingAssistant.Write(raw)
 				}
 			}
 		case "chunk_end":
+			flushThinking()
 			if h, ok := l.out.(*codeHighlighter); ok {
 				_ = h.Flush()
+				if !h.endsWithNewline() {
+					fmt.Fprintln(h.out)
+				}
+			} else {
+				fmt.Fprintln(l.out)
 			}
-			fmt.Fprintln(l.out)
 			// Snapshot + reset the streamed response into a turn entry.
 			assistantText := strings.TrimRight(l.pendingAssistant.String(), "\n")
 			if assistantText != "" {
@@ -988,6 +1050,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			thinkingActive = false
 			l.endStreamOutput(sess)
 		case "err":
+			flushThinking()
 			msg, _ := ev["msg"].(string)
 			agent, _ := ev["agent"].(string)
 			l.beginStreamOutput(sess)
@@ -1012,14 +1075,32 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			}
 			l.endStreamOutput(sess)
 		case "rate_limit":
+			flushThinking()
 			status, _ := ev["status"].(string)
 			l.beginStreamOutput(sess)
 			fmt.Fprintln(l.errw, "⚠ rate limit: "+status)
 		case "end":
+			flushThinking()
 			l.endStreamOutput(sess)
 			return
 		}
 	}
+}
+
+func renderProviderThinkingData(agentID, text string) (string, bool) {
+	if strings.TrimSpace(text) == "" {
+		return "", false
+	}
+	trimmed := strings.TrimLeft(text, "\r\n\t ")
+	if !strings.HasPrefix(trimmed, "Thinking...") {
+		return "", false
+	}
+	body := strings.TrimRight(text, "\r\n")
+	color := agentThinkingColor(agentID)
+	if color == "" {
+		return body, true
+	}
+	return color + body + "\033[0m", true
 }
 
 func (l *chatLoop) beginStreamOutput(sess *chatSession) {
@@ -1054,6 +1135,29 @@ func formatThinkingFragment(text string) string {
 		return ""
 	}
 	return text
+}
+
+func appendThinkingFragment(b *strings.Builder, fragment string) {
+	fragment = strings.TrimSpace(fragment)
+	if fragment == "" {
+		return
+	}
+	if b.Len() > 0 && !strings.HasSuffix(b.String(), " ") && !strings.HasPrefix(fragment, ".") && !strings.HasPrefix(fragment, ",") && !strings.HasPrefix(fragment, ":") && !strings.HasPrefix(fragment, ";") {
+		b.WriteByte(' ')
+	}
+	b.WriteString(fragment)
+}
+
+func shouldFlushThinkingFragment(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return false
+	}
+	last := text[len(text)-1]
+	if last == '.' || last == '!' || last == '?' || last == ':' {
+		return true
+	}
+	return displayWidth(text) >= streamTextWidth()
 }
 
 // formatThinkingLine renders runner reasoning as a visible status line.
@@ -1659,7 +1763,7 @@ func (l *chatLoop) sendAgentPrompt(agentID, prompt string) {
 		l.setPromptState("thinking")
 	}
 	if !wasActive {
-		fmt.Fprintf(l.out, "→ %s background started\n", agentID)
+		fmt.Fprintf(l.out, "%s background started\n", agentID)
 	}
 }
 
@@ -1677,7 +1781,7 @@ func (l *chatLoop) handleTakeover(newID string) {
 	l.activateSession(sess)
 	if briefing, ok := l.buildBriefing(fromID, newID); ok {
 		m, ep := l.displayModelInfo(newID)
-		fmt.Fprintf(l.out, "→ %s  model: %s  (%s)\n", newID, m, ep)
+		fmt.Fprintf(l.out, "%s  model: %s  (%s)\n", newID, m, ep)
 		l.printBriefingBlock(l.snapshotTurns(), fromID)
 		l.lastBriefingFrom = fromID
 		l.lastBriefing = briefing
@@ -1687,7 +1791,7 @@ func (l *chatLoop) handleTakeover(newID string) {
 		}
 		return
 	}
-	fmt.Fprintf(l.out, "→ %s active\n", newID)
+	fmt.Fprintf(l.out, "%s active\n", newID)
 }
 
 // switchAgent changes the visible workspace without sending a handoff.
@@ -1715,7 +1819,7 @@ func (l *chatLoop) switchAgent(newID string) {
 
 	// Print the live model + endpoint so the user knows exactly what's active.
 	m, ep := l.displayModelInfo(newID)
-	fmt.Fprintf(l.out, "→ %s  model: %s  (%s)\n", newID, m, ep)
+	fmt.Fprintf(l.out, "%s  model: %s  (%s)\n", newID, m, ep)
 
 	// Health-check the local runner endpoint immediately on switch so the
 	// user knows before their first prompt whether the server is reachable.
@@ -1930,7 +2034,7 @@ func (l *chatLoop) printBriefingBlock(turns []chatTurn, fromID string) {
 		if len(line) > 90 {
 			line = line[:87] + "…"
 		}
-		fmt.Fprintf(l.out, "  │ [%s] %s\n", role, line)
+		fmt.Fprintf(l.out, "  │ %s %s\n", roleLabel(role), line)
 	}
 	fmt.Fprintf(l.out, "  ╵ /briefing to re-read full context\n")
 }
@@ -2301,11 +2405,11 @@ func (l *chatLoop) printFullBlock(block chatBlock) {
 	color := agentColor(block.AgentID)
 	reset := "\033[0m"
 	fmt.Fprintf(l.out, "%s┌─ block #%d · %s%s\n", color, block.ID, agent, reset)
-	fmt.Fprintln(l.out, "[user]")
+	fmt.Fprintln(l.out, roleLabel("user"))
 	writeRenderedMarkdown(l.out, block.UserText)
 	if block.AssistantText != "" {
 		fmt.Fprintln(l.out)
-		fmt.Fprintf(l.out, "[%s]\n", agent)
+		fmt.Fprintln(l.out, roleLabel(agent))
 		writeRenderedMarkdown(l.out, block.AssistantText)
 	}
 	fmt.Fprintf(l.out, "%s└─ end block #%d%s\n", color, block.ID, reset)
@@ -3094,6 +3198,25 @@ func agentThinkingColor(name string) string {
 		return "\033[38;5;75m" // muted light blue
 	}
 	return unknownAgentThinkingColor // unknown provider
+}
+
+func humanRoleColor() string {
+	if !ansiEnabled() {
+		return ""
+	}
+	return "\033[38;5;110m"
+}
+
+func roleLabel(role string) string {
+	label := "[" + role + "]"
+	if !ansiEnabled() {
+		return label
+	}
+	color := humanRoleColor()
+	if role != "user" {
+		color = agentColor(role)
+	}
+	return color + label + "\033[0m"
 }
 
 // printLanding is the chat-startup banner. Keep it intentionally small:

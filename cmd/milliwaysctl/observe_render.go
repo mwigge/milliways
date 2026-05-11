@@ -59,6 +59,27 @@ type observeRenderFrame struct {
 	Spans []observeRenderSpan `json:"spans"`
 }
 
+type observeRenderStatus struct {
+	ActiveAgent *string `json:"active_agent"`
+	TokensIn    int     `json:"tokens_in"`
+	TokensOut   int     `json:"tokens_out"`
+	CostUSD     float64 `json:"cost_usd"`
+	QuotaPct    float64 `json:"quota_pct"`
+}
+
+type observeRenderQuota struct {
+	AgentID string  `json:"agent_id"`
+	Used    float64 `json:"used"`
+	Cap     float64 `json:"cap"`
+	Pct     float64 `json:"pct"`
+	Window  string  `json:"window,omitempty"`
+}
+
+type observeRenderUsage struct {
+	Status observeRenderStatus
+	Quotas []observeRenderQuota
+}
+
 // observeRender opens an observability.subscribe stream and writes a
 // rendered frame to stdout for each event. Returns when the daemon
 // closes the stream or stdout fails (e.g. parent pane closed).
@@ -92,12 +113,21 @@ func observeRender(socket string) {
 			continue
 		}
 		lastEmit = now
-		out := formatObservabilityFrame(now.UTC(), frame.Spans)
-		// Clear+home prefix so the pane updates in place.
-		if _, err := fmt.Fprint(os.Stdout, "\x1b[2J\x1b[H"+out); err != nil {
+		usage := fetchObserveRenderUsage(c)
+		out := formatObservabilityFrame(now.UTC(), frame.Spans, usage)
+		// Clear scrollback + viewport and hide the cursor so the pane
+		// behaves like a dashboard, not an interactive prompt.
+		if _, err := fmt.Fprint(os.Stdout, "\x1b[?25l\x1b[3J\x1b[2J\x1b[H"+out); err != nil {
 			return
 		}
 	}
+}
+
+func fetchObserveRenderUsage(c *rpc.Client) observeRenderUsage {
+	var usage observeRenderUsage
+	_ = c.Call("status.get", nil, &usage.Status)
+	_ = c.Call("quota.get", nil, &usage.Quotas)
+	return usage
 }
 
 // observeRenderSummary captures derived stats shown under the span tail.
@@ -217,25 +247,19 @@ func computeLatencyBars(spans []observeRenderSpan, topN int) []charts.Bar {
 	return out
 }
 
-// formatObservabilityFrame renders the full text block: header,
-// span tail (top 20 most recent), summary stats, latency bars chart,
-// footer. The wallclock is passed in so tests can assert against a
-// fixed value.
-func formatObservabilityFrame(now time.Time, spans []observeRenderSpan) string {
+// formatObservabilityFrame renders a compact lower-left dashboard. Keep the
+// vertical footprint short: the pane is intentionally small, and the summary,
+// token/cost, time-to-limit, and latency chart are more useful at rest than a
+// scrolling span tail.
+func formatObservabilityFrame(now time.Time, spans []observeRenderSpan, usage observeRenderUsage) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "╭── milliways observability ── %s ──\n",
 		now.Format("15:04:05Z"))
-	fmt.Fprintln(&b, "│ recent spans (last 60s, top 20):")
-
-	// Daemon returns oldest-first; show newest at top of tail.
-	tail := spans
-	if len(tail) > 20 {
-		tail = tail[len(tail)-20:]
-	}
-	for i := len(tail) - 1; i >= 0; i-- {
-		sp := tail[i]
-		fmt.Fprintf(&b, "│   %s  %-22s %6.2fms  %s\n",
-			sp.StartTS.UTC().Format("15:04:05.000"),
+	if len(spans) == 0 {
+		fmt.Fprintln(&b, "│ latest: no spans")
+	} else {
+		sp := spans[len(spans)-1]
+		fmt.Fprintf(&b, "│ latest: %-22s %6.2fms  %s\n",
 			truncate(sp.Name, 22),
 			sp.DurationMS,
 			sp.Status,
@@ -248,14 +272,127 @@ func formatObservabilityFrame(now time.Time, spans []observeRenderSpan) string {
 	fmt.Fprintf(&b, "│   error rate:    %.0f/min\n", sum.ErrorRatePerM)
 	fmt.Fprintf(&b, "│   p50 latency:   %.2fms\n", sum.P50LatencyMS)
 	fmt.Fprintf(&b, "│   p99 latency:   %.2fms\n", sum.P99LatencyMS)
-	if bars := computeLatencyBars(spans, latencyTopN); len(bars) > 0 {
-		fmt.Fprintln(&b, "│")
-		fmt.Fprintf(&b, "│ latency (top %d methods, p50/p95/p99):\n", latencyTopN)
-		png := charts.Bars(bars, charts.DefaultTheme())
-		fmt.Fprintf(&b, "│   %s\n", charts.KittyEscape(png, 0))
+	fmt.Fprintln(&b, "│")
+	fmt.Fprintln(&b, "│ usage:")
+	fmt.Fprintf(&b, "│   tokens:        in %s / out %s / total %s (last 5m)\n",
+		formatObserveTokenCount(usage.Status.TokensIn),
+		formatObserveTokenCount(usage.Status.TokensOut),
+		formatObserveTokenCount(usage.Status.TokensIn+usage.Status.TokensOut))
+	fmt.Fprintf(&b, "│   cost:          %s (last 5m)\n", formatObserveCost(usage.Status.CostUSD))
+	fmt.Fprintf(&b, "│   time to limit: %s\n", formatTimeToLimit(usage.Quotas))
+	bars := computeLatencyBars(spans, latencyTopN)
+	if len(bars) == 0 {
+		bars = []charts.Bar{
+			{Value: 1, Hint: "dim", Label: "p50"},
+			{Value: 1, Hint: "dim", Label: "p95"},
+			{Value: 1, Hint: "dim", Label: "p99"},
+		}
 	}
+	fmt.Fprintln(&b, "│")
+	fmt.Fprintf(&b, "│ latency (top %d methods, p50/p95/p99):\n", latencyTopN)
+	png := charts.Bars(bars, charts.DefaultTheme())
+	fmt.Fprintf(&b, "│   %s\n", charts.KittyEscape(png, 0))
 	fmt.Fprintln(&b, "╰──")
 	return b.String()
+}
+
+func formatObserveTokenCount(n int) string {
+	switch {
+	case n < 0:
+		return "0"
+	case n < 1000:
+		return fmt.Sprintf("%d", n)
+	case n < 1_000_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	default:
+		return fmt.Sprintf("%.1fm", float64(n)/1_000_000)
+	}
+}
+
+func formatObserveCost(usd float64) string {
+	switch {
+	case usd <= 0:
+		return "$0.00"
+	case usd < 0.01:
+		return fmt.Sprintf("$%.4f", usd)
+	case usd < 10:
+		return fmt.Sprintf("$%.2f", usd)
+	default:
+		return fmt.Sprintf("$%.1f", usd)
+	}
+}
+
+func formatTimeToLimit(quotas []observeRenderQuota) string {
+	bestAgent := ""
+	var bestETA time.Duration
+	seenCap := false
+	seenBurn := false
+	seenUsage := false
+	for _, q := range quotas {
+		if q.Used > 0 {
+			seenUsage = true
+		}
+		if q.Cap <= 0 {
+			continue
+		}
+		seenCap = true
+		if q.Used >= q.Cap {
+			return q.AgentID + " limit reached"
+		}
+		window, ok := parseQuotaWindow(q.Window)
+		if !ok || q.Used <= 0 {
+			continue
+		}
+		seenBurn = true
+		ratePerSecond := q.Used / window.Seconds()
+		if ratePerSecond <= 0 {
+			continue
+		}
+		eta := time.Duration(((q.Cap - q.Used) / ratePerSecond) * float64(time.Second))
+		if bestAgent == "" || eta < bestETA {
+			bestAgent = q.AgentID
+			bestETA = eta
+		}
+	}
+	if bestAgent != "" {
+		return bestAgent + " " + formatObserveDuration(bestETA)
+	}
+	if seenCap && !seenBurn {
+		return "-- (no current burn)"
+	}
+	if seenUsage {
+		return "-- (no quota cap)"
+	}
+	return "-- (waiting for usage)"
+}
+
+func parseQuotaWindow(window string) (time.Duration, bool) {
+	window = strings.TrimSpace(strings.ToLower(window))
+	if window == "" {
+		return 0, false
+	}
+	if strings.HasSuffix(window, "d") {
+		var days float64
+		if _, err := fmt.Sscanf(strings.TrimSuffix(window, "d"), "%f", &days); err != nil || days <= 0 {
+			return 0, false
+		}
+		return time.Duration(days * float64(24*time.Hour)), true
+	}
+	d, err := time.ParseDuration(window)
+	return d, err == nil && d > 0
+}
+
+func formatObserveDuration(d time.Duration) string {
+	if d < time.Minute {
+		return "<1m"
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	if d < 48*time.Hour {
+		return fmt.Sprintf("%.1fh", d.Hours())
+	}
+	return fmt.Sprintf("%.1fd", d.Hours()/24)
 }
 
 // truncate clips s to max runes, padding with ellipsis if truncated.

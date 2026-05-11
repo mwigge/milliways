@@ -51,11 +51,15 @@ config.colors = {
   },
 }
 config.font               = wezterm.font('JetBrains Mono', { weight = 'Regular' })
-config.font_size          = 13.0
+config.font_size          = 12.0
 config.window_decorations = 'TITLE | RESIZE'
 config.hide_tab_bar_if_only_one_tab = false
 config.use_fancy_tab_bar  = false
 config.tab_bar_at_bottom  = false
+config.status_update_interval = 500
+config.window_padding = { left = 6, right = 6, top = 4, bottom = 4 }
+config.check_for_updates = false
+config.bypass_mouse_reporting_modifiers = 'SHIFT'
 
 -- ── Clickable URLs ────────────────────────────────────────────────────────────
 -- wezterm detects these patterns and makes them Ctrl+Click (macOS: Cmd+Click)
@@ -63,6 +67,11 @@ config.tab_bar_at_bottom  = false
 config.hyperlink_rules = {
   -- Standard https / http URLs
   { regex = '\\b(https?://[\\w\\-@:%.+~#=/?&]+)', highlight = 1, format = '$1' },
+  -- Project issue / PR shorthand
+  { regex = '\\b(?:issue|issues|pr|PR)[: ]#?(\\d+)\\b', highlight = 1,
+    format = 'https://github.com/mwigge/milliways/issues/$1' },
+  -- File paths with line numbers
+  { regex = '(~/[\\w\\-./]+|/[\\w\\-./]+):(\\d+)\\b', highlight = 1, format = 'file://$1:$2' },
   -- File paths: absolute and home-relative
   { regex = '(~/[\\w\\-./]+|/[\\w\\-./]+\\.[a-zA-Z0-9]+)', highlight = 1, format = 'file://$1' },
   -- GitHub short refs: owner/repo#123  owner/repo@sha
@@ -124,7 +133,14 @@ end
 if not path_env:find(local_bin, 1, true) then
   path_env = path_env .. ':' .. local_bin
 end
-config.set_environment_variables = { PATH = path_env }
+config.set_environment_variables = {
+  PATH = path_env,
+  TERM = 'xterm-256color',
+  COLORTERM = 'truecolor',
+  TERM_PROGRAM = 'WezTerm',
+  MILLIWAYS_HIGHLIGHT_STYLE = os.getenv('MILLIWAYS_HIGHLIGHT_STYLE') or 'catppuccin-mocha',
+  MILLIWAYS_FORCE_COLOR = os.getenv('MILLIWAYS_FORCE_COLOR') or '1',
+}
 
 -- Every new tab/pane runs `milliways`, which (since v0.6.0) drops directly
 -- into the chat REPL when launched inside milliways-term: the launcher
@@ -190,6 +206,41 @@ local function read_observe()
   return data
 end
 
+local function as_number(v)
+  if type(v) == 'number' then return v end
+  if type(v) == 'string' then return tonumber(v) or 0 end
+  return 0
+end
+
+local function format_count(n)
+  n = as_number(n)
+  if n < 1000 then return tostring(math.floor(n)) end
+  if n < 1000000 then return string.format('%.1fk', n / 1000) end
+  return string.format('%.1fm', n / 1000000)
+end
+
+local function format_cost(n)
+  n = as_number(n)
+  if n <= 0 then return '$0.00' end
+  if n < 0.01 then return string.format('$%.4f', n) end
+  if n < 10 then return string.format('$%.2f', n) end
+  return string.format('$%.1f', n)
+end
+
+local function pane_path(pane)
+  local uri = pane and pane.current_working_dir
+  if uri and uri ~= '' then
+    local path = uri:gsub('^file://', '')
+    path = path:gsub('%%20', ' ')
+    return abbrev_path(path)
+  end
+  local data = read_observe()
+  if data and data.p and data.p ~= '' then
+    return abbrev_path(data.p)
+  end
+  return '~'
+end
+
 wezterm.on('update-status', function(window, _pane)
   local data = read_observe()
   if not data then
@@ -206,6 +257,10 @@ wezterm.on('update-status', function(window, _pane)
   local current  = data.c or ''
   local agents   = data.a or {}
   local woke_ago = data.woke_ago  -- seconds since wake, or nil
+  local tokens_in = as_number(data.tin or data.tokens_in)
+  local tokens_out = as_number(data.tout or data.tokens_out)
+  local cost = as_number(data.cost or data.cost_usd)
+  local errors = as_number(data.errors or data.errors_5m)
 
   -- Apply per-client color theme when client changes.
   local theme = client_themes[current] or default_theme
@@ -260,6 +315,22 @@ wezterm.on('update-status', function(window, _pane)
   else
     table.insert(cells, { Foreground = { Color = '#504945' } })
     table.insert(cells, { Text = ' ○— ' })
+  end
+
+  if tokens_in > 0 or tokens_out > 0 or cost > 0 then
+    table.insert(cells, { Foreground = { Color = '#504945' } })
+    table.insert(cells, { Text = '│' })
+    table.insert(cells, { Foreground = { Color = '#8ec07c' } })
+    table.insert(cells, { Text = ' ' .. format_count(tokens_in) .. '↑/' .. format_count(tokens_out) .. '↓ tok ' })
+    table.insert(cells, { Foreground = { Color = theme.accent } })
+    table.insert(cells, { Text = format_cost(cost) .. ' ' })
+  end
+
+  if errors > 0 then
+    table.insert(cells, { Foreground = { Color = '#504945' } })
+    table.insert(cells, { Text = '│' })
+    table.insert(cells, { Foreground = { Color = '#fb4934' } })
+    table.insert(cells, { Text = ' err:' .. tostring(math.floor(errors)) .. ' ' })
   end
 
   table.insert(cells, { Foreground = { Color = '#504945' } })
@@ -502,27 +573,21 @@ function open_ctl_prompt(initial)
   }
 end
 
--- ── Tab title: show milliways status from OSC 0 set by the Go chat loop ──────
--- Tab shows the rich status string set via OSC 0 by the milliways process:
---   ready:     "milliways · claude"
---   thinking:  "milliways · claude · thinking…"
---   streaming: "milliways · claude · streaming…"
---   done:      "milliways · claude · $0.02 session · 1200→340 tok"
--- Window title (OSC 2) carries the compact runner+model: "● claude · sonnet-4-6"
--- pane.title reflects the last OSC 0/1 value; fall back to tab index when unset.
+-- ── Window/tab title: keep app chrome branded, independent of side panes ─────
+local function milliways_title(pane)
+  return 'MilliWays:' .. pane_path(pane)
+end
+
+wezterm.on('format-window-title', function(_tab, pane)
+  return milliways_title(pane)
+end)
+
 wezterm.on('format-tab-title', function(tab, _tabs, _panes, _cfg, _hover, max_width)
-  local pane  = tab.active_pane
-  local title = pane.title  -- set by OSC 0/1 from the Go process
-  if title == nil or title == '' or title == 'milliways' then
-    -- Landing zone or no OSC title yet — show a compact index.
-    title = ' ' .. (tab.tab_index + 1) .. ' '
-  else
-    -- Trim to max_width so wide titles don't overflow the tab bar.
-    if #title > max_width - 2 then
-      title = wezterm.truncate_right(title, max_width - 3) .. '…'
-    end
-    title = ' ' .. title .. ' '
+  local title = milliways_title(tab.active_pane)
+  if #title > max_width - 2 then
+    title = wezterm.truncate_right(title, max_width - 3) .. '…'
   end
+  title = ' ' .. title .. ' '
   local is_active = tab.is_active
   return {
     { Background = { Color = is_active and '#504945' or '#1d2021' } },
@@ -536,7 +601,29 @@ end)
 -- Also maximizes the initial window so milliways fills the screen on launch.
 
 wezterm.on('gui-startup', function(cmd)
-  local _tab, _pane, window = mux.spawn_window(cmd or {})
+  local pane_env = {
+    PATH = path_env,
+    TERM = 'xterm-256color',
+    COLORTERM = 'truecolor',
+    TERM_PROGRAM = 'WezTerm',
+    MILLIWAYS_HIGHLIGHT_STYLE = 'catppuccin-mocha',
+    MILLIWAYS_FORCE_COLOR = '1',
+  }
+  local spawn = cmd or {}
+  if not spawn.args then
+    spawn.args = { mw_bin }
+  end
+  spawn.set_environment_variables = spawn.set_environment_variables or {}
+  for k, v in pairs(pane_env) do
+    spawn.set_environment_variables[k] = v
+  end
+  spawn.set_environment_variables.MILLIWAYS_NO_DECK = '1'
+
+  local _tab, main_pane, window = mux.spawn_window(spawn)
+  if not main_pane then
+    return
+  end
+
   window:gui_window():maximize()
 
   local daemon_sock = state_dir .. '/sock'
@@ -547,6 +634,24 @@ wezterm.on('gui-startup', function(cmd)
     wezterm.background_child_process({ daemon_bin })
   end
   wezterm.background_child_process({ mwctl_bin, 'observe', '--watch' })
+
+  local main_pane_id = tostring(main_pane:pane_id())
+  local deck_pane = main_pane:split {
+    direction = 'Left',
+    size = 0.18,
+    args = { mw_bin, 'attach', '--deck', '--right-pane', main_pane_id },
+    set_environment_variables = pane_env,
+  }
+  if deck_pane then
+    deck_pane:split {
+      direction = 'Bottom',
+      size = 0.38,
+      args = { mwctl_bin, 'observe-render' },
+      set_environment_variables = pane_env,
+    }
+  end
+
+  main_pane:activate()
 end)
 
 return config

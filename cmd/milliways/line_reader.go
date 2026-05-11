@@ -91,7 +91,7 @@ func (r *chatLineReader) SetPrompt(prompt string) {
 func (r *chatLineReader) Refresh() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.closed {
+	if r.closed || !r.active {
 		return
 	}
 	r.redrawLocked()
@@ -153,7 +153,7 @@ func (r *chatLineReader) Readline() (string, error) {
 			// newline-terminated line so the full submitted text is always
 			// selectable as one logical string in the terminal scrollback.
 			r.clearPromptLocked()
-			fmt.Fprintf(r.out, "%s%s\n", r.prompt, line)
+			r.writeSubmittedLineLocked(line)
 			r.mu.Unlock()
 			r.addHistory(line)
 			return line, nil
@@ -194,6 +194,13 @@ func (r *chatLineReader) Readline() (string, error) {
 			}
 		}
 	}
+}
+
+func (r *chatLineReader) writeSubmittedLineLocked(line string) {
+	// Readline runs while the terminal is in raw mode. In raw mode "\n" moves
+	// down but does not return to column 0, which makes the next status or
+	// streamed response start under the submitted prompt.
+	fmt.Fprintf(r.out, "%s%s\r\n", r.prompt, line)
 }
 
 func (r *chatLineReader) handleEscape(br *bufio.Reader) {
@@ -475,10 +482,7 @@ func visualRows(visibleWidth, termWidth int) int {
 	if visibleWidth <= 0 {
 		return 1
 	}
-	rows := (visibleWidth / termWidth) + 1
-	if visibleWidth%termWidth == 0 {
-		rows--
-	}
+	rows := ((visibleWidth - 1) / termWidth) + 1
 	if rows < 1 {
 		return 1
 	}
@@ -492,7 +496,7 @@ func cursorPosition(visibleWidth, termWidth int) (row, col int) {
 	if visibleWidth <= 0 {
 		return 0, 0
 	}
-	return visibleWidth / termWidth, visibleWidth % termWidth
+	return (visibleWidth - 1) / termWidth, ((visibleWidth - 1) % termWidth) + 1
 }
 
 func (r *chatLineReader) addHistory(line string) {

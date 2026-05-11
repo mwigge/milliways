@@ -32,7 +32,8 @@ import (
 
 // urlRe matches http and https URLs in plain text.
 var urlRe = regexp.MustCompile(`https?://[^\s\x1b<>"]+`)
-var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
+var diagnosticWordRe = regexp.MustCompile(`(?i)\b(error|failed|failure|warning|warn|todo):`)
 var codePanelTermWidth = termWidth
 
 func ansiEnabled() bool {
@@ -53,6 +54,42 @@ func linkifyURLs(text string) string {
 	})
 }
 
+func renderInlinePlainText(text string) string {
+	if strings.ContainsRune(text, '\x1b') {
+		return text
+	}
+	if !ansiEnabled() || !diagnosticWordRe.MatchString(text) {
+		return linkifyURLs(text)
+	}
+	var b strings.Builder
+	last := 0
+	matches := diagnosticWordRe.FindAllStringIndex(text, -1)
+	for _, match := range matches {
+		if match[0] > last {
+			b.WriteString(linkifyURLs(text[last:match[0]]))
+		}
+		word := text[match[0]:match[1]]
+		b.WriteString(renderDiagnosticWord(word))
+		last = match[1]
+	}
+	if last < len(text) {
+		b.WriteString(linkifyURLs(text[last:]))
+	}
+	return b.String()
+}
+
+func renderDiagnosticWord(match string) string {
+	lower := strings.ToLower(match)
+	color := "\033[38;5;81m"
+	switch {
+	case strings.HasPrefix(lower, "error"), strings.HasPrefix(lower, "failed"), strings.HasPrefix(lower, "failure"):
+		color = "\033[38;5;203m"
+	case strings.HasPrefix(lower, "warn"):
+		color = "\033[38;5;221m"
+	}
+	return color + "\033[1m" + match + "\033[0m"
+}
+
 // codeHighlighter wraps an io.Writer and intercepts markdown code fences.
 // Text outside fences is passed through immediately. Text inside fences
 // is syntax-highlighted and written as boxed lines as soon as complete
@@ -67,11 +104,25 @@ type codeHighlighter struct {
 	lang       string       // language extracted from the opening fence line
 	codeWidth  int          // content width for the currently open code panel
 	inFence    bool
+	lastBlank  bool
+	lastNL     bool
 }
 
 // newCodeHighlighter returns a codeHighlighter that writes to out.
 func newCodeHighlighter(out io.Writer) *codeHighlighter {
 	return &codeHighlighter{out: out}
+}
+
+func (h *codeHighlighter) writeString(s string) {
+	if s == "" {
+		return
+	}
+	_, _ = io.WriteString(h.out, s)
+	h.lastNL = strings.HasSuffix(s, "\n")
+}
+
+func (h *codeHighlighter) endsWithNewline() bool {
+	return h.lastNL
 }
 
 // Write implements io.Writer. It processes p line by line:
@@ -109,6 +160,15 @@ func (h *codeHighlighter) Write(p []byte) (int, error) {
 // processLine handles a single complete line (without trailing newline).
 func (h *codeHighlighter) processLine(line string) {
 	if !h.inFence {
+		if strings.TrimSpace(line) == "" {
+			h.flushTable()
+			if !h.lastBlank {
+				h.writeString("\n")
+				h.lastBlank = true
+			}
+			return
+		}
+		h.lastBlank = false
 		// Check for an opening fence: three backticks, optionally followed
 		// by a language identifier.
 		if strings.HasPrefix(line, "```") {
@@ -116,7 +176,7 @@ func (h *codeHighlighter) processLine(line string) {
 			h.inFence = true
 			h.lang = strings.TrimSpace(strings.TrimPrefix(line, "```"))
 			h.codeWidth = streamingCodePanelWidth(h.lang)
-			_, _ = io.WriteString(h.out, renderCodePanelTop(h.lang, h.codeWidth))
+			h.writeString(renderCodePanelTop(h.lang, h.codeWidth))
 			return
 		}
 		if isMarkdownTableCandidate(line) {
@@ -125,10 +185,10 @@ func (h *codeHighlighter) processLine(line string) {
 		}
 		h.flushTable()
 		if rendered, ok := renderActionLine(line); ok {
-			_, _ = io.WriteString(h.out, rendered)
+			h.writeString(rendered)
 			return
 		}
-		_, _ = io.WriteString(h.out, renderPlainMarkdownLine(line, true))
+		h.writeString(renderPlainMarkdownLine(line, true))
 		return
 	}
 
@@ -136,13 +196,13 @@ func (h *codeHighlighter) processLine(line string) {
 	if line == "```" {
 		// Closing fence — close the streaming code panel.
 		h.inFence = false
-		_, _ = io.WriteString(h.out, renderCodePanelBottom(h.codeWidth))
+		h.writeString(renderCodePanelBottom(h.codeWidth))
 		h.lang = ""
 		h.codeWidth = 0
 		return
 	}
 
-	_, _ = io.WriteString(h.out, renderCodePanelLine(line, h.lang, h.codeWidth))
+	h.writeString(renderCodePanelLine(line, h.lang, h.codeWidth))
 }
 
 // Flush writes any pending line and closes any unclosed streaming code panel.
@@ -154,34 +214,25 @@ func (h *codeHighlighter) Flush() error {
 		line := h.pending.String()
 		h.pending.Reset()
 		if h.inFence {
-			if _, err := io.WriteString(h.out, renderCodePanelLine(line, h.lang, h.codeWidth)); err != nil {
-				return err
-			}
+			h.writeString(renderCodePanelLine(line, h.lang, h.codeWidth))
 		} else if isMarkdownTableCandidate(line) {
 			h.tableLines = append(h.tableLines, line)
 		} else {
 			h.flushTable()
 			if rendered, ok := renderActionLine(line); ok {
-				_, err := io.WriteString(h.out, strings.TrimSuffix(rendered, "\n"))
-				if err != nil {
-					return err
-				}
+				h.writeString(strings.TrimSuffix(rendered, "\n"))
 				return nil
 			}
-			_, err := io.WriteString(h.out, strings.TrimSuffix(renderPlainMarkdownLine(line, false), "\n"))
-			if err != nil {
-				return err
-			}
+			h.writeString(strings.TrimSuffix(renderPlainMarkdownLine(line, false), "\n"))
 		}
 	}
 	h.flushTable()
 
 	if h.inFence {
-		_, err := io.WriteString(h.out, renderCodePanelBottom(h.codeWidth))
+		h.writeString(renderCodePanelBottom(h.codeWidth))
 		h.inFence = false
 		h.lang = ""
 		h.codeWidth = 0
-		return err
 	}
 
 	return nil
@@ -194,12 +245,14 @@ func (h *codeHighlighter) flushTable() {
 	lines := h.tableLines
 	h.tableLines = nil
 	if rendered, ok := renderMarkdownTable(lines); ok {
-		_, _ = io.WriteString(h.out, rendered)
+		h.writeString(rendered)
+		h.lastBlank = false
 		return
 	}
 	for _, line := range lines {
-		_, _ = io.WriteString(h.out, renderPlainMarkdownLine(line, true))
+		h.writeString(renderPlainMarkdownLine(line, true))
 	}
+	h.lastBlank = false
 }
 
 func renderPlainMarkdownLine(line string, addNewline bool) string {
@@ -221,9 +274,9 @@ func renderPlainMarkdownLine(line string, addNewline bool) string {
 	width := plainMarkdownWrapWidth()
 	if !looksLikeMarkdownStructure(strings.TrimSpace(line)) && displayWidth(line) <= width {
 		if addNewline {
-			return linkifyURLs(line) + "\n"
+			return renderInlinePlainText(line) + "\n"
 		}
-		return linkifyURLs(line)
+		return renderInlinePlainText(line)
 	}
 	prefix, body, continuation := markdownLinePrefix(line)
 	isQuote := strings.HasPrefix(strings.TrimSpace(line), ">")
@@ -233,9 +286,9 @@ func renderPlainMarkdownLine(line string, addNewline bool) string {
 	}
 	if body == "" {
 		if addNewline {
-			return linkifyURLs(prefix) + "\n"
+			return renderInlinePlainText(prefix) + "\n"
 		}
-		return linkifyURLs(prefix)
+		return renderInlinePlainText(prefix)
 	}
 	rawPrefix, _, _ := markdownLinePrefix(line)
 	bodyWidth := width - displayWidth(rawPrefix)
@@ -254,7 +307,7 @@ func renderPlainMarkdownLine(line string, addNewline bool) string {
 		} else {
 			b.WriteString(prefix)
 		}
-		b.WriteString(linkifyURLs(wrapped))
+		b.WriteString(renderInlinePlainText(wrapped))
 	}
 	if addNewline {
 		b.WriteByte('\n')
@@ -475,19 +528,6 @@ func renderMarkdownTable(lines []string) (string, bool) {
 			}
 			widths[maxIdx]--
 		}
-		// Truncate cell text to fit the capped widths.
-		for i, cell := range header {
-			if displayWidth(cell) > widths[i] {
-				header[i] = truncateANSIVisible(cell, widths[i])
-			}
-		}
-		for ri, row := range rows {
-			for i, cell := range row {
-				if displayWidth(cell) > widths[i] {
-					rows[ri][i] = truncateANSIVisible(cell, widths[i])
-				}
-			}
-		}
 	}
 
 	const (
@@ -567,28 +607,62 @@ func writeTableRule(b *strings.Builder, border, reset, left, mid, right string, 
 }
 
 func writeTableRow(b *strings.Builder, border, style, reset string, cells []string, widths []int, align []string) {
-	b.WriteString(border)
-	b.WriteString("│")
-	b.WriteString(reset)
+	wrapped := make([][]string, len(widths))
+	rowHeight := 1
 	for i, width := range widths {
 		if i >= len(cells) {
 			cells = append(cells, "")
 		}
-		cell := alignedCell(cells[i], width, align[i])
-		b.WriteByte(' ')
-		if style != "" {
-			b.WriteString(style)
+		wrapped[i] = wrapTableCell(cells[i], width)
+		if len(wrapped[i]) > rowHeight {
+			rowHeight = len(wrapped[i])
 		}
-		b.WriteString(linkifyURLs(cell))
-		if style != "" {
-			b.WriteString(reset)
-		}
-		b.WriteByte(' ')
+	}
+	for lineIdx := 0; lineIdx < rowHeight; lineIdx++ {
 		b.WriteString(border)
 		b.WriteString("│")
 		b.WriteString(reset)
+		for i, width := range widths {
+			cell := ""
+			if lineIdx < len(wrapped[i]) {
+				cell = wrapped[i][lineIdx]
+			}
+			cell = alignedCell(cell, width, align[i])
+			b.WriteByte(' ')
+			if style != "" {
+				b.WriteString(style)
+			}
+			b.WriteString(linkifyURLs(cell))
+			if style != "" {
+				b.WriteString(reset)
+			}
+			b.WriteByte(' ')
+			b.WriteString(border)
+			b.WriteString("│")
+			b.WriteString(reset)
+		}
+		b.WriteByte('\n')
 	}
-	b.WriteByte('\n')
+}
+
+func wrapTableCell(cell string, width int) []string {
+	cell = strings.TrimSpace(cell)
+	if cell == "" {
+		return []string{""}
+	}
+	if displayWidth(cell) <= width {
+		return []string{cell}
+	}
+	lines := wrapPlainForTerminal(cell, width)
+	if len(lines) == 0 {
+		return []string{cell}
+	}
+	for i, line := range lines {
+		if displayWidth(line) > width {
+			lines[i] = truncateANSIVisible(line, width)
+		}
+	}
+	return lines
 }
 
 func alignedCell(cell string, width int, align string) string {
@@ -1133,7 +1207,8 @@ func writeTerminalStatus(out io.Writer, line string) {
 		return
 	}
 	if h, ok := out.(*codeHighlighter); ok {
-		_, _ = io.WriteString(h.out, line+"\n")
+		h.writeString(line + "\n")
+		h.lastBlank = false
 		return
 	}
 	_, _ = io.WriteString(out, line+"\n")

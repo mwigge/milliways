@@ -82,7 +82,7 @@ func TestFormatObservabilityFrame(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := formatObservabilityFrame(fixedNow, tt.spans)
+			got := formatObservabilityFrame(fixedNow, tt.spans, observeRenderUsage{})
 			for _, want := range tt.wantSubs {
 				if !strings.Contains(got, want) {
 					t.Errorf("missing substring %q in:\n%s", want, got)
@@ -100,15 +100,15 @@ func TestFormatObservabilityFrame(t *testing.T) {
 // TestFormatObservabilityFrame_EmbedsBarsChart asserts that when the
 // snapshot has at least one span, the frame embeds a kitty-graphics
 // bars chart (latency p50/p95/p99) after the summary block. Empty
-// snapshots fall back to text-only.
+// snapshots keep a dim placeholder chart so the cockpit layout does not jump.
 func TestFormatObservabilityFrame_EmbedsBarsChart(t *testing.T) {
 	t.Parallel()
 	fixedNow := time.Date(2026, 4, 27, 12, 34, 56, 0, time.UTC)
 
-	// Empty: no escape.
-	got := formatObservabilityFrame(fixedNow, nil)
-	if strings.Contains(got, "\x1b_G") {
-		t.Errorf("empty snapshot should not embed a kitty escape")
+	// Empty: placeholder chart remains mounted.
+	got := formatObservabilityFrame(fixedNow, nil, observeRenderUsage{})
+	if !strings.Contains(got, "\x1b_G") {
+		t.Errorf("empty snapshot should embed a placeholder kitty escape")
 	}
 
 	// Populated: escape and label appear.
@@ -117,12 +117,75 @@ func TestFormatObservabilityFrame_EmbedsBarsChart(t *testing.T) {
 		{Name: "rpc.ping", DurationMS: 1.5, Status: "ok"},
 		{Name: "rpc.ping", DurationMS: 12.0, Status: "ok"},
 	}
-	got = formatObservabilityFrame(fixedNow, spans)
+	got = formatObservabilityFrame(fixedNow, spans, observeRenderUsage{})
 	if !strings.Contains(got, "\x1b_G") {
 		t.Errorf("populated snapshot should embed a kitty escape:\n%s", got)
 	}
 	if !strings.Contains(got, "latency (top") {
 		t.Errorf("expected 'latency (top …)' label in frame:\n%s", got)
+	}
+}
+
+func TestFormatObservabilityFrame_ShowsUsageAndTimeToLimit(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 4, 27, 12, 34, 56, 0, time.UTC)
+	usage := observeRenderUsage{
+		Status: observeRenderStatus{TokensIn: 1200, TokensOut: 800, CostUSD: 0.0123},
+		Quotas: []observeRenderQuota{{
+			AgentID: "claude",
+			Used:    500,
+			Cap:     1000,
+			Window:  "1h",
+		}},
+	}
+
+	got := formatObservabilityFrame(fixedNow, nil, usage)
+	for _, want := range []string{
+		"usage:",
+		"tokens:        in 1.2k / out 800 / total 2.0k",
+		"cost:          $0.01",
+		"time to limit: claude 1.0h",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("frame missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestFormatTimeToLimitFallbacks(t *testing.T) {
+	t.Parallel()
+	if got := formatTimeToLimit(nil); got != "-- (waiting for usage)" {
+		t.Fatalf("empty quotas = %q", got)
+	}
+	if got := formatTimeToLimit([]observeRenderQuota{{AgentID: "claude", Used: 0, Cap: 1000, Window: "1h"}}); got != "-- (no current burn)" {
+		t.Fatalf("no burn = %q", got)
+	}
+	if got := formatTimeToLimit([]observeRenderQuota{{AgentID: "claude", Used: 100, Cap: 0, Window: "1h"}}); got != "-- (no quota cap)" {
+		t.Fatalf("uncapped usage = %q", got)
+	}
+	if got := formatTimeToLimit([]observeRenderQuota{{AgentID: "claude", Used: 1000, Cap: 1000, Window: "1h"}}); got != "claude limit reached" {
+		t.Fatalf("limit reached = %q", got)
+	}
+}
+
+func TestFormatObservabilityFrame_StaysCompact(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 4, 27, 12, 34, 56, 0, time.UTC)
+	spans := []observeRenderSpan{
+		{Name: "rpc.status.get", DurationMS: 0.5, Status: "ok"},
+		{Name: "rpc.agent.list", DurationMS: 0.1, Status: "ok"},
+		{Name: "rpc.observe.latest", DurationMS: 2.0, Status: "ok"},
+	}
+
+	got := formatObservabilityFrame(fixedNow, spans, observeRenderUsage{})
+	if strings.Contains(got, "recent spans") {
+		t.Fatalf("frame should not render a scrolling span tail:\n%s", got)
+	}
+	if !strings.Contains(got, "latest: rpc.observe.latest") {
+		t.Fatalf("frame missing compact latest span:\n%s", got)
+	}
+	if lines := strings.Count(got, "\n"); lines > 18 {
+		t.Fatalf("frame too tall for lower-left pane: %d lines\n%s", lines, got)
 	}
 }
 

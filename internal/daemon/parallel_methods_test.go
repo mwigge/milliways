@@ -90,6 +90,29 @@ func parallelTestHarness(t *testing.T) (srv *Server, send func(method string, pa
 	return
 }
 
+func TestCodeGraphInjectTimeoutFromEnv(t *testing.T) {
+	cases := []struct {
+		name string
+		env  string
+		want time.Duration
+	}{
+		{name: "default", want: 750 * time.Millisecond},
+		{name: "invalid", env: "nope", want: 750 * time.Millisecond},
+		{name: "negative", env: "-1s", want: 750 * time.Millisecond},
+		{name: "custom", env: "25ms", want: 25 * time.Millisecond},
+		{name: "capped", env: "10s", want: 5 * time.Second},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("MILLIWAYS_CODEGRAPH_TIMEOUT", tc.env)
+			if got := codeGraphInjectTimeout(); got != tc.want {
+				t.Fatalf("codeGraphInjectTimeout() = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestParallelDispatch_EchoAgent verifies that parallel.dispatch with _echo
 // provider returns a group_id and at least one slot.
 func TestParallelDispatch_EchoAgent(t *testing.T) {

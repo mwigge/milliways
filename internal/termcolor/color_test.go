@@ -51,16 +51,22 @@ func TestEnabledRespectsEnvironment(t *testing.T) {
 	oldTerm, hadTerm := os.LookupEnv("TERM")
 	oldColorTerm, hadColorTerm := os.LookupEnv("COLORTERM")
 	oldTermProgram, hadTermProgram := os.LookupEnv("TERM_PROGRAM")
+	oldMWForce, hadMWForce := os.LookupEnv("MILLIWAYS_FORCE_COLOR")
+	oldForce, hadForce := os.LookupEnv("FORCE_COLOR")
 	t.Cleanup(func() {
 		restoreEnv("NO_COLOR", oldNoColor, hadNoColor)
 		restoreEnv("TERM", oldTerm, hadTerm)
 		restoreEnv("COLORTERM", oldColorTerm, hadColorTerm)
 		restoreEnv("TERM_PROGRAM", oldTermProgram, hadTermProgram)
+		restoreEnv("MILLIWAYS_FORCE_COLOR", oldMWForce, hadMWForce)
+		restoreEnv("FORCE_COLOR", oldForce, hadForce)
 	})
 
 	_ = os.Unsetenv("NO_COLOR")
 	_ = os.Unsetenv("COLORTERM")
 	_ = os.Unsetenv("TERM_PROGRAM")
+	_ = os.Unsetenv("MILLIWAYS_FORCE_COLOR")
+	_ = os.Unsetenv("FORCE_COLOR")
 	_ = os.Setenv("TERM", "dumb")
 	if Enabled() {
 		t.Fatal("Enabled() with TERM=dumb = true, want false")
@@ -76,6 +82,15 @@ func TestEnabledRespectsEnvironment(t *testing.T) {
 	_ = os.Setenv("NO_COLOR", "1")
 	if Enabled() {
 		t.Fatal("Enabled() with NO_COLOR = true, want false")
+	}
+	_ = os.Setenv("MILLIWAYS_FORCE_COLOR", "1")
+	if !Enabled() {
+		t.Fatal("Enabled() with MILLIWAYS_FORCE_COLOR and NO_COLOR = false, want true")
+	}
+	_ = os.Setenv("MILLIWAYS_FORCE_COLOR", "0")
+	_ = os.Setenv("FORCE_COLOR", "1")
+	if !Enabled() {
+		t.Fatal("Enabled() with FORCE_COLOR and NO_COLOR = false, want true")
 	}
 }
 

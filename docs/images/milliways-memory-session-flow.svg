@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="520" viewBox="0 0 1120 520">
+  <rect width="1120" height="520" fill="#111827"/>
+  <style>
+    .title { font: 700 20px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #f9fafb; }
+    .label { font: 600 14px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #e5e7eb; }
+    .text { font: 13px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #cbd5e1; }
+    .mono { font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; fill: #d1d5db; }
+    .muted { fill: #94a3b8; }
+    .ok { fill: #34d399; }
+    .warn { fill: #fbbf24; }
+    .accent { fill: #8b5cf6; }
+    .cyan { fill: #38bdf8; }
+    .pearl { fill: #f5f5f4; }
+    .box { fill: #1f2937; stroke: #475569; stroke-width: 1.4; rx: 10; }
+    .box2 { fill: #172033; stroke: #64748b; stroke-width: 1.4; rx: 10; }
+    .store { fill: #0f172a; stroke: #38bdf8; stroke-width: 1.4; rx: 10; }
+    .line { stroke: #94a3b8; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    .line2 { stroke: #8b5cf6; stroke-width: 2; fill: none; marker-end: url(#arrow2); }
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L7,3 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrow2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L7,3 z" fill="#8b5cf6"/>
+    </marker>
+  </defs>
+<text x="40" y="52" class="title">Session memory flow</text>
+<rect x="40" y="92" width="210" height="120" class="box"/>
+<text x="58" y="120" class="label">Prompt</text>
+<text x="58" y="146" class="text">user input</text>
+<text x="58" y="168" class="text">slash commands</text>
+<text x="58" y="190" class="text">context fragments</text>
+<rect x="310" y="72" width="230" height="160" class="box"/>
+<text x="328" y="100" class="label">Context builder</text>
+<text x="328" y="126" class="text">active turn log</text>
+<text x="328" y="148" class="text">project facts</text>
+<text x="328" y="170" class="text">repo context</text>
+<rect x="610" y="50" width="220" height="120" class="store"/>
+<text x="628" y="78" class="label">Project memory</text>
+<text x="628" y="104" class="text">MemPalace MCP</text>
+<text x="628" y="126" class="text">relevant drawers</text>
+<text x="628" y="148" class="text">handoff facts</text>
+<rect x="610" y="206" width="220" height="120" class="store"/>
+<text x="628" y="234" class="label">Code context</text>
+<text x="628" y="260" class="text">CodeGraph index</text>
+<text x="628" y="282" class="text">symbols</text>
+<text x="628" y="304" class="text">call graph</text>
+<rect x="890" y="92" width="190" height="120" class="box"/>
+<text x="908" y="120" class="label">Runner</text>
+<text x="908" y="146" class="text">streaming output</text>
+<text x="908" y="168" class="text">tool events</text>
+<text x="908" y="190" class="text">usage data</text>
+<rect x="310" y="310" width="230" height="120" class="box2"/>
+<text x="328" y="338" class="label">Live turn log</text>
+<text x="328" y="364" class="text">in-memory</text>
+<text x="328" y="386" class="text">used for switch</text>
+<text x="328" y="408" class="text">compactable</text>
+<rect x="610" y="352" width="220" height="120" class="store"/>
+<text x="628" y="380" class="label">Daemon history</text>
+<text x="628" y="406" class="text">history/*.ndjson</text>
+<text x="628" y="428" class="text">bounded retention</text>
+<text x="628" y="450" class="text">per runner</text>
+<path d="M250,152 C280,152 280,152 310,152" class="line"/>
+<path d="M540,132 C575,132 575,110 610,110" class="line"/>
+<path d="M540,172 C575,172 575,254 610,254" class="line"/>
+<path d="M830,110 C860,110 860,152 890,152" class="line"/>
+<path d="M830,254 C860,254 860,152 890,152" class="line"/>
+<path d="M980,212 C850,212 850,352 720,352" class="line"/>
+<path d="M890,174 C715,174 715,370 540,370" class="line"/>
+<path d="M425,310 C425,310 425,232 425,232" class="line"/>
+</svg>

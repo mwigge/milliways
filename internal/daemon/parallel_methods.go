@@ -19,10 +19,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/mwigge/milliways/internal/mempalace"
+	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/parallel"
 	"github.com/mwigge/milliways/internal/security"
 )
@@ -406,6 +408,136 @@ func (a *mempalaceParallelAdapter) KGAdd(ctx context.Context, subject, predicate
 	}
 	drawerID := predicate + ":" + truncate(object, 80)
 	return a.c.Write(ctx, wing, subject, drawerID, object)
+}
+
+func (a *mempalaceParallelAdapter) KGInvalidate(ctx context.Context, subject, predicate, object string) error {
+	if err := a.c.KGInvalidate(ctx, subject, predicate, object); err == nil {
+		return nil
+	}
+	results, err := a.c.Search(ctx, subject, 20)
+	if err != nil {
+		return err
+	}
+	for _, r := range results {
+		if r.Content != object || r.DrawerID == "" {
+			continue
+		}
+		if err := a.c.DeleteDrawer(ctx, r.DrawerID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// codeGraphClient returns a CodeGraph-backed context client when
+// MILLIWAYS_CODEGRAPH_MCP_CMD is set. In tests, testCGClient overrides
+// the real client.
+func (s *Server) codeGraphClient() (parallel.CodeGraphClient, func()) {
+	if s.testCGClient != nil {
+		return s.testCGClient, func() {}
+	}
+	cmd := strings.TrimSpace(os.Getenv("MILLIWAYS_CODEGRAPH_MCP_CMD"))
+	if cmd == "" {
+		return nil, func() {}
+	}
+	type result struct {
+		client *pantry.CodeGraphClient
+		err    error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		c, err := pantry.NewCodeGraphClient(cmd, strings.Fields(os.Getenv("MILLIWAYS_CODEGRAPH_MCP_ARGS"))...)
+		ch <- result{client: c, err: err}
+	}()
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			slog.Debug("codegraph client unavailable", "err", res.err)
+			return nil, func() {}
+		}
+		return &codeGraphParallelAdapter{c: res.client}, func() { _ = res.client.Close() }
+	case <-time.After(codeGraphInjectTimeout()):
+		go func() {
+			res := <-ch
+			if res.client != nil {
+				_ = res.client.Close()
+			}
+		}()
+		slog.Debug("codegraph client unavailable", "err", "startup timeout")
+		return nil, func() {}
+	}
+}
+
+func codeGraphInjectTimeout() time.Duration {
+	value := strings.TrimSpace(os.Getenv("MILLIWAYS_CODEGRAPH_TIMEOUT"))
+	if value == "" {
+		return 750 * time.Millisecond
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		return 750 * time.Millisecond
+	}
+	if d > 5*time.Second {
+		return 5 * time.Second
+	}
+	return d
+}
+
+type codeGraphParallelAdapter struct {
+	c *pantry.CodeGraphClient
+}
+
+func (a *codeGraphParallelAdapter) Search(ctx context.Context, query string) ([]parallel.CodeGraphResult, error) {
+	results, err := a.c.Search(ctx, query, 10)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]parallel.CodeGraphResult, 0, len(results))
+	for _, r := range results {
+		out = append(out, parallel.CodeGraphResult{
+			Symbol: r.Name,
+			File:   r.File,
+			Kind:   r.Kind,
+			Line:   r.Line,
+		})
+	}
+	return out, nil
+}
+
+func (a *codeGraphParallelAdapter) Callers(context.Context, string) ([]string, error) {
+	return nil, fmt.Errorf("codegraph callers unavailable through daemon adapter")
+}
+
+func (a *codeGraphParallelAdapter) Callees(context.Context, string) ([]string, error) {
+	return nil, fmt.Errorf("codegraph callees unavailable through daemon adapter")
+}
+
+func (a *codeGraphParallelAdapter) Impact(ctx context.Context, filePath string) ([]string, error) {
+	results, err := a.c.Search(ctx, filePath, 10)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(results))
+	for _, r := range results {
+		if r.File == "" {
+			continue
+		}
+		label := r.File
+		if r.Name != "" {
+			label = fmt.Sprintf("%s (%s:%d)", r.Name, r.File, r.Line)
+		}
+		out = append(out, label)
+	}
+	if len(out) == 0 {
+		ctxText, ctxErr := a.c.Context(ctx, "impact of changing "+filePath)
+		if ctxErr != nil {
+			return nil, ctxErr
+		}
+		if strings.TrimSpace(ctxText) != "" {
+			out = append(out, strings.TrimSpace(ctxText))
+		}
+	}
+	return out, nil
 }
 
 func truncate(s string, n int) string {

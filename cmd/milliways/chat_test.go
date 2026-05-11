@@ -76,6 +76,22 @@ func TestDisplayModelInfoUsesObservedSessionModelAndSource(t *testing.T) {
 	}
 }
 
+func TestCRLFWriterNormalizesBareNewlines(t *testing.T) {
+	var out bytes.Buffer
+	w := &crlfWriter{w: &out}
+
+	if _, err := w.Write([]byte("one\ntwo\r")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte("\nthree")); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := out.String(), "one\r\ntwo\r\nthree"; got != want {
+		t.Fatalf("crlf writer output = %q, want %q", got, want)
+	}
+}
+
 func TestPrintModelSummaryUsesObservedSessionModel(t *testing.T) {
 	sess := &chatSession{agentID: "codex"}
 	sess.setModel("gpt-5.5", "observed")
@@ -190,6 +206,45 @@ func TestDrainStreamKeepsPromptHiddenAcrossThinkingEvents(t *testing.T) {
 	}
 }
 
+func TestDrainStreamCoalescesThinkingFragments(t *testing.T) {
+	stream := make(chan []byte, 4)
+	sess := &chatSession{
+		agentID:      "minimax",
+		streamCh:     stream,
+		done:         make(chan struct{}),
+		streamCancel: func() {},
+	}
+	var out bytes.Buffer
+	loop := &chatLoop{
+		out:      &out,
+		errw:     &bytes.Buffer{},
+		sess:     sess,
+		sessions: map[string]*chatSession{"minimax": sess},
+	}
+
+	for _, msg := range []string{"The user", "wants an architectural", "review."} {
+		event, err := json.Marshal(map[string]any{
+			"t":   "thinking",
+			"b64": base64.StdEncoding.EncodeToString([]byte(msg)),
+		})
+		if err != nil {
+			t.Fatalf("marshal event: %v", err)
+		}
+		stream <- event
+	}
+	stream <- []byte(`{"t":"end"}`)
+	close(stream)
+
+	loop.drainStream(sess)
+	got := stripANSISequences(out.String())
+	if count := strings.Count(got, "⏺"); count != 1 {
+		t.Fatalf("thinking fragments should render as one status line, got %d:\n%s", count, got)
+	}
+	if !strings.Contains(got, "The user wants an architectural review.") {
+		t.Fatalf("thinking fragments not coalesced in order:\n%s", got)
+	}
+}
+
 func TestDrainStreamClearsPromptBeforeStreamingData(t *testing.T) {
 	stream := make(chan []byte, 3)
 	sess := &chatSession{
@@ -226,12 +281,133 @@ func TestDrainStreamClearsPromptBeforeStreamingData(t *testing.T) {
 	close(stream)
 
 	loop.drainStream(sess)
-	got := stripANSISequences(out.String())
+	rawOut := out.String()
+	if !strings.Contains(rawOut, agentThinkingColor("pool")+"Thinking...") {
+		t.Fatalf("provider thinking data missing client thinking color:\n%q", rawOut)
+	}
+	got := stripANSISequences(rawOut)
 	if strings.Contains(got, "[pool ↯streaming] ▶ Thinking") || strings.Contains(got, "[pool] ▶ Thinking") {
 		t.Fatalf("streaming data started on prompt line:\n%s", got)
 	}
 	if !strings.Contains(got, "Thinking...\nI'll review the journey.") {
 		t.Fatalf("streaming data missing or out of order:\n%s", got)
+	}
+}
+
+func TestDrainStreamDoesNotAddBlankLineAfterNewlineTerminatedData(t *testing.T) {
+	stream := make(chan []byte, 3)
+	sess := &chatSession{
+		agentID:      "pool",
+		streamCh:     stream,
+		done:         make(chan struct{}),
+		streamCancel: func() {},
+	}
+	var out bytes.Buffer
+	loop := &chatLoop{
+		out:      newCodeHighlighter(&out),
+		errw:     &bytes.Buffer{},
+		sess:     sess,
+		sessions: map[string]*chatSession{"pool": sess},
+	}
+
+	data, err := json.Marshal(map[string]any{
+		"t":   "data",
+		"b64": base64.StdEncoding.EncodeToString([]byte("done\n")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream <- data
+	stream <- []byte(`{"t":"chunk_end"}`)
+	stream <- []byte(`{"t":"end"}`)
+	close(stream)
+
+	loop.drainStream(sess)
+	if got := stripANSISequences(out.String()); got != "done\n" {
+		t.Fatalf("chunk end added extra vertical space: %q", got)
+	}
+}
+
+func TestDrainStreamProviderThinkingDataDoesNotAddChunkEndBlankLine(t *testing.T) {
+	stream := make(chan []byte, 3)
+	sess := &chatSession{
+		agentID:      "pool",
+		streamCh:     stream,
+		done:         make(chan struct{}),
+		streamCancel: func() {},
+	}
+	var out bytes.Buffer
+	loop := &chatLoop{
+		out:      newCodeHighlighter(&out),
+		errw:     &bytes.Buffer{},
+		sess:     sess,
+		sessions: map[string]*chatSession{"pool": sess},
+	}
+
+	data, err := json.Marshal(map[string]any{
+		"t":   "data",
+		"b64": base64.StdEncoding.EncodeToString([]byte("Thinking...\n")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream <- data
+	stream <- []byte(`{"t":"chunk_end"}`)
+	stream <- []byte(`{"t":"end"}`)
+	close(stream)
+
+	loop.drainStream(sess)
+	if got := stripANSISequences(out.String()); got != "Thinking...\n" {
+		t.Fatalf("provider thinking chunk end added extra vertical space: %q", got)
+	}
+}
+
+func TestPromptStateDoesNotIndentStreamAfterSubmittedPrompt(t *testing.T) {
+	stream := make(chan []byte, 3)
+	sess := &chatSession{
+		agentID:      "pool",
+		streamCh:     stream,
+		done:         make(chan struct{}),
+		streamCancel: func() {},
+	}
+	var out bytes.Buffer
+	rl := &chatLineReader{
+		out:    &out,
+		prompt: chatPrompt("pool"),
+		active: false,
+	}
+	loop := &chatLoop{
+		out:      newCodeHighlighter(&out),
+		errw:     &bytes.Buffer{},
+		rl:       rl,
+		sess:     sess,
+		sessions: map[string]*chatSession{"pool": sess},
+	}
+
+	loop.setPromptState("thinking")
+	data, err := json.Marshal(map[string]any{
+		"t":   "data",
+		"b64": base64.StdEncoding.EncodeToString([]byte("Thinking...\nIt looks like your message might have been cut off.\n")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream <- data
+	stream <- []byte(`{"t":"chunk_end"}`)
+	stream <- []byte(`{"t":"end"}`)
+	close(stream)
+
+	loop.drainStream(sess)
+	rawOut := out.String()
+	if !strings.Contains(rawOut, agentThinkingColor("pool")+"Thinking...") {
+		t.Fatalf("provider thinking data missing client thinking color:\n%q", rawOut)
+	}
+	got := stripANSISequences(rawOut)
+	if strings.Contains(got, "pool …thinking") || strings.Contains(got, "pool ↯streaming") {
+		t.Fatalf("inactive prompt state leaked into stream output:\n%s", got)
+	}
+	if !strings.HasPrefix(got, "Thinking...\nIt looks like") {
+		t.Fatalf("stream output should start at column 0 and stay in order:\n%q", got)
 	}
 }
 
@@ -246,6 +422,21 @@ func TestFriendlyErrorRewritesRPCInternals(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("friendlyError missing %q in %q", want, got)
 		}
+	}
+}
+
+func TestProviderThinkingDataUsesClientThinkingColor(t *testing.T) {
+	withoutNoColor(t)
+
+	got, ok := renderProviderThinkingData("minimax", "Thinking...\nChecking files.\n")
+	if !ok {
+		t.Fatal("provider thinking data was not detected")
+	}
+	if !strings.HasPrefix(got, agentThinkingColor("minimax")+"Thinking...") {
+		t.Fatalf("thinking data missing minimax thinking color:\n%q", got)
+	}
+	if !strings.HasSuffix(got, "\033[0m") {
+		t.Fatalf("thinking data missing reset:\n%q", got)
 	}
 }
 
@@ -452,9 +643,9 @@ func TestChatPromptFormat(t *testing.T) {
 
 	cases := map[string]string{
 		"":        "[select: /1 claude · /2 codex · /4 minimax · /help] ▶ ",
-		"claude":  " claude  ▶ ",
-		"local":   " local  ▶ ",
-		"minimax": " minimax  ▶ ",
+		"claude":  "claude ▶ ",
+		"local":   "local ▶ ",
+		"minimax": "minimax ▶ ",
 	}
 	for agent, want := range cases {
 		if got := stripANSI(chatPrompt(agent)); got != want {
@@ -469,6 +660,18 @@ func TestChatPromptShowsInFlightState(t *testing.T) {
 	got := stripANSISequences(chatPromptState("minimax", "streaming"))
 	if !strings.Contains(got, "minimax") || !strings.Contains(got, "streaming") {
 		t.Fatalf("prompt state = %q, want provider and streaming state", got)
+	}
+}
+
+func TestChatPromptUsesProviderForegroundColor(t *testing.T) {
+	withoutNoColor(t)
+
+	if got := chatPrompt("minimax"); !strings.HasPrefix(got, agentColor("minimax")+"minimax") {
+		t.Fatalf("minimax prompt missing provider foreground color: %q", got)
+	}
+	state := chatPromptState("minimax", "thinking")
+	if !strings.Contains(state, agentThinkingColor("minimax")+promptStateGlyph("thinking")) {
+		t.Fatalf("thinking prompt missing darker provider-family color: %q", state)
 	}
 }
 
@@ -1234,6 +1437,30 @@ func TestHandleSlashRunnerPromptStartsBackgroundJob(t *testing.T) {
 	}
 	if geminiState.PromptCount != 1 || geminiState.Status != deckStatusThinking {
 		t.Fatalf("gemini deck state = %#v", geminiState)
+	}
+}
+
+func TestSwitchAgentStatusIsPlainLeftAligned(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	claude := &chatSession{agentID: "claude", done: make(chan struct{}), streamCancel: func() {}}
+	pool := &chatSession{agentID: "pool", done: make(chan struct{}), streamCancel: func() {}}
+	loop := &chatLoop{
+		sess:     claude,
+		sessions: map[string]*chatSession{"claude": claude, "pool": pool},
+		out:      &stdout,
+		errw:     &stderr,
+	}
+
+	loop.switchAgent("pool")
+
+	got := stripANSISequences(stdout.String())
+	if strings.Contains(got, "→") {
+		t.Fatalf("switch status should not use arrow glyph:\n%s", got)
+	}
+	if !strings.HasPrefix(got, "pool  model:") {
+		t.Fatalf("switch status should start at column 0 with runner name:\n%q", got)
 	}
 }
 
