@@ -13,19 +13,10 @@
 // limitations under the License.
 
 // launcher.go implements the `milliways` (no-flags) launcher: it resolves
-// the daemon UDS, starts `milliwaysd` detached if not reachable, then
-// drops into the chat REPL in the current TTY.
-//
-// History: pre-v0.7.1 this exec(2)'d `milliways-term` (the wezterm fork)
-// when invoked from a non-wezterm shell. That binary panics during
-// `mux::Mux::get` when not launched as a bundled .app, and the panic
-// hook then aborts on UNUserNotificationCenter for non-bundled binaries
-// — so any `milliways` invocation from kitty/iTerm/ssh crashed.
-//
-// The .app bundle's CFBundleExecutable is `wezterm-gui` directly, so
-// the bundle path never needs `milliways` to exec milliways-term. We
-// removed the exec-milliways-term path and just run chat in the
-// current TTY for every invocation.
+// the daemon UDS, starts `milliwaysd` detached if not reachable, then opens
+// the full terminal cockpit when possible. Existing WezTerm sessions get
+// split in place; graphical non-WezTerm shells exec the bundled
+// milliways-term; headless shells fall back to chat in the current TTY.
 package main
 
 import (
@@ -295,7 +286,17 @@ func runCockpit(ctx context.Context, _ []string) error {
 		}
 	}
 
+	if !deckDisabled && hasGraphicalSession() {
+		if termPath, err := exec.LookPath("milliways-term"); err == nil {
+			return syscall.Exec(termPath, []string{termPath}, os.Environ())
+		}
+	}
+
 	return runChat(ctx)
+}
+
+func hasGraphicalSession() bool {
+	return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
 }
 
 // detectWeztermCurrentPaneID finds the pane ID of the terminal running this
@@ -358,6 +359,9 @@ func detectWeztermCurrentPaneIDWith(
 }
 
 const deckNavigatorPanePercent = 18
+const deckObservePanePercent = 38
+
+var runDeckCommand = exec.Command
 
 // runDeck opens the home-hero-dashboard layout: left navigator plus
 // the calling pane as the main chat session on the right.
@@ -371,6 +375,7 @@ func runDeck(_ context.Context, _ string, rightPaneID string) error {
 	if err != nil {
 		milliwaysBin = "milliways"
 	}
+	milliwaysCtlBin := resolveMilliwaysCtlBin(milliwaysBin)
 
 	// Split LEFT: narrow navigator pane. The current pane stays as the chat.
 	navArgs := []string{
@@ -378,13 +383,49 @@ func runDeck(_ context.Context, _ string, rightPaneID string) error {
 		"--",
 		milliwaysBin, "attach", "--deck", "--right-pane", rightPaneID,
 	}
-	if out, err := exec.Command("wezterm", navArgs...).CombinedOutput(); err != nil {
+	out, err := runDeckCommand("wezterm", navArgs...).CombinedOutput()
+	if err != nil {
 		return fmt.Errorf("wezterm split-pane (nav): %w\n%s", err, out)
+	}
+	if navPaneID := parseWeztermSplitPaneID(string(out)); navPaneID != "" {
+		observeArgs := []string{
+			"cli", "split-pane", "--pane-id", navPaneID,
+			"--bottom", "--percent", strconv.Itoa(deckObservePanePercent),
+			"--",
+			milliwaysCtlBin, "observe-render",
+		}
+		if out, err := runDeckCommand("wezterm", observeArgs...).CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "milliways: observe cockpit launch failed (%v)\n%s", err, out)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "milliways: observe cockpit launch skipped; could not parse navigator pane id from %q\n", strings.TrimSpace(string(out)))
 	}
 
 	// Signal to printLanding that the navigator is handling provider selection.
 	os.Setenv("MILLIWAYS_DECK_MODE", "1")
 	return nil
+}
+
+func resolveMilliwaysCtlBin(milliwaysBin string) string {
+	if path, err := exec.LookPath("milliwaysctl"); err == nil {
+		return path
+	}
+	if milliwaysBin != "" {
+		candidate := filepath.Join(filepath.Dir(milliwaysBin), "milliwaysctl")
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+			return candidate
+		}
+	}
+	return "milliwaysctl"
+}
+
+func parseWeztermSplitPaneID(out string) string {
+	for _, field := range strings.Fields(out) {
+		if _, err := strconv.Atoi(field); err == nil {
+			return field
+		}
+	}
+	return ""
 }
 
 // splitComma splits a comma-separated string and trims whitespace.

@@ -182,3 +182,52 @@ func TestDeckNavigatorPanePercentIsThin(t *testing.T) {
 		t.Fatalf("deckNavigatorPanePercent = %d, want <= 18", deckNavigatorPanePercent)
 	}
 }
+
+func TestDeckObservePanePercentFitsUnderNavigator(t *testing.T) {
+	t.Parallel()
+
+	if deckObservePanePercent > 45 {
+		t.Fatalf("deckObservePanePercent = %d, want <= 45", deckObservePanePercent)
+	}
+}
+
+func TestParseWeztermSplitPaneID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		out  string
+		want string
+	}{
+		{name: "plain", out: "12\n", want: "12"},
+		{name: "labelled", out: "pane_id: 34\n", want: "34"},
+		{name: "empty", out: "", want: ""},
+		{name: "none", out: "created pane\n", want: ""},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parseWeztermSplitPaneID(tt.out); got != tt.want {
+				t.Fatalf("parseWeztermSplitPaneID(%q) = %q, want %q", tt.out, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveMilliwaysCtlBinFromSibling(t *testing.T) {
+	dir := t.TempDir()
+	milliwaysBin := filepath.Join(dir, "milliways")
+	milliwaysCtlBin := filepath.Join(dir, "milliwaysctl")
+	if err := os.WriteFile(milliwaysBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(milliwaysCtlBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", "")
+
+	if got := resolveMilliwaysCtlBin(milliwaysBin); got != milliwaysCtlBin {
+		t.Fatalf("resolveMilliwaysCtlBin = %q, want %q", got, milliwaysCtlBin)
+	}
+}
