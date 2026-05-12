@@ -394,6 +394,62 @@ install_support_scripts() {
   done
 }
 
+# ── Linux: milliwaysd systemd user service ───────────────────────────────────
+install_milliwaysd_service() {
+  [ "$PLATFORM" = "linux" ] || return 0
+  [ "${SKIP_DAEMON_SERVICE:-0}" = "1" ] && return 0
+  command -v systemctl >/dev/null 2>&1 || {
+    warn "systemctl not found — start daemon manually with: milliwaysd &"
+    return 0
+  }
+
+  local daemon_bin
+  if [ -x "$BIN_DIR/milliwaysd" ]; then
+    daemon_bin="$BIN_DIR/milliwaysd"
+  else
+    daemon_bin="$(command -v milliwaysd 2>/dev/null || true)"
+  fi
+  [ -x "$daemon_bin" ] || {
+    warn "milliwaysd binary not found — service not installed"
+    return 0
+  }
+
+  local unit_dir="$HOME/.config/systemd/user"
+  local unit="$unit_dir/milliwaysd.service"
+  mkdir -p "$unit_dir"
+  cat > "$unit" <<EOF
+[Unit]
+Description=MilliWays daemon
+Documentation=https://github.com/${REPO}
+
+[Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=$daemon_bin
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+EOF
+  ok "Installed systemd user service → $unit"
+
+  systemctl --user daemon-reload >/dev/null 2>&1 || {
+    warn "Could not reload systemd user units — run: systemctl --user daemon-reload"
+    return 0
+  }
+
+  if ! systemctl --user is-active --quiet milliwaysd >/dev/null 2>&1; then
+    command -v milliwaysctl >/dev/null 2>&1 && milliwaysctl daemon stop >/dev/null 2>&1 || true
+  fi
+
+  if systemctl --user enable --now milliwaysd >/dev/null 2>&1; then
+    ok "Enabled and started milliwaysd.service"
+  else
+    warn "Installed milliwaysd.service, but could not start it automatically"
+    warn "  Try: systemctl --user enable --now milliwaysd"
+  fi
+}
+
 # ── PATH setup ────────────────────────────────────────────────────────────────
 add_to_path() {
   local profile="$1"
@@ -440,6 +496,8 @@ fi
 install_wezterm_lua
 install_support_scripts
 install_feature_dependencies
+
+install_milliwaysd_service
 
 if [ "${SKIP_TERM:-0}" != "1" ]; then
   setup_wezterm_config
@@ -493,8 +551,10 @@ fi
 
 printf '\n'
 printf '  Get started:\n'
-printf '    milliwaysd &              # start the agent daemon\n'
-printf '    milliwaysctl status       # check runner availability\n'
+if [ "$PLATFORM" = "linux" ]; then
+  printf '    systemctl --user status milliwaysd   # check daemon service\n'
+fi
+printf '    milliwaysctl status                  # check runner availability\n'
 printf '    milliways                 # open the terminal\n'
 if [ "$PLATFORM" = "darwin" ]; then
   printf '    open /Applications/MilliWays.app   # native terminal\n'

@@ -102,6 +102,20 @@ docker run --rm \
     install -Dm755 dist/milliways_linux_amd64       "$pkg_root/usr/bin/milliways"
     install -Dm755 dist/milliwaysd_linux_amd64      "$pkg_root/usr/bin/milliwaysd"
     install -Dm755 dist/milliwaysctl_linux_amd64    "$pkg_root/usr/bin/milliwaysctl"
+    install -Dm644 /dev/stdin "$pkg_root/usr/lib/systemd/user/milliwaysd.service" <<'"'"'UNIT'"'"'
+[Unit]
+Description=MilliWays daemon
+Documentation=https://github.com/mwigge/milliways
+
+[Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/milliwaysd
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+UNIT
     # Bundle llama-server when available — removes the need for brew/cmake on first use.
     [ -f dist/llama-server_linux_amd64 ] && \
       install -Dm755 dist/llama-server_linux_amd64 "$pkg_root/usr/bin/llama-server"

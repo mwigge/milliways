@@ -320,6 +320,56 @@ upgrade_support_scripts() {
   fi
 }
 
+ensure_milliwaysd_service() {
+  [ "$PLATFORM" = "linux" ] || return 0
+  [ "${SKIP_DAEMON_SERVICE:-0}" = "1" ] && return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+
+  local daemon_bin
+  if [ -x "$BIN_DIR/milliwaysd" ]; then
+    daemon_bin="$BIN_DIR/milliwaysd"
+  else
+    daemon_bin="$(command -v milliwaysd 2>/dev/null || true)"
+  fi
+  [ -x "$daemon_bin" ] || return 0
+
+  local unit_dir="$HOME/.config/systemd/user"
+  local unit="$unit_dir/milliwaysd.service"
+  mkdir -p "$unit_dir"
+  cat > "$unit" <<EOF
+[Unit]
+Description=MilliWays daemon
+Documentation=https://github.com/${REPO}
+
+[Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=$daemon_bin
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+EOF
+  ok "Installed systemd user service → $unit"
+
+  systemctl --user daemon-reload >/dev/null 2>&1 || {
+    warn "Could not reload systemd user units — run: systemctl --user daemon-reload"
+    return 0
+  }
+
+  if ! systemctl --user is-active --quiet milliwaysd >/dev/null 2>&1; then
+    command -v milliwaysctl >/dev/null 2>&1 && milliwaysctl daemon stop >/dev/null 2>&1 || true
+  fi
+
+  if systemctl --user restart milliwaysd >/dev/null 2>&1 \
+     || systemctl --user enable --now milliwaysd >/dev/null 2>&1; then
+    ok "milliwaysd.service running"
+  else
+    warn "Installed milliwaysd.service, but could not start it automatically"
+    warn "  Try: systemctl --user enable --now milliwaysd"
+  fi
+}
+
 # ── Confirmation prompt ───────────────────────────────────────────────────────
 confirm() {
   [ "$YES" = "1" ] && return 0
@@ -386,6 +436,7 @@ fi
 # macOS: always try to upgrade the app bundle regardless of install tier.
 upgrade_macos_app "$TARGET_VERSION"
 upgrade_linux_desktop_app "$TARGET_VERSION"
+ensure_milliwaysd_service
 
 printf '\n'
 mw_bin="$(command -v milliways 2>/dev/null || echo "$BIN_DIR/milliways")"

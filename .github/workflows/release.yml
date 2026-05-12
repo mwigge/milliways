@@ -26,11 +26,10 @@ jobs:
       # ── Linux desktop terminal binaries (optional) ───────────────────────
       - name: Download Linux terminal binaries
         id: wezterm_linux
-        continue-on-error: true
         env:
           WEZTERM_RELEASE: milliways-wezterm
           WEZTERM_REPO: mwigge/wezterm-milliways
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.WEZTERM_RELEASE_TOKEN || github.token }}
         run: |
           mkdir -p /tmp/wezterm-linux-bin
           for pattern in \
@@ -67,6 +66,7 @@ jobs:
           MILLIWAYS_TERM_SRC=/tmp/wezterm-linux-bin \
           OUT_DIR=$GITHUB_WORKSPACE/dist \
             bash scripts/build-linux-amd64.sh
+          test -f dist/MilliWays-linux-amd64.tar.gz
 
       # ── Package agent toolkit bundle (if sibling repo is present) ────────
       - name: Package agent toolkit bundle
