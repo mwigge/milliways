@@ -151,6 +151,8 @@ UNIT
       mkdir -p "$app_dir/bin" "$app_dir/share/applications" \
         "$app_dir/share/icons/hicolor/scalable/apps" "$app_dir/share/milliways"
       cp "$pkg_root/usr/bin/milliways" "$app_dir/bin/"
+      cp "$pkg_root/usr/bin/milliwaysctl" "$app_dir/bin/"
+      cp "$pkg_root/usr/bin/milliwaysd" "$app_dir/bin/"
       cp "$pkg_root/usr/bin/milliways-term" "$app_dir/bin/"
       cp "$pkg_root/usr/bin/wezterm-mux-server" "$app_dir/bin/"
       cp "$pkg_root/usr/share/applications/dev.milliways.MilliWays.desktop" "$app_dir/share/applications/"

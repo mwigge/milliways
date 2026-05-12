@@ -154,26 +154,22 @@ jobs:
             done
           done
 
-      # ── macOS app bundle (optional — needs wezterm-milliways fork) ────────
-      - name: Download wezterm binaries
-        id: wezterm
-        continue-on-error: true
-        env:
-          WEZTERM_RELEASE: milliways-wezterm
-          WEZTERM_REPO: mwigge/wezterm-milliways
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # ── macOS app bundle ─────────────────────────────────────────────────
+      - name: Build macOS terminal binaries
         run: |
           mkdir -p /tmp/wezterm-bin
-          gh release download "$WEZTERM_RELEASE" \
-            --repo "$WEZTERM_REPO" \
-            --pattern "wezterm-gui" \
-            --pattern "wezterm-mux-server" \
-            --dir /tmp/wezterm-bin \
-            --clobber
+
+          cargo build \
+            --manifest-path crates/milliways-term/Cargo.toml \
+            --release \
+            -p wezterm-gui \
+            -p wezterm-mux-server
+
+          cp crates/milliways-term/target/release/milliways-term /tmp/wezterm-bin/wezterm-gui
+          cp crates/milliways-term/target/release/wezterm-mux-server /tmp/wezterm-bin/
           chmod +x /tmp/wezterm-bin/wezterm-gui /tmp/wezterm-bin/wezterm-mux-server
 
       - name: Build and bundle macOS app
-        if: steps.wezterm.outcome == 'success'
         run: make bundle-macos WEZTERM_SRC=/tmp/wezterm-bin
         env:
           PREFIX: /tmp/milliways-install

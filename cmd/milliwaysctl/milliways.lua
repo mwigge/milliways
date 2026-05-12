@@ -99,6 +99,7 @@ config.mouse_bindings = {
 -- path when present so stale user-local binaries cannot shadow package upgrades.
 local local_bin = (os.getenv('HOME') or '') .. '/.local/bin'
 local path_env  = os.getenv('PATH') or '/usr/bin:/bin:/usr/sbin:/sbin'
+local app_bin   = wezterm.executable_dir
 
 local function file_exists(path)
   local f = io.open(path, 'r')
@@ -113,6 +114,9 @@ local function resolve_milliways_bin(name)
   local override = os.getenv('MILLIWAYS_BIN_DIR')
   if override and override ~= '' and file_exists(override .. '/' .. name) then
     return override .. '/' .. name
+  end
+  if app_bin and app_bin ~= '' and file_exists(app_bin .. '/' .. name) then
+    return app_bin .. '/' .. name
   end
   if file_exists('/usr/bin/' .. name) then
     return '/usr/bin/' .. name
@@ -129,6 +133,9 @@ local daemon_bin  = resolve_milliways_bin('milliwaysd')
 
 if not path_env:find('/usr/bin', 1, true) then
   path_env = '/usr/bin:' .. path_env
+end
+if app_bin and app_bin ~= '' and not path_env:find(app_bin, 1, true) then
+  path_env = app_bin .. ':' .. path_env
 end
 if not path_env:find(local_bin, 1, true) then
   path_env = path_env .. ':' .. local_bin
@@ -638,14 +645,14 @@ wezterm.on('gui-startup', function(cmd)
   local main_pane_id = tostring(main_pane:pane_id())
   local deck_pane = main_pane:split {
     direction = 'Left',
-    size = 0.18,
+    size = 0.25,
     args = { mw_bin, 'attach', '--deck', '--right-pane', main_pane_id },
     set_environment_variables = pane_env,
   }
   if deck_pane then
     deck_pane:split {
       direction = 'Bottom',
-      size = 0.38,
+      size = 0.25,
       args = { mwctl_bin, 'observe-render' },
       set_environment_variables = pane_env,
     }

@@ -1,18 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <defs>
-    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#0a0a0a"/>
-      <stop offset="100%" style="stop-color:#111811"/>
-    </linearGradient>
-    <filter id="glow">
-      <feGaussianBlur stdDeviation="3.5" result="blur"/>
+    <radialGradient id="bg" cx="50%" cy="42%" r="76%">
+      <stop offset="0%" stop-color="#101710"/>
+      <stop offset="62%" stop-color="#050705"/>
+      <stop offset="100%" stop-color="#000000"/>
+    </radialGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
       <feMerge>
         <feMergeNode in="blur"/>
         <feMergeNode in="SourceGraphic"/>
       </feMerge>
     </filter>
-    <filter id="softglow">
-      <feGaussianBlur stdDeviation="10" result="blur"/>
+    <filter id="wide-glow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
       <feMerge>
         <feMergeNode in="blur"/>
         <feMergeNode in="SourceGraphic"/>
@@ -20,24 +21,20 @@
     </filter>
   </defs>
 
-  <!-- Background rounded square -->
   <rect width="512" height="512" rx="112" ry="112" fill="url(#bg)"/>
-
-  <!-- Outer phosphor border ring -->
   <rect x="18" y="18" width="476" height="476" rx="96" ry="96"
-        fill="none" stroke="#4db51f" stroke-width="1.5" opacity="0.25"/>
+        fill="none" stroke="#4db51f" stroke-width="2" opacity="0.28"/>
+  <rect x="38" y="38" width="436" height="436" rx="78" ry="78"
+        fill="none" stroke="#4db51f" stroke-width="1" opacity="0.12"/>
 
-  <!-- AI — top half -->
-  <text x="256" y="222"
+  <text x="256" y="220"
         font-family="JetBrains Mono, Courier New, monospace"
-        font-size="128" font-weight="700" letter-spacing="-6"
-        text-anchor="middle" fill="#4db51f" opacity="0.75"
+        font-size="128" font-weight="800" letter-spacing="8"
+        text-anchor="middle" fill="#7dff52" opacity="0.86"
         filter="url(#glow)">AI</text>
-
-  <!-- MW — bottom half, dominant -->
   <text x="256" y="390"
         font-family="JetBrains Mono, Courier New, monospace"
-        font-size="188" font-weight="700" letter-spacing="-12"
+        font-size="186" font-weight="800" letter-spacing="-14"
         text-anchor="middle" fill="#4db51f"
-        filter="url(#softglow)">MW</text>
+        filter="url(#wide-glow)">MW</text>
 </svg>

@@ -178,16 +178,16 @@ func TestCockpitHintPathUsesStateDir(t *testing.T) {
 func TestDeckNavigatorPanePercentIsThin(t *testing.T) {
 	t.Parallel()
 
-	if deckNavigatorPanePercent > 18 {
-		t.Fatalf("deckNavigatorPanePercent = %d, want <= 18", deckNavigatorPanePercent)
+	if deckNavigatorPanePercent != 25 {
+		t.Fatalf("deckNavigatorPanePercent = %d, want 25", deckNavigatorPanePercent)
 	}
 }
 
 func TestDeckObservePanePercentFitsUnderNavigator(t *testing.T) {
 	t.Parallel()
 
-	if deckObservePanePercent > 45 {
-		t.Fatalf("deckObservePanePercent = %d, want <= 45", deckObservePanePercent)
+	if deckObservePanePercent != 25 {
+		t.Fatalf("deckObservePanePercent = %d, want 25", deckObservePanePercent)
 	}
 }
 
@@ -201,6 +201,7 @@ func TestParseWeztermSplitPaneID(t *testing.T) {
 	}{
 		{name: "plain", out: "12\n", want: "12"},
 		{name: "labelled", out: "pane_id: 34\n", want: "34"},
+		{name: "last numeric line", out: "warning 2026\n56\n", want: "56"},
 		{name: "empty", out: "", want: ""},
 		{name: "none", out: "created pane\n", want: ""},
 	}
@@ -212,6 +213,30 @@ func TestParseWeztermSplitPaneID(t *testing.T) {
 				t.Fatalf("parseWeztermSplitPaneID(%q) = %q, want %q", tt.out, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDeckSplitArgsTargetExpectedPanes(t *testing.T) {
+	t.Parallel()
+
+	nav := strings.Join(deckNavSplitArgs("7", "/bin/milliways"), " ")
+	for _, want := range []string{
+		"split-pane --pane-id 7 --left --percent 25",
+		"/bin/milliways attach --deck --right-pane 7",
+	} {
+		if !strings.Contains(nav, want) {
+			t.Fatalf("nav split args missing %q: %s", want, nav)
+		}
+	}
+
+	observe := strings.Join(deckObserveSplitArgs("8", "/bin/milliwaysctl"), " ")
+	for _, want := range []string{
+		"split-pane --pane-id 8 --bottom --percent 25",
+		"/bin/milliwaysctl observe-render",
+	} {
+		if !strings.Contains(observe, want) {
+			t.Fatalf("observe split args missing %q: %s", want, observe)
+		}
 	}
 }
 

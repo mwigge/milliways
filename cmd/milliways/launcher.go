@@ -358,8 +358,8 @@ func detectWeztermCurrentPaneIDWith(
 	return "", fmt.Sprintf("myTTY=%q not in panes %v", myTTY, ttyNames)
 }
 
-const deckNavigatorPanePercent = 18
-const deckObservePanePercent = 38
+const deckNavigatorPanePercent = 25
+const deckObservePanePercent = 25
 
 var runDeckCommand = exec.Command
 
@@ -378,22 +378,13 @@ func runDeck(_ context.Context, _ string, rightPaneID string) error {
 	milliwaysCtlBin := resolveMilliwaysCtlBin(milliwaysBin)
 
 	// Split LEFT: narrow navigator pane. The current pane stays as the chat.
-	navArgs := []string{
-		"cli", "split-pane", "--left", "--percent", strconv.Itoa(deckNavigatorPanePercent),
-		"--",
-		milliwaysBin, "attach", "--deck", "--right-pane", rightPaneID,
-	}
+	navArgs := deckNavSplitArgs(rightPaneID, milliwaysBin)
 	out, err := runDeckCommand("wezterm", navArgs...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("wezterm split-pane (nav): %w\n%s", err, out)
 	}
 	if navPaneID := parseWeztermSplitPaneID(string(out)); navPaneID != "" {
-		observeArgs := []string{
-			"cli", "split-pane", "--pane-id", navPaneID,
-			"--bottom", "--percent", strconv.Itoa(deckObservePanePercent),
-			"--",
-			milliwaysCtlBin, "observe-render",
-		}
+		observeArgs := deckObserveSplitArgs(navPaneID, milliwaysCtlBin)
 		if out, err := runDeckCommand("wezterm", observeArgs...).CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "milliways: observe cockpit launch failed (%v)\n%s", err, out)
 		}
@@ -404,6 +395,24 @@ func runDeck(_ context.Context, _ string, rightPaneID string) error {
 	// Signal to printLanding that the navigator is handling provider selection.
 	os.Setenv("MILLIWAYS_DECK_MODE", "1")
 	return nil
+}
+
+func deckNavSplitArgs(rightPaneID, milliwaysBin string) []string {
+	return []string{
+		"cli", "split-pane", "--pane-id", rightPaneID,
+		"--left", "--percent", strconv.Itoa(deckNavigatorPanePercent),
+		"--",
+		milliwaysBin, "attach", "--deck", "--right-pane", rightPaneID,
+	}
+}
+
+func deckObserveSplitArgs(navPaneID, milliwaysCtlBin string) []string {
+	return []string{
+		"cli", "split-pane", "--pane-id", navPaneID,
+		"--bottom", "--percent", strconv.Itoa(deckObservePanePercent),
+		"--",
+		milliwaysCtlBin, "observe-render",
+	}
 }
 
 func resolveMilliwaysCtlBin(milliwaysBin string) string {
@@ -420,9 +429,13 @@ func resolveMilliwaysCtlBin(milliwaysBin string) string {
 }
 
 func parseWeztermSplitPaneID(out string) string {
-	for _, field := range strings.Fields(out) {
-		if _, err := strconv.Atoi(field); err == nil {
-			return field
+	lines := strings.Split(out, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		fields := strings.Fields(lines[i])
+		for j := len(fields) - 1; j >= 0; j-- {
+			if _, err := strconv.Atoi(fields[j]); err == nil {
+				return fields[j]
+			}
 		}
 	}
 	return ""
