@@ -8,7 +8,7 @@ Open a tab and you're talking to a runner. Switch runners mid-session with a str
 
 It wraps the CLIs and APIs you already have set up. It does not run models or manage credentials. Bring your own towel.
 
-Architecture update: [memory, persistence, and observability](docs/milliways-blog-2.md).
+Architecture update: [memory, persistence, and observability](docs/milliways-blog-3.md).
 
 ---
 
