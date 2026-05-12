@@ -14,7 +14,7 @@ Milliways now has a clearer split between three things that used to be described
 
 That distinction matters. It lets the product claim what is already true without overselling automatic restore. The daemon persists history and metrics today. Full automatic REPL restoration by working directory is still a separate product capability.
 
-![Session memory flow](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/milliways-memory-session-flow.svg)
+![Session memory flow](images/milliways-memory-session-flow.png)
 
 ---
 
@@ -22,7 +22,7 @@ That distinction matters. It lets the product claim what is already true without
 
 The Linux smoke validates the boring but important parts: binaries install, the daemon starts, the control CLI can talk to it, metrics storage exists, structured telemetry is emitted, feature dependencies are available, artifact commands still work, and takeover works through the local-server path.
 
-![Linux package smoke evidence](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/milliways-evidence-linux-smoke.svg)
+![Linux package smoke evidence](images/milliways-evidence-linux-smoke.png)
 
 Evidence captured in this iteration:
 
@@ -52,7 +52,7 @@ The smoke run uses native package installation in distro containers. Full source
 
 The app layout now keeps observability visible instead of hiding it behind a command. The left side is split into a top client navigator and a bottom observability cockpit. The right side remains the prompt and stream area.
 
-![Observability cockpit](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/milliways-observability-cockpit.svg)
+![Observability cockpit](images/milliways-observability-cockpit.png)
 
 The cockpit focuses on the signals that help during a live session:
 
@@ -73,7 +73,7 @@ This is backed by the same metrics and telemetry path used by `milliwaysctl metr
 
 The persistence story is now explicit:
 
-![Persistence map](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/milliways-persistence-map.svg)
+![Persistence map](images/milliways-persistence-map.png)
 
 | State | Location | Status |
 |---|---|---|
@@ -92,7 +92,7 @@ That means the product can safely say: daemon history, metrics, cost, config, an
 
 Same-window runner switching uses the active turn log. Cross-pane takeover adds MemPalace when configured.
 
-![Takeover flow](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/milliways-takeover-flow.svg)
+![Takeover flow](images/milliways-takeover-flow.png)
 
 The flow is:
 
