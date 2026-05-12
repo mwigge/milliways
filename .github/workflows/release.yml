@@ -23,39 +23,49 @@ jobs:
         with:
           go-version: '1.26'
 
-      # ── Linux desktop terminal binaries (optional) ───────────────────────
-      - name: Download Linux terminal binaries
-        id: wezterm_linux
-        env:
-          WEZTERM_RELEASE: milliways-wezterm
-          WEZTERM_REPO: mwigge/wezterm-milliways
-          GH_TOKEN: ${{ secrets.WEZTERM_RELEASE_TOKEN || github.token }}
+      # ── Linux desktop terminal binaries ─────────────────────────────────
+      - name: Build Linux terminal binaries
         run: |
+          sudo apt-get update
+          xcbutil=libxcb-util-dev
+          apt-cache show libxcb-util-dev >/dev/null 2>&1 || xcbutil=libxcb-util0-dev
+          sudo apt-get install -y --no-install-recommends \
+            bsdutils \
+            cmake \
+            dpkg-dev \
+            fakeroot \
+            g++ \
+            gcc \
+            libegl1-mesa-dev \
+            libfontconfig1-dev \
+            libssl-dev \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxcb-ewmh-dev \
+            libxcb-icccm4-dev \
+            libxcb-image0-dev \
+            libxcb-keysyms1-dev \
+            libxcb-randr0-dev \
+            libxcb-render0-dev \
+            libxcb-xkb-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            "$xcbutil" \
+            lsb-release \
+            python3 \
+            xdg-utils \
+            xorg-dev
+
+          cargo build \
+            --manifest-path crates/milliways-term/Cargo.toml \
+            --release \
+            -p wezterm-gui \
+            -p wezterm-mux-server
+
           mkdir -p /tmp/wezterm-linux-bin
-          for pattern in \
-            milliways-term_linux_amd64 \
-            wezterm-gui_linux_amd64 \
-            wezterm-mux-server_linux_amd64
-          do
-            gh release download "$WEZTERM_RELEASE" \
-              --repo "$WEZTERM_REPO" \
-              --pattern "$pattern" \
-              --dir /tmp/wezterm-linux-bin \
-              --clobber || true
-          done
-
-          if [ -f /tmp/wezterm-linux-bin/milliways-term_linux_amd64 ]; then
-            mv /tmp/wezterm-linux-bin/milliways-term_linux_amd64 /tmp/wezterm-linux-bin/milliways-term
-          elif [ -f /tmp/wezterm-linux-bin/wezterm-gui_linux_amd64 ]; then
-            mv /tmp/wezterm-linux-bin/wezterm-gui_linux_amd64 /tmp/wezterm-linux-bin/wezterm-gui
-          fi
-          if [ -f /tmp/wezterm-linux-bin/wezterm-mux-server_linux_amd64 ]; then
-            mv /tmp/wezterm-linux-bin/wezterm-mux-server_linux_amd64 /tmp/wezterm-linux-bin/wezterm-mux-server
-          fi
-
-          chmod +x /tmp/wezterm-linux-bin/milliways-term /tmp/wezterm-linux-bin/wezterm-gui /tmp/wezterm-linux-bin/wezterm-mux-server 2>/dev/null || true
-          test \( -x /tmp/wezterm-linux-bin/milliways-term -o -x /tmp/wezterm-linux-bin/wezterm-gui \) \
-            -a -x /tmp/wezterm-linux-bin/wezterm-mux-server
+          cp crates/milliways-term/target/release/milliways-term /tmp/wezterm-linux-bin/
+          cp crates/milliways-term/target/release/wezterm-mux-server /tmp/wezterm-linux-bin/
+          chmod +x /tmp/wezterm-linux-bin/milliways-term /tmp/wezterm-linux-bin/wezterm-mux-server
 
       # ── Linux amd64 binaries + native packages (.deb / .rpm / .pkg.tar.zst)
       # Uses the Debian bookworm build image with fpm installed.
