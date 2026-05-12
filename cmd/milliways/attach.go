@@ -944,10 +944,8 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 		if rightPaneID == "" {
 			return
 		}
-		err := exec.Command("wezterm", "cli", "send-text",
-			"--pane-id", rightPaneID,
-			"--no-paste",
-			"/switch "+provider+"\n").Run()
+		bin, args := deckSwitchProviderCommand(rightPaneID, provider)
+		err := exec.Command(bin, args...).Run()
 		if err != nil {
 			slog.Debug("deck: send-text failed", "provider", provider, "err", err)
 			return
@@ -1011,6 +1009,25 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 				}
 			}
 		}
+	}
+}
+
+func deckSwitchProviderCommand(rightPaneID, provider string) (string, []string) {
+	bin := strings.TrimSpace(os.Getenv("MILLIWAYS_WEZTERM_CLI"))
+	if bin == "" {
+		if path, err := exec.LookPath("wezterm"); err == nil {
+			bin = path
+		} else if path, err := exec.LookPath("milliways-term"); err == nil {
+			bin = path
+		} else {
+			bin = "wezterm"
+		}
+	}
+	return bin, []string{
+		"cli", "send-text",
+		"--pane-id", rightPaneID,
+		"--no-paste",
+		"/switch " + provider + "\n",
 	}
 }
 

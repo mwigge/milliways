@@ -359,6 +359,23 @@ func TestDeckNavigatorAgentListShape(t *testing.T) {
 	}
 }
 
+func TestDeckSwitchProviderCommandUsesConfiguredCLI(t *testing.T) {
+	t.Setenv("MILLIWAYS_WEZTERM_CLI", "/opt/MilliWays/bin/milliways-term")
+
+	bin, args := deckSwitchProviderCommand("42", "codex")
+	if bin != "/opt/MilliWays/bin/milliways-term" {
+		t.Fatalf("bin = %q, want configured milliways-term", bin)
+	}
+	got := strings.Join(args, "\x00")
+	for _, want := range []string{
+		"cli", "send-text", "--pane-id", "42", "--no-paste", "/switch codex\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("args missing %q: %#v", want, args)
+		}
+	}
+}
+
 func TestRenderDeckNavigatorShowsRequestedPanels(t *testing.T) {
 	t.Parallel()
 

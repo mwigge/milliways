@@ -130,6 +130,16 @@ end
 local mw_bin      = resolve_milliways_bin('milliways')
 local mwctl_bin   = resolve_milliways_bin('milliwaysctl')
 local daemon_bin  = resolve_milliways_bin('milliwaysd')
+local term_cli_bin = os.getenv('MILLIWAYS_WEZTERM_CLI') or ''
+if term_cli_bin == '' then
+  if app_bin and app_bin ~= '' and file_exists(app_bin .. '/milliways-term') then
+    term_cli_bin = app_bin .. '/milliways-term'
+  elseif app_bin and app_bin ~= '' and file_exists(app_bin .. '/wezterm-gui') then
+    term_cli_bin = app_bin .. '/wezterm-gui'
+  else
+    term_cli_bin = 'wezterm'
+  end
+end
 
 if not path_env:find('/usr/bin', 1, true) then
   path_env = '/usr/bin:' .. path_env
@@ -613,6 +623,7 @@ wezterm.on('gui-startup', function(cmd)
     TERM = 'xterm-256color',
     COLORTERM = 'truecolor',
     TERM_PROGRAM = 'WezTerm',
+    MILLIWAYS_WEZTERM_CLI = term_cli_bin,
     MILLIWAYS_HIGHLIGHT_STYLE = 'catppuccin-mocha',
     MILLIWAYS_FORCE_COLOR = '1',
   }
