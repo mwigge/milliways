@@ -34,7 +34,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"os/signal"
 	"sort"
 	"strconv"
@@ -823,21 +822,20 @@ func runDeckNavigatorPlain(ctx context.Context) error {
 
 // runDeckNavigator is the interactive provider browser for deck mode.
 // It shows a list of all providers, lets the user browse with ↑↓, and
-// sends "/switch <provider>\n" to rightPaneID on Enter.
+// writes a local deck switch control message on Enter.
 //
 // Key bindings:
 //
 //	↑ / k   move up
 //	↓ / j   move down
-//	Enter   switch right pane to selected provider
+//	Enter   switch chat pane to selected provider
 //	q/^D    exit navigator
 func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 	sock := daemonSocket()
 
 	// Retry dial up to 3 times with 200ms backoff. The navigator is launched
-	// by wezterm cli split-pane concurrently with the chat pane; the daemon
-	// is expected to be up but a short timing race can cause the first dial
-	// to fail.
+	// concurrently with the chat pane; the daemon is expected to be up but a
+	// short timing race can cause the first dial to fail.
 	var client *rpc.Client
 	const dialAttempts = 3
 	const dialBackoff = 200 * time.Millisecond
@@ -1014,15 +1012,11 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 	}()
 
 	switchProvider := func(provider string) {
-		if rightPaneID == "" {
+		if err := writeDeckSwitchControl(provider); err != nil {
+			slog.Debug("deck: switch control write failed", "provider", provider, "err", err)
 			return
 		}
-		bin, args := deckSwitchProviderCommand(rightPaneID, provider)
-		err := exec.Command(bin, args...).Run()
-		if err != nil {
-			slog.Debug("deck: send-text failed", "provider", provider, "err", err)
-			return
-		}
+		_ = client.Call("agent.set_active", map[string]any{"agent_id": provider}, nil)
 		active = provider
 		render()
 	}
@@ -1088,25 +1082,6 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 				}
 			}
 		}
-	}
-}
-
-func deckSwitchProviderCommand(rightPaneID, provider string) (string, []string) {
-	bin := strings.TrimSpace(os.Getenv("MILLIWAYS_WEZTERM_CLI"))
-	if bin == "" {
-		if path, err := exec.LookPath("wezterm"); err == nil {
-			bin = path
-		} else if path, err := exec.LookPath("milliways-term"); err == nil {
-			bin = path
-		} else {
-			bin = "wezterm"
-		}
-	}
-	return bin, []string{
-		"cli", "send-text",
-		"--pane-id", rightPaneID,
-		"--no-paste",
-		"/switch " + provider + "\n",
 	}
 }
 

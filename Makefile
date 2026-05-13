@@ -213,7 +213,7 @@ install-linux-app: bundle-linux
 	@echo "==> Installing MilliWays desktop app to $(PREFIX)"
 	install -Dm755 "$(LINUX_APPDIR)/bin/milliways-term" "$(BIN)/milliways-term"
 	install -Dm755 "$(LINUX_APPDIR)/bin/wezterm-mux-server" "$(BIN)/wezterm-mux-server"
-	sed -e "s|^Exec=.*|Exec=$(BIN)/milliways-term|" \
+	sed -e "s|^Exec=.*|Exec=$(BIN)/milliways-term --config-file $(DATADIR)/milliways/wezterm.lua|" \
 	    -e "s|^TryExec=.*|TryExec=$(BIN)/milliways-term|" \
 	    "$(LINUX_APPDIR)/share/applications/dev.milliways.MilliWays.desktop" \
 	    > "$(LINUX_APPDIR)/share/applications/dev.milliways.MilliWays.local.desktop"

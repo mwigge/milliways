@@ -78,6 +78,23 @@ jobs:
             bash scripts/build-linux-amd64.sh
           test -f dist/MilliWays-linux-amd64.tar.gz
 
+      - name: Verify Linux desktop app parity invariants
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          tar -xzf dist/MilliWays-linux-amd64.tar.gz -C "$tmp"
+          root="$tmp/MilliWays-linux-amd64"
+          for bin in milliways milliwaysd milliwaysctl milliways-term wezterm-mux-server; do
+            test -x "$root/bin/$bin"
+          done
+          grep -q '^Exec=.*milliways-term --config-file ' "$root/share/applications/dev.milliways.MilliWays.desktop"
+          grep -q "direction = 'Left'" "$root/share/milliways/wezterm.lua"
+          grep -q "direction = 'Bottom'" "$root/share/milliways/wezterm.lua"
+          grep -q "size = 0.25" "$root/share/milliways/wezterm.lua"
+          grep -q "args = { mw_bin, 'attach', '--deck', '--right-pane', main_pane_id }" "$root/share/milliways/wezterm.lua"
+          grep -q "args = { mwctl_bin, 'observe-render' }" "$root/share/milliways/wezterm.lua"
+          ! grep -q "MILLIWAYS_WEZTERM_CLI" "$root/share/milliways/wezterm.lua"
+
       # ── Package agent toolkit bundle (if sibling repo is present) ────────
       - name: Package agent toolkit bundle
         continue-on-error: true

@@ -18,16 +18,14 @@ package main
 
 // deck_integration_test.go — integration tests for the deck navigator.
 //
-// Starts a real daemon and exercises agent.list and the switchProvider
-// exec path inline without requiring a live WezTerm session.
+// Starts a real daemon and exercises agent.list plus the native deck switch
+// control path without requiring a live WezTerm session.
 //
 // Build / run:
 //
 //	go test ./cmd/milliways/... -tags integration -run TestDeck -v
 
 import (
-	"log/slog"
-	"os/exec"
 	"testing"
 
 	"github.com/mwigge/milliways/internal/rpc"
@@ -63,59 +61,23 @@ func TestDeckNavigatorPollsAgentList(t *testing.T) {
 	}
 }
 
-// TestDeckNavigatorSwitchProvider_NoWeztermPanic verifies the switchProvider
-// logic — extracted inline — does not panic in edge cases:
-//
-//  1. Empty rightPaneID → return immediately without calling exec.
-//  2. Bogus pane ID "99999" → exec may error (wezterm absent in CI or bad
-//     pane); the function must return normally, never panic.
-func TestDeckNavigatorSwitchProvider_NoWeztermPanic(t *testing.T) {
-	t.Parallel()
+func TestDeckNavigatorSwitchProviderWritesNativeControl(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 
-	// switchProvider is the exact logic from runDeckNavigator, extracted as a
-	// local closure so it can be called without a live terminal.
-	switchProvider := func(rightPaneID, provider string) {
-		if rightPaneID == "" {
-			return
-		}
-		if err := exec.Command("wezterm", "cli", "send-text",
-			"--pane-id", rightPaneID,
-			"--no-paste",
-			"/switch "+provider+"\n").Run(); err != nil {
-			slog.Debug("deck: send-text failed", "err", err)
-		}
+	if err := writeDeckSwitchControl("claude"); err != nil {
+		t.Fatalf("writeDeckSwitchControl: %v", err)
+	}
+	line, ok := newDeckSwitchControlPoller()()
+	if ok || line != "" {
+		t.Fatalf("new poller consumed stale switch = (%q,%t), want empty", line, ok)
 	}
 
-	tests := []struct {
-		name        string
-		rightPaneID string
-		provider    string
-	}{
-		{
-			name:        "empty rightPaneID skips exec without panic",
-			rightPaneID: "",
-			provider:    "claude",
-		},
-		{
-			name:        "bogus pane ID fails gracefully without panic",
-			rightPaneID: "99999",
-			provider:    "claude",
-		},
+	poll := newDeckSwitchControlPoller()
+	if err := writeDeckSwitchControl("codex"); err != nil {
+		t.Fatalf("writeDeckSwitchControl fresh: %v", err)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			// Confirm the call never panics regardless of outcome.
-			defer func() {
-				if r := recover(); r != nil {
-					t.Errorf("switchProvider panicked with pane=%q provider=%q: %v",
-						tt.rightPaneID, tt.provider, r)
-				}
-			}()
-
-			switchProvider(tt.rightPaneID, tt.provider)
-		})
+	line, ok = poll()
+	if !ok || line != "/switch codex" {
+		t.Fatalf("native switch poll = (%q,%t), want /switch codex", line, ok)
 	}
 }

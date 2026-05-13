@@ -23,8 +23,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -41,6 +43,7 @@ type chatLineReaderConfig struct {
 	InterruptPrompt string
 	EOFPrompt       string
 	AutoComplete    completionProvider
+	ControlPoll     func() (string, bool)
 }
 
 type chatLineReader struct {
@@ -51,6 +54,7 @@ type chatLineReader struct {
 	interruptPrompt string
 	eofPrompt       string
 	completer       completionProvider
+	controlPoll     func() (string, bool)
 	pipeReader      *bufio.Reader
 
 	mu           sync.Mutex
@@ -73,6 +77,7 @@ func newChatLineReader(cfg chatLineReaderConfig) (*chatLineReader, error) {
 		interruptPrompt: cfg.InterruptPrompt,
 		eofPrompt:       cfg.EOFPrompt,
 		completer:       cfg.AutoComplete,
+		controlPoll:     cfg.ControlPoll,
 	}
 	r.loadHistory()
 	r.histPos = len(r.history)
@@ -139,6 +144,25 @@ func (r *chatLineReader) Readline() (string, error) {
 
 	br := bufio.NewReader(r.in)
 	for {
+		if r.controlPoll != nil {
+			if line, ok := r.controlPoll(); ok {
+				r.mu.Lock()
+				r.active = false
+				r.promptHidden = false
+				r.clearPromptLocked()
+				r.mu.Unlock()
+				return line, nil
+			}
+		}
+		if br.Buffered() == 0 {
+			ready, err := waitReadable(int(r.in.Fd()), 100*time.Millisecond)
+			if err != nil {
+				return "", err
+			}
+			if !ready {
+				continue
+			}
+		}
 		ch, _, err := br.ReadRune()
 		if err != nil {
 			return "", err
@@ -194,6 +218,22 @@ func (r *chatLineReader) Readline() (string, error) {
 			}
 		}
 	}
+}
+
+func waitReadable(fd int, timeout time.Duration) (bool, error) {
+	ms := int(timeout / time.Millisecond)
+	if ms < 0 {
+		ms = 0
+	}
+	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	n, err := unix.Poll(fds, ms)
+	if err != nil {
+		if err == unix.EINTR {
+			return false, nil
+		}
+		return false, err
+	}
+	return n > 0 && fds[0].Revents&unix.POLLIN != 0, nil
 }
 
 func (r *chatLineReader) writeSubmittedLineLocked(line string) {

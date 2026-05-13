@@ -20,6 +20,30 @@ for bin in milliways milliwaysd milliwaysctl; do
   require_asset "${bin}_linux_amd64"
 done
 
+smoke_linux_app_bundle() {
+  local tar="$full_release/MilliWays-linux-amd64.tar.gz"
+  if [ ! -f "$tar" ]; then
+    printf 'SKIP Linux desktop app bundle invariants: %s missing\n' "$tar"
+    return 0
+  fi
+
+  local app_dir="$tmp_root/linux-app"
+  mkdir -p "$app_dir"
+  tar -xzf "$tar" -C "$app_dir"
+  local root="$app_dir/MilliWays-linux-amd64"
+  for bin in milliways milliwaysd milliwaysctl milliways-term wezterm-mux-server; do
+    test -x "$root/bin/$bin"
+  done
+  grep -q '^Exec=.*milliways-term --config-file ' "$root/share/applications/dev.milliways.MilliWays.desktop"
+  grep -q "direction = 'Left'" "$root/share/milliways/wezterm.lua"
+  grep -q "direction = 'Bottom'" "$root/share/milliways/wezterm.lua"
+  grep -q "size = 0.25" "$root/share/milliways/wezterm.lua"
+  grep -q "args = { mw_bin, 'attach', '--deck', '--right-pane', main_pane_id }" "$root/share/milliways/wezterm.lua"
+  grep -q "args = { mwctl_bin, 'observe-render' }" "$root/share/milliways/wezterm.lua"
+  ! grep -q "MILLIWAYS_WEZTERM_CLI" "$root/share/milliways/wezterm.lua"
+  printf 'PASS Linux desktop app bundle invariants\n'
+}
+
 run_case() {
   local image="$1"
   local label="$2"
@@ -346,9 +370,11 @@ partial_release="$tmp_root/partial-release"
 support_release="$tmp_root/support-release"
 mkdir -p "$full_release" "$empty_release" "$partial_release" "$support_release"
 cp "$dist_dir"/milliways*_linux_amd64 "$full_release"/
+[ ! -f "$dist_dir/MilliWays-linux-amd64.tar.gz" ] || cp "$dist_dir/MilliWays-linux-amd64.tar.gz" "$full_release"/
 cp "$dist_dir/milliways_linux_amd64" "$partial_release"/
 cp "$repo_root/scripts/install_local.sh" "$repo_root/scripts/install_local_swap.sh" "$repo_root/scripts/install_feature_deps.sh" "$repo_root/scripts/upgrade.sh" "$support_release"/
 cp "$repo_root/cmd/milliwaysctl/milliways.lua" "$support_release/wezterm.lua"
+smoke_linux_app_bundle
 
 images=(
   "ubuntu:24.04|Ubuntu binary install"

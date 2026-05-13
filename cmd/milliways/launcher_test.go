@@ -256,3 +256,53 @@ func TestResolveMilliwaysCtlBinFromSibling(t *testing.T) {
 		t.Fatalf("resolveMilliwaysCtlBin = %q, want %q", got, milliwaysCtlBin)
 	}
 }
+
+func TestResolveMilliwaysTermConfigFromSiblingShare(t *testing.T) {
+	root := t.TempDir()
+	termPath := filepath.Join(root, "bin", "milliways-term")
+	configPath := filepath.Join(root, "share", "milliways", "wezterm.lua")
+	if err := os.MkdirAll(filepath.Dir(termPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("-- test config\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolveMilliwaysTermConfig(termPath); got != configPath {
+		t.Fatalf("resolveMilliwaysTermConfig = %q, want %q", got, configPath)
+	}
+}
+
+func TestResolveMilliwaysTermConfigHonorsOverride(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "wezterm.lua")
+	if err := os.WriteFile(configPath, []byte("-- override config\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MILLIWAYS_WEZTERM_CONFIG", configPath)
+
+	if got := resolveMilliwaysTermConfig("/missing/bin/milliways-term"); got != configPath {
+		t.Fatalf("resolveMilliwaysTermConfig = %q, want override %q", got, configPath)
+	}
+}
+
+func TestMilliwaysTermExecArgsIncludesConfigWhenPresent(t *testing.T) {
+	root := t.TempDir()
+	termPath := filepath.Join(root, "bin", "milliways-term")
+	configPath := filepath.Join(root, "share", "milliways", "wezterm.lua")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("-- test config\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := strings.Join(milliwaysTermExecArgs(termPath), "\x00")
+	for _, want := range []string{termPath, "--config-file", configPath} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("exec args missing %q: %#v", want, milliwaysTermExecArgs(termPath))
+		}
+	}
+}

@@ -386,6 +386,7 @@ func runChat(ctx context.Context) error {
 		InterruptPrompt: chatInterruptPrompt,
 		EOFPrompt:       "exit",
 		AutoComplete:    sc,
+		ControlPoll:     newDeckSwitchControlPoller(),
 	})
 	if err != nil {
 		return fmt.Errorf("line reader init: %w", err)

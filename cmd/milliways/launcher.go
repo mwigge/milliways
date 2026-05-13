@@ -15,8 +15,9 @@
 // launcher.go implements the `milliways` (no-flags) launcher: it resolves
 // the daemon UDS, starts `milliwaysd` detached if not reachable, then opens
 // the full terminal cockpit when possible. Existing WezTerm sessions get
-// split in place; graphical non-WezTerm shells exec the bundled
-// milliways-term; headless shells fall back to chat in the current TTY.
+// split in place; graphical non-WezTerm shells exec the bundled milliways-term
+// with the installed MilliWays config; headless shells fall back to chat in the
+// current TTY.
 package main
 
 import (
@@ -35,6 +36,8 @@ import (
 
 	"github.com/mwigge/milliways/internal/rpc"
 )
+
+var execProcess = syscall.Exec
 
 // launcherMode classifies what the binary should do based on its argv.
 type launcherMode int
@@ -288,11 +291,46 @@ func runCockpit(ctx context.Context, _ []string) error {
 
 	if !deckDisabled && hasGraphicalSession() {
 		if termPath, err := exec.LookPath("milliways-term"); err == nil {
-			return syscall.Exec(termPath, []string{termPath}, os.Environ())
+			return execProcess(termPath, milliwaysTermExecArgs(termPath), os.Environ())
 		}
 	}
 
 	return runChat(ctx)
+}
+
+func milliwaysTermExecArgs(termPath string) []string {
+	args := []string{termPath}
+	if config := resolveMilliwaysTermConfig(termPath); config != "" {
+		args = append(args, "--config-file", config)
+	}
+	return args
+}
+
+func resolveMilliwaysTermConfig(termPath string) string {
+	var candidates []string
+	if override := strings.TrimSpace(os.Getenv("MILLIWAYS_WEZTERM_CONFIG")); override != "" {
+		candidates = append(candidates, override)
+	}
+	if termPath != "" {
+		prefix := filepath.Dir(filepath.Dir(termPath))
+		candidates = append(candidates, filepath.Join(prefix, "share", "milliways", "wezterm.lua"))
+	}
+	candidates = append(candidates, "/usr/share/milliways/wezterm.lua")
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, ".local", "share", "milliways", "wezterm.lua"),
+			filepath.Join(home, ".config", "wezterm", "wezterm.lua"),
+		)
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func hasGraphicalSession() bool {

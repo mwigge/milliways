@@ -305,7 +305,7 @@ install_linux_desktop_app() {
     local root="$tmp/MilliWays-linux-amd64"
     install -Dm755 "$root/bin/milliways-term" "$BIN_DIR/milliways-term"
     install -Dm755 "$root/bin/wezterm-mux-server" "$BIN_DIR/wezterm-mux-server"
-    sed -e "s|^Exec=.*|Exec=$BIN_DIR/milliways-term|" \
+    sed -e "s|^Exec=.*|Exec=$BIN_DIR/milliways-term --config-file $SHARE_DIR/wezterm.lua|" \
         -e "s|^TryExec=.*|TryExec=$BIN_DIR/milliways-term|" \
         "$root/share/applications/dev.milliways.MilliWays.desktop" > "$tmp/dev.milliways.MilliWays.desktop"
     install -Dm644 "$tmp/dev.milliways.MilliWays.desktop" \
