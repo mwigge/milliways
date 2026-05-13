@@ -81,8 +81,9 @@ type observeRenderUsage struct {
 }
 
 // observeRender opens an observability.subscribe stream and writes a
-// rendered frame to stdout for each event. Returns when the daemon
-// closes the stream or stdout fails (e.g. parent pane closed).
+// rendered frame immediately, then refreshes it once per second. Quiet
+// daemons may not emit spans for a while; the cockpit still needs to be
+// visible as soon as the pane is created.
 func observeRender(socket string) {
 	c, err := rpc.Dial(socket)
 	if err != nil {
@@ -95,30 +96,39 @@ func observeRender(socket string) {
 	}
 	defer cancel()
 
-	// Throttle emission to 1 Hz even if the daemon ever emits faster —
-	// the cockpit's frame budget is 1 Hz steady-state.
-	const minInterval = 1 * time.Second
-	var lastEmit time.Time
-
-	for ev := range events {
-		var frame observeRenderFrame
-		if err := json.Unmarshal(ev, &frame); err != nil {
-			continue
-		}
-		if frame.T != "data" {
-			continue
-		}
+	var spans []observeRenderSpan
+	render := func() bool {
 		now := time.Now()
-		if !lastEmit.IsZero() && now.Sub(lastEmit) < minInterval {
-			continue
-		}
-		lastEmit = now
 		usage := fetchObserveRenderUsage(c)
-		out := formatObservabilityFrame(now.UTC(), frame.Spans, usage)
+		out := formatObservabilityFrame(now.UTC(), spans, usage)
 		// Clear scrollback + viewport and hide the cursor so the pane
 		// behaves like a dashboard, not an interactive prompt.
 		if _, err := fmt.Fprint(os.Stdout, "\x1b[?25l\x1b[3J\x1b[2J\x1b[H"+out); err != nil {
-			return
+			return false
+		}
+		return true
+	}
+	if !render() {
+		return
+	}
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				return
+			}
+			var frame observeRenderFrame
+			if err := json.Unmarshal(ev, &frame); err != nil || frame.T != "data" {
+				continue
+			}
+			spans = frame.Spans
+		case <-ticker.C:
+			if !render() {
+				return
+			}
 		}
 	}
 }

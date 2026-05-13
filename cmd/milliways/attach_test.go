@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
@@ -373,6 +374,38 @@ func TestDeckSwitchProviderCommandUsesConfiguredCLI(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("args missing %q: %#v", want, args)
 		}
+	}
+}
+
+func TestDeckProviderIndexAtRowMatchesRenderedCards(t *testing.T) {
+	t.Parallel()
+
+	if got := deckProviderIndexAtRow(2, 7, 0, 40); got != 0 {
+		t.Fatalf("row 2 index = %d, want 0", got)
+	}
+	if got := deckProviderIndexAtRow(4, 7, 0, 40); got != 0 {
+		t.Fatalf("row 4 index = %d, want 0", got)
+	}
+	if got := deckProviderIndexAtRow(5, 7, 0, 40); got != 1 {
+		t.Fatalf("row 5 index = %d, want 1", got)
+	}
+	if got := deckProviderIndexAtRow(14, 7, 6, 22); got != 6 {
+		t.Fatalf("scrolled row index = %d, want 6", got)
+	}
+	if got := deckProviderIndexAtRow(1, 7, 0, 40); got != -1 {
+		t.Fatalf("section row index = %d, want -1", got)
+	}
+}
+
+func TestReadSGRMouse(t *testing.T) {
+	t.Parallel()
+
+	x, y, ok := readSGRMouse(bufio.NewReader(strings.NewReader("0;12;5M")))
+	if !ok || x != 12 || y != 5 {
+		t.Fatalf("mouse = (%d,%d,%t), want (12,5,true)", x, y, ok)
+	}
+	if _, _, ok := readSGRMouse(bufio.NewReader(strings.NewReader("0;12;5m"))); ok {
+		t.Fatal("release event should be ignored")
 	}
 }
 

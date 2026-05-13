@@ -26,6 +26,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -593,24 +594,9 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 
 	// The bottom-left observability pane owns status, quota, cost, and span
 	// details. Keep this pane focused on client selection and active context.
-	clientBudget := max(3, h-6)
-	maxCards := min(7, max(1, clientBudget/3))
-	if maxCards > len(providers) || len(providers) == 0 {
-		maxCards = len(providers)
-	}
-	start := 0
-	if len(providers) > maxCards {
-		start = selected - maxCards/2
-		if start < 0 {
-			start = 0
-		}
-		if start+maxCards > len(providers) {
-			start = len(providers) - maxCards
-		}
-	}
-	end := start + maxCards
+	start, end := deckVisibleProviderRange(len(providers), selected, h)
 	clientSection := "Clients"
-	if len(providers) > 0 && maxCards < len(providers) {
+	if len(providers) > 0 && end-start < len(providers) {
 		clientSection = fmt.Sprintf("Clients %d-%d/%d", start+1, end, len(providers))
 	}
 	section(clientSection)
@@ -628,6 +614,71 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 	ln("%s↑↓ move  ↩ switch  q quit%s", dim, reset)
 
 	return b.String()
+}
+
+func deckVisibleProviderRange(total, selected, h int) (int, int) {
+	if h <= 0 {
+		h = 40
+	}
+	clientBudget := max(3, h-6)
+	maxCards := min(7, max(1, clientBudget/3))
+	if maxCards > total || total == 0 {
+		maxCards = total
+	}
+	start := 0
+	if total > maxCards {
+		start = selected - maxCards/2
+		if start < 0 {
+			start = 0
+		}
+		if start+maxCards > total {
+			start = total - maxCards
+		}
+	}
+	return start, start + maxCards
+}
+
+func deckProviderIndexAtRow(row, total, selected, h int) int {
+	if row < 2 || total <= 0 {
+		return -1
+	}
+	start, end := deckVisibleProviderRange(total, selected, h)
+	idx := start + (row-2)/3
+	if idx < start || idx >= end {
+		return -1
+	}
+	return idx
+}
+
+func readSGRMouse(br *bufio.Reader) (int, int, bool) {
+	var seq strings.Builder
+	for i := 0; i < 32; i++ {
+		b, err := br.ReadByte()
+		if err != nil {
+			return 0, 0, false
+		}
+		if b == 'M' || b == 'm' {
+			if b == 'm' {
+				return 0, 0, false
+			}
+			parts := strings.Split(seq.String(), ";")
+			if len(parts) != 3 {
+				return 0, 0, false
+			}
+			button, err1 := strconv.Atoi(parts[0])
+			x, err2 := strconv.Atoi(parts[1])
+			y, err3 := strconv.Atoi(parts[2])
+			if err1 != nil || err2 != nil || err3 != nil || x <= 0 || y <= 0 {
+				return 0, 0, false
+			}
+			if button&3 != 0 {
+				return 0, 0, false
+			}
+			return x, y, true
+		}
+		seq.WriteByte(b)
+	}
+	return 0, 0, false
 }
 
 // obsProviderShort returns a 4-char abbreviation used in the Observability panel rows.
@@ -814,9 +865,9 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 	}
 	defer func() {
 		_ = term.Restore(fd, oldState)
-		fmt.Print("\033[?25h\033[?1049l\033[0m\n")
+		fmt.Print("\033[?1006l\033[?1000l\033[?25h\033[?1049l\033[0m\n")
 	}()
-	fmt.Print("\033[?1049h\033[?25l") // alternate screen + hidden cursor
+	fmt.Print("\033[?1049h\033[?25l\033[?1000h\033[?1006h") // alternate screen + hidden cursor + SGR mouse
 
 	var providers []deckProviderInfo
 	var quotas map[string]parallel.QuotaSummary
@@ -911,32 +962,54 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 		keyUp
 		keyDown
 		keyEnter
+		keyMouse
 		keyEOF
 	)
 	type keyEvent struct {
 		kind keyKind
 		ch   byte
+		x    int
+		y    int
 	}
 	keyCh := make(chan keyEvent, 8)
 	go func() {
-		buf := make([]byte, 8)
+		br := bufio.NewReader(os.Stdin)
 		for {
-			n, err := os.Stdin.Read(buf)
-			if err != nil || n == 0 {
+			b, err := br.ReadByte()
+			if err != nil {
 				keyCh <- keyEvent{kind: keyEOF}
 				return
 			}
-			// Arrow keys arrive as ESC [ A/B.
-			if n >= 3 && buf[0] == 27 && buf[1] == '[' {
-				switch buf[2] {
+			if b == 27 {
+				next, err := br.ReadByte()
+				if err != nil {
+					continue
+				}
+				if next != '[' {
+					continue
+				}
+				third, err := br.ReadByte()
+				if err != nil {
+					continue
+				}
+				switch third {
 				case 'A':
 					keyCh <- keyEvent{kind: keyUp}
 				case 'B':
 					keyCh <- keyEvent{kind: keyDown}
+				case '<':
+					if x, y, ok := readSGRMouse(br); ok {
+						keyCh <- keyEvent{kind: keyMouse, x: x, y: y}
+					}
 				}
 				continue
 			}
-			keyCh <- keyEvent{kind: keyRune, ch: buf[0]}
+			switch b {
+			case '\r', '\n':
+				keyCh <- keyEvent{kind: keyEnter}
+			default:
+				keyCh <- keyEvent{kind: keyRune, ch: b}
+			}
 		}
 	}()
 
@@ -986,6 +1059,12 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 				}
 			case keyEnter:
 				if selected >= 0 && selected < len(providers) {
+					switchProvider(providers[selected].ID)
+				}
+			case keyMouse:
+				_, h, _ := term.GetSize(fd)
+				if idx := deckProviderIndexAtRow(ev.y, len(providers), selected, h); idx >= 0 {
+					selected = idx
 					switchProvider(providers[selected].ID)
 				}
 			case keyRune:
