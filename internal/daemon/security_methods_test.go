@@ -254,6 +254,35 @@ func TestSecurityCRARPCReturnsSummaryAndChecks(t *testing.T) {
 	}
 }
 
+func TestSecurityCRAUsesSupportUntilEvidence(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	writeSecurityMethodFile(t, filepath.Join(workspace, "SUPPORT.md"), "Security support until: 2029-12-31\n")
+
+	s := &Server{pantryDB: db, spans: observability.NewRing(10)}
+	enc, buf := newCapturingEncoder()
+	s.dispatch(enc, &Request{Method: "security.cra", ID: mustSecurityMethodParams(t, 1)})
+
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	if _, ok := resp["error"]; ok {
+		t.Fatalf("security.cra returned error: %v", resp)
+	}
+	result := resp["result"].(map[string]any)
+	checks, _ := result["checks"].([]any)
+	for _, raw := range checks {
+		check := raw.(map[string]any)
+		if check["id"] != "cra-support-period" {
+			continue
+		}
+		if status, _ := check["status"].(string); status != "present" {
+			t.Fatalf("support-period status = %q, want present; check=%v", status, check)
+		}
+		return
+	}
+	t.Fatalf("cra-support-period check missing: %v", checks)
+}
+
 func TestSecurityModeStoresWorkspaceMode(t *testing.T) {
 	db := openSecurityMethodTestDB(t)
 	workspace := t.TempDir()

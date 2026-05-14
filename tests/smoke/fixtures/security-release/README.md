@@ -6,11 +6,22 @@ Smoke coverage should be able to find the documented command surface:
 
 ```bash
 milliwaysctl security status
+milliwaysctl security cra
 milliwaysctl security startup-scan --strict
 milliwaysctl security command-check --mode strict -- npm install left-pad
 milliwaysctl security output-plan --generated cmd/app/main.go --staged .env.local
 milliwaysctl security quarantine --dry-run
 milliwaysctl security rules list
+```
+
+The terminal slash surface mirrors the core posture controls:
+
+```text
+/security status
+/security cra
+/security startup-scan --strict
+/security scan
+/security mode strict
 ```
 
 Expected scanner names for release docs: `osv-scanner`, `gitleaks`, `semgrep`, and `govulncheck`.

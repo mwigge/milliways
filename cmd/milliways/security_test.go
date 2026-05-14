@@ -145,6 +145,18 @@ func TestHandleSecurityStatusCallsRPC(t *testing.T) {
 				map[string]any{"name": "osv-scanner", "installed": true, "version": "osv-scanner 2.0.0"},
 				map[string]any{"name": "gitleaks", "installed": false},
 			},
+			"cra": map[string]any{
+				"evidence_score":         float64(67),
+				"checks_present":         float64(3),
+				"checks_total":           float64(7),
+				"checks_partial":         float64(2),
+				"checks_missing":         float64(2),
+				"reporting_present":      float64(2),
+				"reporting_total":        float64(3),
+				"reporting_ready":        false,
+				"design_evidence_status": "partial",
+				"reporting_deadline":     "2026-09-11",
+			},
 		},
 	})
 
@@ -156,7 +168,7 @@ func TestHandleSecurityStatusCallsRPC(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("unexpected stderr: %s", stderr.String())
 	}
-	for _, want := range []string{"mode: warn", "posture: WARN", "warnings: 2", "blocks: 1", "installed osv-scanner", "missing gitleaks", "last startup scan"} {
+	for _, want := range []string{"mode: warn", "posture: WARN", "warnings: 2", "blocks: 1", "installed osv-scanner", "missing gitleaks", "last startup scan", "cra: 67%"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("status output missing %q:\n%s", want, stdout.String())
 		}
@@ -245,5 +257,122 @@ func TestHandleSecurityWarningsCallsRPC(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "1 warning(s)") || !strings.Contains(stdout.String(), "HIGH: startup script is risky") {
 		t.Fatalf("warnings output did not summarize warning:\n%s", stdout.String())
+	}
+}
+
+func TestHandleSecurityCRACallsRPC(t *testing.T) {
+	t.Parallel()
+
+	loop, calls, stdout, stderr := newSecurityTestLoop(t, map[string]any{
+		"security.cra": map[string]any{
+			"workspace": "/tmp/project",
+			"summary": map[string]any{
+				"evidence_score":         float64(58),
+				"checks_present":         float64(2),
+				"checks_total":           float64(7),
+				"checks_partial":         float64(4),
+				"checks_missing":         float64(1),
+				"reporting_present":      float64(2),
+				"reporting_total":        float64(3),
+				"reporting_ready":        false,
+				"design_evidence_status": "partial",
+				"reporting_deadline":     "2026-09-11",
+			},
+			"checks": []any{
+				map[string]any{
+					"id":               "cra-sbom",
+					"title":            "SBOM evidence",
+					"status":           "missing",
+					"missing_evidence": []any{"sbom_paths"},
+				},
+			},
+		},
+	})
+
+	loop.handleSlash("/security cra")
+	call := requireSecurityCall(t, calls)
+	if call.Method != "security.cra" {
+		t.Fatalf("method = %q, want security.cra", call.Method)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected stderr: %s", stderr.String())
+	}
+	for _, want := range []string{"CRA readiness", "evidence: 58%", "vulnerability/reporting: 2/3 not ready", "design evidence: partial", "Article 14 reporting: 2026-09-11", "MISS  cra-sbom"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("CRA output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestHandleSecurityScanCallsRPC(t *testing.T) {
+	t.Parallel()
+
+	loop, calls, stdout, stderr := newSecurityTestLoop(t, map[string]any{
+		"security.scan": map[string]any{"findings": []any{}},
+	})
+
+	loop.handleSlash("/security scan")
+	call := requireSecurityCall(t, calls)
+	if call.Method != "security.scan" {
+		t.Fatalf("method = %q, want security.scan", call.Method)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected stderr: %s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "0 finding(s)") {
+		t.Fatalf("scan output did not summarize findings:\n%s", stdout.String())
+	}
+}
+
+func TestHandleSecurityStartupScanPassesStrict(t *testing.T) {
+	t.Parallel()
+
+	loop, calls, stdout, stderr := newSecurityTestLoop(t, map[string]any{
+		"security.startup_scan": map[string]any{"warnings": []any{"x"}},
+	})
+
+	loop.handleSlash("/security startup-scan --strict")
+	call := requireSecurityCall(t, calls)
+	if call.Method != "security.startup_scan" {
+		t.Fatalf("method = %q, want security.startup_scan", call.Method)
+	}
+	if strict, _ := call.Params["strict"].(bool); !strict {
+		t.Fatalf("strict param = %#v, want true", call.Params)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected stderr: %s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "1 warning(s)") {
+		t.Fatalf("startup-scan output did not summarize warnings:\n%s", stdout.String())
+	}
+}
+
+func TestHandleSecurityModeValidatesAndCallsRPC(t *testing.T) {
+	t.Parallel()
+
+	loop, calls, stdout, stderr := newSecurityTestLoop(t, map[string]any{
+		"security.mode": map[string]any{"mode": "strict"},
+	})
+
+	loop.handleSlash("/security mode strict")
+	call := requireSecurityCall(t, calls)
+	if call.Method != "security.mode" {
+		t.Fatalf("method = %q, want security.mode", call.Method)
+	}
+	if mode, _ := call.Params["mode"].(string); mode != "strict" {
+		t.Fatalf("mode param = %#v, want strict", call.Params)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected stderr: %s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "mode: strict") {
+		t.Fatalf("mode output did not summarize mode:\n%s", stdout.String())
+	}
+
+	var badOut, badErr bytes.Buffer
+	badLoop := &chatLoop{client: loop.client, out: &badOut, errw: &badErr}
+	badLoop.handleSlash("/security mode panic")
+	if !strings.Contains(badErr.String(), "invalid mode") {
+		t.Fatalf("invalid mode error missing:\n%s", badErr.String())
 	}
 }

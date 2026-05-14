@@ -924,7 +924,7 @@ Milliways wraps Claude, Codex, Copilot, Gemini, Pool, MiniMax, and local models 
 | Output gate | `milliwaysctl security output-plan` | Classifies generated and staged paths into secret, SAST, and dependency scan requests before output is trusted or committed. |
 | Quarantine planner | `milliwaysctl security quarantine` | Dry-run remediation planning for suspicious workspace files and auto-run tasks. Apply-style actions require explicit confirmation through the daemon surface that supports them. |
 | Rule packs | `milliwaysctl security rules list\|update` | Bundled and local rules for IOC, startup, command, package, and persistence checks. Offline mode uses local rule packs only. |
-| CRA readiness | planned `milliwaysctl security cra` | Tracks EU Cyber Resilience Act evidence: SBOM presence, vulnerability handling process, secure-by-default posture, scanner coverage, support-period metadata, and reporting readiness. CRA is a policy/evidence layer; OSV, Gitleaks, Semgrep, govulncheck, and optional NVD enrichment feed it. |
+| CRA readiness | `milliwaysctl security cra`, `/security cra` | Tracks EU Cyber Resilience Act evidence: SBOM presence, vulnerability handling process, secure-by-default posture, scanner coverage, support-period metadata, and reporting readiness. CRA is a policy/evidence layer; OSV, Gitleaks, Semgrep, govulncheck, and optional NVD enrichment feed it. |
 | Status and warnings | `milliwaysctl security status`, `warnings`, `mode` | One posture summary for CLI, terminal cockpit, and future release smoke checks: mode, scanner state, last scan times, warnings, blocks, and client profile state. |
 
 The layers are intentionally additive. Startup scan is deterministic and local; external scanners add dependency, secret, and SAST depth when installed; client profiles and command checks reduce the risk of handing unsafe work to external CLIs that execute their own tools.
@@ -981,6 +981,7 @@ Implementation note: MilliWays currently attaches to the `osv-scanner` CLI for l
 
 ```bash
 milliwaysctl security status
+milliwaysctl security cra
 milliwaysctl security startup-scan --strict
 milliwaysctl security scan
 milliwaysctl security warnings
@@ -990,6 +991,18 @@ milliwaysctl security output-plan --generated cmd/app/main.go --staged .env.loca
 milliwaysctl security quarantine --dry-run
 milliwaysctl security rules list
 milliwaysctl security harden npm --dry-run
+```
+
+Inside the MilliWays terminal, the same core posture controls are available without leaving the active client:
+
+```text
+/security status
+/security cra
+/security startup-scan --strict
+/security scan
+/security mode strict
+/security client codex
+/security command-check --mode strict -- npm install left-pad
 ```
 
 `startup-scan` and most posture RPCs are daemon-backed. If a new `milliwaysctl` has a command before the running daemon exposes the matching RPC, the CLI prints that the surface is present and will activate when `milliwaysd` is updated.

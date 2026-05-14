@@ -42,6 +42,22 @@ func (l *chatLoop) handleSecurity(rest string) {
 			return
 		}
 		l.callSecurityRPC("security status", "security.status", map[string]any{}, renderSecurityStatus)
+	case "cra":
+		if len(args) != 1 {
+			fmt.Fprintln(l.errw, "usage: /security cra")
+			return
+		}
+		l.callSecurityRPC("security cra", "security.cra", map[string]any{}, renderSecurityCRA)
+	case "scan":
+		if len(args) != 1 {
+			fmt.Fprintln(l.errw, "usage: /security scan")
+			return
+		}
+		l.callSecurityRPC("security scan", "security.scan", map[string]any{}, renderSecurityGeneric)
+	case "startup-scan":
+		l.handleSecurityStartupScan(args[1:])
+	case "mode":
+		l.handleSecurityMode(args[1:])
 	case "client":
 		l.handleSecurityClient(args[1:])
 	case "command-check":
@@ -56,6 +72,40 @@ func (l *chatLoop) handleSecurity(rest string) {
 		fmt.Fprintf(l.errw, "unknown security command %q\n", verb)
 		printSecurityUsage(l.errw)
 	}
+}
+
+func (l *chatLoop) handleSecurityStartupScan(args []string) {
+	fs := flag.NewFlagSet("security startup-scan", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	strict := fs.Bool("strict", false, "request strict startup posture checks")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(l.errw, "security startup-scan: %v\n", err)
+		return
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(l.errw, "usage: /security startup-scan [--strict]")
+		return
+	}
+	l.callSecurityRPC("security startup-scan", "security.startup_scan", map[string]any{
+		"strict": *strict,
+	}, renderSecurityGeneric)
+}
+
+func (l *chatLoop) handleSecurityMode(args []string) {
+	if len(args) > 1 {
+		fmt.Fprintln(l.errw, "usage: /security mode [off|observe|warn|strict|ci]")
+		return
+	}
+	params := map[string]any{}
+	if len(args) == 1 {
+		mode := args[0]
+		if !validSecurityMode(mode) {
+			fmt.Fprintf(l.errw, "security mode: invalid mode %q (want off, observe, warn, strict, or ci)\n", mode)
+			return
+		}
+		params["mode"] = mode
+	}
+	l.callSecurityRPC("security mode", "security.mode", params, renderSecurityGeneric)
 }
 
 func (l *chatLoop) handleSecurityClient(args []string) {
@@ -117,6 +167,10 @@ func (l *chatLoop) callSecurityRPC(label, method string, params map[string]any, 
 func printSecurityUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: /security <command>")
 	fmt.Fprintln(w, "  /security status")
+	fmt.Fprintln(w, "  /security cra")
+	fmt.Fprintln(w, "  /security scan")
+	fmt.Fprintln(w, "  /security startup-scan [--strict]")
+	fmt.Fprintln(w, "  /security mode [off|observe|warn|strict|ci]")
 	fmt.Fprintln(w, "  /security client <name>")
 	fmt.Fprintln(w, "  /security command-check [--mode <mode>] [--cwd <dir>] [--client <name>] -- <command...>")
 	fmt.Fprintln(w, "  /security warnings")
@@ -156,6 +210,92 @@ func renderSecurityStatus(stdout io.Writer, label string, result map[string]any)
 	if lastDependency := firstStringField(result, "last_dependency_scan", "last_dependency_scan_at", "scanned_at"); lastDependency != "" {
 		fmt.Fprintf(stdout, "last dependency scan: %s\n", lastDependency)
 	}
+	if cra, _ := result["cra"].(map[string]any); len(cra) > 0 {
+		fmt.Fprintf(stdout, "cra: %s\n", formatSecurityCRASummary(cra))
+	}
+}
+
+func renderSecurityCRA(stdout io.Writer, label string, result map[string]any) {
+	summary, _ := result["summary"].(map[string]any)
+	fmt.Fprintln(stdout, "[security] CRA readiness")
+	if workspace := stringField(result, "workspace"); workspace != "" {
+		fmt.Fprintf(stdout, "workspace: %s\n", workspace)
+	}
+	fmt.Fprintf(stdout, "evidence: %s\n", formatSecurityCRAEvidence(summary))
+	fmt.Fprintf(stdout, "vulnerability/reporting: %s\n", formatSecurityCRAReporting(summary))
+	design := stringField(summary, "design_evidence_status")
+	if design == "" {
+		design = "missing"
+	}
+	fmt.Fprintf(stdout, "design evidence: %s\n", design)
+	if deadline := stringField(summary, "reporting_deadline"); deadline != "" {
+		fmt.Fprintf(stdout, "Article 14 reporting: %s\n", deadline)
+	}
+	checks, _ := result["checks"].([]any)
+	if len(checks) == 0 {
+		return
+	}
+	fmt.Fprintln(stdout, "checks:")
+	for i, raw := range checks {
+		if i >= 5 {
+			fmt.Fprintf(stdout, "  ... %d more\n", len(checks)-i)
+			break
+		}
+		check, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(stdout, "  %s  %s — %s\n", securityCRAStatusMark(stringField(check, "status")), stringField(check, "id"), stringField(check, "title"))
+		if missing := stringListField(check, "missing_evidence"); len(missing) > 0 {
+			fmt.Fprintf(stdout, "      missing: %s\n", strings.Join(missing, ", "))
+		}
+	}
+}
+
+func formatSecurityCRASummary(cra map[string]any) string {
+	return strings.Join([]string{
+		formatSecurityCRAEvidence(cra),
+		formatSecurityCRAReporting(cra),
+		"design " + firstNonEmptyString(stringField(cra, "design_evidence_status"), "missing"),
+		"Article 14 " + firstNonEmptyString(stringField(cra, "reporting_deadline"), "2026-09-11"),
+	}, ", ")
+}
+
+func formatSecurityCRAEvidence(summary map[string]any) string {
+	score := intSecurityField(summary, "evidence_score")
+	present := intSecurityField(summary, "checks_present")
+	total := intSecurityField(summary, "checks_total")
+	partial := intSecurityField(summary, "checks_partial")
+	missing := intSecurityField(summary, "checks_missing")
+	return fmt.Sprintf("%d%% (%d/%d present, %d partial, %d missing)", score, present, total, partial, missing)
+}
+
+func formatSecurityCRAReporting(summary map[string]any) string {
+	present := intSecurityField(summary, "reporting_present")
+	total := intSecurityField(summary, "reporting_total")
+	ready := "not ready"
+	if ok, _ := summary["reporting_ready"].(bool); ok {
+		ready = "ready"
+	}
+	return fmt.Sprintf("%d/%d %s", present, total, ready)
+}
+
+func securityCRAStatusMark(status string) string {
+	switch status {
+	case "present":
+		return "OK"
+	case "partial":
+		return "WARN"
+	default:
+		return "MISS"
+	}
+}
+
+func firstNonEmptyString(value, fallback string) string {
+	if value != "" {
+		return value
+	}
+	return fallback
 }
 
 func renderSecurityGeneric(stdout io.Writer, label string, result map[string]any) {

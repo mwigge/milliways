@@ -408,6 +408,7 @@ func securityCRAStatus(workspace string, status pantry.SecurityStatus, scannerSt
 }
 
 func evaluateCRAReadiness(workspace string, status pantry.SecurityStatus, scannerStatus any) (adapters.CRAReport, map[string]any) {
+	supportPeriod := firstCRAEvidenceFile(workspace, "support-period")
 	report := adapters.NewCRAAdapter().Evaluate(adapters.CRAEvidenceInput{
 		ProductName:                     "MilliWays",
 		AsOf:                            time.Now().UTC(),
@@ -417,8 +418,8 @@ func evaluateCRAReadiness(workspace string, status pantry.SecurityStatus, scanne
 		VulnerabilityReportingProcess:   firstCRAEvidenceFile(workspace, "security-process"),
 		SecureByDefaultEvidence:         secureByDefaultCRAEvidence(status),
 		ScannerCoverage:                 scannerCoverageCRAEvidence(scannerStatus),
-		SupportPeriod:                   firstCRAEvidenceFile(workspace, "support-period"),
-		SupportUntil:                    nil,
+		SupportPeriod:                   supportPeriod,
+		SupportUntil:                    craSupportUntil(workspace, supportPeriod),
 		ConformityDocumentationPaths:    findCRAEvidenceFiles(workspace, "conformity"),
 		AutomaticSecurityUpdateEvidence: findCRAEvidenceFiles(workspace, "updates"),
 	})
@@ -515,6 +516,29 @@ func firstCRAEvidenceFile(workspace, kind string) string {
 		return ""
 	}
 	return files[0]
+}
+
+func craSupportUntil(workspace, rel string) *time.Time {
+	if strings.TrimSpace(workspace) == "" || strings.TrimSpace(rel) == "" {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, rel))
+	if err != nil {
+		return nil
+	}
+	fields := strings.FieldsFunc(string(data), func(r rune) bool {
+		return r < '0' || r > '9'
+	})
+	for i := 0; i+2 < len(fields); i++ {
+		if len(fields[i]) != 4 || len(fields[i+1]) != 2 || len(fields[i+2]) != 2 {
+			continue
+		}
+		t, err := time.Parse("2006-01-02", fields[i]+"-"+fields[i+1]+"-"+fields[i+2])
+		if err == nil && t.Year() >= 2027 {
+			return &t
+		}
+	}
+	return nil
 }
 
 func secureByDefaultCRAEvidence(status pantry.SecurityStatus) []string {
