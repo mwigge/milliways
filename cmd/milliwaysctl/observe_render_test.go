@@ -178,6 +178,39 @@ func TestFormatObservabilityFrame_ShowsSecurityPosture(t *testing.T) {
 	}
 }
 
+func TestFormatObservabilityFrame_ShowsCRAReadinessKPIs(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	usage := observeRenderUsage{
+		Security: observeRenderSecurity{
+			Installed: true,
+			Mode:      "warn",
+			CRA: observeRenderCRA{
+				EvidenceScore:        67,
+				ChecksTotal:          6,
+				ChecksPresent:        3,
+				ChecksPartial:        2,
+				ChecksMissing:        1,
+				ReportingReady:       false,
+				ReportingPresent:     2,
+				ReportingTotal:       3,
+				DesignEvidenceStatus: "partial",
+				DaysToReporting:      120,
+				ReportingDeadline:    "2026-09-11",
+			},
+		},
+	}
+
+	got := formatObservabilityFrame(fixedNow, nil, usage)
+	want := "cra:           67% evidence, reporting 2/3 not ready, design partial, Article 14 2026-09-11"
+	if !strings.Contains(got, want) {
+		t.Fatalf("frame missing CRA KPIs %q:\n%s", want, got)
+	}
+	if strings.Contains(got, "120d to 2026-09-11") {
+		t.Fatalf("frame should not render CRA as a countdown:\n%s", got)
+	}
+}
+
 func TestFormatTimeToLimitFallbacks(t *testing.T) {
 	t.Parallel()
 	if got := formatTimeToLimit(nil); got != "-- (waiting for usage)" {

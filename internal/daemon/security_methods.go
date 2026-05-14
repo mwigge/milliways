@@ -361,9 +361,167 @@ func (s *Server) securityStatus(enc *json.Encoder, req *Request) {
 			if status.LastDependencyScan != nil && !status.LastDependencyScan.CompletedAt.IsZero() {
 				result["last_dependency_scan_at"] = status.LastDependencyScan.CompletedAt.UTC().Format(time.RFC3339)
 			}
+			result["cra"] = securityCRAStatus(workspace, status, result["scanners"])
 		}
 	}
+	if _, ok := result["cra"]; !ok {
+		result["cra"] = securityCRAStatus("", pantry.SecurityStatus{}, result["scanners"])
+	}
 	writeResult(enc, req.ID, result)
+}
+
+func securityCRAStatus(workspace string, status pantry.SecurityStatus, scannerStatus any) map[string]any {
+	now := time.Now().UTC()
+	report := adapters.NewCRAAdapter().Evaluate(adapters.CRAEvidenceInput{
+		ProductName:                     "MilliWays",
+		AsOf:                            now,
+		SBOMPaths:                       findCRAEvidenceFiles(workspace, "sbom"),
+		VulnerabilityHandlingPolicy:     firstCRAEvidenceFile(workspace, "security-policy"),
+		VulnerabilityReportingContact:   firstCRAEvidenceFile(workspace, "security-contact"),
+		VulnerabilityReportingProcess:   firstCRAEvidenceFile(workspace, "security-process"),
+		SecureByDefaultEvidence:         secureByDefaultCRAEvidence(status),
+		ScannerCoverage:                 scannerCoverageCRAEvidence(scannerStatus),
+		SupportPeriod:                   firstCRAEvidenceFile(workspace, "support-period"),
+		SupportUntil:                    nil,
+		ConformityDocumentationPaths:    findCRAEvidenceFiles(workspace, "conformity"),
+		AutomaticSecurityUpdateEvidence: findCRAEvidenceFiles(workspace, "updates"),
+	})
+
+	total, present, partial, missing := len(report.Checks), 0, 0, 0
+	reportingPresent, reportingTotal := 0, 0
+	daysToReporting := 0
+	reportingDeadlineStatus := string(adapters.CRADeadlineUnknown)
+	designEvidenceStatus := string(adapters.CRAEvidenceMissing)
+	for _, check := range report.Checks {
+		switch check.Status {
+		case adapters.CRAEvidencePresent:
+			present++
+		case adapters.CRAEvidencePartial:
+			partial++
+		default:
+			missing++
+		}
+		if check.ID == "cra-vulnerability-handling" {
+			reportingPresent = len(check.PresentEvidence)
+			reportingTotal = len(check.PresentEvidence) + len(check.MissingEvidence)
+			daysToReporting = check.DaysUntilDue
+			reportingDeadlineStatus = string(check.DeadlineStatus)
+		}
+		if check.ID == "cra-secure-by-default" {
+			designEvidenceStatus = string(check.Status)
+		}
+	}
+	score := 0
+	if total > 0 {
+		score = int((float64(present)+0.5*float64(partial))/float64(total)*100 + 0.5)
+	}
+	return map[string]any{
+		"regulation":                report.Regulation,
+		"evidence_score":            score,
+		"checks_total":              total,
+		"checks_present":            present,
+		"checks_partial":            partial,
+		"checks_missing":            missing,
+		"reporting_ready":           reportingTotal > 0 && reportingPresent == reportingTotal,
+		"reporting_present":         reportingPresent,
+		"reporting_total":           reportingTotal,
+		"design_evidence_status":    designEvidenceStatus,
+		"days_to_reporting":         daysToReporting,
+		"reporting_deadline":        "2026-09-11",
+		"reporting_deadline_status": reportingDeadlineStatus,
+		"full_deadline":             "2027-12-11",
+	}
+}
+
+func findCRAEvidenceFiles(workspace, kind string) []string {
+	if strings.TrimSpace(workspace) == "" {
+		return nil
+	}
+	candidates := map[string][]string{
+		"sbom": {
+			"sbom.spdx.json", "sbom.cdx.json", "bom.json", "dist/sbom.spdx.json",
+			"dist/sbom.cdx.json", "dist/milliways.spdx.json",
+		},
+		"conformity": {
+			"docs/cra-technical-file.md", "docs/declaration-of-conformity.md",
+			"docs/conformity.md", "COMPLIANCE.md",
+		},
+		"updates": {
+			"docs/update-policy.md", "docs/security-updates.md", "SECURITY.md",
+		},
+		"support-period": {
+			"SUPPORT.md", "docs/support.md", "SECURITY.md",
+		},
+		"security-policy": {
+			"SECURITY.md", ".github/SECURITY.md", "docs/security.md",
+		},
+		"security-contact": {
+			"SECURITY.md", ".well-known/security.txt", ".github/SECURITY.md",
+		},
+		"security-process": {
+			"SECURITY.md", "docs/security-reporting.md", ".github/SECURITY.md",
+		},
+	}
+	var found []string
+	for _, rel := range candidates[kind] {
+		path := filepath.Join(workspace, rel)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			found = append(found, rel)
+		}
+	}
+	return found
+}
+
+func firstCRAEvidenceFile(workspace, kind string) string {
+	files := findCRAEvidenceFiles(workspace, kind)
+	if len(files) == 0 {
+		return ""
+	}
+	return files[0]
+}
+
+func secureByDefaultCRAEvidence(status pantry.SecurityStatus) []string {
+	var evidence []string
+	if strings.TrimSpace(status.Workspace) == "" {
+		return evidence
+	}
+	if security.NormalizeMode(security.Mode(status.Mode)) != security.ModeOff {
+		evidence = append(evidence, "security mode "+status.Mode)
+	}
+	if !status.StartupScanCompletedAt.IsZero() {
+		evidence = append(evidence, "startup scan completed")
+	}
+	return evidence
+}
+
+func scannerCoverageCRAEvidence(raw any) []adapters.CRAScannerCoverage {
+	items, ok := raw.([]map[string]any)
+	if !ok {
+		return nil
+	}
+	var coverage []adapters.CRAScannerCoverage
+	for _, item := range items {
+		installed, _ := item["installed"].(bool)
+		name, _ := item["name"].(string)
+		if !installed || name == "" {
+			continue
+		}
+		coverage = append(coverage, adapters.CRAScannerCoverage{Name: name, Kind: craScannerKind(name)})
+	}
+	return coverage
+}
+
+func craScannerKind(name string) string {
+	switch name {
+	case "osv-scanner", "govulncheck":
+		return "dependency"
+	case "gitleaks":
+		return "secret"
+	case "semgrep":
+		return "sast"
+	default:
+		return "scanner"
+	}
 }
 
 func securityScannerAdapterStatus(ctx context.Context) []map[string]any {

@@ -168,6 +168,52 @@ func TestSecurityStatusIncludesScannerAdapterStatus(t *testing.T) {
 	}
 }
 
+func TestSecurityStatusIncludesCRAReadinessKPIs(t *testing.T) {
+	oldAdapters := securityStatusAdapters
+	securityStatusAdapters = func() []adapters.ScannerAdapter {
+		return []adapters.ScannerAdapter{
+			fakeSecurityStatusAdapter{name: "osv-scanner", installed: true, version: "osv-scanner 2.0.0"},
+			fakeSecurityStatusAdapter{name: "gitleaks", installed: true, version: "gitleaks 8.0.0"},
+		}
+	}
+	t.Cleanup(func() { securityStatusAdapters = oldAdapters })
+
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	writeSecurityMethodFile(t, filepath.Join(workspace, "SECURITY.md"), "Report vulnerabilities to security@example.test.\n")
+	writeSecurityMethodFile(t, filepath.Join(workspace, "sbom.spdx.json"), "{}\n")
+	if err := db.Security().MarkStartupScanCompleted(workspace, startupScanConfigHash(workspace)); err != nil {
+		t.Fatalf("MarkStartupScanCompleted: %v", err)
+	}
+
+	s := &Server{pantryDB: db}
+	enc, buf := newCapturingEncoder()
+	s.securityStatus(enc, &Request{ID: mustSecurityMethodParams(t, 1)})
+
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	result := resp["result"].(map[string]any)
+	cra, ok := result["cra"].(map[string]any)
+	if !ok {
+		t.Fatalf("cra status missing or wrong type: %#v", result["cra"])
+	}
+	if score, _ := cra["evidence_score"].(float64); score <= 0 {
+		t.Fatalf("cra evidence_score = %v, want positive; cra=%v", cra["evidence_score"], cra)
+	}
+	if present, _ := cra["reporting_present"].(float64); present != 3 {
+		t.Fatalf("cra reporting_present = %v, want 3; cra=%v", cra["reporting_present"], cra)
+	}
+	if ready, _ := cra["reporting_ready"].(bool); !ready {
+		t.Fatalf("cra reporting_ready = false, want true; cra=%v", cra)
+	}
+	if design, _ := cra["design_evidence_status"].(string); design != "present" {
+		t.Fatalf("cra design_evidence_status = %q, want present; cra=%v", design, cra)
+	}
+	if deadline, _ := cra["reporting_deadline"].(string); deadline != "2026-09-11" {
+		t.Fatalf("cra reporting_deadline = %q, want 2026-09-11; cra=%v", deadline, cra)
+	}
+}
+
 func TestSecurityModeStoresWorkspaceMode(t *testing.T) {
 	db := openSecurityMethodTestDB(t)
 	workspace := t.TempDir()

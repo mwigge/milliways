@@ -82,18 +82,35 @@ type observeRenderUsage struct {
 }
 
 type observeRenderSecurity struct {
-	Installed            bool   `json:"installed"`
-	Enabled              bool   `json:"enabled"`
-	Mode                 string `json:"mode"`
-	Posture              string `json:"posture"`
-	Warnings             int    `json:"warnings"`
-	Blocks               int    `json:"blocks"`
-	WarningCount         int    `json:"warning_count"`
-	BlockCount           int    `json:"block_count"`
-	LastStartupScanAt    string `json:"last_startup_scan_at"`
-	LastDependencyScanAt string `json:"last_dependency_scan_at"`
-	LastStartupScan      string `json:"last_startup_scan"`
-	LastDependencyScan   string `json:"last_dependency_scan"`
+	Installed            bool             `json:"installed"`
+	Enabled              bool             `json:"enabled"`
+	Mode                 string           `json:"mode"`
+	Posture              string           `json:"posture"`
+	Warnings             int              `json:"warnings"`
+	Blocks               int              `json:"blocks"`
+	WarningCount         int              `json:"warning_count"`
+	BlockCount           int              `json:"block_count"`
+	LastStartupScanAt    string           `json:"last_startup_scan_at"`
+	LastDependencyScanAt string           `json:"last_dependency_scan_at"`
+	LastStartupScan      string           `json:"last_startup_scan"`
+	LastDependencyScan   string           `json:"last_dependency_scan"`
+	CRA                  observeRenderCRA `json:"cra"`
+}
+
+type observeRenderCRA struct {
+	EvidenceScore           int    `json:"evidence_score"`
+	ChecksTotal             int    `json:"checks_total"`
+	ChecksPresent           int    `json:"checks_present"`
+	ChecksPartial           int    `json:"checks_partial"`
+	ChecksMissing           int    `json:"checks_missing"`
+	ReportingReady          bool   `json:"reporting_ready"`
+	ReportingPresent        int    `json:"reporting_present"`
+	ReportingTotal          int    `json:"reporting_total"`
+	DesignEvidenceStatus    string `json:"design_evidence_status"`
+	DaysToReporting         int    `json:"days_to_reporting"`
+	ReportingDeadline       string `json:"reporting_deadline"`
+	ReportingDeadlineStatus string `json:"reporting_deadline_status"`
+	FullDeadline            string `json:"full_deadline"`
 }
 
 // observeRender opens an observability.subscribe stream and writes a
@@ -308,6 +325,9 @@ func formatObservabilityFrame(now time.Time, spans []observeRenderSpan, usage ob
 	fmt.Fprintf(&b, "│   cost:          %s (last 5m)\n", formatObserveCost(usage.Status.CostUSD))
 	fmt.Fprintf(&b, "│   time to limit: %s\n", formatTimeToLimit(usage.Quotas))
 	fmt.Fprintf(&b, "│   security:      %s\n", formatObserveSecurity(usage.Security))
+	if cra := formatObserveCRA(usage.Security.CRA); cra != "" {
+		fmt.Fprintf(&b, "│   cra:           %s\n", cra)
+	}
 	bars := computeLatencyBars(spans, latencyTopN)
 	if len(bars) == 0 {
 		bars = []charts.Bar{
@@ -359,6 +379,36 @@ func formatObserveSecurity(sec observeRenderSecurity) string {
 		return fmt.Sprintf("%s (mode %s, osv missing)", label, mode)
 	}
 	return fmt.Sprintf("%s (mode %s)", label, mode)
+}
+
+func formatObserveCRA(cra observeRenderCRA) string {
+	if cra.ChecksTotal == 0 && cra.ReportingTotal == 0 && cra.ReportingDeadline == "" {
+		return ""
+	}
+	score := cra.EvidenceScore
+	if score < 0 {
+		score = 0
+	}
+	if score > 100 {
+		score = 100
+	}
+	reporting := "--"
+	if cra.ReportingTotal > 0 {
+		reporting = fmt.Sprintf("%d/%d", cra.ReportingPresent, cra.ReportingTotal)
+	}
+	deadline := ""
+	if cra.ReportingDeadline != "" {
+		deadline = ", Article 14 " + cra.ReportingDeadline
+	}
+	ready := "not ready"
+	if cra.ReportingReady {
+		ready = "ready"
+	}
+	design := strings.TrimSpace(cra.DesignEvidenceStatus)
+	if design == "" {
+		design = "missing"
+	}
+	return fmt.Sprintf("%d%% evidence, reporting %s %s, design %s%s", score, reporting, ready, design, deadline)
 }
 
 func formatObserveTokenCount(n int) string {
