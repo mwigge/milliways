@@ -44,21 +44,21 @@ const (
 
 // FileChange is one generated or staged file to evaluate for scan planning.
 type FileChange struct {
-	Path   string
-	Status ChangeStatus
-	Source ChangeSource
+	Path   string       `json:"path"`
+	Status ChangeStatus `json:"status"`
+	Source ChangeSource `json:"source"`
 }
 
 // ScanRequest is a request for a later scanner invocation.
 type ScanRequest struct {
-	Kind   security.ScanKind
-	Files  []string
-	Reason string
+	Kind   security.ScanKind `json:"kind"`
+	Files  []string          `json:"files"`
+	Reason string            `json:"reason"`
 }
 
 // Plan is the output gate's scanner worklist.
 type Plan struct {
-	Requests []ScanRequest
+	Requests []ScanRequest `json:"requests"`
 }
 
 // PlanScans determines which scanner families should run for a set of changed

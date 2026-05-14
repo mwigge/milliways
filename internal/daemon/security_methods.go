@@ -25,8 +25,21 @@ import (
 
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/security"
+	"github.com/mwigge/milliways/internal/security/adapters"
 	"github.com/mwigge/milliways/internal/security/clientprofiles"
+	"github.com/mwigge/milliways/internal/security/firewall"
+	"github.com/mwigge/milliways/internal/security/quarantine"
+	"github.com/mwigge/milliways/internal/security/rulepacks"
 )
+
+var securityStatusAdapters = func() []adapters.ScannerAdapter {
+	return []adapters.ScannerAdapter{
+		adapters.NewOSVScanner(),
+		adapters.NewGitleaks(),
+		adapters.NewSemgrep(),
+		adapters.NewGovulncheck(),
+	}
+}
 
 // securityFindingWire is the JSON wire type for a security finding.
 type securityFindingWire struct {
@@ -311,6 +324,7 @@ func (s *Server) securityStatus(enc *json.Encoder, req *Request) {
 		"enabled":      enabled,
 		"scanner_path": scannerPath,
 		"installed":    scannerPath != "",
+		"scanners":     securityScannerAdapterStatus(context.Background()),
 		"mode":         string(security.ModeWarn),
 		"posture":      string(security.PostureOK),
 		"warnings":     0,
@@ -337,6 +351,30 @@ func (s *Server) securityStatus(enc *json.Encoder, req *Request) {
 		}
 	}
 	writeResult(enc, req.ID, result)
+}
+
+func securityScannerAdapterStatus(ctx context.Context) []map[string]any {
+	scannerAdapters := securityStatusAdapters()
+	statuses := make([]map[string]any, 0, len(scannerAdapters))
+	for _, adapter := range scannerAdapters {
+		status := map[string]any{
+			"name":      adapter.Name(),
+			"installed": adapter.Installed(),
+		}
+		installed, _ := status["installed"].(bool)
+		if installed {
+			versionCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			version, err := adapter.Version(versionCtx)
+			cancel()
+			if err != nil {
+				status["version_error"] = err.Error()
+			} else if version != "" {
+				status["version"] = version
+			}
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses
 }
 
 // securityStartupScan handles "security.startup_scan" by running the fast
@@ -514,6 +552,122 @@ func (s *Server) securityMode(enc *json.Encoder, req *Request) {
 	})
 }
 
+type securityCommandCheckParams struct {
+	Command string `json:"command"`
+	CWD     string `json:"cwd,omitempty"`
+	Client  string `json:"client,omitempty"`
+	Mode    string `json:"mode,omitempty"`
+}
+
+type securityCommandRiskWire struct {
+	Category string `json:"category"`
+	Reason   string `json:"reason"`
+	Evidence string `json:"evidence,omitempty"`
+}
+
+type securityCommandCheckResult struct {
+	Command        string                    `json:"command"`
+	CWD            string                    `json:"cwd,omitempty"`
+	Client         string                    `json:"client,omitempty"`
+	Mode           string                    `json:"mode"`
+	Posture        string                    `json:"posture,omitempty"`
+	Decision       string                    `json:"decision"`
+	Reason         string                    `json:"reason"`
+	Parsed         bool                      `json:"parsed"`
+	Risks          []securityCommandRiskWire `json:"risks"`
+	RiskCategories []string                  `json:"risk_categories"`
+}
+
+// securityCommandCheck handles "security.command_check".
+func (s *Server) securityCommandCheck(enc *json.Encoder, req *Request) {
+	var p securityCommandCheckParams
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+	}
+	result, err := s.runSecurityCommandCheck(p)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, err.Error())
+		return
+	}
+	writeResult(enc, req.ID, result)
+}
+
+func (s *Server) runSecurityCommandCheck(p securityCommandCheckParams) (securityCommandCheckResult, error) {
+	command := strings.TrimSpace(p.Command)
+	if command == "" {
+		return securityCommandCheckResult{}, fmt.Errorf("command is required")
+	}
+	cwd := strings.TrimSpace(p.CWD)
+	if cwd == "" {
+		cwd = s.securityWorkspaceRoot()
+	}
+	if abs, err := filepath.Abs(cwd); err == nil {
+		cwd = abs
+	}
+	client := strings.TrimSpace(p.Client)
+	if client == "" {
+		client = s.currentAgent
+	}
+
+	mode, posture := security.ModeWarn, security.PostureUnknown
+	if s.pantryDB != nil {
+		status, err := s.pantryDB.Security().SecurityStatus(cwd)
+		if err == nil {
+			mode = security.Mode(status.Mode)
+			posture = security.Posture(status.Posture)
+			if client == "" {
+				client = status.ActiveClient
+			}
+		}
+	}
+	if strings.TrimSpace(p.Mode) != "" {
+		requested := security.Mode(strings.TrimSpace(p.Mode))
+		normalized := security.NormalizeMode(requested)
+		if normalized != requested {
+			return securityCommandCheckResult{}, fmt.Errorf("invalid security mode")
+		}
+		mode = normalized
+	}
+
+	fwResult := firewall.Evaluate(firewall.Request{
+		Command:  command,
+		RunnerID: client,
+		CWD:      cwd,
+		Policy: firewall.Policy{
+			Mode:                      mode,
+			BlockNetworkDownloadsInCI: true,
+		},
+		Posture: posture,
+	})
+
+	risks := make([]securityCommandRiskWire, 0, len(fwResult.Risks))
+	categories := make([]string, 0, len(fwResult.Risks))
+	for _, risk := range fwResult.Risks {
+		category := string(risk.Category)
+		categories = append(categories, category)
+		risks = append(risks, securityCommandRiskWire{
+			Category: category,
+			Reason:   risk.Reason,
+			Evidence: risk.Evidence,
+		})
+	}
+	return securityCommandCheckResult{
+		Command:        command,
+		CWD:            cwd,
+		Client:         client,
+		Mode:           string(fwResult.Mode),
+		Posture:        string(posture),
+		Decision:       string(fwResult.Decision),
+		Reason:         fwResult.Reason,
+		Parsed:         fwResult.Parsed,
+		Risks:          risks,
+		RiskCategories: categories,
+	}, nil
+}
+
 func (s *Server) recordClientProfileSecurity(ctx context.Context, workspace, client string) error {
 	_, err := s.runClientProfileSecurity(ctx, workspace, client)
 	return err
@@ -550,6 +704,98 @@ func (s *Server) securityClientProfile(enc *json.Encoder, req *Request) {
 		return
 	}
 	writeResult(enc, req.ID, result)
+}
+
+// securityQuarantine handles "security.quarantine" as a dry-run planner.
+func (s *Server) securityQuarantine(enc *json.Encoder, req *Request) {
+	var p struct {
+		Workspace string `json:"workspace,omitempty"`
+		DryRun    bool   `json:"dry_run"`
+		Apply     bool   `json:"apply"`
+	}
+	p.DryRun = true
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+	}
+	if p.Apply {
+		writeError(enc, req.ID, ErrInvalidParams, "security.quarantine apply is not implemented; run dry-run and apply manually")
+		return
+	}
+	workspace := strings.TrimSpace(p.Workspace)
+	if workspace == "" {
+		workspace = s.securityWorkspaceRoot()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	plan, err := quarantine.PlanActions(ctx, quarantine.Options{
+		WorkspaceRoot:    workspace,
+		SystemdRoots:     quarantineRoots("systemd-user", filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user")),
+		LaunchAgentRoots: quarantineRoots("launch-agents", filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents")),
+	})
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("plan quarantine: %v", err))
+		return
+	}
+	actions := make([]map[string]any, 0, len(plan.Actions))
+	for _, a := range plan.Actions {
+		actions = append(actions, map[string]any{
+			"kind":              string(a.Kind),
+			"reason":            a.Reason,
+			"source_path":       a.SourcePath,
+			"destination_path":  a.DestinationPath,
+			"hash":              a.Hash,
+			"apply_required":    a.ApplyRequired,
+			"rollback_hint":     a.RollbackHint,
+			"additional_fields": a.AdditionalFields,
+		})
+	}
+	writeResult(enc, req.ID, map[string]any{
+		"workspace":       plan.WorkspaceRoot,
+		"quarantine_root": plan.QuarantineRoot,
+		"planned_at":      plan.PlannedAt.UTC().Format(time.RFC3339),
+		"dry_run":         true,
+		"actions":         actions,
+	})
+}
+
+// securityRulesList handles "security.rules_list".
+func (s *Server) securityRulesList(enc *json.Encoder, req *Request) {
+	packs, err := rulepacks.LoadAll(securityRulePackOptions(s.securityWorkspaceRoot()))
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("load rule packs: %v", err))
+		return
+	}
+	out := make([]map[string]any, 0, len(packs))
+	for _, p := range packs {
+		out = append(out, map[string]any{
+			"name":       p.Manifest.Name,
+			"version":    p.Manifest.Version,
+			"source":     string(p.Source),
+			"rules":      len(p.Rules),
+			"root":       p.Root,
+			"rules_path": p.RulesPath,
+		})
+	}
+	writeResult(enc, req.ID, map[string]any{"rules": out, "offline": true})
+}
+
+// securityRulesUpdate verifies local rule packs. Network updates are
+// intentionally disabled by default.
+func (s *Server) securityRulesUpdate(enc *json.Encoder, req *Request) {
+	packs, err := rulepacks.LoadAll(securityRulePackOptions(s.securityWorkspaceRoot()))
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("verify rule packs: %v", err))
+		return
+	}
+	writeResult(enc, req.ID, map[string]any{
+		"ok":      true,
+		"offline": true,
+		"packs":   len(packs),
+		"message": "local rule packs verified; network updates are disabled by default",
+	})
 }
 
 func (s *Server) runClientProfileSecurity(ctx context.Context, workspace, client string) (map[string]any, error) {
@@ -648,6 +894,27 @@ func startupPersistenceRoots() []security.StartupScanRoot {
 	return []security.StartupScanRoot{
 		{Name: "systemd-user", Path: filepath.Join(home, ".config", "systemd", "user")},
 		{Name: "launch-agents", Path: filepath.Join(home, "Library", "LaunchAgents")},
+	}
+}
+
+func quarantineRoots(name, path string) []quarantine.Root {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	return []quarantine.Root{{Name: name, Path: path}}
+}
+
+func securityRulePackOptions(workspace string) rulepacks.Options {
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	var userDirs []string
+	if home != "" {
+		userDirs = append(userDirs, filepath.Join(home, ".config", "milliways", "security", "rules"))
+	}
+	return rulepacks.Options{
+		BundledDirs:   []string{"/usr/share/milliways/security/rules"},
+		UserDirs:      userDirs,
+		WorkspaceDirs: []string{filepath.Join(workspace, ".milliways", "security", "rules")},
+		AllowNetwork:  false,
 	}
 }
 

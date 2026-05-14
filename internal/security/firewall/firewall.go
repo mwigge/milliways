@@ -24,6 +24,7 @@ import (
 	"unicode"
 
 	"github.com/mwigge/milliways/internal/security"
+	"github.com/mwigge/milliways/internal/security/pkgguard"
 )
 
 // Decision is the action the command firewall recommends for a command.
@@ -55,6 +56,26 @@ type Risk struct {
 	Category RiskCategory
 	Reason   string
 	Evidence string
+	Package  *PackageRisk
+}
+
+// PackageRisk exposes package-guard classification details for package
+// manager commands detected by the firewall.
+type PackageRisk struct {
+	Ecosystem     string
+	Manager       string
+	Operation     string
+	DependencyOp  bool
+	RequiresGuard bool
+	Reasons       []PackageReason
+}
+
+// PackageReason is one package-guard reason attached to a package risk.
+type PackageReason struct {
+	Code     string
+	Severity string
+	Message  string
+	Subject  string
 }
 
 // Policy controls how classified risks map to a decision.
@@ -116,6 +137,18 @@ func Classify(command string, policy Policy) ([]Risk, bool) {
 		}
 		seen[category] = Risk{Category: category, Reason: reason, Evidence: evidence}
 	}
+	addPackage := func(classification pkgguard.Classification) {
+		if _, ok := seen[RiskPackageInstall]; ok {
+			return
+		}
+		risk := Risk{
+			Category: RiskPackageInstall,
+			Reason:   packageRiskReason(classification),
+			Evidence: strings.TrimSpace(classification.Manager + " " + classification.Action),
+			Package:  packageRiskFromClassification(classification),
+		}
+		seen[RiskPackageInstall] = risk
+	}
 
 	lowerCommand := strings.ToLower(command)
 	for _, indicator := range allIOCIndicators(policy) {
@@ -136,7 +169,7 @@ func Classify(command string, policy Policy) ([]Risk, bool) {
 			parsed = false
 		}
 		tokensBySegment = append(tokensBySegment, tokens)
-		classifyTokens(tokens, add)
+		classifyTokens(tokens, add, addPackage)
 	}
 
 	if isComplex(command, segments, parsed) && hasRiskPrimitive(command) {
@@ -208,14 +241,17 @@ func decide(mode security.Mode, policy Policy, risks []Risk) (Decision, string) 
 	return DecisionAllow, "risky primitives are allowed by policy"
 }
 
-func classifyTokens(tokens []string, add func(RiskCategory, string, string)) {
+func classifyTokens(tokens []string, add func(RiskCategory, string, string), addPackage func(pkgguard.Classification)) {
 	if len(tokens) == 0 {
 		return
 	}
 	cmd := base(tokens[0])
-	switch {
-	case isPackageInstall(tokens):
+	if classification := pkgguard.ClassifyArgv(tokens); classification.Matched {
+		addPackage(classification)
+	} else if isPackageInstall(tokens) {
 		add(RiskPackageInstall, "command invokes a package manager install/update operation", strings.Join(head(tokens, 4), " "))
+	}
+	switch {
 	case isNetworkDownload(tokens):
 		add(RiskNetworkDownload, "command fetches content from the network", strings.Join(head(tokens, 3), " "))
 	case isPersistenceCommand(tokens):
@@ -225,6 +261,38 @@ func classifyTokens(tokens []string, add func(RiskCategory, string, string)) {
 	case cmd == "eval":
 		add(RiskShellEval, "command uses eval", "eval")
 	}
+}
+
+func packageRiskFromClassification(classification pkgguard.Classification) *PackageRisk {
+	reasons := make([]PackageReason, 0, len(classification.Findings))
+	for _, finding := range classification.Findings {
+		reasons = append(reasons, PackageReason{
+			Code:     string(finding.Code),
+			Severity: string(finding.Severity),
+			Message:  finding.Message,
+			Subject:  finding.Subject,
+		})
+	}
+	return &PackageRisk{
+		Ecosystem:     string(classification.Ecosystem),
+		Manager:       classification.Manager,
+		Operation:     classification.Action,
+		DependencyOp:  classification.DependencyOp,
+		RequiresGuard: classification.RequiresGuard,
+		Reasons:       reasons,
+	}
+}
+
+func packageRiskReason(classification pkgguard.Classification) string {
+	if len(classification.Findings) == 0 {
+		return "package manager command can install or mutate dependencies"
+	}
+	codes := make([]string, 0, len(classification.Findings))
+	for _, finding := range classification.Findings {
+		codes = append(codes, string(finding.Code))
+	}
+	sort.Strings(codes)
+	return "package guard: " + strings.Join(codes, ", ")
 }
 
 func isPackageInstall(tokens []string) bool {

@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/mwigge/milliways/internal/rpc"
+	"github.com/mwigge/milliways/internal/security/outputgate"
 )
 
 // runSecurity dispatches `milliwaysctl security <verb> [args...]`.
@@ -80,12 +81,16 @@ func runSecurity(args []string, stdout, stderr io.Writer, socketOverride ...stri
 		return runSecurityMode(rest, stdout, stderr, sock)
 	case "client":
 		return runSecurityClient(rest, stdout, stderr, sock)
+	case "command-check":
+		return runSecurityCommandCheck(rest, stdout, stderr, sock)
 	case "harden":
 		return runSecurityHarden(rest, stdout, stderr)
 	case "quarantine":
 		return runSecurityQuarantine(rest, stdout, stderr, sock)
 	case "rules":
 		return runSecurityRules(rest, stdout, stderr, sock)
+	case "output-plan":
+		return runSecurityOutputPlan(rest, stdout, stderr)
 	case "install-scanner":
 		return runInstallScanner(stdout, stderr)
 	default:
@@ -114,12 +119,16 @@ func printSecurityUsage(w io.Writer) {
 	fmt.Fprintln(w, "    show or set MilliWays security policy mode")
 	fmt.Fprintln(w, "  client <name> [--json]")
 	fmt.Fprintln(w, "    run a per-client security profile check")
+	fmt.Fprintln(w, "  command-check [--mode <mode>] [--cwd <dir>] [--client <name>] [--json] -- <command...>")
+	fmt.Fprintln(w, "    evaluate a command with the Secure MilliWays firewall")
 	fmt.Fprintln(w, "  harden npm [--dry-run|--apply] [--path <.npmrc>]")
 	fmt.Fprintln(w, "    preview or write safer npm defaults")
 	fmt.Fprintln(w, "  quarantine [--dry-run|--apply] [--json]")
 	fmt.Fprintln(w, "    plan or apply quarantine actions when supported by the daemon")
 	fmt.Fprintln(w, "  rules list|update [--json]")
 	fmt.Fprintln(w, "    list or update security rule packs when supported by the daemon")
+	fmt.Fprintln(w, "  output-plan [--json] [--generated <path> ...] [--staged <path> ...]")
+	fmt.Fprintln(w, "    classify output or diff paths into requested scan types without running scanners")
 	fmt.Fprintln(w, "  install-scanner        install osv-scanner via 'go install'")
 }
 
@@ -391,6 +400,9 @@ func runSecurityStatusCmd(stdout, stderr io.Writer, sock string) int {
 	} else {
 		fmt.Fprintln(stdout, "[security] scanning: disabled  (enable: milliwaysctl security enable)")
 	}
+	if scanners := renderSecurityScanners(result["scanners"]); scanners != "" {
+		fmt.Fprintf(stdout, "[security] scanners: %s\n", scanners)
+	}
 	if mode != "" {
 		fmt.Fprintf(stdout, "[security] mode: %s\n", mode)
 	}
@@ -476,6 +488,39 @@ func runSecurityClient(args []string, stdout, stderr io.Writer, sock string) int
 	}, *asJSON, stdout, stderr, sock)
 }
 
+func runSecurityCommandCheck(args []string, stdout, stderr io.Writer, sock string) int {
+	fs := flag.NewFlagSet("security command-check", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	mode := fs.String("mode", "", "security mode override: off, observe, warn, strict, or ci")
+	cwd := fs.String("cwd", "", "working directory for command evaluation")
+	client := fs.String("client", "", "client name")
+	asJSON := fs.Bool("json", false, "print raw JSON result")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if *mode != "" && !validSecurityMode(*mode) {
+		fmt.Fprintf(stderr, "security command-check: invalid mode %q (want off, observe, warn, strict, or ci)\n", *mode)
+		return 1
+	}
+	if fs.NArg() == 0 {
+		fmt.Fprintln(stderr, "security command-check: expected command after --")
+		return 1
+	}
+	params := map[string]any{
+		"command": strings.Join(fs.Args(), " "),
+	}
+	if *mode != "" {
+		params["mode"] = *mode
+	}
+	if *cwd != "" {
+		params["cwd"] = *cwd
+	}
+	if *client != "" {
+		params["client"] = *client
+	}
+	return callSecurityRPC("security command-check", "security.command_check", params, *asJSON, stdout, stderr, sock)
+}
+
 func validSecurityMode(mode string) bool {
 	switch mode {
 	case "off", "observe", "warn", "strict", "ci":
@@ -527,6 +572,81 @@ func runSecurityRules(args []string, stdout, stderr io.Writer, sock string) int 
 	}
 }
 
+type repeatedStringFlag []string
+
+func (f *repeatedStringFlag) String() string {
+	if f == nil {
+		return ""
+	}
+	return strings.Join(*f, ",")
+}
+
+func (f *repeatedStringFlag) Set(value string) error {
+	*f = append(*f, value)
+	return nil
+}
+
+func runSecurityOutputPlan(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("security output-plan", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print JSON scan plan")
+	var generated repeatedStringFlag
+	var staged repeatedStringFlag
+	fs.Var(&generated, "generated", "generated output path to classify; may be repeated")
+	fs.Var(&staged, "staged", "staged diff path to classify; may be repeated")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "security output-plan: unexpected positional path %q; use --generated or --staged\n", fs.Arg(0))
+		return 1
+	}
+
+	changes := make([]outputgate.FileChange, 0, len(generated)+len(staged))
+	for _, path := range generated {
+		changes = append(changes, outputgate.FileChange{
+			Path:   path,
+			Status: outputgate.StatusModified,
+			Source: outputgate.SourceGenerated,
+		})
+	}
+	for _, path := range staged {
+		changes = append(changes, outputgate.FileChange{
+			Path:   path,
+			Status: outputgate.StatusModified,
+			Source: outputgate.SourceStaged,
+		})
+	}
+
+	plan := outputgate.PlanScans(changes)
+	if *asJSON {
+		out, err := json.MarshalIndent(plan, "", "  ")
+		if err != nil {
+			fmt.Fprintf(stderr, "security output-plan: encode plan: %v\n", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, string(out))
+		return 0
+	}
+
+	renderSecurityOutputPlan(stdout, plan)
+	return 0
+}
+
+func renderSecurityOutputPlan(stdout io.Writer, plan outputgate.Plan) {
+	if len(plan.Requests) == 0 {
+		fmt.Fprintln(stdout, "[security output-plan] no scans requested")
+		return
+	}
+	fmt.Fprintf(stdout, "[security output-plan] %d scan request(s)\n", len(plan.Requests))
+	for _, req := range plan.Requests {
+		fmt.Fprintf(stdout, "  %s: %s\n", req.Kind, strings.Join(req.Files, ", "))
+		if req.Reason != "" {
+			fmt.Fprintf(stdout, "    reason: %s\n", req.Reason)
+		}
+	}
+}
+
 func callSecurityRPC(label, method string, params map[string]any, asJSON bool, stdout, stderr io.Writer, sock string) int {
 	c, err := rpc.Dial(sock)
 	if err != nil {
@@ -571,6 +691,24 @@ func renderSecurityGenericResult(stdout io.Writer, label string, result map[stri
 	}
 	if warnings, ok := result["warnings"].([]any); ok {
 		fmt.Fprintf(stdout, "[%s] %d warning(s)\n", label, len(warnings))
+		return
+	}
+	if decision := stringMapField(result, "decision"); decision != "" {
+		fmt.Fprintf(stdout, "[%s] decision: %s\n", label, decision)
+		if reason := stringMapField(result, "reason"); reason != "" {
+			fmt.Fprintf(stdout, "reason: %s\n", reason)
+		}
+		if categories, ok := result["risk_categories"].([]any); ok && len(categories) > 0 {
+			parts := make([]string, 0, len(categories))
+			for _, category := range categories {
+				if s, ok := category.(string); ok {
+					parts = append(parts, s)
+				}
+			}
+			if len(parts) > 0 {
+				fmt.Fprintf(stdout, "risks: %s\n", strings.Join(parts, ", "))
+			}
+		}
 		return
 	}
 	if actions, ok := result["actions"].([]any); ok {
@@ -707,6 +845,44 @@ func intMapField(m map[string]any, keys ...string) int {
 		}
 	}
 	return 0
+}
+
+func renderSecurityScanners(raw any) string {
+	scanners, ok := raw.([]any)
+	if !ok || len(scanners) == 0 {
+		return ""
+	}
+
+	var installed []string
+	var missing []string
+	for _, item := range scanners {
+		scanner, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := scanner["name"].(string)
+		if name == "" {
+			continue
+		}
+		if isInstalled, _ := scanner["installed"].(bool); isInstalled {
+			if version, _ := scanner["version"].(string); version != "" {
+				installed = append(installed, fmt.Sprintf("%s (%s)", name, version))
+			} else {
+				installed = append(installed, name)
+			}
+		} else {
+			missing = append(missing, name)
+		}
+	}
+
+	var parts []string
+	if len(installed) > 0 {
+		parts = append(parts, "installed "+strings.Join(installed, ", "))
+	}
+	if len(missing) > 0 {
+		parts = append(parts, "missing "+strings.Join(missing, ", "))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // runInstallScanner installs osv-scanner via go install.

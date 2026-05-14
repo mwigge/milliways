@@ -21,6 +21,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -96,7 +97,7 @@ func TestRunSecurityHelpIncludesSecureSurface(t *testing.T) {
 	if rc := runSecurity([]string{"help"}, &stdout, &bytes.Buffer{}); rc != 0 {
 		t.Fatalf("expected rc=0, got %d", rc)
 	}
-	for _, want := range []string{"startup-scan", "warnings", "mode", "client <name>", "harden npm", "quarantine", "rules list|update"} {
+	for _, want := range []string{"startup-scan", "warnings", "mode", "client <name>", "command-check", "harden npm", "quarantine", "rules list|update", "output-plan"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("help missing %q; got:\n%s", want, stdout.String())
 		}
@@ -121,6 +122,37 @@ func TestRunSecurityClientCallsRPC(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "2 warning(s)") {
 		t.Errorf("client output should summarize warnings; got:\n%s", stdout.String())
+	}
+}
+
+func TestRunSecurityCommandCheckCallsRPC(t *testing.T) {
+	sock, calls := startSecurityRPCTestServer(t, map[string]any{
+		"security.command_check": map[string]any{
+			"decision":        "block",
+			"reason":          "command changes dependencies",
+			"risk_categories": []any{"package-install"},
+		},
+	})
+
+	var stdout bytes.Buffer
+	if rc := runSecurity([]string{"command-check", "--mode", "strict", "--client", "codex", "--", "npm", "install", "left-pad"}, &stdout, &bytes.Buffer{}, sock); rc != 0 {
+		t.Fatalf("expected rc=0, got %d; stdout:\n%s", rc, stdout.String())
+	}
+	call := <-calls
+	if call.Method != "security.command_check" {
+		t.Fatalf("expected security.command_check, got %q", call.Method)
+	}
+	if command, _ := call.Params["command"].(string); command != "npm install left-pad" {
+		t.Fatalf("expected joined command params, got %#v", call.Params)
+	}
+	if mode, _ := call.Params["mode"].(string); mode != "strict" {
+		t.Fatalf("expected mode=strict params, got %#v", call.Params)
+	}
+	if client, _ := call.Params["client"].(string); client != "codex" {
+		t.Fatalf("expected client=codex params, got %#v", call.Params)
+	}
+	if !strings.Contains(stdout.String(), "decision: block") || !strings.Contains(stdout.String(), "package-install") {
+		t.Errorf("command-check output should summarize decision and risks; got:\n%s", stdout.String())
 	}
 }
 
@@ -213,6 +245,69 @@ func TestRunSecurityQuarantineDefaultsToDryRun(t *testing.T) {
 	}
 }
 
+func TestRunSecurityOutputPlanClassifiesPathsAsJSON(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	rc := runSecurity([]string{
+		"output-plan",
+		"--json",
+		"--generated", "cmd/app/main.go",
+		"--generated", "package-lock.json",
+		"--staged", ".env.local",
+		"--staged", "README.md",
+	}, &stdout, &stderr)
+	if rc != 0 {
+		t.Fatalf("expected rc=0, got %d; stderr:\n%s", rc, stderr.String())
+	}
+
+	var plan struct {
+		Requests []struct {
+			Kind   string   `json:"kind"`
+			Files  []string `json:"files"`
+			Reason string   `json:"reason"`
+		} `json:"requests"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &plan); err != nil {
+		t.Fatalf("Unmarshal output-plan JSON: %v\n%s", err, stdout.String())
+	}
+
+	got := map[string][]string{}
+	for _, req := range plan.Requests {
+		got[req.Kind] = req.Files
+		if req.Reason == "" {
+			t.Fatalf("request for %s has empty reason", req.Kind)
+		}
+	}
+	want := map[string][]string{
+		"secret":     {".env.local", "cmd/app/main.go", "package-lock.json"},
+		"sast":       {"cmd/app/main.go"},
+		"dependency": {"package-lock.json"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("output-plan = %#v, want %#v", got, want)
+	}
+}
+
+func TestRunSecurityOutputPlanRendersNoScans(t *testing.T) {
+	var stdout bytes.Buffer
+	if rc := runSecurity([]string{"output-plan", "--generated", "docs/guide.md"}, &stdout, &bytes.Buffer{}); rc != 0 {
+		t.Fatalf("expected rc=0, got %d", rc)
+	}
+	if !strings.Contains(stdout.String(), "no scans requested") {
+		t.Fatalf("expected no-scan summary, got:\n%s", stdout.String())
+	}
+}
+
+func TestRunSecurityOutputPlanRejectsPositionalPaths(t *testing.T) {
+	var stderr bytes.Buffer
+	if rc := runSecurity([]string{"output-plan", "cmd/app/main.go"}, &bytes.Buffer{}, &stderr); rc == 0 {
+		t.Fatalf("expected positional path to fail")
+	}
+	if !strings.Contains(stderr.String(), "use --generated or --staged") {
+		t.Fatalf("expected flag guidance, got:\n%s", stderr.String())
+	}
+}
+
 func TestRunSecurityStatusRendersExtendedFields(t *testing.T) {
 	sock, _ := startSecurityRPCTestServer(t, map[string]any{
 		"security.status": map[string]any{
@@ -224,6 +319,12 @@ func TestRunSecurityStatusRendersExtendedFields(t *testing.T) {
 			"block_count":             1,
 			"last_startup_scan_at":    "2026-05-14T10:00:00Z",
 			"last_dependency_scan_at": "2026-05-14T10:02:00Z",
+			"scanners": []any{
+				map[string]any{"name": "osv-scanner", "installed": true, "version": "osv-scanner 2.0.0"},
+				map[string]any{"name": "gitleaks", "installed": false},
+				map[string]any{"name": "semgrep", "installed": true},
+				map[string]any{"name": "govulncheck", "installed": false},
+			},
 		},
 	})
 
@@ -231,7 +332,7 @@ func TestRunSecurityStatusRendersExtendedFields(t *testing.T) {
 	if rc := runSecurity([]string{"status"}, &stdout, &bytes.Buffer{}, sock); rc != 0 {
 		t.Fatalf("expected rc=0, got %d", rc)
 	}
-	for _, want := range []string{"mode: warn", "posture: WARN", "warnings: 2  blocks: 1", "last startup scan", "last dependency scan"} {
+	for _, want := range []string{"mode: warn", "posture: WARN", "warnings: 2  blocks: 1", "last startup scan", "last dependency scan", "scanners: installed osv-scanner (osv-scanner 2.0.0), semgrep; missing gitleaks, govulncheck"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("status missing %q; got:\n%s", want, stdout.String())
 		}
