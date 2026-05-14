@@ -194,8 +194,12 @@ func (a *baseAdapter) path() (string, error) {
 // NewGitleaks returns an adapter for local secret scanning.
 func NewGitleaks(opts ...Option) ScannerAdapter {
 	a := newBaseAdapter("gitleaks", "gitleaks", security.ScanSecret, security.FindingSecret, opts...)
-	a.scanArgs = func(workspace string, _ []string) []string {
-		return []string{"detect", "--source", workspace, "--report-format", "json", "--no-banner", "--exit-code", "1"}
+	a.scanArgs = func(workspace string, targets []string) []string {
+		source := workspace
+		if len(targets) == 1 {
+			source = scanTargetPath(workspace, targets[0])
+		}
+		return []string{"detect", "--source", source, "--report-format", "json", "--no-banner", "--exit-code", "1"}
 	}
 	a.parse = parseGitleaks
 	a.render = func(f security.Finding) string {
@@ -213,8 +217,15 @@ func NewGitleaks(opts ...Option) ScannerAdapter {
 // later without changing the adapter contract.
 func NewSemgrep(opts ...Option) ScannerAdapter {
 	a := newBaseAdapter("semgrep", "semgrep", security.ScanSAST, security.FindingSAST, opts...)
-	a.scanArgs = func(workspace string, _ []string) []string {
-		return []string{"scan", "--json", "--disable-version-check", "--metrics=off", "--config", "auto", workspace}
+	a.scanArgs = func(workspace string, targets []string) []string {
+		args := []string{"scan", "--json", "--disable-version-check", "--metrics=off", "--config", "auto"}
+		if len(targets) == 0 {
+			return append(args, workspace)
+		}
+		for _, target := range targets {
+			args = append(args, scanTargetPath(workspace, target))
+		}
+		return args
 	}
 	a.parse = parseSemgrep
 	return a
@@ -241,13 +252,37 @@ func NewOSVScanner(opts ...Option) ScannerAdapter {
 	a.scanArgs = func(_ string, targets []string) []string {
 		args := []string{"--format", "json"}
 		for _, target := range targets {
-			args = append(args, "--lockfile", target)
+			if isOSVManifest(target) {
+				args = append(args, "--manifest", target)
+			} else {
+				args = append(args, "--lockfile", target)
+			}
 		}
 		return args
 	}
 	a.parse = parseOSVScanner
 	a.render = renderDependencyFinding
 	return a
+}
+
+func scanTargetPath(workspace, target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return workspace
+	}
+	if filepath.IsAbs(target) {
+		return filepath.Clean(target)
+	}
+	return filepath.Join(workspace, target)
+}
+
+func isOSVManifest(path string) bool {
+	switch strings.ToLower(filepath.Base(path)) {
+	case "package.json", "pyproject.toml", "go.mod", "cargo.toml", "pnpm-workspace.yaml":
+		return true
+	default:
+		return false
+	}
 }
 
 func commandExec(ctx context.Context, path string, args ...string) ([]byte, []byte, error) {

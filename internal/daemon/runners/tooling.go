@@ -31,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/provider"
 	"github.com/mwigge/milliways/internal/security"
 	"github.com/mwigge/milliways/internal/security/firewall"
@@ -148,6 +149,7 @@ type OutputGateOptions struct {
 	Workspace string
 	Mode      security.Mode
 	Scanners  []outputgate.Scanner
+	Store     *pantry.SecurityStore
 	// UseDefaultScanners asks the gate to use the real local adapters when
 	// Scanners is nil. Tests can leave this false and pass an explicit scanner set.
 	UseDefaultScanners bool
@@ -173,6 +175,7 @@ type StaticCommandFirewall struct {
 	RunnerID string
 	CWD      string
 	Posture  security.Posture
+	Store    *pantry.SecurityStore
 }
 
 // EvaluateCommand implements CommandFirewall.
@@ -523,6 +526,7 @@ func deriveOutputGateOptions(gate OutputGateOptions, commandFirewall CommandFire
 	return OutputGateOptions{
 		Workspace:          static.CWD,
 		Mode:               static.Policy.Mode,
+		Store:              static.Store,
 		UseDefaultScanners: true,
 	}
 }
@@ -560,6 +564,9 @@ func appendOutputGateResult(ctx context.Context, gate OutputGateOptions, before 
 	if len(exec.Results) == 0 && len(exec.Warnings) == 0 {
 		return toolResult
 	}
+	if gate.Store != nil {
+		persistOutputGateResult(gate.Store, gate.Workspace, exec, logger)
+	}
 	report := formatOutputGateReport(exec)
 	if outputGateShouldBlock(gate.Mode, exec) {
 		report += "\nerror: output gate blocked generated file changes"
@@ -577,6 +584,146 @@ func appendOutputGateResult(ctx context.Context, gate OutputGateOptions, before 
 		return report
 	}
 	return toolResult + "\n\n" + report
+}
+
+func persistOutputGateResult(store *pantry.SecurityStore, workspace string, exec outputgate.ExecutionResult, logger *slog.Logger) {
+	var activeWarnings []pantry.SecurityWarning
+	for _, warning := range exec.Warnings {
+		w := pantry.SecurityWarning{
+			Workspace:    fallback(warning.Workspace, workspace),
+			Category:     string(warning.Category),
+			Severity:     outputGateWarningSeverity(warning),
+			Source:       outputGateWarningSource(warning.Source),
+			Message:      warning.Message,
+			Status:       string(fallbackFindingStatus(warning.Status)),
+			FirstSeen:    warning.FirstSeen,
+			LastSeen:     warning.LastSeen,
+			EvidenceHash: warning.EvidenceHash,
+			Remediation:  warning.Remediation,
+		}
+		activeWarnings = append(activeWarnings, w)
+		if err := store.UpsertWarning(w); err != nil && logger != nil {
+			logger.Warn("output gate warning persistence failed", "error", err)
+		}
+	}
+	if err := store.ResolveWarningsNotSeen(workspace, []string{"dependency", "secret", "sast", "command-block"}, "output-gate", activeWarnings); err != nil && logger != nil {
+		logger.Warn("output gate warning resolution failed", "error", err)
+	}
+	for _, result := range exec.Results {
+		for _, finding := range result.Findings {
+			if err := store.UpsertFinding(outputGateSecurityFinding(workspace, result, finding)); err != nil && logger != nil {
+				logger.Warn("output gate finding persistence failed", "error", err)
+			}
+		}
+	}
+}
+
+func outputGateSecurityFinding(workspace string, result security.ScanResult, finding security.Finding) pantry.SecurityFinding {
+	category := string(finding.Category)
+	if category == "" {
+		category = string(outputGateCategoryForKind(result.Kind))
+	}
+	source := finding.ScanSource
+	if source == "" {
+		source = finding.FilePath
+	}
+	if source == "" && len(result.LockFiles) > 0 {
+		source = result.LockFiles[0]
+	}
+	if source == "" {
+		source = "output-gate"
+	}
+	return pantry.SecurityFinding{
+		Category:         category,
+		CVEID:            outputGateFindingID(finding),
+		PackageName:      outputGateFindingPackage(result, finding),
+		InstalledVersion: outputGateFindingVersion(finding),
+		FixedInVersion:   finding.FixedInVersion,
+		Severity:         strings.ToUpper(fallback(finding.Severity, "WARNING")),
+		Ecosystem:        fallback(finding.Ecosystem, category),
+		Summary:          finding.Summary,
+		ScanSource:       source,
+		Status:           string(fallbackFindingStatus(finding.Status)),
+		FirstSeen:        result.ScannedAt,
+		LastSeen:         result.ScannedAt,
+	}
+}
+
+func outputGateWarningSeverity(warning security.Warning) string {
+	severity := strings.ToUpper(strings.TrimSpace(warning.Severity))
+	if severity == "WARNING" {
+		return "WARN"
+	}
+	if severity == "" {
+		return "WARN"
+	}
+	return severity
+}
+
+func outputGateWarningSource(source string) string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return "output-gate"
+	}
+	if strings.HasPrefix(source, "output-gate") {
+		return source
+	}
+	return "output-gate:" + source
+}
+
+func outputGateFindingID(finding security.Finding) string {
+	for _, value := range []string{finding.CVEID, finding.ID, finding.EvidenceHash} {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return "output-gate:" + string(finding.Category) + ":" + finding.FilePath + ":" + strconv.Itoa(finding.Line)
+}
+
+func outputGateFindingPackage(result security.ScanResult, finding security.Finding) string {
+	for _, value := range []string{finding.PackageName, finding.FilePath, finding.ToolName, result.ToolName} {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return "output-gate"
+}
+
+func outputGateFindingVersion(finding security.Finding) string {
+	if strings.TrimSpace(finding.InstalledVersion) != "" {
+		return finding.InstalledVersion
+	}
+	if finding.Line > 0 || finding.Column > 0 {
+		return strconv.Itoa(finding.Line) + ":" + strconv.Itoa(finding.Column)
+	}
+	return "n/a"
+}
+
+func outputGateCategoryForKind(kind security.ScanKind) security.FindingCategory {
+	switch kind {
+	case security.ScanSecret:
+		return security.FindingSecret
+	case security.ScanSAST:
+		return security.FindingSAST
+	case security.ScanDependency:
+		return security.FindingDependency
+	default:
+		return security.FindingCommand
+	}
+}
+
+func fallbackFindingStatus(status security.FindingStatus) security.FindingStatus {
+	if status == "" {
+		return security.FindingActive
+	}
+	return status
+}
+
+func fallback(primary, secondary string) string {
+	if strings.TrimSpace(primary) != "" {
+		return primary
+	}
+	return secondary
 }
 
 func formatOutputGateReport(exec outputgate.ExecutionResult) string {

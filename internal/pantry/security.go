@@ -199,6 +199,7 @@ func (s *SecurityStore) UpsertFinding(f SecurityFinding) error {
 			severity         = excluded.severity,
 			summary          = excluded.summary,
 			scan_source      = excluded.scan_source,
+			status           = excluded.status,
 			last_seen        = excluded.last_seen`,
 		f.Category, f.CVEID, f.PackageName, f.InstalledVersion, f.FixedInVersion,
 		f.Severity, f.Ecosystem, f.Summary, f.ScanSource, f.Status,
@@ -210,17 +211,17 @@ func (s *SecurityStore) UpsertFinding(f SecurityFinding) error {
 	return nil
 }
 
-// ListActive returns findings with status=active, optionally filtered to
-// the given severity values. Excluded are findings with a non-expired
-// accepted-risk entry. Results are ordered CRITICAL→HIGH→MEDIUM→LOW,
-// then by first_seen descending.
+// ListActive returns active or blocked findings, optionally filtered to the
+// given severity values. Excluded are findings with a non-expired accepted-risk
+// entry. Results are ordered CRITICAL→HIGH→MEDIUM→LOW, then by first_seen
+// descending.
 func (s *SecurityStore) ListActive(severities []string) ([]SecurityFinding, error) {
 	query := `
 		SELECT f.id, f.cve_id, f.package_name, f.installed_version,
 		       f.fixed_in_version, f.severity, f.ecosystem, f.summary,
 		       f.scan_source, f.status, f.first_seen, f.last_seen, f.category
 		FROM mw_security_findings f
-		WHERE f.status = 'active'
+		WHERE f.status IN ('active', 'blocked')
 		  AND NOT EXISTS (
 		      SELECT 1 FROM mw_security_accepted_risks r
 		      WHERE r.cve_id = f.cve_id
@@ -927,7 +928,7 @@ func (s *SecurityStore) addFindingCounts(byCategory, bySeverity map[string]int) 
 	rows, err := s.db.Query(`
 		SELECT category, severity, COUNT(*)
 		FROM mw_security_findings f
-		WHERE f.status = 'active'
+		WHERE f.status IN ('active', 'blocked')
 		  AND NOT EXISTS (
 		      SELECT 1 FROM mw_security_accepted_risks r
 		      WHERE r.cve_id = f.cve_id

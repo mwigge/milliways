@@ -134,7 +134,7 @@ func TestStartupSecurityGateRunsRequiredScanAndPreservesStrictMode(t *testing.T)
 	}
 
 	s := &Server{pantryDB: db, currentAgent: "codex", spans: observability.NewRing(10)}
-	gotWorkspace, err := s.ensureStartupSecurityGate(context.Background(), "codex")
+	gotWorkspace, err := s.ensureStartupSecurityGate(context.Background(), "codex", workspace)
 	if err != nil {
 		t.Fatalf("ensureStartupSecurityGate: %v", err)
 	}
@@ -163,9 +163,79 @@ func TestStartupSecurityGateBlocksStrictBlockFindings(t *testing.T) {
 	}
 
 	s := &Server{pantryDB: db, currentAgent: "codex", spans: observability.NewRing(10)}
-	_, err := s.ensureStartupSecurityGate(context.Background(), "codex")
+	_, err := s.ensureStartupSecurityGate(context.Background(), "codex", workspace)
 	if err == nil || !strings.Contains(err.Error(), "blocked codex") {
 		t.Fatalf("ensureStartupSecurityGate err = %v, want block", err)
+	}
+}
+
+func TestAgentOpenWorkspaceUsesProjectSecurityWorkspace(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	daemonRoot := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", daemonRoot)
+	writeSecurityMethodFile(t, filepath.Join(workspace, "package.json"), `{
+  "scripts": {"postinstall": "node setup.mjs"}
+}`)
+
+	s := &Server{pantryDB: db, spans: observability.NewRing(10)}
+	s.agents = NewAgentRegistry(s)
+
+	enc, buf := newCapturingEncoder()
+	s.agentOpen(enc, &Request{
+		ID: mustSecurityMethodParams(t, 1),
+		Params: mustSecurityMethodParams(t, map[string]any{
+			"agent_id":  "codex",
+			"workspace": workspace,
+		}),
+	})
+
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	if _, ok := resp["error"]; ok {
+		t.Fatalf("agent.open returned error: %v", resp)
+	}
+	result := resp["result"].(map[string]any)
+	securityWorkspace, _ := result["security_workspace"].(string)
+	if securityWorkspace != workspace {
+		t.Fatalf("security_workspace = %q, want %q", securityWorkspace, workspace)
+	}
+	handle := AgentHandle(int64(result["handle"].(float64)))
+	defer s.agents.Close(handle)
+	sess, ok := s.agents.Get(handle)
+	if !ok {
+		t.Fatalf("session for handle %d not found", handle)
+	}
+	if sess.SecurityWorkspace != workspace {
+		t.Fatalf("session SecurityWorkspace = %q, want %q", sess.SecurityWorkspace, workspace)
+	}
+	if tracked := s.agentSecurityWorkspace("codex"); tracked != workspace {
+		t.Fatalf("tracked workspace = %q, want %q", tracked, workspace)
+	}
+
+	projectStatus, err := db.Security().SecurityStatus(workspace)
+	if err != nil {
+		t.Fatalf("SecurityStatus project: %v", err)
+	}
+	if projectStatus.StartupScanCompletedAt.IsZero() {
+		t.Fatalf("project startup scan was not completed")
+	}
+	if _, ok, err := db.Security().GetClientProfile(workspace, "codex", clientProfileConfigHash(workspace, "codex")); err != nil {
+		t.Fatalf("GetClientProfile project: %v", err)
+	} else if !ok {
+		t.Fatalf("project client profile was not recorded")
+	}
+
+	daemonStatus, err := db.Security().SecurityStatus(daemonRoot)
+	if err != nil {
+		t.Fatalf("SecurityStatus daemon root: %v", err)
+	}
+	if !daemonStatus.StartupScanCompletedAt.IsZero() {
+		t.Fatalf("daemon cwd startup scan completed unexpectedly")
+	}
+	if _, ok, err := db.Security().GetClientProfile(daemonRoot, "codex", clientProfileConfigHash(daemonRoot, "codex")); err != nil {
+		t.Fatalf("GetClientProfile daemon root: %v", err)
+	} else if ok {
+		t.Fatalf("daemon cwd client profile recorded unexpectedly")
 	}
 }
 

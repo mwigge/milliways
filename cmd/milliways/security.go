@@ -60,11 +60,7 @@ func (l *chatLoop) handleSecurity(rest string) {
 		}
 		l.callSecurityRPC("security cra", "security.cra", map[string]any{}, renderSecurityCRA)
 	case "scan":
-		if len(args) != 1 {
-			fmt.Fprintln(l.errw, "usage: /security scan")
-			return
-		}
-		l.callSecurityRPC("security scan", "security.scan", map[string]any{}, renderSecurityGeneric)
+		l.handleSecurityScan(args[1:])
 	case "startup-scan":
 		l.handleSecurityStartupScan(args[1:])
 	case "mode":
@@ -131,6 +127,36 @@ func (l *chatLoop) handleSecurityStartupScan(args []string) {
 	l.callSecurityRPC("security startup-scan", "security.startup_scan", map[string]any{
 		"strict": *strict,
 	}, renderSecurityGeneric)
+}
+
+func (l *chatLoop) handleSecurityScan(args []string) {
+	fs := flag.NewFlagSet("security scan", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	startup := fs.Bool("startup", false, "run startup posture checks before the dependency scan")
+	client := fs.String("client", "", "run a per-client profile check before the dependency scan")
+	diff := fs.Bool("diff", false, "request scan planning for the staged diff")
+	staged := fs.Bool("staged", false, "request scan planning for the staged diff")
+	secrets := fs.Bool("secrets", false, "include the secret scanning layer")
+	sast := fs.Bool("sast", false, "include the SAST scanning layer")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(l.errw, "security scan: %v\n", err)
+		return
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(l.errw, "usage: /security scan [--startup] [--client <name>] [--diff|--staged] [--secrets] [--sast]")
+		return
+	}
+	if *startup {
+		l.callSecurityRPC("security startup-scan", "security.startup_scan", map[string]any{
+			"strict": false,
+		}, renderSecurityGeneric)
+	}
+	if strings.TrimSpace(*client) != "" {
+		l.callSecurityRPC("security client", "security.client_profile", map[string]any{
+			"client": strings.TrimSpace(*client),
+		}, renderSecurityGeneric)
+	}
+	l.callSecurityRPC("security scan", "security.scan", securityScanParams(*diff || *staged, *secrets, *sast), renderSecurityGeneric)
 }
 
 func (l *chatLoop) handleSecurityMode(args []string) {
@@ -212,12 +238,32 @@ func printSecurityUsage(w io.Writer) {
 	fmt.Fprintln(w, "  /security cra")
 	fmt.Fprintln(w, "  /security cra-scaffold [--workspace <dir>] [--dry-run] [--force]")
 	fmt.Fprintln(w, "  /security sbom [--workspace <dir>] [--output <path>]")
-	fmt.Fprintln(w, "  /security scan")
+	fmt.Fprintln(w, "  /security scan [--startup] [--client <name>] [--diff|--staged] [--secrets] [--sast]")
 	fmt.Fprintln(w, "  /security startup-scan [--strict]")
 	fmt.Fprintln(w, "  /security mode [off|observe|warn|strict|ci]")
 	fmt.Fprintln(w, "  /security client <name>")
 	fmt.Fprintln(w, "  /security command-check [--mode <mode>] [--cwd <dir>] [--client <name>] -- <command...>")
 	fmt.Fprintln(w, "  /security warnings")
+}
+
+func securityScanParams(staged, secrets, sast bool) map[string]any {
+	params := map[string]any{}
+	var layers []string
+	if secrets {
+		layers = append(layers, "secret")
+	}
+	if sast {
+		layers = append(layers, "sast")
+	}
+	if len(layers) > 0 {
+		layers = append(layers, "dependency")
+		params["layers"] = layers
+	}
+	if staged {
+		params["diff"] = "staged"
+		params["staged"] = true
+	}
+	return params
 }
 
 func (l *chatLoop) handleSecurityCRAScaffold(args []string) {

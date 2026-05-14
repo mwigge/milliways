@@ -324,22 +324,27 @@ func (r *AgentRegistry) metricsObserver() runners.MetricsObserver {
 	return nil
 }
 
-// Open allocates a new session for agent_id. For reserved/known ids the
-// session goroutine is started; for unknown ids returns an error.
 func (r *AgentRegistry) Open(agentID string) (*AgentSession, error) {
+	return r.OpenWithWorkspace(agentID, "")
+}
+
+// OpenWithWorkspace allocates a new session for agent_id. For reserved/known
+// ids the session goroutine is started; for unknown ids returns an error.
+func (r *AgentRegistry) OpenWithWorkspace(agentID, securityWorkspace string) (*AgentSession, error) {
 	handle := AgentHandle(r.next.Add(1))
 	ctx, cancel := context.WithCancel(context.Background())
 	sess := &AgentSession{
-		Handle:      handle,
-		AgentID:     agentID,
-		SessionID:   fmt.Sprintf("%s-%d", agentID, handle),
-		server:      r.server,
-		ctx:         ctx,
-		cancel:      cancel,
-		input:       make(chan []byte, 16),
-		streamReady: make(chan struct{}),
-		streams:     make(map[int64]*Stream),
-		status:      "idle",
+		Handle:            handle,
+		AgentID:           agentID,
+		SessionID:         fmt.Sprintf("%s-%d", agentID, handle),
+		SecurityWorkspace: strings.TrimSpace(securityWorkspace),
+		server:            r.server,
+		ctx:               ctx,
+		cancel:            cancel,
+		input:             make(chan []byte, 16),
+		streamReady:       make(chan struct{}),
+		streams:           make(map[int64]*Stream),
+		status:            "idle",
 		// firstSendDone starts at zero (atomic.Uint32 zero value) — first send
 		// will CAS it to 1 and perform context injection exactly once.
 	}
@@ -533,12 +538,22 @@ func (r *AgentRegistry) Close(handle AgentHandle) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if s, ok := r.sessions[handle]; ok {
-		if s.closed.CompareAndSwap(false, true) {
-			s.cancel()
-			close(s.input)
-			s.closeStreams()
-		}
+		s.Close()
 		delete(r.sessions, handle)
+	}
+}
+
+// Close terminates the session's runner/input lifecycle. Registry-owned
+// sessions should normally be closed through AgentRegistry.Close so the handle
+// is removed from the registry as well.
+func (s *AgentSession) Close() {
+	if s == nil {
+		return
+	}
+	if s.closed.CompareAndSwap(false, true) {
+		s.cancel()
+		close(s.input)
+		s.closeStreams()
 	}
 }
 

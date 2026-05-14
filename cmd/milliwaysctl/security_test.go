@@ -93,6 +93,16 @@ func handleSecurityRPCTestConn(conn net.Conn, results map[string]any, calls chan
 	}
 }
 
+func joinSecurityTestStrings(values []any) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		if s, ok := value.(string); ok {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
 func TestRunSecurityHelpIncludesSecureSurface(t *testing.T) {
 	var stdout bytes.Buffer
 	if rc := runSecurity([]string{"help"}, &stdout, &bytes.Buffer{}); rc != 0 {
@@ -211,6 +221,70 @@ func TestRunSecurityScanUsesExistingRPC(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "0 finding(s)") {
 		t.Errorf("scan output should summarize findings; got:\n%s", stdout.String())
+	}
+}
+
+func TestRunSecurityScanJSONKeepsExistingRPCParams(t *testing.T) {
+	sock, calls := startSecurityRPCTestServer(t, map[string]any{
+		"security.scan": map[string]any{"findings": []any{}},
+	})
+
+	var stdout bytes.Buffer
+	if rc := runSecurity([]string{"scan", "--json"}, &stdout, &bytes.Buffer{}, sock); rc != 0 {
+		t.Fatalf("expected rc=0, got %d; stdout:\n%s", rc, stdout.String())
+	}
+	call := <-calls
+	if call.Method != "security.scan" {
+		t.Fatalf("expected security.scan, got %q", call.Method)
+	}
+	if len(call.Params) != 0 {
+		t.Fatalf("security scan --json params = %#v, want empty for compatibility", call.Params)
+	}
+	if !strings.Contains(stdout.String(), `"findings": []`) {
+		t.Errorf("scan JSON should render raw scan result; got:\n%s", stdout.String())
+	}
+}
+
+func TestRunSecurityScanFlagsLayerRPCs(t *testing.T) {
+	sock, calls := startSecurityRPCTestServer(t, map[string]any{
+		"security.startup_scan":   map[string]any{"warnings": []any{}},
+		"security.client_profile": map[string]any{"client": "codex", "warnings": []any{"profile warning"}},
+		"security.scan":           map[string]any{"findings": []any{}},
+	})
+
+	var stdout bytes.Buffer
+	if rc := runSecurity([]string{"scan", "--startup", "--client", "codex", "--diff", "--secrets", "--sast"}, &stdout, &bytes.Buffer{}, sock); rc != 0 {
+		t.Fatalf("expected rc=0, got %d; stdout:\n%s", rc, stdout.String())
+	}
+	startupCall := <-calls
+	clientCall := <-calls
+	scanCall := <-calls
+	if startupCall.Method != "security.startup_scan" {
+		t.Fatalf("first method = %q, want security.startup_scan", startupCall.Method)
+	}
+	if clientCall.Method != "security.client_profile" {
+		t.Fatalf("second method = %q, want security.client_profile", clientCall.Method)
+	}
+	if client, _ := clientCall.Params["client"].(string); client != "codex" {
+		t.Fatalf("client params = %#v, want codex", clientCall.Params)
+	}
+	if scanCall.Method != "security.scan" {
+		t.Fatalf("third method = %q, want security.scan", scanCall.Method)
+	}
+	layers, _ := scanCall.Params["layers"].([]any)
+	if got := joinSecurityTestStrings(layers); got != "secret,sast,dependency" {
+		t.Fatalf("layers = %#v (%q), want secret,sast,dependency", scanCall.Params["layers"], got)
+	}
+	if staged, _ := scanCall.Params["staged"].(bool); !staged {
+		t.Fatalf("staged param = %#v, want true", scanCall.Params)
+	}
+	if diff, _ := scanCall.Params["diff"].(string); diff != "staged" {
+		t.Fatalf("diff param = %#v, want staged", scanCall.Params)
+	}
+	for _, want := range []string{"security startup-scan", "security client", "security scan"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, stdout.String())
+		}
 	}
 }
 

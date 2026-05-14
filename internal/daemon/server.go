@@ -26,6 +26,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -78,6 +79,10 @@ type Server struct {
 	// currentAgent is the last agent opened via agent.open.
 	currentAgent string
 
+	// agentSecurityWorkspaces tracks the most recent security workspace opened
+	// per agent id so runner-side security hooks follow the active session.
+	agentSecurityWorkspaces map[string]string
+
 	// In-memory span ring — populated by every dispatch, served by
 	// observability.spans.
 	spans *observability.Ring
@@ -121,13 +126,14 @@ func NewServer(socket string) (*Server, error) {
 	}
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	s := &Server{
-		socket:            socket,
-		listener:          l,
-		streams:           NewStreamRegistry(),
-		bgCtx:             bgCtx,
-		bgCancel:          bgCancel,
-		statusSubscribers: make(map[int64]*Stream),
-		spans:             observability.NewRing(1000),
+		socket:                  socket,
+		listener:                l,
+		streams:                 NewStreamRegistry(),
+		bgCtx:                   bgCtx,
+		bgCancel:                bgCancel,
+		statusSubscribers:       make(map[int64]*Stream),
+		agentSecurityWorkspaces: make(map[string]string),
+		spans:                   observability.NewRing(1000),
 	}
 	s.agents = NewAgentRegistry(s)
 
@@ -180,9 +186,12 @@ func NewServer(socket string) (*Server, error) {
 		}
 		s.secRunner = security.NewRunner(pdb.Security(), workspaceRoot)
 		runners.SetCommandFirewallProvider(func(agentID string) runners.CommandFirewall {
-			root := workspaceRoot
-			if abs, err := filepath.Abs(root); err == nil {
-				root = abs
+			root := s.agentSecurityWorkspace(agentID)
+			if root == "" {
+				root = workspaceRoot
+				if abs, err := filepath.Abs(root); err == nil {
+					root = abs
+				}
 			}
 			mode, posture := security.ModeWarn, security.PostureUnknown
 			if status, err := pdb.Security().SecurityStatus(root); err == nil {
@@ -221,6 +230,29 @@ func NewServer(socket string) (*Server, error) {
 
 	go s.statusBroadcaster()
 	return s, nil
+}
+
+func (s *Server) trackAgentSecurityWorkspace(agentID, workspace string) {
+	agentID = strings.TrimSpace(agentID)
+	workspace = strings.TrimSpace(workspace)
+	if s == nil || agentID == "" || workspace == "" {
+		return
+	}
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	if s.agentSecurityWorkspaces == nil {
+		s.agentSecurityWorkspaces = make(map[string]string)
+	}
+	s.agentSecurityWorkspaces[agentID] = workspace
+}
+
+func (s *Server) agentSecurityWorkspace(agentID string) string {
+	if s == nil {
+		return ""
+	}
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	return s.agentSecurityWorkspaces[strings.TrimSpace(agentID)]
 }
 
 // Serve accepts connections until Shutdown is called.

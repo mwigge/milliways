@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -36,6 +37,7 @@ import (
 type agentOpenParams struct {
 	AgentID   string `json:"agent_id"`
 	SessionID string `json:"session_id,omitempty"`
+	Workspace string `json:"workspace,omitempty"`
 	// SecurityContext controls whether a security context priming block is
 	// injected before the first user turn. Defaults to true when nil.
 	SecurityContext *bool `json:"security_context,omitempty"`
@@ -65,10 +67,10 @@ func (s *Server) agentOpen(enc *json.Encoder, req *Request) {
 		writeError(enc, req.ID, ErrInvalidParams, "agent.open requires agent_id")
 		return
 	}
-	securityWorkspace := ""
+	securityWorkspace := s.resolveSecurityWorkspace(p.Workspace)
 	if !strings.HasPrefix(p.AgentID, "_") && s.pantryDB != nil {
 		gateCtx, gateCancel := context.WithTimeout(context.Background(), 6*time.Second)
-		workspace, err := s.ensureStartupSecurityGate(gateCtx, p.AgentID)
+		workspace, err := s.ensureStartupSecurityGate(gateCtx, p.AgentID, securityWorkspace)
 		gateCancel()
 		if err != nil {
 			writeError(enc, req.ID, ErrInvalidParams, err.Error())
@@ -76,7 +78,16 @@ func (s *Server) agentOpen(enc *json.Encoder, req *Request) {
 		}
 		securityWorkspace = workspace
 	}
-	sess, err := s.agents.Open(p.AgentID)
+	if !strings.HasPrefix(p.AgentID, "_") && s.pantryDB != nil {
+		profileCtx, profileCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err := s.ensureClientProfileSecurityGate(profileCtx, securityWorkspace, p.AgentID)
+		profileCancel()
+		if err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, err.Error())
+			return
+		}
+	}
+	sess, err := s.agents.OpenWithWorkspace(p.AgentID, securityWorkspace)
 	if err != nil {
 		// Reserved/known agent_ids that aren't implemented yet hit here.
 		// Real runner lift (TASK-1.4) plugs claude/codex/minimax/copilot in.
@@ -91,17 +102,14 @@ func (s *Server) agentOpen(enc *json.Encoder, req *Request) {
 	if strings.TrimSpace(p.SessionID) != "" {
 		sess.SessionID = strings.TrimSpace(p.SessionID)
 	}
-	if securityWorkspace == "" {
-		securityWorkspace = s.securityWorkspaceRoot()
-	}
-	sess.SecurityWorkspace = securityWorkspace
+	s.trackAgentSecurityWorkspace(p.AgentID, securityWorkspace)
 	// Track current agent for the status bar.
 	s.statusMu.Lock()
 	s.currentAgent = p.AgentID
 	s.statusMu.Unlock()
-	if s.pantryDB != nil {
+	if s.pantryDB != nil && strings.HasPrefix(p.AgentID, "_") {
 		profileCtx, profileCancel := context.WithTimeout(context.Background(), 2*time.Second)
-		if err := s.recordClientProfileSecurity(profileCtx, s.securityWorkspaceRoot(), p.AgentID); err != nil {
+		if err := s.recordClientProfileSecurity(profileCtx, securityWorkspace, p.AgentID); err != nil {
 			slog.Debug("security profile: record client profile", "agent", p.AgentID, "err", err)
 		}
 		profileCancel()
@@ -172,8 +180,8 @@ func (s *Server) agentOpen(enc *json.Encoder, req *Request) {
 	})
 }
 
-func (s *Server) ensureStartupSecurityGate(ctx context.Context, agentID string) (string, error) {
-	workspace := s.securityWorkspaceRoot()
+func (s *Server) ensureStartupSecurityGate(ctx context.Context, agentID, workspace string) (string, error) {
+	workspace = s.resolveSecurityWorkspace(workspace)
 	if s.pantryDB == nil {
 		return workspace, nil
 	}
@@ -199,10 +207,25 @@ func (s *Server) ensureStartupSecurityGate(ctx context.Context, agentID string) 
 			return workspace, fmt.Errorf("security startup gate status: %w", err)
 		}
 	}
-	if (mode == security.ModeStrict || mode == security.ModeCI) && status.CountsBySeverity["BLOCK"] > 0 {
-		return workspace, fmt.Errorf("security startup gate blocked %s for workspace %s: %d block finding(s); run `milliwaysctl security warnings`", agentID, workspace, status.CountsBySeverity["BLOCK"])
+	blockCount := status.CountsBySeverity["BLOCK"] - activeClientProfileBlockCount(status.Warnings, "")
+	if blockCount < 0 {
+		blockCount = 0
+	}
+	if (mode == security.ModeStrict || mode == security.ModeCI) && blockCount > 0 {
+		return workspace, fmt.Errorf("security startup gate blocked %s for workspace %s: %d block finding(s); run `milliwaysctl security warnings`", agentID, workspace, blockCount)
 	}
 	return workspace, nil
+}
+
+func (s *Server) resolveSecurityWorkspace(workspace string) string {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		workspace = s.securityWorkspaceRoot()
+	}
+	if abs, err := filepath.Abs(workspace); err == nil {
+		return abs
+	}
+	return workspace
 }
 
 type agentSendParams struct {

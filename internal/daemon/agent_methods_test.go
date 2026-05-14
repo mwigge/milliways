@@ -29,6 +29,7 @@ import (
 
 	"github.com/mwigge/milliways/internal/history"
 	"github.com/mwigge/milliways/internal/parallel"
+	"github.com/mwigge/milliways/internal/security"
 )
 
 // stubMPClient implements parallel.MPClient and captures KGAdd calls.
@@ -303,6 +304,94 @@ func (h *agentMethodsHarness) attachAdditionalStream(id any) net.Conn {
 	}
 	h.t.Cleanup(func() { sidecar.Close() })
 	return sidecar
+}
+
+func TestAgentOpen_BlocksStrictClientProfileBeforeSessionCreation(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	writeSecurityMethodFile(t, filepath.Join(workspace, ".codex", "config.toml"), `sandbox_mode = "danger-full-access"`)
+	if err := db.Security().SetWorkspaceStatus(workspace, string(security.ModeStrict), "codex"); err != nil {
+		t.Fatalf("SetWorkspaceStatus: %v", err)
+	}
+
+	s := &Server{pantryDB: db}
+	s.agents = NewAgentRegistry(s)
+	enc, buf := newCapturingEncoder()
+	s.agentOpen(enc, &Request{
+		ID:     mustSecurityMethodParams(t, 1),
+		Params: mustSecurityMethodParams(t, map[string]any{"agent_id": "codex"}),
+	})
+
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	rawErr, ok := resp["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("agent.open succeeded; want client-profile block: %v", resp)
+	}
+	if msg, _ := rawErr["message"].(string); !strings.Contains(msg, "client profile blocked codex") {
+		t.Fatalf("error message = %q, want client profile block; resp=%v", msg, resp)
+	}
+	s.agents.mu.Lock()
+	sessionCount := len(s.agents.sessions)
+	s.agents.mu.Unlock()
+	if sessionCount != 0 {
+		t.Fatalf("sessions created = %d, want 0 before blocked client open", sessionCount)
+	}
+
+	status, err := db.Security().SecurityStatus(workspace)
+	if err != nil {
+		t.Fatalf("SecurityStatus: %v", err)
+	}
+	if status.CountsBySeverity["BLOCK"] == 0 {
+		t.Fatalf("profile block was not recorded in status: %#v", status.Warnings)
+	}
+}
+
+func TestAgentOpen_WarnModeRecordsClientProfileWithoutBlocking(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	writeSecurityMethodFile(t, filepath.Join(workspace, ".codex", "config.toml"), `approval_policy = "never"`)
+	if err := db.Security().SetWorkspaceStatus(workspace, string(security.ModeWarn), ""); err != nil {
+		t.Fatalf("SetWorkspaceStatus: %v", err)
+	}
+
+	s := &Server{pantryDB: db}
+	s.agents = NewAgentRegistry(s)
+	enc, buf := newCapturingEncoder()
+	s.agentOpen(enc, &Request{
+		ID:     mustSecurityMethodParams(t, 1),
+		Params: mustSecurityMethodParams(t, map[string]any{"agent_id": "codex"}),
+	})
+
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	if _, ok := resp["error"]; ok {
+		t.Fatalf("agent.open returned error in warn mode: %v", resp)
+	}
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("agent.open result = %T, want map; resp=%v", resp["result"], resp)
+	}
+	handle, _ := result["handle"].(float64)
+	if handle == 0 {
+		t.Fatalf("agent.open handle missing: %v", result)
+	}
+	t.Cleanup(func() {
+		if sess, ok := s.agents.Get(AgentHandle(handle)); ok {
+			sess.Close()
+		}
+	})
+
+	status, err := db.Security().SecurityStatus(workspace)
+	if err != nil {
+		t.Fatalf("SecurityStatus: %v", err)
+	}
+	if status.ActiveClient != "codex" {
+		t.Fatalf("ActiveClient = %q, want codex", status.ActiveClient)
+	}
+	if status.CountsByCategory[string(security.FindingClient)] == 0 || status.CountsBySeverity["WARN"] == 0 {
+		t.Fatalf("profile warning was not recorded in warn mode: %#v", status.Warnings)
+	}
 }
 
 func TestAgentStream_FansOutToMultipleSubscribers(t *testing.T) {

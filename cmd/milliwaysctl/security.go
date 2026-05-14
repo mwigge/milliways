@@ -126,7 +126,8 @@ func printSecurityUsage(w io.Writer) {
 	fmt.Fprintln(w, "    create missing CRA evidence files: SECURITY.md, SUPPORT.md, docs/update-policy.md, docs/cra-technical-file.md")
 	fmt.Fprintln(w, "  sbom [--workspace <dir>] [--output <path>]")
 	fmt.Fprintln(w, "    generate an offline SPDX JSON SBOM from local Go, Cargo, npm, pnpm, yarn, Bun, and Python manifests")
-	fmt.Fprintln(w, "  scan [--json]          run dependency security scan")
+	fmt.Fprintln(w, "  scan [--json] [--startup] [--client <name>] [--diff|--staged] [--secrets] [--sast]")
+	fmt.Fprintln(w, "    run dependency security scan, optionally layered with startup, client, staged-diff, secret, and SAST checks")
 	fmt.Fprintln(w, "  startup-scan [--json] [--strict]")
 	fmt.Fprintln(w, "    run startup posture scan when supported by the daemon")
 	fmt.Fprintln(w, "  warnings [--json]      show active security warnings")
@@ -615,10 +616,62 @@ func runSecurityScan(args []string, stdout, stderr io.Writer, sock string) int {
 	fs := flag.NewFlagSet("security scan", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "print raw JSON result")
+	startup := fs.Bool("startup", false, "run startup posture checks before the dependency scan")
+	client := fs.String("client", "", "run a per-client security profile check before the dependency scan")
+	diff := fs.Bool("diff", false, "scan staged diff paths")
+	staged := fs.Bool("staged", false, "scan staged diff paths")
+	secrets := fs.Bool("secrets", false, "include secret scanning layer")
+	sast := fs.Bool("sast", false, "include SAST scanning layer")
 	if err := fs.Parse(args); err != nil {
 		return 1
 	}
-	return callSecurityRPC("security scan", "security.scan", map[string]any{}, *asJSON, stdout, stderr, sock)
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "security scan: unexpected positional path %q; use --diff/--staged or security output-plan\n", fs.Arg(0))
+		return 1
+	}
+	if !*startup && strings.TrimSpace(*client) == "" && !*diff && !*staged && !*secrets && !*sast {
+		return callSecurityRPC("security scan", "security.scan", map[string]any{}, *asJSON, stdout, stderr, sock)
+	}
+
+	results := map[string]any{}
+	if *startup {
+		result, rc := callSecurityRPCResult("security startup-scan", "security.startup_scan", map[string]any{"strict": false}, stderr, sock)
+		if rc != 0 {
+			return rc
+		}
+		results["startup"] = result
+		if !*asJSON {
+			renderSecurityGenericResult(stdout, "security startup-scan", result)
+		}
+	}
+	if name := strings.TrimSpace(*client); name != "" {
+		result, rc := callSecurityRPCResult("security client", "security.client_profile", map[string]any{"client": name}, stderr, sock)
+		if rc != 0 {
+			return rc
+		}
+		results["client"] = result
+		if !*asJSON {
+			renderSecurityGenericResult(stdout, "security client", result)
+		}
+	}
+
+	params := securityScanParams(*diff || *staged, *secrets, *sast)
+	result, rc := callSecurityRPCResult("security scan", "security.scan", params, stderr, sock)
+	if rc != 0 {
+		return rc
+	}
+	results["scan"] = result
+	if *asJSON {
+		out, err := json.MarshalIndent(results, "", "  ")
+		if err != nil {
+			fmt.Fprintf(stderr, "milliwaysctl security scan: encode result: %v\n", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, string(out))
+		return 0
+	}
+	renderSecurityGenericResult(stdout, "security scan", result)
+	return 0
 }
 
 func runSecurityStartupScan(args []string, stdout, stderr io.Writer, sock string) int {
@@ -956,21 +1009,30 @@ func renderSecurityScanPlan(stdout io.Writer, label string, plan outputgate.Plan
 	}
 }
 
-func callSecurityRPC(label, method string, params map[string]any, asJSON bool, stdout, stderr io.Writer, sock string) int {
-	c, err := rpc.Dial(sock)
-	if err != nil {
-		fmt.Fprintf(stderr, "milliwaysctl %s: dial %s: %v\n", label, sock, err)
-		return 1
+func securityScanParams(staged, secrets, sast bool) map[string]any {
+	params := map[string]any{}
+	var layers []string
+	if secrets {
+		layers = append(layers, "secret")
 	}
-	defer func() { _ = c.Close() }()
+	if sast {
+		layers = append(layers, "sast")
+	}
+	if len(layers) > 0 {
+		layers = append(layers, "dependency")
+		params["layers"] = layers
+	}
+	if staged {
+		params["diff"] = "staged"
+		params["staged"] = true
+	}
+	return params
+}
 
-	var result map[string]any
-	if err := c.Call(method, params, &result); err != nil {
-		fmt.Fprintf(stderr, "milliwaysctl %s: %v\n", label, err)
-		if strings.Contains(err.Error(), "method not found") || strings.Contains(err.Error(), "-32601") {
-			fmt.Fprintln(stderr, "  this command surface is present in milliwaysctl and will activate when milliwaysd exposes the matching Secure MilliWays RPC")
-		}
-		return 1
+func callSecurityRPC(label, method string, params map[string]any, asJSON bool, stdout, stderr io.Writer, sock string) int {
+	result, rc := callSecurityRPCResult(label, method, params, stderr, sock)
+	if rc != 0 {
+		return rc
 	}
 	if asJSON {
 		out, err := json.MarshalIndent(result, "", "  ")
@@ -983,6 +1045,25 @@ func callSecurityRPC(label, method string, params map[string]any, asJSON bool, s
 	}
 	renderSecurityGenericResult(stdout, label, result)
 	return 0
+}
+
+func callSecurityRPCResult(label, method string, params map[string]any, stderr io.Writer, sock string) (map[string]any, int) {
+	c, err := rpc.Dial(sock)
+	if err != nil {
+		fmt.Fprintf(stderr, "milliwaysctl %s: dial %s: %v\n", label, sock, err)
+		return nil, 1
+	}
+	defer func() { _ = c.Close() }()
+
+	var result map[string]any
+	if err := c.Call(method, params, &result); err != nil {
+		fmt.Fprintf(stderr, "milliwaysctl %s: %v\n", label, err)
+		if strings.Contains(err.Error(), "method not found") || strings.Contains(err.Error(), "-32601") {
+			fmt.Fprintln(stderr, "  this command surface is present in milliwaysctl and will activate when milliwaysd exposes the matching Secure MilliWays RPC")
+		}
+		return nil, 1
+	}
+	return result, 0
 }
 
 func renderSecurityGenericResult(stdout io.Writer, label string, result map[string]any) {

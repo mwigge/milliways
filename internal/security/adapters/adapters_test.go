@@ -136,6 +136,56 @@ func TestDefaultScanArgsAvoidVersionAndMetricsNetworkChecks(t *testing.T) {
 	}
 }
 
+func TestGitleaksScanScopesSingleTargetWhenProvided(t *testing.T) {
+	t.Parallel()
+
+	var got []string
+	adapter := adapters.NewGitleaks(
+		adapters.WithLookPath(func(file string) (string, error) {
+			return "/fake/" + file, nil
+		}),
+		adapters.WithExec(func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+			got = append([]string(nil), args...)
+			return []byte(`[]`), nil, nil
+		}),
+	)
+	if _, err := adapter.Scan(context.Background(), "/work/app", []string{"config/app.env"}); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "--source /work/app/config/app.env") {
+		t.Fatalf("args = %v, want scoped source", got)
+	}
+}
+
+func TestSemgrepScanScopesTargetsWhenProvided(t *testing.T) {
+	t.Parallel()
+
+	var got []string
+	adapter := adapters.NewSemgrep(
+		adapters.WithLookPath(func(file string) (string, error) {
+			return "/fake/" + file, nil
+		}),
+		adapters.WithExec(func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+			got = append([]string(nil), args...)
+			return []byte(`{"results":[]}`), nil, nil
+		}),
+	)
+	targets := []string{"cmd/app/main.go", "/tmp/generated.go"}
+	if _, err := adapter.Scan(context.Background(), "/work/app", targets); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	joined := strings.Join(got, " ")
+	for _, want := range []string{"/work/app/cmd/app/main.go", "/tmp/generated.go"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("args = %v, missing scoped target %s", got, want)
+		}
+	}
+	if strings.HasSuffix(joined, " /work/app") {
+		t.Fatalf("args = %v, unexpectedly scanned workspace root", got)
+	}
+}
+
 func TestGovulncheckDefaultTargetIsWorkspaceRooted(t *testing.T) {
 	t.Parallel()
 
@@ -181,6 +231,30 @@ func TestOSVScannerScanParsesFixture(t *testing.T) {
 	rendered := adapters.NewOSVScanner().RenderFinding(f)
 	if !strings.Contains(rendered, "CVE-2024-12345") || !strings.Contains(rendered, "fixed in v1.2.3") {
 		t.Fatalf("rendered finding = %q", rendered)
+	}
+}
+
+func TestOSVScannerUsesManifestAndLockfileArgs(t *testing.T) {
+	t.Parallel()
+
+	var got []string
+	adapter := adapters.NewOSVScanner(
+		adapters.WithLookPath(func(file string) (string, error) {
+			return "/fake/" + file, nil
+		}),
+		adapters.WithExec(func(_ context.Context, _ string, args ...string) ([]byte, []byte, error) {
+			got = append([]string(nil), args...)
+			return []byte(`{"results":[]}`), nil, nil
+		}),
+	)
+	if _, err := adapter.Scan(context.Background(), "/work/app", []string{"package.json", "package-lock.json"}); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	joined := strings.Join(got, " ")
+	for _, want := range []string{"--manifest package.json", "--lockfile package-lock.json"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("args = %v, missing %s", got, want)
+		}
 	}
 }
 

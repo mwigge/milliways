@@ -82,12 +82,16 @@ func ExecutePlan(ctx context.Context, workspace string, plan Plan, scanners []Sc
 				warnings = append(warnings, scannerWarning(workspace, req.Kind, scanner.Adapter.Name(), fmt.Sprintf("%s scan skipped: %s is not installed", req.Kind, scanner.Adapter.Name()), now))
 				continue
 			}
+			targets := targetsForScanner(req.Kind, scanner.Adapter.Name(), req.Files)
+			if len(req.Files) > 0 && len(targets) == 0 {
+				continue
+			}
 			tasks = append(tasks, scanTask{
 				requestIndex: reqIndex,
 				scannerIndex: scannerIndex,
 				kind:         req.Kind,
 				workspace:    workspace,
-				targets:      append([]string(nil), req.Files...),
+				targets:      targets,
 				adapter:      scanner.Adapter,
 			})
 		}
@@ -193,6 +197,36 @@ func scannersForKind(scanners []Scanner, kind security.ScanKind) []Scanner {
 		}
 	}
 	return matches
+}
+
+func targetsForScanner(kind security.ScanKind, scannerName string, files []string) []string {
+	if kind != security.ScanDependency {
+		return append([]string(nil), files...)
+	}
+	switch strings.ToLower(strings.TrimSpace(scannerName)) {
+	case "govulncheck":
+		return filterFiles(files, isGoDependencyTarget)
+	case "osv-scanner":
+		return append([]string(nil), files...)
+	default:
+		return append([]string(nil), files...)
+	}
+}
+
+func filterFiles(files []string, keep func(string) bool) []string {
+	var out []string
+	for _, file := range files {
+		if keep(file) {
+			out = append(out, file)
+		}
+	}
+	return out
+}
+
+func isGoDependencyTarget(path string) bool {
+	base := strings.ToLower(strings.TrimSpace(path))
+	base = base[strings.LastIndex(base, "/")+1:]
+	return base == "go.mod" || base == "go.sum"
 }
 
 func scannerWarning(workspace string, kind security.ScanKind, source, message string, at time.Time) security.Warning {

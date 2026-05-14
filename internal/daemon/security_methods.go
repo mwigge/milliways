@@ -1065,6 +1065,64 @@ func (s *Server) recordClientProfileSecurity(ctx context.Context, workspace, cli
 	return err
 }
 
+func (s *Server) ensureClientProfileSecurityGate(ctx context.Context, workspace, client string) error {
+	result, err := s.runClientProfileSecurity(ctx, workspace, client)
+	if err != nil {
+		return fmt.Errorf("security client profile gate: %w", err)
+	}
+	store := s.pantryDB.Security()
+	status, err := store.SecurityStatus(workspace)
+	if err != nil {
+		return fmt.Errorf("security client profile gate status: %w", err)
+	}
+	mode := security.Mode(strings.TrimSpace(status.Mode))
+	if mode == "" {
+		mode = security.ModeWarn
+	}
+	if mode != security.ModeStrict && mode != security.ModeCI {
+		return nil
+	}
+	blockCount := profileResultBlockCount(result)
+	if blockCount == 0 {
+		blockCount = activeClientProfileBlockCount(status.Warnings, client)
+	}
+	if blockCount > 0 {
+		return fmt.Errorf("security client profile blocked %s for workspace %s: %d block client-profile finding(s); run `milliwaysctl security client %s`", client, workspace, blockCount, client)
+	}
+	return nil
+}
+
+func profileResultBlockCount(result map[string]any) int {
+	switch v := result["block_count"].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return int(n)
+	default:
+		return 0
+	}
+}
+
+func activeClientProfileBlockCount(warnings []pantry.SecurityWarning, client string) int {
+	prefix := strings.ToLower(strings.TrimSpace(client)) + ":"
+	count := 0
+	for _, warning := range warnings {
+		if warning.Category != string(security.FindingClient) || warning.Severity != "BLOCK" {
+			continue
+		}
+		if prefix != ":" && !strings.HasPrefix(strings.ToLower(warning.Source), prefix) {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 func (s *Server) securityClientProfile(enc *json.Encoder, req *Request) {
 	if s.pantryDB == nil {
 		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")

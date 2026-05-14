@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Smoke: Secure MilliWays release docs and release fixture coverage.
+# Smoke: Secure MilliWays daemon security flows plus release docs/fixture coverage.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 FIXTURE="${REPO_ROOT}/tests/smoke/fixtures/security-release/README.md"
+SMOKE_ROOT="$(mktemp -d)"
+DAEMON_PID=""
+
+cleanup() {
+  if [[ -n "${DAEMON_PID}" ]]; then
+    kill "${DAEMON_PID}" 2>/dev/null || true
+    wait "${DAEMON_PID}" 2>/dev/null || true
+  fi
+  rm -rf "${SMOKE_ROOT}"
+}
+trap cleanup EXIT
 
 assert_contains() {
   local file="$1"
@@ -15,6 +26,81 @@ assert_contains() {
     exit 1
   fi
 }
+
+assert_output_contains() {
+  local label="$1"
+  local expected="$2"
+  local file="${SMOKE_ROOT}/${label}.out"
+  if ! grep -q "$expected" "$file"; then
+    echo "FAIL: '$expected' not found in ${label} output" >&2
+    echo "--- ${label} output ---" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+echo "[smoke] building milliwaysd and milliwaysctl"
+go build -o "${SMOKE_ROOT}/milliwaysd" "${REPO_ROOT}/cmd/milliwaysd/"
+go build -o "${SMOKE_ROOT}/milliwaysctl" "${REPO_ROOT}/cmd/milliwaysctl/"
+
+WORKSPACE="${SMOKE_ROOT}/workspace"
+mkdir -p "${WORKSPACE}/.github/workflows"
+cat >"${WORKSPACE}/go.mod" <<'EOF'
+module example.test/security-smoke
+
+go 1.22
+EOF
+cat >"${WORKSPACE}/.github/workflows/release.yml" <<'EOF'
+name: release
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: go test ./...
+EOF
+
+export XDG_RUNTIME_DIR="${SMOKE_ROOT}/runtime"
+export MILLIWAYS_WORKSPACE_ROOT="${WORKSPACE}"
+mkdir -p "${XDG_RUNTIME_DIR}"
+
+echo "[smoke] starting isolated milliwaysd"
+"${SMOKE_ROOT}/milliwaysd" --state-dir "${XDG_RUNTIME_DIR}/milliways" --log-level error >"${SMOKE_ROOT}/daemon.out" 2>"${SMOKE_ROOT}/daemon.err" &
+DAEMON_PID=$!
+
+deadline=$(( $(date +%s) + 10 ))
+until "${SMOKE_ROOT}/milliwaysctl" ping >"${SMOKE_ROOT}/ping.out" 2>"${SMOKE_ROOT}/ping.err"; do
+  if [[ $(date +%s) -ge ${deadline} ]]; then
+    echo "FAIL: milliwaysd did not become ready" >&2
+    cat "${SMOKE_ROOT}/daemon.err" >&2 || true
+    exit 1
+  fi
+  sleep 0.2
+done
+
+echo "[smoke] exercising real security RPC flows"
+"${SMOKE_ROOT}/milliwaysctl" security startup-scan --json >"${SMOKE_ROOT}/startup.out"
+assert_output_contains startup '"workspace"'
+assert_output_contains startup '"scanned_at"'
+
+"${SMOKE_ROOT}/milliwaysctl" security status >"${SMOKE_ROOT}/status.out"
+assert_output_contains status "last startup scan"
+assert_output_contains status "scanners:"
+
+"${SMOKE_ROOT}/milliwaysctl" security client --json codex >"${SMOKE_ROOT}/client.out"
+assert_output_contains client '"client": "codex"'
+
+"${SMOKE_ROOT}/milliwaysctl" security scan --json >"${SMOKE_ROOT}/scan.out"
+assert_output_contains scan '"findings"'
+
+"${SMOKE_ROOT}/milliwaysctl" security scan --startup --client codex --staged --secrets --sast --json >"${SMOKE_ROOT}/layered-scan.out"
+assert_output_contains layered-scan '"startup"'
+assert_output_contains layered-scan '"client"'
+assert_output_contains layered-scan '"scan"'
+
+"${SMOKE_ROOT}/milliwaysctl" security output-plan --staged .env.local --staged cmd/app/main.go >"${SMOKE_ROOT}/output-plan.out"
+assert_output_contains output-plan "secret: .env.local, cmd/app/main.go"
+assert_output_contains output-plan "sast: cmd/app/main.go"
 
 assert_contains "${REPO_ROOT}/README.md" "Secure MilliWays is the release security theme"
 assert_contains "${REPO_ROOT}/README.md" "all clients in one place, shared memory, shared sessions, one security layer"

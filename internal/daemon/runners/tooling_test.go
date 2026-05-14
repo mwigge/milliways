@@ -18,10 +18,12 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/provider"
 	"github.com/mwigge/milliways/internal/security"
 	"github.com/mwigge/milliways/internal/security/firewall"
@@ -327,6 +329,78 @@ func TestRunAgenticLoop_OutputGateWarnsWhenScannerMissing(t *testing.T) {
 	}
 	if !strings.Contains(content, "sast scan skipped: no sast scanner adapter configured") {
 		t.Fatalf("tool content missing sast scanner warning: %q", content)
+	}
+}
+
+func TestRunAgenticLoop_OutputGatePersistsFindingsAndWarnings(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	db, err := pantry.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := db.Security()
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "WriteApp", Args: `{}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	registry.Register("WriteApp", func(context.Context, map[string]any) (string, error) {
+		return "wrote app", os.WriteFile(workspace+"/app.go", []byte("package main\n"), 0o644)
+	}, provider.ToolDef{Name: "WriteApp"})
+	secret := &outputGateFakeAdapter{
+		name:      "gitleaks",
+		installed: true,
+		result: security.ScanResult{Findings: []security.Finding{{
+			ID:       "secret-1",
+			Category: security.FindingSecret,
+			Severity: "HIGH",
+			FilePath: "app.go",
+			Line:     7,
+			Summary:  "generated token",
+			Status:   security.FindingBlocked,
+		}}},
+	}
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	_, err = RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		OutputGate: OutputGateOptions{
+			Workspace: workspace,
+			Mode:      security.ModeWarn,
+			Store:     store,
+			Scanners: []outputgate.Scanner{
+				{Kind: security.ScanSecret, Adapter: secret},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+
+	status, err := store.SecurityStatus(workspace)
+	if err != nil {
+		t.Fatalf("SecurityStatus: %v", err)
+	}
+	if status.CountsByCategory["secret"] != 1 {
+		t.Fatalf("secret count = %d, want 1", status.CountsByCategory["secret"])
+	}
+	if status.CountsBySeverity["HIGH"] != 1 {
+		t.Fatalf("HIGH count = %d, want 1", status.CountsBySeverity["HIGH"])
+	}
+	findings, err := store.ListAll()
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Status != "blocked" {
+		t.Fatalf("findings = %#v, want one blocked finding", findings)
+	}
+	if len(status.Warnings) != 1 || !strings.Contains(status.Warnings[0].Message, "no sast scanner adapter configured") {
+		t.Fatalf("warnings = %#v, want persisted missing sast warning", status.Warnings)
 	}
 }
 

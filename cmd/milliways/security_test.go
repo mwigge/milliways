@@ -117,6 +117,16 @@ func requireSecurityCall(t *testing.T, calls <-chan chatSecurityRPCCall) chatSec
 	}
 }
 
+func joinAnyStrings(values []any) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		if s, ok := value.(string); ok {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
 func TestHandleSecurityNilClientPrintsError(t *testing.T) {
 	t.Parallel()
 
@@ -375,6 +385,52 @@ func TestHandleSecurityScanCallsRPC(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "0 finding(s)") {
 		t.Fatalf("scan output did not summarize findings:\n%s", stdout.String())
+	}
+}
+
+func TestHandleSecurityScanFlagsLayerRPCs(t *testing.T) {
+	t.Parallel()
+
+	loop, calls, stdout, stderr := newSecurityTestLoop(t, map[string]any{
+		"security.startup_scan":   map[string]any{"warnings": []any{}},
+		"security.client_profile": map[string]any{"client": "codex", "warnings": []any{"profile warning"}},
+		"security.scan":           map[string]any{"findings": []any{}},
+	})
+
+	loop.handleSlash("/security scan --startup --client codex --staged --secrets --sast")
+	startupCall := requireSecurityCall(t, calls)
+	clientCall := requireSecurityCall(t, calls)
+	scanCall := requireSecurityCall(t, calls)
+
+	if startupCall.Method != "security.startup_scan" {
+		t.Fatalf("first method = %q, want security.startup_scan", startupCall.Method)
+	}
+	if clientCall.Method != "security.client_profile" {
+		t.Fatalf("second method = %q, want security.client_profile", clientCall.Method)
+	}
+	if client, _ := clientCall.Params["client"].(string); client != "codex" {
+		t.Fatalf("client params = %#v, want codex", clientCall.Params)
+	}
+	if scanCall.Method != "security.scan" {
+		t.Fatalf("third method = %q, want security.scan", scanCall.Method)
+	}
+	layers, _ := scanCall.Params["layers"].([]any)
+	if got := joinAnyStrings(layers); got != "secret,sast,dependency" {
+		t.Fatalf("layers = %#v (%q), want secret,sast,dependency", scanCall.Params["layers"], got)
+	}
+	if staged, _ := scanCall.Params["staged"].(bool); !staged {
+		t.Fatalf("staged param = %#v, want true", scanCall.Params)
+	}
+	if diff, _ := scanCall.Params["diff"].(string); diff != "staged" {
+		t.Fatalf("diff param = %#v, want staged", scanCall.Params)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected stderr: %s", stderr.String())
+	}
+	for _, want := range []string{"security startup-scan", "security client", "security scan"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, stdout.String())
+		}
 	}
 }
 

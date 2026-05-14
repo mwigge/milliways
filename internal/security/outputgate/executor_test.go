@@ -166,6 +166,31 @@ func TestExecutePlanRunsAdaptersConcurrently(t *testing.T) {
 	}
 }
 
+func TestExecutePlanRoutesGovulncheckOnlyForGoDependencyTargets(t *testing.T) {
+	t.Parallel()
+
+	govulncheck := &fakeScanAdapter{name: "govulncheck", installed: true}
+	osv := &fakeScanAdapter{name: "osv-scanner", installed: true}
+	plan := outputgate.Plan{Requests: []outputgate.ScanRequest{
+		{Kind: security.ScanDependency, Files: []string{"go.mod", "package-lock.json", "pyproject.toml"}},
+	}}
+
+	result := outputgate.ExecutePlan(context.Background(), "/work/repo", plan, []outputgate.Scanner{
+		{Kind: security.ScanDependency, Adapter: govulncheck},
+		{Kind: security.ScanDependency, Adapter: osv},
+	})
+
+	if len(result.Warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", result.Warnings)
+	}
+	if !reflect.DeepEqual(govulncheck.calls, []scanCall{{workspace: "/work/repo", targets: []string{"go.mod"}}}) {
+		t.Fatalf("govulncheck calls = %#v", govulncheck.calls)
+	}
+	if !reflect.DeepEqual(osv.calls, []scanCall{{workspace: "/work/repo", targets: []string{"go.mod", "package-lock.json", "pyproject.toml"}}}) {
+		t.Fatalf("osv-scanner calls = %#v", osv.calls)
+	}
+}
+
 type fakeScanAdapter struct {
 	name      string
 	installed bool
