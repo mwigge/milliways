@@ -209,3 +209,79 @@ write(
         ),
     ),
 )
+
+write(
+    "secure-milliways-layered-security.svg",
+    svg(
+        1120,
+        560,
+        "\n".join(
+            [
+                '<text x="40" y="52" class="title">Secure MilliWays: one security layer around every client</text>',
+                box(40, 98, 220, 120, "Startup", ["workspace posture", "package hooks", "IOC rule packs"]),
+                box(310, 98, 220, 120, "Client switch", ["Claude / Codex / Pool", "profile checks", "workspace-scoped"]),
+                box(580, 98, 220, 120, "Command path", ["package installs", "secret reads", "persistence"]),
+                box(850, 98, 220, 120, "Output path", ["generated files", "staged diff", "SBOM refresh"]),
+                box(175, 292, 250, 130, "Observability", ["SEC OK / WARN / BLOCK", "scanner gaps", "CRA KPIs"], "store"),
+                box(455, 292, 250, 130, "Policy and evidence", ["mode: warn / strict / ci", "quarantine", "accepted risk"], "box2"),
+                box(735, 292, 250, 130, "External scanners", ["OSV + OSV API", "Gitleaks / Semgrep", "govulncheck / NVD"], "store"),
+                line(260, 158, 310, 158),
+                line(530, 158, 580, 158),
+                line(800, 158, 850, 158),
+                line(150, 218, 300, 292),
+                line(420, 218, 580, 292),
+                line(690, 218, 580, 292),
+                line(960, 218, 860, 292),
+                '<text x="54" y="490" class="text muted">Intent: the runner can change, but workspace posture, memory, sessions, and security state stay in one place.</text>',
+            ]
+        ),
+    ),
+)
+
+write(
+    "secure-milliways-observability-kpis.svg",
+    svg(
+        1080,
+        500,
+        "\n".join(
+            [
+                '<text x="40" y="52" class="title">Security status in the observability cockpit</text>',
+                '<rect x="42" y="88" width="996" height="350" rx="18" fill="#020617" stroke="#334155"/>',
+                '<text x="70" y="128" class="mono accent">milliways observability -- secure workspace</text>',
+                '<text x="70" y="170" class="mono ok">SEC WARN 2     mode warn     workspace ./service-api</text>',
+                '<text x="70" y="210" class="mono pearl">startup: current     dependency scan: 10:02Z     client: codex warn</text>',
+                '<text x="70" y="250" class="mono warn">sec detail: missing gitleaks, govulncheck; package scripts need review</text>',
+                '<text x="70" y="306" class="label">CRA KPIs</text>',
+                '<text x="70" y="340" class="mono">readiness:        71%</text>',
+                '<text x="350" y="340" class="mono">evidence:         5 / 7 present</text>',
+                '<text x="650" y="340" class="mono">vuln handling:    documented</text>',
+                '<text x="70" y="390" class="mono cyan">next: refresh SBOM after dependency file changes</text>',
+                '<text x="70" y="462" class="text muted">Same signal flows through the status bar, /security, milliwaysctl, and the lower-left cockpit.</text>',
+            ]
+        ),
+    ),
+)
+
+write(
+    "secure-milliways-command-gate.svg",
+    svg(
+        1120,
+        520,
+        "\n".join(
+            [
+                '<text x="40" y="52" class="title">Command and output gates</text>',
+                box(40, 105, 220, 120, "Agent asks", ["npm install ...", "curl | sh", "write generated code"]),
+                box(320, 90, 240, 150, "Command firewall", ["parse and classify", "package / network / secret", "mode decides warn or block"], "box2"),
+                box(640, 70, 210, 120, "Allow / warn", ["execute command", "record warning", "show in cockpit"], "store"),
+                box(640, 245, 210, 120, "Block", ["stop tool flow", "persist finding", "return deterministic error"], "box"),
+                box(910, 150, 170, 140, "Output gate", ["track changed files", "secret/SAST plan", "dependency follow-up"]),
+                line(260, 165, 320, 165),
+                line(560, 140, 640, 130, "line2"),
+                line(560, 190, 640, 305),
+                line(850, 130, 910, 195),
+                line(850, 305, 910, 230),
+                '<text x="70" y="425" class="text muted">The model does not decide whether its command is safe. Milliways classifies before execution and scans generated changes after.</text>',
+            ]
+        ),
+    ),
+)

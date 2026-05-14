@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="560" viewBox="0 0 1120 560">
+  <rect width="1120" height="560" fill="#111827"/>
+  <style>
+    .title { font: 700 20px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #f9fafb; }
+    .label { font: 600 14px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #e5e7eb; }
+    .text { font: 13px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #cbd5e1; }
+    .mono { font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; fill: #d1d5db; }
+    .muted { fill: #94a3b8; }
+    .ok { fill: #34d399; }
+    .warn { fill: #fbbf24; }
+    .accent { fill: #8b5cf6; }
+    .cyan { fill: #38bdf8; }
+    .pearl { fill: #f5f5f4; }
+    .box { fill: #1f2937; stroke: #475569; stroke-width: 1.4; rx: 10; }
+    .box2 { fill: #172033; stroke: #64748b; stroke-width: 1.4; rx: 10; }
+    .store { fill: #0f172a; stroke: #38bdf8; stroke-width: 1.4; rx: 10; }
+    .line { stroke: #94a3b8; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    .line2 { stroke: #8b5cf6; stroke-width: 2; fill: none; marker-end: url(#arrow2); }
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L7,3 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrow2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L7,3 z" fill="#8b5cf6"/>
+    </marker>
+  </defs>
+<text x="40" y="52" class="title">Secure MilliWays: one security layer around every client</text>
+<rect x="40" y="98" width="220" height="120" class="box"/>
+<text x="58" y="126" class="label">Startup</text>
+<text x="58" y="152" class="text">workspace posture</text>
+<text x="58" y="174" class="text">package hooks</text>
+<text x="58" y="196" class="text">IOC rule packs</text>
+<rect x="310" y="98" width="220" height="120" class="box"/>
+<text x="328" y="126" class="label">Client switch</text>
+<text x="328" y="152" class="text">Claude / Codex / Pool</text>
+<text x="328" y="174" class="text">profile checks</text>
+<text x="328" y="196" class="text">workspace-scoped</text>
+<rect x="580" y="98" width="220" height="120" class="box"/>
+<text x="598" y="126" class="label">Command path</text>
+<text x="598" y="152" class="text">package installs</text>
+<text x="598" y="174" class="text">secret reads</text>
+<text x="598" y="196" class="text">persistence</text>
+<rect x="850" y="98" width="220" height="120" class="box"/>
+<text x="868" y="126" class="label">Output path</text>
+<text x="868" y="152" class="text">generated files</text>
+<text x="868" y="174" class="text">staged diff</text>
+<text x="868" y="196" class="text">SBOM refresh</text>
+<rect x="175" y="292" width="250" height="130" class="store"/>
+<text x="193" y="320" class="label">Observability</text>
+<text x="193" y="346" class="text">SEC OK / WARN / BLOCK</text>
+<text x="193" y="368" class="text">scanner gaps</text>
+<text x="193" y="390" class="text">CRA KPIs</text>
+<rect x="455" y="292" width="250" height="130" class="box2"/>
+<text x="473" y="320" class="label">Policy and evidence</text>
+<text x="473" y="346" class="text">mode: warn / strict / ci</text>
+<text x="473" y="368" class="text">quarantine</text>
+<text x="473" y="390" class="text">accepted risk</text>
+<rect x="735" y="292" width="250" height="130" class="store"/>
+<text x="753" y="320" class="label">External scanners</text>
+<text x="753" y="346" class="text">OSV + OSV API</text>
+<text x="753" y="368" class="text">Gitleaks / Semgrep</text>
+<text x="753" y="390" class="text">govulncheck / NVD</text>
+<path d="M260,158 C285,158 285,158 310,158" class="line"/>
+<path d="M530,158 C555,158 555,158 580,158" class="line"/>
+<path d="M800,158 C825,158 825,158 850,158" class="line"/>
+<path d="M150,218 C225,218 225,292 300,292" class="line"/>
+<path d="M420,218 C500,218 500,292 580,292" class="line"/>
+<path d="M690,218 C635,218 635,292 580,292" class="line"/>
+<path d="M960,218 C910,218 910,292 860,292" class="line"/>
+<text x="54" y="490" class="text muted">Intent: the runner can change, but workspace posture, memory, sessions, and security state stay in one place.</text>
+</svg>

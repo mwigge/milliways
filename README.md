@@ -1,14 +1,27 @@
 # Milliways
 
-> The Restaurant at the End of the Universe — one CLI to route them all.
+> Secure MilliWays: all clients in one place, shared memory, shared sessions, one security layer.
 
-Milliways is an AI terminal for macOS and Linux — the restaurant at the end of the universe where Claude, Codex, Pool, Gemini, Copilot, and MiniMax all show up for dinner.
+Milliways is an AI terminal for macOS and Linux. Claude, Codex, Pool, Gemini, Copilot, MiniMax, and local models all run from the same workspace, with the same observable control plane around them.
 
-Open a tab and you're talking to a runner. Switch runners mid-session with a structured briefing from the active turn log. Hit a quota limit and milliways rotates to the next one automatically. Daemon event history, metrics, and project memory are persisted; the live REPL turn log is kept in memory until it is compacted, handed off, or written through the daemon.
+Open a tab and you're talking to a runner. Switch runners mid-session with a structured briefing from the active turn log. Hit a quota limit and milliways rotates to the next one automatically. Daemon event history, metrics, project memory, and security posture are persisted and surfaced while you work; the live REPL turn log stays in memory until it is compacted, handed off, or written through the daemon.
 
-It wraps the CLIs and APIs you already have set up. It does not run models or manage credentials. Bring your own towel.
+The security focus is simple: AI clients should not each invent their own workstation safety story in isolation. Milliways adds a terminal-owned layer for startup scans, client profile checks, command risk classification, output scanning, quarantine planning, SBOM evidence, and CRA readiness. It is not a magic shield, but it gives you one place to see and manage risk before, during, and after agent work.
 
-Architecture update: [memory, persistence, and observability](docs/milliways-blog-3.md).
+It wraps the CLIs and APIs you already have set up. It does not run hosted models or manage cloud credentials. Bring your own towel.
+
+Architecture updates: [memory, persistence, and observability](docs/milliways-blog-3.md) · [Secure MilliWays](docs/milliways-blog-4.md).
+
+### Security at a glance
+
+| Layer | What Milliways adds |
+|---|---|
+| Startup | First-workspace posture scan for package hooks, client config, task runners, IOC files/domains, user services, and macOS LaunchAgents. |
+| Client switch | Per-client checks for Claude, Codex, Copilot, Gemini, Pool, MiniMax, and local endpoints before handoff. |
+| Command path | Deterministic command firewall for package installs, persistence, secret reads, exfiltration patterns, network download, shell eval, IOC hits, and complex unparsed commands. |
+| Output path | Generated/staged file planning for secrets, SAST, dependency changes, SBOM refresh, and strict/CI blocking. |
+| Operations | Security mode, warnings, quarantine, rule updates, status, scanner detection, and observability cockpit badges. |
+| Evidence | SPDX SBOM generation and EU Cyber Resilience Act readiness tracking without pretending NVD is the compliance model. |
 
 ---
 
