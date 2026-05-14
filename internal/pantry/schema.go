@@ -348,3 +348,25 @@ ALTER TABLE mw_security_workspace_status ADD COLUMN startup_scan_config_hash TEX
 
 INSERT OR IGNORE INTO mw_schema (version) VALUES (10);
 `
+
+const schemaV11 = `
+CREATE TABLE IF NOT EXISTS mw_security_quarantine_actions (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace              TEXT NOT NULL DEFAULT '',
+    kind                   TEXT NOT NULL,
+    source_path            TEXT NOT NULL,
+    destination_path       TEXT NOT NULL DEFAULT '',
+    original_hash          TEXT NOT NULL DEFAULT '',
+    applied_hash           TEXT NOT NULL DEFAULT '',
+    status                 TEXT NOT NULL,
+    error                  TEXT NOT NULL DEFAULT '',
+    rollback_hint          TEXT NOT NULL DEFAULT '',
+    additional_fields_json TEXT NOT NULL DEFAULT '{}',
+    applied_at             TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_quarantine_actions_workspace ON mw_security_quarantine_actions(workspace, applied_at);
+CREATE INDEX IF NOT EXISTS idx_mw_security_quarantine_actions_status ON mw_security_quarantine_actions(status);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (11);
+`

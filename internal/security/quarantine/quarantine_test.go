@@ -16,6 +16,7 @@ package quarantine_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -118,8 +119,180 @@ func TestPlanActionsIgnoresCleanWorkspace(t *testing.T) {
 	}
 }
 
+func TestApplyPlanMovesClaudeExecutableToQuarantine(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeFile(t, root, ".claude/hooks/setup.mjs", "console.log('setup')\n")
+
+	plan, err := quarantine.PlanActions(context.Background(), quarantine.Options{
+		WorkspaceRoot: root,
+		Now:           fixedTime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := quarantine.ApplyPlan(context.Background(), plan, quarantine.ApplyOptions{Now: fixedTime})
+	if err != nil {
+		t.Fatalf("ApplyPlan: %v", err)
+	}
+	if len(result.Actions) != 1 {
+		t.Fatalf("applied actions = %d, want 1", len(result.Actions))
+	}
+	action := result.Actions[0]
+	if action.Status != quarantine.ApplyStatusApplied {
+		t.Fatalf("status = %q, want applied: %#v", action.Status, action)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".claude/hooks/setup.mjs")); !os.IsNotExist(err) {
+		t.Fatalf("source still exists or stat failed unexpectedly: %v", err)
+	}
+	got, err := os.ReadFile(action.DestinationPath)
+	if err != nil {
+		t.Fatalf("read quarantined file: %v", err)
+	}
+	if string(got) != "console.log('setup')\n" {
+		t.Fatalf("quarantined contents = %q", got)
+	}
+	assertHash(t, action.AppliedHash)
+	if action.AppliedHash != action.Hash {
+		t.Fatalf("applied hash = %q, want original hash %q", action.AppliedHash, action.Hash)
+	}
+}
+
+func TestApplyPlanRefusesChangedSourceHash(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeFile(t, root, ".claude/hooks.js", "console.log('before')\n")
+	plan, err := quarantine.PlanActions(context.Background(), quarantine.Options{
+		WorkspaceRoot: root,
+		Now:           fixedTime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, root, ".claude/hooks.js", "console.log('after')\n")
+
+	result, err := quarantine.ApplyPlan(context.Background(), plan, quarantine.ApplyOptions{Now: fixedTime})
+	if err != nil {
+		t.Fatalf("ApplyPlan: %v", err)
+	}
+	action := actionsByApplyKind(result.Actions)[quarantine.ActionMoveToQuarantine]
+	if action.Status != quarantine.ApplyStatusFailed {
+		t.Fatalf("status = %q, want failed: %#v", action.Status, action)
+	}
+	if !strings.Contains(action.Error, "source hash changed") {
+		t.Fatalf("error = %q, want hash mismatch", action.Error)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".claude/hooks.js")); err != nil {
+		t.Fatalf("changed source should remain present: %v", err)
+	}
+	if _, err := os.Stat(action.DestinationPath); !os.IsNotExist(err) {
+		t.Fatalf("destination should not be created after hash mismatch: %v", err)
+	}
+}
+
+func TestApplyPlanBacksUpAndDisablesVSCodeFolderOpenTasks(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeFile(t, root, ".vscode/tasks.json", `{
+  "version": "2.0.0",
+  "tasks": [
+    {"label": "agent-start", "type": "shell", "command": "node setup.mjs", "runOptions": {"runOn": "folderOpen"}},
+    {"label": "manual", "type": "shell", "command": "echo ok"}
+  ]
+}`)
+
+	plan, err := quarantine.PlanActions(context.Background(), quarantine.Options{
+		WorkspaceRoot: root,
+		Now:           fixedTime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := quarantine.ApplyPlan(context.Background(), plan, quarantine.ApplyOptions{Now: fixedTime})
+	if err != nil {
+		t.Fatalf("ApplyPlan: %v", err)
+	}
+	action := actionsByApplyKind(result.Actions)[quarantine.ActionDisableVSCodeFolderOpen]
+	if action.Status != quarantine.ApplyStatusApplied {
+		t.Fatalf("vscode status = %q, want applied: %#v", action.Status, action)
+	}
+	backup, err := os.ReadFile(action.DestinationPath)
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if !strings.Contains(string(backup), `"runOn": "folderOpen"`) {
+		t.Fatalf("backup did not preserve original folderOpen task:\n%s", backup)
+	}
+
+	var rewritten struct {
+		Tasks []struct {
+			Label      string         `json:"label"`
+			RunOptions map[string]any `json:"runOptions"`
+		} `json:"tasks"`
+	}
+	data, err := os.ReadFile(filepath.Join(root, ".vscode/tasks.json"))
+	if err != nil {
+		t.Fatalf("read rewritten tasks: %v", err)
+	}
+	if err := json.Unmarshal(data, &rewritten); err != nil {
+		t.Fatalf("rewritten tasks JSON: %v\n%s", err, data)
+	}
+	if got := rewritten.Tasks[0].RunOptions["runOn"]; got != "default" {
+		t.Fatalf("folderOpen task runOn = %#v, want default", got)
+	}
+	assertHash(t, action.AppliedHash)
+	if action.AppliedHash == action.Hash {
+		t.Fatal("rewritten tasks hash should differ from original hash")
+	}
+}
+
+func TestApplyPlanLeavesApplyRequiredPersistenceActionsUntouched(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	systemd := filepath.Join(root, "systemd")
+	writeFile(t, systemd, "gh-token-monitor.service", "[Service]\nExecStart=gh-token-monitor\n")
+
+	plan, err := quarantine.PlanActions(context.Background(), quarantine.Options{
+		WorkspaceRoot: root,
+		SystemdRoots:  []quarantine.Root{{Name: "systemd", Path: systemd}},
+		Now:           fixedTime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := quarantine.ApplyPlan(context.Background(), plan, quarantine.ApplyOptions{Now: fixedTime})
+	if err != nil {
+		t.Fatalf("ApplyPlan: %v", err)
+	}
+	action := actionsByApplyKind(result.Actions)[quarantine.ActionDisableSystemdUnit]
+	if action.Status != quarantine.ApplyStatusRequiresConfirmation {
+		t.Fatalf("systemd status = %q, want requires-confirmation: %#v", action.Status, action)
+	}
+	if _, err := os.Stat(action.SourcePath); err != nil {
+		t.Fatalf("systemd source should remain present: %v", err)
+	}
+	if _, err := os.Stat(action.DestinationPath); !os.IsNotExist(err) {
+		t.Fatalf("systemd backup should not be created without explicit confirmation: %v", err)
+	}
+}
+
 func actionsByKind(actions []quarantine.Action) map[quarantine.ActionKind]quarantine.Action {
 	out := make(map[quarantine.ActionKind]quarantine.Action, len(actions))
+	for _, action := range actions {
+		out[action.Kind] = action
+	}
+	return out
+}
+
+func actionsByApplyKind(actions []quarantine.AppliedAction) map[quarantine.ActionKind]quarantine.AppliedAction {
+	out := make(map[quarantine.ActionKind]quarantine.AppliedAction, len(actions))
 	for _, action := range actions {
 		out[action.Kind] = action
 	}

@@ -322,7 +322,8 @@ func buildCompleter(agentID string) []string {
 	// Session commands
 	items = append(items,
 		"/switch", "/takeover", "/login", "/briefing", "/model", "/agents", "/quota",
-		"/parallel", "/parallel --providers", "/scan", "/help", "/exit",
+		"/parallel", "/parallel --providers", "/scan", "/security", "/security status",
+		"/security client", "/security command-check --", "/security warnings", "/help", "/exit",
 		// Install / Upgrade
 		"/install", "/install claude", "/install codex", "/install copilot", "/install gemini", "/install local",
 		"/install-local-server", "/install-local-swap",
@@ -1466,6 +1467,8 @@ func (l *chatLoop) handleSlash(line string) {
 		l.handleParallelView(rest)
 	case "scan":
 		l.handleScan(rest)
+	case "security":
+		l.handleSecurity(rest)
 	case "help", "?":
 		l.printHelp()
 	case "exit", "quit", "bye":
@@ -3333,6 +3336,10 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /briefing                     re-show the full context handed off on last /takeover")
 	fmt.Fprintln(l.out, "  /login [client]               auth setup — API key prompt or CLI steps")
 	fmt.Fprintln(l.out, "  /scan                         scan workspace dependencies for known CVEs")
+	fmt.Fprintln(l.out, "  /security status              show Secure MilliWays posture")
+	fmt.Fprintln(l.out, "  /security client <name>       check per-client security profile")
+	fmt.Fprintln(l.out, "  /security command-check -- <cmd>  evaluate a command before running it")
+	fmt.Fprintln(l.out, "  /security warnings            show active security warnings")
 	fmt.Fprintln(l.out, "  /help                         show this command reference")
 	fmt.Fprintln(l.out, "  /exit                         exit (Ctrl+D also works)")
 	fmt.Fprintln(l.out, "  !<cmd>                        run a shell command inline")

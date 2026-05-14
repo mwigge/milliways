@@ -18,6 +18,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -305,6 +306,105 @@ func TestRunSecurityOutputPlanRejectsPositionalPaths(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "use --generated or --staged") {
 		t.Fatalf("expected flag guidance, got:\n%s", stderr.String())
+	}
+}
+
+func TestRunSecurityPrecommitPlanReadsGitStagedChanges(t *testing.T) {
+	prevGitOutput := securityGitOutput
+	t.Cleanup(func() { securityGitOutput = prevGitOutput })
+
+	var gotName string
+	var gotArgs []string
+	securityGitOutput = func(name string, args ...string) ([]byte, error) {
+		gotName = name
+		gotArgs = append([]string(nil), args...)
+		return []byte("A\x00.env.local\x00M\x00cmd/app/main.go\x00D\x00go.sum\x00R100\x00old.js\x00src/new.ts\x00"), nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	rc := runSecurity([]string{"precommit-plan", "--json"}, &stdout, &stderr)
+	if rc != 0 {
+		t.Fatalf("expected rc=0, got %d; stderr:\n%s", rc, stderr.String())
+	}
+	if gotName != "git" || !reflect.DeepEqual(gotArgs, []string{"diff", "--cached", "--name-status", "-z"}) {
+		t.Fatalf("git command = %s %#v, want git diff --cached --name-status -z", gotName, gotArgs)
+	}
+
+	var plan struct {
+		Requests []struct {
+			Kind  string   `json:"kind"`
+			Files []string `json:"files"`
+		} `json:"requests"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &plan); err != nil {
+		t.Fatalf("Unmarshal precommit-plan JSON: %v\n%s", err, stdout.String())
+	}
+
+	got := map[string][]string{}
+	for _, req := range plan.Requests {
+		got[req.Kind] = req.Files
+	}
+	want := map[string][]string{
+		"secret": {".env.local", "cmd/app/main.go", "src/new.ts"},
+		"sast":   {"cmd/app/main.go", "src/new.ts"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("precommit-plan = %#v, want %#v", got, want)
+	}
+}
+
+func TestRunSecurityPrecommitPlanStagedFallbackSkipsGit(t *testing.T) {
+	prevGitOutput := securityGitOutput
+	t.Cleanup(func() { securityGitOutput = prevGitOutput })
+	securityGitOutput = func(string, ...string) ([]byte, error) {
+		t.Fatal("git should not be called when --staged paths are supplied")
+		return nil, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	rc := runSecurity([]string{"precommit-plan", "--json", "--staged", "package-lock.json", "--staged", "README.md"}, &stdout, &stderr)
+	if rc != 0 {
+		t.Fatalf("expected rc=0, got %d; stderr:\n%s", rc, stderr.String())
+	}
+
+	var plan struct {
+		Requests []struct {
+			Kind  string   `json:"kind"`
+			Files []string `json:"files"`
+		} `json:"requests"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &plan); err != nil {
+		t.Fatalf("Unmarshal precommit-plan JSON: %v\n%s", err, stdout.String())
+	}
+
+	got := map[string][]string{}
+	for _, req := range plan.Requests {
+		got[req.Kind] = req.Files
+	}
+	want := map[string][]string{
+		"secret":     {"package-lock.json"},
+		"dependency": {"package-lock.json"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("precommit-plan fallback = %#v, want %#v", got, want)
+	}
+}
+
+func TestRunSecurityPrecommitPlanReportsGitFailure(t *testing.T) {
+	prevGitOutput := securityGitOutput
+	t.Cleanup(func() { securityGitOutput = prevGitOutput })
+	securityGitOutput = func(string, ...string) ([]byte, error) {
+		return nil, fmt.Errorf("not a git repo")
+	}
+
+	var stderr bytes.Buffer
+	if rc := runSecurity([]string{"precommit-plan"}, &bytes.Buffer{}, &stderr); rc == 0 {
+		t.Fatalf("expected git failure to fail")
+	}
+	if !strings.Contains(stderr.String(), "read staged files") || !strings.Contains(stderr.String(), "--staged") {
+		t.Fatalf("expected staged fallback guidance, got:\n%s", stderr.String())
 	}
 }
 

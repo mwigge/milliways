@@ -155,6 +155,11 @@ func migrate(conn *sql.DB) error {
 			return fmt.Errorf("applying schema v10: %w", err)
 		}
 	}
+	if version < 11 {
+		if _, err := conn.Exec(schemaV11); err != nil {
+			return fmt.Errorf("applying schema v11: %w", err)
+		}
+	}
 
 	return nil
 }

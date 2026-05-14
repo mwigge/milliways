@@ -91,6 +91,8 @@ func runSecurity(args []string, stdout, stderr io.Writer, socketOverride ...stri
 		return runSecurityRules(rest, stdout, stderr, sock)
 	case "output-plan":
 		return runSecurityOutputPlan(rest, stdout, stderr)
+	case "precommit-plan":
+		return runSecurityPrecommitPlan(rest, stdout, stderr)
 	case "install-scanner":
 		return runInstallScanner(stdout, stderr)
 	default:
@@ -129,6 +131,8 @@ func printSecurityUsage(w io.Writer) {
 	fmt.Fprintln(w, "    list or update security rule packs when supported by the daemon")
 	fmt.Fprintln(w, "  output-plan [--json] [--generated <path> ...] [--staged <path> ...]")
 	fmt.Fprintln(w, "    classify output or diff paths into requested scan types without running scanners")
+	fmt.Fprintln(w, "  precommit-plan [--json] [--staged <path> ...]")
+	fmt.Fprintln(w, "    plan scans for staged commit files without running scanners")
 	fmt.Fprintln(w, "  install-scanner        install osv-scanner via 'go install'")
 }
 
@@ -586,6 +590,12 @@ func (f *repeatedStringFlag) Set(value string) error {
 	return nil
 }
 
+type commandOutputFunc func(name string, args ...string) ([]byte, error)
+
+var securityGitOutput commandOutputFunc = func(name string, args ...string) ([]byte, error) {
+	return execCommand(name, args...).Output()
+}
+
 func runSecurityOutputPlan(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("security output-plan", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -629,16 +639,126 @@ func runSecurityOutputPlan(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	renderSecurityOutputPlan(stdout, plan)
+	renderSecurityScanPlan(stdout, "security output-plan", plan)
 	return 0
 }
 
-func renderSecurityOutputPlan(stdout io.Writer, plan outputgate.Plan) {
+func runSecurityPrecommitPlan(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("security precommit-plan", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print JSON scan plan")
+	var staged repeatedStringFlag
+	fs.Var(&staged, "staged", "staged path to classify instead of reading git; may be repeated")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "security precommit-plan: unexpected positional path %q; use --staged\n", fs.Arg(0))
+		return 1
+	}
+
+	var changes []outputgate.FileChange
+	if len(staged) > 0 {
+		changes = stagedPathChanges(staged)
+	} else {
+		var err error
+		changes, err = gitStagedChanges(securityGitOutput)
+		if err != nil {
+			fmt.Fprintf(stderr, "security precommit-plan: read staged files: %v\n", err)
+			fmt.Fprintln(stderr, "  fallback: pass paths with --staged <path>")
+			return 1
+		}
+	}
+
+	plan := outputgate.PlanScans(changes)
+	if *asJSON {
+		out, err := json.MarshalIndent(plan, "", "  ")
+		if err != nil {
+			fmt.Fprintf(stderr, "security precommit-plan: encode plan: %v\n", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, string(out))
+		return 0
+	}
+
+	renderSecurityScanPlan(stdout, "security precommit-plan", plan)
+	return 0
+}
+
+func stagedPathChanges(paths []string) []outputgate.FileChange {
+	changes := make([]outputgate.FileChange, 0, len(paths))
+	for _, path := range paths {
+		changes = append(changes, outputgate.FileChange{
+			Path:   path,
+			Status: outputgate.StatusModified,
+			Source: outputgate.SourceStaged,
+		})
+	}
+	return changes
+}
+
+func gitStagedChanges(run commandOutputFunc) ([]outputgate.FileChange, error) {
+	out, err := run("git", "diff", "--cached", "--name-status", "-z")
+	if err != nil {
+		return nil, err
+	}
+	return parseGitNameStatusZ(out), nil
+}
+
+func parseGitNameStatusZ(out []byte) []outputgate.FileChange {
+	fields := strings.Split(strings.TrimRight(string(out), "\x00"), "\x00")
+	changes := make([]outputgate.FileChange, 0, len(fields)/2)
+	for i := 0; i < len(fields); {
+		statusText := strings.TrimSpace(fields[i])
+		i++
+		if statusText == "" || i >= len(fields) {
+			continue
+		}
+
+		status := gitStatusKind(statusText)
+		path := fields[i]
+		i++
+		if gitStatusHasOldAndNewPath(statusText) {
+			if i >= len(fields) {
+				continue
+			}
+			path = fields[i]
+			i++
+		}
+		changes = append(changes, outputgate.FileChange{
+			Path:   path,
+			Status: status,
+			Source: outputgate.SourceStaged,
+		})
+	}
+	return changes
+}
+
+func gitStatusKind(status string) outputgate.ChangeStatus {
+	switch status[0] {
+	case 'A':
+		return outputgate.StatusAdded
+	case 'C':
+		return outputgate.StatusAdded
+	case 'D':
+		return outputgate.StatusDeleted
+	case 'R':
+		return outputgate.StatusRenamed
+	default:
+		return outputgate.StatusModified
+	}
+}
+
+func gitStatusHasOldAndNewPath(status string) bool {
+	return status[0] == 'R' || status[0] == 'C'
+}
+
+func renderSecurityScanPlan(stdout io.Writer, label string, plan outputgate.Plan) {
 	if len(plan.Requests) == 0 {
-		fmt.Fprintln(stdout, "[security output-plan] no scans requested")
+		fmt.Fprintf(stdout, "[%s] no scans requested\n", label)
 		return
 	}
-	fmt.Fprintf(stdout, "[security output-plan] %d scan request(s)\n", len(plan.Requests))
+	fmt.Fprintf(stdout, "[%s] %d scan request(s)\n", label, len(plan.Requests))
 	for _, req := range plan.Requests {
 		fmt.Fprintf(stdout, "  %s: %s\n", req.Kind, strings.Join(req.Files, ", "))
 		if req.Reason != "" {

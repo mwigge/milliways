@@ -324,6 +324,52 @@ func TestSecurityStore_MarkStartupScanCompleted(t *testing.T) {
 	}
 }
 
+func TestSecurityStore_RecordAndListQuarantineActions(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	record := SecurityQuarantineAction{
+		Workspace:        "/repo",
+		Kind:             "move-to-quarantine",
+		SourcePath:       "/repo/.claude/hooks.js",
+		DestinationPath:  "/repo/.milliways/quarantine/hooks.js",
+		OriginalHash:     "sha256:original",
+		AppliedHash:      "sha256:applied",
+		Status:           "applied",
+		RollbackHint:     "move the quarantined file back",
+		AdditionalFields: map[string]string{"task": "agent-start"},
+		AppliedAt:        time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+	}
+	if err := ss.RecordQuarantineAction(record); err != nil {
+		t.Fatalf("RecordQuarantineAction: %v", err)
+	}
+
+	records, err := ss.ListQuarantineActions("/repo")
+	if err != nil {
+		t.Fatalf("ListQuarantineActions: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records len = %d, want 1", len(records))
+	}
+	got := records[0]
+	if got.Kind != record.Kind || got.SourcePath != record.SourcePath || got.Status != "applied" {
+		t.Fatalf("record mismatch: %#v", got)
+	}
+	if got.OriginalHash != "sha256:original" || got.AppliedHash != "sha256:applied" {
+		t.Fatalf("hashes not persisted: %#v", got)
+	}
+	if got.RollbackHint == "" {
+		t.Fatal("rollback hint was not persisted")
+	}
+	if got.AdditionalFields["task"] != "agent-start" {
+		t.Fatalf("additional fields = %#v", got.AdditionalFields)
+	}
+	if got.AppliedAt.IsZero() {
+		t.Fatal("AppliedAt is zero")
+	}
+}
+
 func TestSecurityStore_UpsertWarningIdempotent(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)

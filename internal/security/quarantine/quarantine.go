@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package quarantine plans local remediation actions without applying them.
+// Package quarantine plans and applies local remediation actions.
 package quarantine
 
 import (
@@ -79,6 +79,37 @@ type Action struct {
 	AdditionalFields map[string]string
 }
 
+// ApplyStatus describes the outcome for one attempted action.
+type ApplyStatus string
+
+const (
+	ApplyStatusApplied              ApplyStatus = "applied"
+	ApplyStatusFailed               ApplyStatus = "failed"
+	ApplyStatusRequiresConfirmation ApplyStatus = "requires-confirmation"
+	ApplyStatusSkipped              ApplyStatus = "skipped"
+)
+
+// ApplyOptions controls local quarantine mutation.
+type ApplyOptions struct {
+	Now func() time.Time
+}
+
+// ApplyResult summarizes a local quarantine apply attempt.
+type ApplyResult struct {
+	AppliedAt time.Time
+	Actions   []AppliedAction
+}
+
+// AppliedAction records one action outcome. AppliedHash is the hash of the
+// resulting file when MilliWays safely mutated local files.
+type AppliedAction struct {
+	Action
+	Status      ApplyStatus
+	Error       string
+	AppliedHash string
+	AppliedAt   time.Time
+}
+
 // PlanActions inspects local security surfaces and returns dry-run quarantine
 // actions. It never mutates files, shells out, or talks to the network.
 func PlanActions(ctx context.Context, opts Options) (Plan, error) {
@@ -129,6 +160,44 @@ func PlanActions(ctx context.Context, opts Options) (Plan, error) {
 		PlannedAt:      plannedAt,
 		Actions:        planner.actionsList(),
 	}, nil
+}
+
+// ApplyPlan applies only safe local file quarantine actions. Actions that need
+// external service management or explicit operator confirmation are recorded as
+// requires-confirmation and are not mutated here.
+func ApplyPlan(ctx context.Context, plan Plan, opts ApplyOptions) (ApplyResult, error) {
+	now := opts.Now
+	if now == nil {
+		now = func() time.Time { return time.Now().UTC() }
+	}
+	appliedAt := now()
+	result := ApplyResult{
+		AppliedAt: appliedAt,
+		Actions:   make([]AppliedAction, 0, len(plan.Actions)),
+	}
+	for _, action := range plan.Actions {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		applied := AppliedAction{
+			Action:    action,
+			Status:    ApplyStatusSkipped,
+			AppliedAt: appliedAt,
+		}
+		switch action.Kind {
+		case ActionMoveToQuarantine:
+			applied = applyMoveToQuarantine(action, appliedAt)
+		case ActionDisableVSCodeFolderOpen:
+			applied = applyDisableVSCodeFolderOpen(action, appliedAt)
+		case ActionDisableSystemdUnit, ActionDisableLaunchAgent:
+			applied.Status = ApplyStatusRequiresConfirmation
+		default:
+			applied.Status = ApplyStatusFailed
+			applied.Error = "unsupported quarantine action kind"
+		}
+		result.Actions = append(result.Actions, applied)
+	}
+	return result, nil
 }
 
 type planner struct {
@@ -336,4 +405,129 @@ func readSmallFile(path string) ([]byte, error) {
 func hashBytes(data []byte) string {
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func applyMoveToQuarantine(action Action, appliedAt time.Time) AppliedAction {
+	applied := AppliedAction{Action: action, AppliedAt: appliedAt}
+	data, mode, err := readActionSource(action)
+	if err != nil {
+		return failedAction(applied, err)
+	}
+	if err := ensureExpectedHash(action, data); err != nil {
+		return failedAction(applied, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(action.DestinationPath), 0o700); err != nil {
+		return failedAction(applied, fmt.Errorf("create quarantine directory: %w", err))
+	}
+	if err := writeNewFile(action.DestinationPath, data, mode); err != nil {
+		return failedAction(applied, fmt.Errorf("write quarantine file: %w", err))
+	}
+	if err := os.Remove(action.SourcePath); err != nil {
+		_ = os.Remove(action.DestinationPath)
+		return failedAction(applied, fmt.Errorf("remove source after quarantine: %w", err))
+	}
+	applied.Status = ApplyStatusApplied
+	applied.AppliedHash = hashBytes(data)
+	return applied
+}
+
+func applyDisableVSCodeFolderOpen(action Action, appliedAt time.Time) AppliedAction {
+	applied := AppliedAction{Action: action, AppliedAt: appliedAt}
+	data, mode, err := readActionSource(action)
+	if err != nil {
+		return failedAction(applied, err)
+	}
+	if err := ensureExpectedHash(action, data); err != nil {
+		return failedAction(applied, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(action.DestinationPath), 0o700); err != nil {
+		return failedAction(applied, fmt.Errorf("create backup directory: %w", err))
+	}
+	if err := writeNewFile(action.DestinationPath, data, mode); err != nil {
+		return failedAction(applied, fmt.Errorf("write backup: %w", err))
+	}
+	rewritten, err := disableFolderOpenTasks(data)
+	if err != nil {
+		return failedAction(applied, err)
+	}
+	if err := os.WriteFile(action.SourcePath, rewritten, mode); err != nil {
+		return failedAction(applied, fmt.Errorf("write disabled tasks: %w", err))
+	}
+	applied.Status = ApplyStatusApplied
+	applied.AppliedHash = hashBytes(rewritten)
+	return applied
+}
+
+func readActionSource(action Action) ([]byte, fs.FileMode, error) {
+	info, err := os.Stat(action.SourcePath)
+	if err != nil {
+		return nil, 0, fmt.Errorf("stat source: %w", err)
+	}
+	data, err := readSmallFile(action.SourcePath)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read source: %w", err)
+	}
+	return data, info.Mode().Perm(), nil
+}
+
+func ensureExpectedHash(action Action, data []byte) error {
+	if action.Hash == "" {
+		return nil
+	}
+	if got := hashBytes(data); got != action.Hash {
+		return fmt.Errorf("source hash changed: got %s, want %s", got, action.Hash)
+	}
+	return nil
+}
+
+func writeNewFile(path string, data []byte, mode fs.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	_, writeErr := f.Write(data)
+	closeErr := f.Close()
+	if writeErr != nil {
+		_ = os.Remove(path)
+		return writeErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(path)
+		return closeErr
+	}
+	return nil
+}
+
+func disableFolderOpenTasks(data []byte) ([]byte, error) {
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("parse tasks.json: %w", err)
+	}
+	tasks, _ := doc["tasks"].([]any)
+	changed := false
+	for _, rawTask := range tasks {
+		task, _ := rawTask.(map[string]any)
+		runOptions, _ := task["runOptions"].(map[string]any)
+		if runOptions == nil {
+			continue
+		}
+		if runOptions["runOn"] == "folderOpen" {
+			runOptions["runOn"] = "default"
+			changed = true
+		}
+	}
+	if !changed {
+		return data, nil
+	}
+	rewritten, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode tasks.json: %w", err)
+	}
+	return append(rewritten, '\n'), nil
+}
+
+func failedAction(action AppliedAction, err error) AppliedAction {
+	action.Status = ApplyStatusFailed
+	action.Error = err.Error()
+	return action
 }

@@ -16,6 +16,7 @@ package pantry
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -117,6 +118,22 @@ type SecurityRulePack struct {
 	Status                  string
 	FirstSeen               time.Time
 	LastSeen                time.Time
+}
+
+// SecurityQuarantineAction is a durable record of one quarantine apply action.
+type SecurityQuarantineAction struct {
+	ID               int64
+	Workspace        string
+	Kind             string
+	SourcePath       string
+	DestinationPath  string
+	OriginalHash     string
+	AppliedHash      string
+	Status           string
+	Error            string
+	RollbackHint     string
+	AdditionalFields map[string]string
+	AppliedAt        time.Time
 }
 
 // SecurityStore provides access to durable security posture tables.
@@ -590,6 +607,70 @@ func (s *SecurityStore) ListRulePacks(workspace string) ([]SecurityRulePack, err
 		packs = append(packs, p)
 	}
 	return packs, rows.Err()
+}
+
+// RecordQuarantineAction persists the outcome of one quarantine apply action.
+func (s *SecurityStore) RecordQuarantineAction(a SecurityQuarantineAction) error {
+	if a.Status == "" {
+		a.Status = "unknown"
+	}
+	if a.AppliedAt.IsZero() {
+		a.AppliedAt = time.Now().UTC()
+	}
+	fields, err := json.Marshal(a.AdditionalFields)
+	if err != nil {
+		return fmt.Errorf("marshal quarantine action fields: %w", err)
+	}
+	if string(fields) == "null" {
+		fields = []byte("{}")
+	}
+	_, err = s.db.Exec(`
+		INSERT INTO mw_security_quarantine_actions
+			(workspace, kind, source_path, destination_path, original_hash, applied_hash,
+			 status, error, rollback_hint, additional_fields_json, applied_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.Workspace, a.Kind, a.SourcePath, a.DestinationPath, a.OriginalHash, a.AppliedHash,
+		a.Status, a.Error, a.RollbackHint, string(fields), secFormatTime(a.AppliedAt))
+	if err != nil {
+		return fmt.Errorf("record quarantine action: %w", err)
+	}
+	return nil
+}
+
+// ListQuarantineActions returns quarantine apply records for a workspace.
+func (s *SecurityStore) ListQuarantineActions(workspace string) ([]SecurityQuarantineAction, error) {
+	rows, err := s.db.Query(`
+		SELECT id, workspace, kind, source_path, destination_path, original_hash, applied_hash,
+		       status, error, rollback_hint, additional_fields_json, applied_at
+		FROM mw_security_quarantine_actions
+		WHERE workspace = ?
+		ORDER BY applied_at DESC, id DESC`, workspace)
+	if err != nil {
+		return nil, fmt.Errorf("list quarantine actions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var actions []SecurityQuarantineAction
+	for rows.Next() {
+		var a SecurityQuarantineAction
+		var fieldsJSON, appliedAt string
+		if err := rows.Scan(&a.ID, &a.Workspace, &a.Kind, &a.SourcePath, &a.DestinationPath,
+			&a.OriginalHash, &a.AppliedHash, &a.Status, &a.Error, &a.RollbackHint,
+			&fieldsJSON, &appliedAt); err != nil {
+			return nil, fmt.Errorf("scan quarantine action: %w", err)
+		}
+		a.AppliedAt = secParseTime(appliedAt)
+		if fieldsJSON != "" {
+			if err := json.Unmarshal([]byte(fieldsJSON), &a.AdditionalFields); err != nil {
+				return nil, fmt.Errorf("decode quarantine action fields: %w", err)
+			}
+		}
+		if a.AdditionalFields == nil {
+			a.AdditionalFields = map[string]string{}
+		}
+		actions = append(actions, a)
+	}
+	return actions, rows.Err()
 }
 
 func (s *SecurityStore) queryFindings(query string, args ...any) ([]SecurityFinding, error) {

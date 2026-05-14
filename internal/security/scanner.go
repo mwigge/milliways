@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"time"
 )
 
@@ -47,26 +48,117 @@ var SupportedLockfiles = []string{
 	"pdm.lock",
 }
 
-// DiscoverLockfiles walks root non-recursively and returns paths of files
-// whose basename is in SupportedLockfiles.
+const (
+	defaultLockfileDiscoveryMaxDepth = 6
+	defaultLockfileDiscoveryMaxFiles = 8192
+)
+
+// LockfileDiscoveryOptions controls recursive lockfile discovery.
+type LockfileDiscoveryOptions struct {
+	// MaxDepth is the maximum directory depth below root. A zero value uses the
+	// default; a negative value disables the depth limit.
+	MaxDepth int
+	// MaxFiles is the maximum number of regular files inspected. A zero value
+	// uses the default; a negative value disables the file-count limit.
+	MaxFiles int
+	// IgnoreDirs names directories that should not be walked.
+	IgnoreDirs []string
+}
+
+var defaultLockfileIgnoreDirs = []string{
+	".git",
+	".hg",
+	".svn",
+	".milliways",
+	"node_modules",
+	"vendor",
+	"target",
+	"dist",
+	"build",
+	".next",
+	".turbo",
+	".cache",
+}
+
+// DiscoverLockfiles walks root recursively and returns paths of files whose
+// basename is in SupportedLockfiles. Discovery is bounded by default so large
+// dependency trees do not dominate security startup work.
 func DiscoverLockfiles(root string) []string {
-	entries, err := os.ReadDir(root)
-	if err != nil {
+	return DiscoverLockfilesWithOptions(root, LockfileDiscoveryOptions{})
+}
+
+// DiscoverLockfilesWithOptions walks root recursively with explicit bounds.
+func DiscoverLockfilesWithOptions(root string, opts LockfileDiscoveryOptions) []string {
+	if root == "" {
 		return nil
 	}
+	maxDepth := opts.MaxDepth
+	if maxDepth == 0 {
+		maxDepth = defaultLockfileDiscoveryMaxDepth
+	}
+	maxFiles := opts.MaxFiles
+	if maxFiles == 0 {
+		maxFiles = defaultLockfileDiscoveryMaxFiles
+	}
+	ignoreDirs := make(map[string]struct{}, len(defaultLockfileIgnoreDirs)+len(opts.IgnoreDirs))
+	for _, name := range defaultLockfileIgnoreDirs {
+		ignoreDirs[name] = struct{}{}
+	}
+	for _, name := range opts.IgnoreDirs {
+		ignoreDirs[name] = struct{}{}
+	}
+	supported := make(map[string]struct{}, len(SupportedLockfiles))
+	for _, name := range SupportedLockfiles {
+		supported[name] = struct{}{}
+	}
+
 	var found []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		for _, name := range SupportedLockfiles {
-			if e.Name() == name {
-				found = append(found, filepath.Join(root, e.Name()))
-				break
+	visitedFiles := 0
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
 			}
+			return nil
+		}
+		if path == root {
+			return nil
+		}
+		if d.IsDir() {
+			if _, ignored := ignoreDirs[d.Name()]; ignored {
+				return filepath.SkipDir
+			}
+			if maxDepth >= 0 && depthBelow(root, path) > maxDepth {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		visitedFiles++
+		if maxFiles >= 0 && visitedFiles > maxFiles {
+			return filepath.SkipAll
+		}
+		if _, ok := supported[d.Name()]; !ok {
+			return nil
+		}
+		found = append(found, path)
+		return nil
+	})
+	sort.Strings(found)
+	return found
+}
+
+func depthBelow(root, path string) int {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." {
+		return 0
+	}
+	depth := 1
+	for _, r := range rel {
+		if os.IsPathSeparator(uint8(r)) {
+			depth++
 		}
 	}
-	return found
+	return depth
 }
 
 // ScannerPath returns the path to the osv-scanner binary, or empty string.
@@ -88,9 +180,9 @@ type osvOutput struct {
 				Ecosystem string `json:"ecosystem"`
 			} `json:"package"`
 			Vulnerabilities []struct {
-				ID      string   `json:"id"`
-				Aliases []string `json:"aliases"`
-				Summary string   `json:"summary"`
+				ID       string   `json:"id"`
+				Aliases  []string `json:"aliases"`
+				Summary  string   `json:"summary"`
 				Affected []struct {
 					Ranges []struct {
 						Events []struct {
