@@ -180,6 +180,16 @@ func NewServer(socket string) (*Server, error) {
 		s.secRunner = security.NewRunner(pdb.Security(), workspaceRoot)
 		s.secRunner.Start(bgCtx)
 		go func(root string) {
+			if abs, err := filepath.Abs(root); err == nil {
+				root = abs
+			}
+			status, err := pdb.Security().SecurityStatus(root)
+			if err == nil {
+				_, _, required := startupScanState(status, startupScanConfigHash(root))
+				if !required {
+					return
+				}
+			}
 			scanCtx, scanCancel := context.WithTimeout(bgCtx, 5*time.Second)
 			defer scanCancel()
 			if _, err := s.runStartupSecurityScan(scanCtx, root, false); err != nil {

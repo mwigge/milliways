@@ -16,8 +16,11 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,6 +29,8 @@ import (
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/security"
 	"github.com/mwigge/milliways/internal/security/adapters"
+	"github.com/mwigge/milliways/internal/security/rulepacks"
+	"github.com/mwigge/milliways/internal/security/rules"
 )
 
 func TestSecurityStartupScanPersistsWarningsForStatus(t *testing.T) {
@@ -62,6 +67,65 @@ func TestSecurityStartupScanPersistsWarningsForStatus(t *testing.T) {
 	}
 	if blocks, _ := result["blocks"].(float64); blocks < 1 {
 		t.Fatalf("status blocks = %v, want at least one; result=%v", result["blocks"], result)
+	}
+	if completed, _ := result["startup_scan_completed"].(bool); !completed {
+		t.Fatalf("startup_scan_completed = %v, want true; result=%v", result["startup_scan_completed"], result)
+	}
+	if required, _ := result["startup_scan_required"].(bool); required {
+		t.Fatalf("startup_scan_required = %v, want false; result=%v", result["startup_scan_required"], result)
+	}
+}
+
+func TestSecurityStatusReportsStartupScanState(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+
+	s := &Server{pantryDB: db}
+	enc, buf := newCapturingEncoder()
+	s.securityStatus(enc, &Request{ID: mustSecurityMethodParams(t, 1)})
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	result := resp["result"].(map[string]any)
+	if completed, _ := result["startup_scan_completed"].(bool); completed {
+		t.Fatalf("startup_scan_completed = true before scan; result=%v", result)
+	}
+	if required, _ := result["startup_scan_required"].(bool); !required {
+		t.Fatalf("startup_scan_required = false before scan; result=%v", result)
+	}
+	if stale, _ := result["startup_scan_stale"].(bool); stale {
+		t.Fatalf("startup_scan_stale = true before scan; result=%v", result)
+	}
+
+	currentHash := startupScanConfigHash(workspace)
+	if err := db.Security().MarkStartupScanCompleted(workspace, currentHash); err != nil {
+		t.Fatalf("MarkStartupScanCompleted current: %v", err)
+	}
+	enc, buf = newCapturingEncoder()
+	s.securityStatus(enc, &Request{ID: mustSecurityMethodParams(t, 2)})
+	resp = decodeSecurityMethodResponse(t, buf.Bytes())
+	result = resp["result"].(map[string]any)
+	if completed, _ := result["startup_scan_completed"].(bool); !completed {
+		t.Fatalf("startup_scan_completed = false after scan; result=%v", result)
+	}
+	if required, _ := result["startup_scan_required"].(bool); required {
+		t.Fatalf("startup_scan_required = true after current scan; result=%v", result)
+	}
+	if stale, _ := result["startup_scan_stale"].(bool); stale {
+		t.Fatalf("startup_scan_stale = true after current scan; result=%v", result)
+	}
+
+	if err := db.Security().MarkStartupScanCompleted(workspace, "old-config"); err != nil {
+		t.Fatalf("MarkStartupScanCompleted stale: %v", err)
+	}
+	enc, buf = newCapturingEncoder()
+	s.securityStatus(enc, &Request{ID: mustSecurityMethodParams(t, 3)})
+	resp = decodeSecurityMethodResponse(t, buf.Bytes())
+	result = resp["result"].(map[string]any)
+	if stale, _ := result["startup_scan_stale"].(bool); !stale {
+		t.Fatalf("startup_scan_stale = false for old config; result=%v", result)
+	}
+	if required, _ := result["startup_scan_required"].(bool); !required {
+		t.Fatalf("startup_scan_required = false for old config; result=%v", result)
 	}
 }
 
@@ -314,6 +378,44 @@ func TestSecurityRulesRPCsUseOfflineLocalPacks(t *testing.T) {
 	}
 }
 
+func TestSecurityRulesListPersistsValidatedMetadata(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	writeSecurityRulePack(t, filepath.Join(workspace, ".milliways", "security", "rules", "ioc"), "workspace-ioc", "1.2.3")
+
+	s := &Server{pantryDB: db}
+	enc, buf := newCapturingEncoder()
+	s.securityRulesList(enc, &Request{ID: mustSecurityMethodParams(t, 1)})
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	if _, ok := resp["error"]; ok {
+		t.Fatalf("security.rules_list returned error: %v", resp)
+	}
+	result := resp["result"].(map[string]any)
+	rulesOut, _ := result["rules"].([]any)
+	if len(rulesOut) != 1 {
+		t.Fatalf("rules len = %d, want 1: %v", len(rulesOut), result)
+	}
+	persistedOut, _ := result["persisted_metadata"].([]any)
+	if len(persistedOut) != 1 {
+		t.Fatalf("persisted_metadata len = %d, want 1: %v", len(persistedOut), result)
+	}
+
+	packs, err := db.Security().ListRulePacks(workspace)
+	if err != nil {
+		t.Fatalf("ListRulePacks: %v", err)
+	}
+	if len(packs) != 1 {
+		t.Fatalf("persisted packs = %d, want 1", len(packs))
+	}
+	if packs[0].Name != "workspace-ioc" || packs[0].Version != "1.2.3" {
+		t.Fatalf("persisted pack = %#v", packs[0])
+	}
+	if packs[0].Source != "workspace" || packs[0].RulesCount != 1 {
+		t.Fatalf("source/rules = %q/%d, want workspace/1", packs[0].Source, packs[0].RulesCount)
+	}
+}
+
 func openSecurityMethodTestDB(t *testing.T) *pantry.DB {
 	t.Helper()
 	db, err := pantry.Open(filepath.Join(t.TempDir(), "milliways.db"))
@@ -332,6 +434,36 @@ func writeSecurityMethodFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
+}
+
+func writeSecurityRulePack(t *testing.T, root, name, version string) {
+	t.Helper()
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	ruleBytes, err := rulepacks.MarshalRules([]rules.Rule{{
+		ID:          "ioc.test",
+		Title:       "Test IOC",
+		Category:    rules.CategoryIOC,
+		Severity:    rules.SeverityBlock,
+		MatchType:   rules.MatchPath,
+		Patterns:    []string{"setup.mjs"},
+		Description: "test rule",
+		Remediation: "remove test file",
+	}})
+	if err != nil {
+		t.Fatalf("MarshalRules: %v", err)
+	}
+	writeSecurityMethodFile(t, filepath.Join(root, "rules.yaml"), string(ruleBytes))
+	sum := sha256.Sum256(ruleBytes)
+	manifest := fmt.Sprintf(`name: %s
+version: %s
+checksum: sha256:%s
+source: workspace
+minimum_milliways_version: 0.0.0
+rules_file: rules.yaml
+`, name, version, hex.EncodeToString(sum[:]))
+	writeSecurityMethodFile(t, filepath.Join(root, "manifest.yaml"), manifest)
 }
 
 func mustSecurityMethodParams(t *testing.T, params any) json.RawMessage {

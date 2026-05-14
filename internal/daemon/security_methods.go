@@ -16,10 +16,13 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -321,14 +324,17 @@ func (s *Server) securityStatus(enc *json.Encoder, req *Request) {
 	scannerPath := security.ScannerPath()
 	enabled := s.secRunner != nil && s.secRunner.IsEnabled()
 	result := map[string]any{
-		"enabled":      enabled,
-		"scanner_path": scannerPath,
-		"installed":    scannerPath != "",
-		"scanners":     securityScannerAdapterStatus(context.Background()),
-		"mode":         string(security.ModeWarn),
-		"posture":      string(security.PostureOK),
-		"warnings":     0,
-		"blocks":       0,
+		"enabled":                enabled,
+		"scanner_path":           scannerPath,
+		"installed":              scannerPath != "",
+		"scanners":               securityScannerAdapterStatus(context.Background()),
+		"mode":                   string(security.ModeWarn),
+		"posture":                string(security.PostureOK),
+		"warnings":               0,
+		"blocks":                 0,
+		"startup_scan_completed": false,
+		"startup_scan_stale":     false,
+		"startup_scan_required":  true,
 	}
 	if s.pantryDB != nil {
 		workspace := s.securityWorkspaceRoot()
@@ -342,6 +348,13 @@ func (s *Server) securityStatus(enc *json.Encoder, req *Request) {
 			result["warning_count"] = result["warnings"]
 			result["block_count"] = result["blocks"]
 			result["active_client"] = status.ActiveClient
+			completed, stale, required := startupScanState(status, startupScanConfigHash(workspace))
+			result["startup_scan_completed"] = completed
+			result["startup_scan_stale"] = stale
+			result["startup_scan_required"] = required
+			if !status.StartupScanCompletedAt.IsZero() {
+				result["startup_scan_completed_at"] = status.StartupScanCompletedAt.UTC().Format(time.RFC3339)
+			}
 			if status.LastStartupScan != nil && !status.LastStartupScan.CompletedAt.IsZero() {
 				result["last_startup_scan_at"] = status.LastStartupScan.CompletedAt.UTC().Format(time.RFC3339)
 			}
@@ -465,6 +478,9 @@ func (s *Server) runStartupSecurityScan(ctx context.Context, workspace string, s
 	}
 	if runID > 0 {
 		_ = store.CompleteScanRun(runID, "completed", len(result.Findings), warnCount, blockCount, "")
+	}
+	if err := store.MarkStartupScanCompleted(result.WorkspaceRoot, startupScanConfigHash(result.WorkspaceRoot)); err != nil {
+		return nil, fmt.Errorf("mark startup scan completed: %w", err)
 	}
 	posture := string(security.PostureOK)
 	if blockCount > 0 || (strict && warnCount > 0) {
@@ -763,39 +779,123 @@ func (s *Server) securityQuarantine(enc *json.Encoder, req *Request) {
 
 // securityRulesList handles "security.rules_list".
 func (s *Server) securityRulesList(enc *json.Encoder, req *Request) {
-	packs, err := rulepacks.LoadAll(securityRulePackOptions(s.securityWorkspaceRoot()))
+	workspace := s.securityWorkspaceRoot()
+	packs, err := rulepacks.LoadAll(securityRulePackOptions(workspace))
 	if err != nil {
 		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("load rule packs: %v", err))
 		return
 	}
-	out := make([]map[string]any, 0, len(packs))
-	for _, p := range packs {
-		out = append(out, map[string]any{
-			"name":       p.Manifest.Name,
-			"version":    p.Manifest.Version,
-			"source":     string(p.Source),
-			"rules":      len(p.Rules),
-			"root":       p.Root,
-			"rules_path": p.RulesPath,
-		})
+	persisted, err := s.persistSecurityRulePacks(workspace, packs)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("persist rule packs: %v", err))
+		return
 	}
-	writeResult(enc, req.ID, map[string]any{"rules": out, "offline": true})
+	writeResult(enc, req.ID, map[string]any{
+		"rules":              securityRulePacksToWire(packs),
+		"persisted_metadata": securityPersistedRulePacksToWire(persisted),
+		"offline":            true,
+	})
 }
 
 // securityRulesUpdate verifies local rule packs. Network updates are
 // intentionally disabled by default.
 func (s *Server) securityRulesUpdate(enc *json.Encoder, req *Request) {
-	packs, err := rulepacks.LoadAll(securityRulePackOptions(s.securityWorkspaceRoot()))
+	workspace := s.securityWorkspaceRoot()
+	packs, err := rulepacks.LoadAll(securityRulePackOptions(workspace))
 	if err != nil {
 		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("verify rule packs: %v", err))
 		return
 	}
+	persisted, err := s.persistSecurityRulePacks(workspace, packs)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("persist rule packs: %v", err))
+		return
+	}
 	writeResult(enc, req.ID, map[string]any{
-		"ok":      true,
-		"offline": true,
-		"packs":   len(packs),
-		"message": "local rule packs verified; network updates are disabled by default",
+		"ok":                 true,
+		"offline":            true,
+		"packs":              len(packs),
+		"persisted_metadata": securityPersistedRulePacksToWire(persisted),
+		"message":            "local rule packs verified; network updates are disabled by default",
 	})
+}
+
+func (s *Server) persistSecurityRulePacks(workspace string, packs []rulepacks.Pack) ([]pantry.SecurityRulePack, error) {
+	if s.pantryDB == nil {
+		return nil, nil
+	}
+	store := s.pantryDB.Security()
+	for _, p := range packs {
+		if err := store.UpsertRulePack(pantry.SecurityRulePack{
+			Workspace:               workspace,
+			Name:                    p.Manifest.Name,
+			Version:                 p.Manifest.Version,
+			Source:                  string(p.Source),
+			ManifestSource:          p.Manifest.Source,
+			Checksum:                p.Manifest.Checksum,
+			MinimumMilliWaysVersion: p.Manifest.MinimumMilliWaysVersion,
+			RulesFile:               p.Manifest.RulesFile,
+			RulesCount:              len(p.Rules),
+			Root:                    p.Root,
+			ManifestPath:            p.ManifestPath,
+			RulesPath:               p.RulesPath,
+			Status:                  "loaded",
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return store.ListRulePacks(workspace)
+}
+
+func securityRulePacksToWire(packs []rulepacks.Pack) []map[string]any {
+	out := make([]map[string]any, 0, len(packs))
+	for _, p := range packs {
+		out = append(out, map[string]any{
+			"name":                      p.Manifest.Name,
+			"version":                   p.Manifest.Version,
+			"source":                    string(p.Source),
+			"manifest_source":           p.Manifest.Source,
+			"checksum":                  p.Manifest.Checksum,
+			"minimum_milliways_version": p.Manifest.MinimumMilliWaysVersion,
+			"rules_file":                p.Manifest.RulesFile,
+			"rules":                     len(p.Rules),
+			"root":                      p.Root,
+			"manifest_path":             p.ManifestPath,
+			"rules_path":                p.RulesPath,
+		})
+	}
+	return out
+}
+
+func securityPersistedRulePacksToWire(packs []pantry.SecurityRulePack) []map[string]any {
+	out := make([]map[string]any, 0, len(packs))
+	for _, p := range packs {
+		out = append(out, map[string]any{
+			"workspace":                 p.Workspace,
+			"name":                      p.Name,
+			"version":                   p.Version,
+			"source":                    p.Source,
+			"manifest_source":           p.ManifestSource,
+			"checksum":                  p.Checksum,
+			"minimum_milliways_version": p.MinimumMilliWaysVersion,
+			"rules_file":                p.RulesFile,
+			"rules":                     p.RulesCount,
+			"root":                      p.Root,
+			"manifest_path":             p.ManifestPath,
+			"rules_path":                p.RulesPath,
+			"status":                    p.Status,
+			"first_seen":                secWireTime(p.FirstSeen),
+			"last_seen":                 secWireTime(p.LastSeen),
+		})
+	}
+	return out
+}
+
+func secWireTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 func (s *Server) runClientProfileSecurity(ctx context.Context, workspace, client string) (map[string]any, error) {
@@ -884,6 +984,32 @@ func (s *Server) securityWorkspaceRoot() string {
 		return wd
 	}
 	return "."
+}
+
+func startupScanState(status pantry.SecurityStatus, currentConfigHash string) (completed, stale, required bool) {
+	completed = !status.StartupScanCompletedAt.IsZero()
+	stale = completed && status.StartupScanConfigHash != currentConfigHash
+	required = !completed || stale
+	return completed, stale, required
+}
+
+func startupScanConfigHash(workspace string) string {
+	if abs, err := filepath.Abs(workspace); err == nil {
+		workspace = abs
+	}
+	roots := startupPersistenceRoots()
+	parts := make([]string, 0, 2+len(roots))
+	parts = append(parts, "startup-scan-v1", "workspace="+workspace)
+	for _, root := range roots {
+		path := root.Path
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+		parts = append(parts, root.Name+"="+path)
+	}
+	sort.Strings(parts[2:])
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return hex.EncodeToString(sum[:])
 }
 
 func startupPersistenceRoots() []security.StartupScanRoot {

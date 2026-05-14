@@ -85,16 +85,38 @@ type SecurityWarning struct {
 
 // SecurityStatus is the durable workspace security summary.
 type SecurityStatus struct {
-	Workspace          string
-	Mode               string
-	ActiveClient       string
-	UpdatedAt          time.Time
-	Posture            string
-	LastStartupScan    *SecurityScanRun
-	LastDependencyScan *SecurityScanRun
-	CountsByCategory   map[string]int
-	CountsBySeverity   map[string]int
-	Warnings           []SecurityWarning
+	Workspace              string
+	Mode                   string
+	ActiveClient           string
+	UpdatedAt              time.Time
+	Posture                string
+	StartupScanCompletedAt time.Time
+	StartupScanConfigHash  string
+	LastStartupScan        *SecurityScanRun
+	LastDependencyScan     *SecurityScanRun
+	CountsByCategory       map[string]int
+	CountsBySeverity       map[string]int
+	Warnings               []SecurityWarning
+}
+
+// SecurityRulePack is validated rule-pack metadata persisted by security rules RPCs.
+type SecurityRulePack struct {
+	ID                      int64
+	Workspace               string
+	Name                    string
+	Version                 string
+	Source                  string
+	ManifestSource          string
+	Checksum                string
+	MinimumMilliWaysVersion string
+	RulesFile               string
+	RulesCount              int
+	Root                    string
+	ManifestPath            string
+	RulesPath               string
+	Status                  string
+	FirstSeen               time.Time
+	LastSeen                time.Time
 }
 
 // SecurityStore provides access to durable security posture tables.
@@ -342,6 +364,25 @@ func (s *SecurityStore) SetWorkspaceStatus(workspace, mode, activeClient string)
 	return nil
 }
 
+// MarkStartupScanCompleted records that the mandatory startup scan has
+// completed for this workspace and startup scan configuration.
+func (s *SecurityStore) MarkStartupScanCompleted(workspace, configHash string) error {
+	now := secFormatTime(time.Now().UTC())
+	_, err := s.db.Exec(`
+		INSERT INTO mw_security_workspace_status
+			(workspace, mode, active_client, updated_at, startup_scan_completed_at, startup_scan_config_hash)
+		VALUES (?, 'warn', '', ?, ?, ?)
+		ON CONFLICT(workspace) DO UPDATE SET
+			updated_at = excluded.updated_at,
+			startup_scan_completed_at = excluded.startup_scan_completed_at,
+			startup_scan_config_hash = excluded.startup_scan_config_hash`,
+		workspace, now, now, configHash)
+	if err != nil {
+		return fmt.Errorf("mark startup scan completed: %w", err)
+	}
+	return nil
+}
+
 // InsertScanRun records the start of a security scan and returns its row ID.
 func (s *SecurityStore) InsertScanRun(run SecurityScanRun) (int64, error) {
 	if run.Status == "" {
@@ -442,15 +483,16 @@ func (s *SecurityStore) SecurityStatus(workspace string) (SecurityStatus, error)
 		Posture:          "ok",
 	}
 
-	var updatedAt string
+	var updatedAt, startupScanCompletedAt string
 	err := s.db.QueryRow(`
-		SELECT mode, active_client, updated_at
+		SELECT mode, active_client, updated_at, startup_scan_completed_at, startup_scan_config_hash
 		FROM mw_security_workspace_status WHERE workspace = ?`, workspace).
-		Scan(&st.Mode, &st.ActiveClient, &updatedAt)
+		Scan(&st.Mode, &st.ActiveClient, &updatedAt, &startupScanCompletedAt, &st.StartupScanConfigHash)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return SecurityStatus{}, fmt.Errorf("query workspace security status: %w", err)
 	}
 	st.UpdatedAt = secParseTime(updatedAt)
+	st.StartupScanCompletedAt = secParseTime(startupScanCompletedAt)
 
 	startup, err := s.lastScanRun(workspace, "startup")
 	if err != nil {
@@ -481,6 +523,73 @@ func (s *SecurityStore) SecurityStatus(workspace string) (SecurityStatus, error)
 		st.Posture = "warn"
 	}
 	return st, nil
+}
+
+// UpsertRulePack records validated rule-pack metadata. The caller is expected
+// to only pass packs after manifest and checksum validation.
+func (s *SecurityStore) UpsertRulePack(p SecurityRulePack) error {
+	now := secFormatTime(time.Now().UTC())
+	firstSeen := secFormatTime(p.FirstSeen)
+	if firstSeen == "" {
+		firstSeen = now
+	}
+	if p.Status == "" {
+		p.Status = "loaded"
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO mw_security_rule_packs
+			(workspace, name, version, source, manifest_source, checksum,
+			 minimum_milliways_version, rules_file, rules_count, root,
+			 manifest_path, rules_path, status, first_seen, last_seen)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(workspace, source, name, version, root) DO UPDATE SET
+			manifest_source = excluded.manifest_source,
+			checksum = excluded.checksum,
+			minimum_milliways_version = excluded.minimum_milliways_version,
+			rules_file = excluded.rules_file,
+			rules_count = excluded.rules_count,
+			manifest_path = excluded.manifest_path,
+			rules_path = excluded.rules_path,
+			status = excluded.status,
+			last_seen = excluded.last_seen`,
+		p.Workspace, p.Name, p.Version, p.Source, p.ManifestSource, p.Checksum,
+		p.MinimumMilliWaysVersion, p.RulesFile, p.RulesCount, p.Root,
+		p.ManifestPath, p.RulesPath, p.Status, firstSeen, now)
+	if err != nil {
+		return fmt.Errorf("upsert security rule pack: %w", err)
+	}
+	return nil
+}
+
+// ListRulePacks returns persisted rule-pack metadata for a workspace.
+func (s *SecurityStore) ListRulePacks(workspace string) ([]SecurityRulePack, error) {
+	rows, err := s.db.Query(`
+		SELECT id, workspace, name, version, source, manifest_source, checksum,
+		       minimum_milliways_version, rules_file, rules_count, root,
+		       manifest_path, rules_path, status, first_seen, last_seen
+		FROM mw_security_rule_packs
+		WHERE workspace = ?
+		ORDER BY source, name, version, root`, workspace)
+	if err != nil {
+		return nil, fmt.Errorf("list security rule packs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var packs []SecurityRulePack
+	for rows.Next() {
+		var p SecurityRulePack
+		var firstSeen, lastSeen string
+		if err := rows.Scan(&p.ID, &p.Workspace, &p.Name, &p.Version, &p.Source,
+			&p.ManifestSource, &p.Checksum, &p.MinimumMilliWaysVersion, &p.RulesFile,
+			&p.RulesCount, &p.Root, &p.ManifestPath, &p.RulesPath, &p.Status,
+			&firstSeen, &lastSeen); err != nil {
+			return nil, fmt.Errorf("scan security rule pack: %w", err)
+		}
+		p.FirstSeen = secParseTime(firstSeen)
+		p.LastSeen = secParseTime(lastSeen)
+		packs = append(packs, p)
+	}
+	return packs, rows.Err()
 }
 
 func (s *SecurityStore) queryFindings(query string, args ...any) ([]SecurityFinding, error) {

@@ -907,9 +907,102 @@ Switch at runtime with `/local-temp 0.7` or `/local-temp default` (lets the serv
 
 ---
 
-## Tool security
+## Secure MilliWays
 
-The HTTP-based runners (minimax, local) drive an agentic tool loop that lets the model invoke `bash`, file `read`/`write`/`edit`, `grep`/`glob`, and `web_fetch` on your machine. milliways applies guardrails by default; the bars can be raised but should not be lowered for shared / multi-tenant deployments.
+Secure MilliWays is the release security theme, not a separate binary and not a repository rename: all clients in one place, shared memory, shared sessions, one security layer.
+
+Milliways wraps Claude, Codex, Copilot, Gemini, Pool, MiniMax, and local models behind one terminal surface. That makes the security model explicit: the runner changes, but the workspace, memory, session handoff, observability, and security posture are managed in one place.
+
+### Layered architecture
+
+| Layer | Surface | Purpose |
+|---|---|---|
+| Startup posture scan | `milliwaysctl security startup-scan` | Fast local scan of workspace and user persistence surfaces before agents get useful context. It checks `.claude/`, `.vscode/tasks.json`, package manifests, package-manager policy, known IOC paths/domains/IPs, user systemd units, and macOS LaunchAgents. |
+| Client profiles | `milliwaysctl security client <name>` | Per-client checks for risky configuration such as broad sandbox/write roots, auto-approval modes, unsafe local model endpoints, hooks, MCP config, and CLI path/version state. |
+| Dependency scanning | `milliwaysctl security scan` | OSV-backed dependency findings for lockfiles and manifests, with accepted-risk tracking through `security accept`. |
+| Command firewall | `milliwaysctl security command-check -- <command...>` | Pre-flight classification for package install, persistence, exfiltration, secret-read, network-download, shell-eval, IOC, and complex-unparsed command risks. |
+| Output gate | `milliwaysctl security output-plan` | Classifies generated and staged paths into secret, SAST, and dependency scan requests before output is trusted or committed. |
+| Quarantine planner | `milliwaysctl security quarantine` | Dry-run remediation planning for suspicious workspace files and auto-run tasks. Apply-style actions require explicit confirmation through the daemon surface that supports them. |
+| Rule packs | `milliwaysctl security rules list\|update` | Bundled and local rules for IOC, startup, command, package, and persistence checks. Offline mode uses local rule packs only. |
+| Status and warnings | `milliwaysctl security status`, `warnings`, `mode` | One posture summary for CLI, terminal cockpit, and future release smoke checks: mode, scanner state, last scan times, warnings, blocks, and client profile state. |
+
+The layers are intentionally additive. Startup scan is deterministic and local; external scanners add dependency, secret, and SAST depth when installed; client profiles and command checks reduce the risk of handing unsafe work to external CLIs that execute their own tools.
+
+### Mode semantics
+
+| Mode | Behavior | Recommended use |
+|---|---|---|
+| `off` | Security checks are disabled except for explicit manual commands. | Temporary debugging only. |
+| `observe` | Record and render findings without interrupting work. | First rollout in an existing team or noisy repository. |
+| `warn` | Default interactive mode: surface warnings and require attention for risky actions, but keep routine work moving. | Developer laptops and shared workspaces. |
+| `strict` | Block known-bad IOC, persistence, secret-read, and high-risk package/persistence commands when MilliWays controls the execution path. | Sensitive repositories and unattended agent work. |
+| `ci` | Non-interactive strict posture suitable for release and smoke automation. | CI, release packaging, and pre-merge checks. |
+
+Set or inspect the mode with:
+
+```bash
+milliwaysctl security mode
+milliwaysctl security mode warn
+milliwaysctl security mode strict
+```
+
+### Scanner installation
+
+Milliways degrades cleanly when optional scanners are missing, and `milliwaysctl security status` shows what is installed. Install the scanners you want available on `PATH`:
+
+```bash
+# OSV dependency scanner
+milliwaysctl security install-scanner
+# or:
+brew install osv-scanner
+go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest
+
+# Gitleaks secret scanner
+brew install gitleaks
+# or use the upstream release binary / container image
+
+# Semgrep SAST scanner
+brew install semgrep
+pipx install semgrep
+uv tool install semgrep
+
+# Go vulnerability scanner
+go install golang.org/x/vuln/cmd/govulncheck@latest
+```
+
+Official install references: [OSV-Scanner](https://google.github.io/osv-scanner/installation/), [Gitleaks](https://github.com/gitleaks/gitleaks), [Semgrep](https://semgrep.dev/docs/getting-started/cli), and [govulncheck](https://go.dev/doc/security/vuln/).
+
+### Common security commands
+
+```bash
+milliwaysctl security status
+milliwaysctl security startup-scan --strict
+milliwaysctl security scan
+milliwaysctl security warnings
+milliwaysctl security client codex
+milliwaysctl security command-check --mode strict -- npm install left-pad
+milliwaysctl security output-plan --generated cmd/app/main.go --staged .env.local
+milliwaysctl security quarantine --dry-run
+milliwaysctl security rules list
+milliwaysctl security harden npm --dry-run
+```
+
+`startup-scan` and most posture RPCs are daemon-backed. If a new `milliwaysctl` has a command before the running daemon exposes the matching RPC, the CLI prints that the surface is present and will activate when `milliwaysd` is updated.
+
+### Mini Shai-Hulud style findings
+
+When startup scan reports a BLOCK finding for AI-agent package compromise indicators such as `router_init.js`, `router_runtime.js`, `setup.mjs`, `tanstack_runner.js`, `gh-token-monitor`, `git-tanstack.com`, `getsession.org`, or `83.142.209.194`:
+
+1. Stop agent and package-manager activity in the workspace.
+2. Preserve evidence: copy the finding output, keep the suspicious file/unit, and record hashes before cleanup.
+3. Run `milliwaysctl security quarantine --dry-run` to see local remediation actions without changing files.
+4. Inspect `.claude/`, `.vscode/tasks.json`, `package.json`, lockfiles, user systemd units, and macOS LaunchAgents for unexpected commands.
+5. Rotate exposed tokens, especially GitHub, package registry, cloud, and AI provider tokens.
+6. Re-run `milliwaysctl security startup-scan --strict`, dependency scanning, Gitleaks, and Semgrep before resuming agents.
+
+### Tool-loop guardrails
+
+The HTTP-based runners (minimax, local) drive an agentic tool loop that lets the model invoke `bash`, file `read`/`write`/`edit`, `grep`/`glob`, and `web_fetch` on your machine. Milliways applies guardrails by default; the bars can be raised but should not be lowered for shared or multi-tenant deployments.
 
 | Constraint | Default | Override | Why |
 |---|---|---|---|

@@ -314,3 +314,37 @@ CREATE INDEX IF NOT EXISTS idx_mw_security_warnings_severity ON mw_security_warn
 
 INSERT OR IGNORE INTO mw_schema (version) VALUES (8);
 `
+
+const schemaV9 = `
+CREATE TABLE IF NOT EXISTS mw_security_rule_packs (
+    id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace                  TEXT NOT NULL DEFAULT '',
+    name                       TEXT NOT NULL,
+    version                    TEXT NOT NULL,
+    source                     TEXT NOT NULL,
+    manifest_source            TEXT NOT NULL DEFAULT '',
+    checksum                   TEXT NOT NULL,
+    minimum_milliways_version  TEXT NOT NULL DEFAULT '',
+    rules_file                 TEXT NOT NULL DEFAULT '',
+    rules_count                INTEGER NOT NULL DEFAULT 0,
+    root                       TEXT NOT NULL DEFAULT '',
+    manifest_path              TEXT NOT NULL DEFAULT '',
+    rules_path                 TEXT NOT NULL DEFAULT '',
+    status                     TEXT NOT NULL DEFAULT 'loaded',
+    first_seen                 TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen                  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(workspace, source, name, version, root)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_rule_packs_workspace_source ON mw_security_rule_packs(workspace, source);
+CREATE INDEX IF NOT EXISTS idx_mw_security_rule_packs_status ON mw_security_rule_packs(status);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (9);
+`
+
+const schemaV10 = `
+ALTER TABLE mw_security_workspace_status ADD COLUMN startup_scan_completed_at TEXT NOT NULL DEFAULT '';
+ALTER TABLE mw_security_workspace_status ADD COLUMN startup_scan_config_hash TEXT NOT NULL DEFAULT '';
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (10);
+`

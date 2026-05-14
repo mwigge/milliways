@@ -245,6 +245,85 @@ func TestSecurityStore_ScanRunLifecycle(t *testing.T) {
 	}
 }
 
+func TestSecurityStore_UpsertAndListRulePacks(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	pack := SecurityRulePack{
+		Workspace:               "/repo",
+		Name:                    "workspace-ioc",
+		Version:                 "1.0.0",
+		Source:                  "workspace",
+		ManifestSource:          "workspace",
+		Checksum:                "sha256:abc",
+		MinimumMilliWaysVersion: "0.0.0",
+		RulesFile:               "rules.yaml",
+		RulesCount:              2,
+		Root:                    "/repo/.milliways/security/rules/ioc",
+		ManifestPath:            "/repo/.milliways/security/rules/ioc/manifest.yaml",
+		RulesPath:               "/repo/.milliways/security/rules/ioc/rules.yaml",
+	}
+	if err := ss.UpsertRulePack(pack); err != nil {
+		t.Fatalf("UpsertRulePack: %v", err)
+	}
+	pack.RulesCount = 3
+	if err := ss.UpsertRulePack(pack); err != nil {
+		t.Fatalf("second UpsertRulePack: %v", err)
+	}
+
+	packs, err := ss.ListRulePacks("/repo")
+	if err != nil {
+		t.Fatalf("ListRulePacks: %v", err)
+	}
+	if len(packs) != 1 {
+		t.Fatalf("ListRulePacks len = %d, want 1", len(packs))
+	}
+	if packs[0].RulesCount != 3 {
+		t.Fatalf("RulesCount = %d, want 3", packs[0].RulesCount)
+	}
+	if packs[0].Status != "loaded" {
+		t.Fatalf("Status = %q, want loaded", packs[0].Status)
+	}
+	if packs[0].FirstSeen.IsZero() || packs[0].LastSeen.IsZero() {
+		t.Fatalf("timestamps not persisted: %#v", packs[0])
+	}
+}
+
+func TestSecurityStore_MarkStartupScanCompleted(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	if err := ss.MarkStartupScanCompleted("/repo", "hash-a"); err != nil {
+		t.Fatalf("MarkStartupScanCompleted: %v", err)
+	}
+	status, err := ss.SecurityStatus("/repo")
+	if err != nil {
+		t.Fatalf("SecurityStatus: %v", err)
+	}
+	if status.StartupScanCompletedAt.IsZero() {
+		t.Fatal("StartupScanCompletedAt is zero")
+	}
+	if status.StartupScanConfigHash != "hash-a" {
+		t.Fatalf("StartupScanConfigHash = %q, want hash-a", status.StartupScanConfigHash)
+	}
+
+	if err := ss.SetWorkspaceStatus("/repo", "strict", "codex"); err != nil {
+		t.Fatalf("SetWorkspaceStatus: %v", err)
+	}
+	status, err = ss.SecurityStatus("/repo")
+	if err != nil {
+		t.Fatalf("SecurityStatus after SetWorkspaceStatus: %v", err)
+	}
+	if status.Mode != "strict" || status.ActiveClient != "codex" {
+		t.Fatalf("workspace mode/client = %q/%q, want strict/codex", status.Mode, status.ActiveClient)
+	}
+	if status.StartupScanConfigHash != "hash-a" {
+		t.Fatalf("StartupScanConfigHash after SetWorkspaceStatus = %q, want hash-a", status.StartupScanConfigHash)
+	}
+}
+
 func TestSecurityStore_UpsertWarningIdempotent(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
