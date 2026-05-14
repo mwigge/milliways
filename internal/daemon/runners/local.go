@@ -260,6 +260,7 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		XMLToolMode:            xmlMode,
 		Compaction:             CompactionOptions{CtxTokens: ctxTokens},
 		StopOnUserInputRequest: true,
+		CommandFirewall:        commandFirewallForAgent(AgentIDLocal),
 	})
 	if err != nil {
 		observeError(metrics, AgentIDLocal)

@@ -393,8 +393,43 @@ func watchStatus(socket, stateDir string, debounceMs int) {
 // observeConfig holds the static list of available agents shown in the status bar.
 var observeAgents = []string{"claude", "codex", "copilot", "minimax", "gemini", "local", "pool"}
 
+func normalizeObserveSecurityStatus(result map[string]any) map[string]any {
+	if len(result) == 0 {
+		return nil
+	}
+	mode := stringMapField(result, "mode")
+	posture := strings.ToLower(strings.TrimSpace(firstStringField(result, "state", "posture", "level")))
+	warnings := intMapField(result, "warnings", "warn_count", "warning_count")
+	blocks := intMapField(result, "blocks", "block_count", "blocked_count")
+	if blocks > 0 {
+		posture = "block"
+	} else if warnings > 0 && posture == "" {
+		posture = "warn"
+	} else if posture == "" {
+		posture = "ok"
+	}
+	installed, _ := result["installed"].(bool)
+	enabled, _ := result["enabled"].(bool)
+	return map[string]any{
+		"posture":   posture,
+		"warnings":  warnings,
+		"blocks":    blocks,
+		"mode":      mode,
+		"installed": installed,
+		"enabled":   enabled,
+	}
+}
+
+func fetchObserveSecurityStatus(c *rpc.Client) map[string]any {
+	var result map[string]any
+	if err := c.Call("security.status", map[string]any{}, &result); err != nil {
+		return nil
+	}
+	return normalizeObserveSecurityStatus(result)
+}
+
 // runObserve writes a compact JSON status to ${stateDir}/observe.cur every debounceMs.
-// Format: {"v":"<version>","p":"<cwd>","c":"<current_agent>","a":["claude","codex","copilot","minimax","gemini","local","pool"]}
+// Format: {"v":"<version>","p":"<cwd>","c":"<current_agent>","a":["claude","codex","copilot","minimax","gemini","local","pool"],"sec":{"posture":"ok|warn|block"}}
 //
 // This file is read by the wezterm Lua sidecar to render the full status bar:
 //
@@ -448,6 +483,8 @@ func runObserve(socket, stateDir string, debounceMs int) {
 	updates := make(chan []byte, 128)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	var securityStatus map[string]any
+	var lastSecurityPoll time.Time
 
 	// ppid watcher — exit if orphaned.
 	go func() {
@@ -568,6 +605,13 @@ func runObserve(socket, stateDir string, debounceMs int) {
 			"cost":   frame.Snapshot.CostUSD,
 			"quota":  frame.Snapshot.QuotaPct,
 			"errors": frame.Snapshot.Errors5m,
+		}
+		if time.Since(lastSecurityPoll) >= 5*time.Second {
+			securityStatus = fetchObserveSecurityStatus(c)
+			lastSecurityPoll = time.Now()
+		}
+		if len(securityStatus) > 0 {
+			status["sec"] = securityStatus
 		}
 		// Include woke_ago (seconds) for 5 minutes after a detected wake.
 		if !wokeAt.IsZero() {

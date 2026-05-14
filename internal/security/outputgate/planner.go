@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package outputgate plans security scan requests for files produced by an
-// agent or currently staged for commit. It does not invoke scanners.
+// Package outputgate plans and executes security scan requests for files
+// produced by an agent or currently staged for commit.
 package outputgate
 
 import (

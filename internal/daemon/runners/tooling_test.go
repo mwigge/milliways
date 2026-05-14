@@ -21,6 +21,8 @@ import (
 	"testing"
 
 	"github.com/mwigge/milliways/internal/provider"
+	"github.com/mwigge/milliways/internal/security"
+	"github.com/mwigge/milliways/internal/security/firewall"
 	"github.com/mwigge/milliways/internal/tools"
 )
 
@@ -118,6 +120,110 @@ func TestRunAgenticLoop_MultipleToolCallsExecutedInOrder(t *testing.T) {
 	}
 	if messages[3].Role != RoleTool || messages[3].ToolCallID != "c2" || !strings.Contains(messages[3].Content, "second") {
 		t.Errorf("messages[3] = %+v, want tool/c2 containing 'second'", messages[3])
+	}
+}
+
+func TestRunAgenticLoop_CommandFirewallWarnAllowsBashExecution(t *testing.T) {
+	t.Parallel()
+
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "Bash", Args: `{"command":"npm install left-pad"}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	executed := false
+	registry.Register("Bash", func(_ context.Context, args map[string]any) (string, error) {
+		executed = true
+		if got, _ := args["command"].(string); got != "npm install left-pad" {
+			t.Fatalf("command = %q", got)
+		}
+		return "installed", nil
+	}, provider.ToolDef{Name: "Bash"})
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		CommandFirewall: StaticCommandFirewall{
+			Policy: firewall.Policy{Mode: security.ModeWarn},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	if !executed {
+		t.Fatalf("Bash tool was not executed in warn mode")
+	}
+	if len(messages) < 3 || !strings.Contains(messages[2].Content, "installed") {
+		t.Fatalf("tool result missing executed output; messages = %+v", messages)
+	}
+}
+
+func TestRunAgenticLoop_CommandFirewallStrictBlocksBashExecution(t *testing.T) {
+	t.Parallel()
+
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "Bash", Args: `{"command":"npm install left-pad"}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	executed := false
+	registry.Register("Bash", func(context.Context, map[string]any) (string, error) {
+		executed = true
+		return "should not run", nil
+	}, provider.ToolDef{Name: "Bash"})
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		CommandFirewall: StaticCommandFirewall{
+			Policy: firewall.Policy{Mode: security.ModeStrict},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	if executed {
+		t.Fatalf("Bash tool executed despite strict firewall block")
+	}
+	if len(messages) < 3 {
+		t.Fatalf("messages len = %d, want tool error message", len(messages))
+	}
+	content := messages[2].Content
+	if !strings.Contains(content, "error: command blocked by security firewall") {
+		t.Fatalf("tool content = %q, want firewall block error", content)
+	}
+	if !strings.Contains(content, "package install") {
+		t.Fatalf("tool content = %q, want firewall reason", content)
+	}
+}
+
+func TestRunAgenticLoop_CommandFirewallIgnoresNonBashTools(t *testing.T) {
+	t.Parallel()
+
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "echo", Args: `{"text":"npm install left-pad"}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := newRegistryWithEcho()
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		CommandFirewall: StaticCommandFirewall{
+			Policy: firewall.Policy{Mode: security.ModeStrict},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	if len(messages) < 3 || !strings.Contains(messages[2].Content, "npm install left-pad") {
+		t.Fatalf("non-Bash tool result was unexpectedly blocked; messages = %+v", messages)
 	}
 }
 

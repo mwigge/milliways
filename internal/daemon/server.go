@@ -36,6 +36,7 @@ import (
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/parallel"
 	"github.com/mwigge/milliways/internal/security"
+	"github.com/mwigge/milliways/internal/security/firewall"
 )
 
 // Protocol version exposed via ping. Bump major when breaking; minor for
@@ -178,6 +179,26 @@ func NewServer(socket string) (*Server, error) {
 			}
 		}
 		s.secRunner = security.NewRunner(pdb.Security(), workspaceRoot)
+		runners.SetCommandFirewallProvider(func(agentID string) runners.CommandFirewall {
+			root := workspaceRoot
+			if abs, err := filepath.Abs(root); err == nil {
+				root = abs
+			}
+			mode, posture := security.ModeWarn, security.PostureUnknown
+			if status, err := pdb.Security().SecurityStatus(root); err == nil {
+				mode = security.Mode(status.Mode)
+				posture = security.Posture(status.Posture)
+			}
+			return runners.StaticCommandFirewall{
+				Policy: firewall.Policy{
+					Mode:                      mode,
+					BlockNetworkDownloadsInCI: true,
+				},
+				RunnerID: agentID,
+				CWD:      root,
+				Posture:  posture,
+			}
+		})
 		s.secRunner.Start(bgCtx)
 		go func(root string) {
 			if abs, err := filepath.Abs(root); err == nil {

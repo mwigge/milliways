@@ -120,6 +120,22 @@ type SecurityRulePack struct {
 	LastSeen                time.Time
 }
 
+// SecurityClientProfile is a cached client profile check result for one
+// workspace/client/config hash.
+type SecurityClientProfile struct {
+	ID             int64
+	Workspace      string
+	Client         string
+	ConfigHash     string
+	WarningCount   int
+	BlockCount     int
+	Status         string
+	ResultJSON     string
+	Error          string
+	FirstCheckedAt time.Time
+	LastCheckedAt  time.Time
+}
+
 // SecurityQuarantineAction is a durable record of one quarantine apply action.
 type SecurityQuarantineAction struct {
 	ID               int64
@@ -609,6 +625,92 @@ func (s *SecurityStore) ListRulePacks(workspace string) ([]SecurityRulePack, err
 	return packs, rows.Err()
 }
 
+// UpsertClientProfile inserts or refreshes a cached client profile check.
+func (s *SecurityStore) UpsertClientProfile(p SecurityClientProfile) error {
+	now := secFormatTime(time.Now().UTC())
+	firstCheckedAt := secFormatTime(p.FirstCheckedAt)
+	if firstCheckedAt == "" {
+		firstCheckedAt = now
+	}
+	if p.Status == "" {
+		p.Status = "completed"
+	}
+	if p.ResultJSON == "" {
+		p.ResultJSON = "{}"
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO mw_security_client_profiles
+			(workspace, client, config_hash, warning_count, block_count, status,
+			 result_json, error, first_checked_at, last_checked_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(workspace, client, config_hash) DO UPDATE SET
+			warning_count = excluded.warning_count,
+			block_count = excluded.block_count,
+			status = excluded.status,
+			result_json = excluded.result_json,
+			error = excluded.error,
+			last_checked_at = excluded.last_checked_at`,
+		p.Workspace, p.Client, p.ConfigHash, p.WarningCount, p.BlockCount, p.Status,
+		p.ResultJSON, p.Error, firstCheckedAt, now)
+	if err != nil {
+		return fmt.Errorf("upsert security client profile: %w", err)
+	}
+	return nil
+}
+
+// GetClientProfile returns a cached profile check for the exact config hash.
+func (s *SecurityStore) GetClientProfile(workspace, client, configHash string) (SecurityClientProfile, bool, error) {
+	rows, err := s.db.Query(`
+		SELECT id, workspace, client, config_hash, warning_count, block_count,
+		       status, result_json, error, first_checked_at, last_checked_at
+		FROM mw_security_client_profiles
+		WHERE workspace = ? AND client = ? AND config_hash = ?
+		LIMIT 1`, workspace, client, configHash)
+	if err != nil {
+		return SecurityClientProfile{}, false, fmt.Errorf("get security client profile: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		return SecurityClientProfile{}, false, rows.Err()
+	}
+	profile, err := scanSecurityClientProfile(rows)
+	if err != nil {
+		return SecurityClientProfile{}, false, err
+	}
+	return profile, true, rows.Err()
+}
+
+// ListClientProfiles returns cached profile checks for a workspace, optionally
+// filtered by client. Most recent checks are returned first.
+func (s *SecurityStore) ListClientProfiles(workspace, client string) ([]SecurityClientProfile, error) {
+	query := `
+		SELECT id, workspace, client, config_hash, warning_count, block_count,
+		       status, result_json, error, first_checked_at, last_checked_at
+		FROM mw_security_client_profiles
+		WHERE workspace = ?`
+	args := []any{workspace}
+	if client != "" {
+		query += ` AND client = ?`
+		args = append(args, client)
+	}
+	query += ` ORDER BY last_checked_at DESC, id DESC`
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list security client profiles: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var profiles []SecurityClientProfile
+	for rows.Next() {
+		profile, err := scanSecurityClientProfile(rows)
+		if err != nil {
+			return nil, err
+		}
+		profiles = append(profiles, profile)
+	}
+	return profiles, rows.Err()
+}
+
 // RecordQuarantineAction persists the outcome of one quarantine apply action.
 func (s *SecurityStore) RecordQuarantineAction(a SecurityQuarantineAction) error {
 	if a.Status == "" {
@@ -753,6 +855,23 @@ func scanSecurityRun(rows *sql.Rows) (SecurityScanRun, error) {
 	run.StartedAt = secParseTime(startedAt)
 	run.CompletedAt = secParseTime(completedAt)
 	return run, nil
+}
+
+type securityClientProfileScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanSecurityClientProfile(rows securityClientProfileScanner) (SecurityClientProfile, error) {
+	var p SecurityClientProfile
+	var firstCheckedAt, lastCheckedAt string
+	if err := rows.Scan(&p.ID, &p.Workspace, &p.Client, &p.ConfigHash,
+		&p.WarningCount, &p.BlockCount, &p.Status, &p.ResultJSON, &p.Error,
+		&firstCheckedAt, &lastCheckedAt); err != nil {
+		return SecurityClientProfile{}, fmt.Errorf("scan security client profile: %w", err)
+	}
+	p.FirstCheckedAt = secParseTime(firstCheckedAt)
+	p.LastCheckedAt = secParseTime(lastCheckedAt)
+	return p, nil
 }
 
 func (s *SecurityStore) addFindingCounts(byCategory, bySeverity map[string]int) error {

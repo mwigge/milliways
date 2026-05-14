@@ -28,6 +28,26 @@ func TestLinuxDeckLayoutInvariants(t *testing.T) {
 	}
 }
 
+func TestLinuxSecurityChromeInvariants(t *testing.T) {
+	raw, err := os.ReadFile("milliways.lua")
+	if err != nil {
+		t.Fatalf("read milliways.lua: %v", err)
+	}
+	lua := string(raw)
+	for _, want := range []string{
+		"local function security_badge(sec)",
+		"SEC OK",
+		"SEC WARN",
+		"SEC BLOCK",
+		"window:toast_notification('MilliWays security'",
+		"last_security_banner_key",
+	} {
+		if !strings.Contains(lua, want) {
+			t.Fatalf("milliways.lua missing security chrome invariant %q", want)
+		}
+	}
+}
+
 func TestLinuxDesktopEntryUsesExplicitConfig(t *testing.T) {
 	raw, err := os.ReadFile("../../bundle/linux/dev.milliways.MilliWays.desktop")
 	if err != nil {

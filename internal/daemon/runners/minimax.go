@@ -199,6 +199,7 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		SessionID:              AgentIDMiniMax,
 		Logger:                 slog.Default(),
 		StopOnUserInputRequest: true,
+		CommandFirewall:        commandFirewallForAgent(AgentIDMiniMax),
 	})
 	if err != nil {
 		observeError(metrics, AgentIDMiniMax)

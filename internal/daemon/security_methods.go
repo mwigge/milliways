@@ -899,12 +899,29 @@ func secWireTime(t time.Time) string {
 }
 
 func (s *Server) runClientProfileSecurity(ctx context.Context, workspace, client string) (map[string]any, error) {
-	if s.pantryDB == nil || strings.TrimSpace(client) == "" {
+	client = strings.ToLower(strings.TrimSpace(client))
+	if s.pantryDB == nil || client == "" {
 		return nil, fmt.Errorf("pantry not available or client empty")
 	}
+	configHash := clientProfileConfigHash(workspace, client)
+	store := s.pantryDB.Security()
+	if cached, ok, err := store.GetClientProfile(workspace, client, configHash); err != nil {
+		return nil, err
+	} else if ok && cached.Status == "completed" && cached.ResultJSON != "" {
+		var result map[string]any
+		if err := json.Unmarshal([]byte(cached.ResultJSON), &result); err != nil {
+			return nil, fmt.Errorf("decode cached client profile: %w", err)
+		}
+		if err := store.SetWorkspaceStatus(workspace, string(security.ModeWarn), client); err != nil {
+			return nil, err
+		}
+		result["cached"] = true
+		result["config_hash"] = configHash
+		return result, nil
+	}
+
 	check := clientprofiles.New(client, clientprofiles.DefaultOptions())
 	result := check.Check(ctx, workspace)
-	store := s.pantryDB.Security()
 	runID, _ := store.InsertScanRun(pantry.SecurityScanRun{
 		Kind:      string(security.ScanClientProfile),
 		Workspace: workspace,
@@ -962,7 +979,7 @@ func (s *Server) runClientProfileSecurity(ctx context.Context, workspace, client
 			"key":      w.Key,
 		})
 	}
-	return map[string]any{
+	out := map[string]any{
 		"client":        result.Client,
 		"workspace":     result.Workspace,
 		"checked_at":    result.CheckedAt.UTC().Format(time.RFC3339),
@@ -970,7 +987,166 @@ func (s *Server) runClientProfileSecurity(ctx context.Context, workspace, client
 		"warning_count": warnCount,
 		"block_count":   blockCount,
 		"error":         result.Error,
-	}, nil
+		"config_hash":   configHash,
+		"cached":        false,
+	}
+	resultJSON, err := json.Marshal(out)
+	if err != nil {
+		return nil, fmt.Errorf("encode client profile cache: %w", err)
+	}
+	if err := store.UpsertClientProfile(pantry.SecurityClientProfile{
+		Workspace:    workspace,
+		Client:       client,
+		ConfigHash:   configHash,
+		WarningCount: warnCount,
+		BlockCount:   blockCount,
+		Status:       status,
+		ResultJSON:   string(resultJSON),
+		Error:        scanErr,
+	}); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func clientProfileConfigHash(workspace, client string) string {
+	if abs, err := filepath.Abs(workspace); err == nil {
+		workspace = abs
+	}
+	home, _ := os.UserHomeDir()
+	configDir, err := os.UserConfigDir()
+	if err != nil || configDir == "" {
+		configDir = filepath.Join(home, ".config")
+	}
+
+	h := sha256.New()
+	writeHashPart(h, "client-profile-v1")
+	writeHashPart(h, "workspace="+workspace)
+	writeHashPart(h, "client="+client)
+	for _, env := range clientProfileEnvKeys(client) {
+		writeHashPart(h, "env:"+env+"="+os.Getenv(env))
+	}
+	for _, path := range clientProfileConfigPaths(workspace, home, configDir, client) {
+		writeHashPart(h, "path="+path)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			writeHashPart(h, "missing")
+			continue
+		}
+		writeHashPart(h, string(data))
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+func writeHashPart(h interface{ Write([]byte) (int, error) }, part string) {
+	_, _ = h.Write([]byte(part))
+	_, _ = h.Write([]byte{0})
+}
+
+func clientProfileConfigPaths(workspace, home, configDir, client string) []string {
+	var paths []string
+	add := func(path string) {
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	addWorkspace := func(rel string) {
+		if workspace != "" {
+			add(filepath.Join(workspace, rel))
+		}
+	}
+	addConfig := func(rel string) {
+		if configDir != "" {
+			add(filepath.Join(configDir, rel))
+		}
+	}
+	switch client {
+	case clientprofiles.ClientClaude:
+		addWorkspace(".claude/settings.json")
+		addWorkspace(".claude/mcp.json")
+		addConfig(filepath.Join("claude", "settings.json"))
+		addConfig(filepath.Join("claude", "mcp.json"))
+		for _, path := range globProfilePaths(filepath.Join(workspace, ".claude", "*.js")) {
+			add(path)
+		}
+		addWorkspace("CLAUDE.md")
+	case clientprofiles.ClientCodex:
+		if home != "" {
+			add(filepath.Join(home, ".codex", "config.toml"))
+			add(filepath.Join(home, ".codex", "config.json"))
+		}
+		addWorkspace(filepath.Join(".codex", "config.toml"))
+		addConfig(filepath.Join("codex", "config.toml"))
+		addConfig(filepath.Join("codex", "config.json"))
+	case clientprofiles.ClientCopilot:
+		addWorkspace(".copilot/config.json")
+		addWorkspace(".copilot/settings.json")
+		addConfig(filepath.Join("github-copilot", "config.json"))
+		addConfig(filepath.Join("copilot", "config.json"))
+	case clientprofiles.ClientGemini:
+		addWorkspace(".gemini/settings.json")
+		addWorkspace(".gemini/config.json")
+		addConfig(filepath.Join("gemini", "settings.json"))
+		addConfig(filepath.Join("gemini", "config.json"))
+	case clientprofiles.ClientPool:
+		addWorkspace(".pool/config.json")
+		addWorkspace(".pool/settings.json")
+		addConfig(filepath.Join("pool", "config.json"))
+		addConfig(filepath.Join("pool", "settings.json"))
+	case clientprofiles.ClientMiniMax:
+		addWorkspace(".minimax/config.json")
+		addWorkspace(".minimax/settings.json")
+		addConfig(filepath.Join("minimax", "config.json"))
+		addConfig(filepath.Join("milliways", "local.env"))
+	case clientprofiles.ClientLocal:
+		addWorkspace(filepath.Join(".milliways", "local.env"))
+		addConfig(filepath.Join("milliways", "local.env"))
+		addConfig(filepath.Join("milliways", "local.yaml"))
+	}
+	addWorkspace("package.json")
+	sort.Strings(paths)
+	return dedupeStrings(paths)
+}
+
+func globProfilePaths(pattern string) []string {
+	if strings.TrimSpace(pattern) == "" {
+		return nil
+	}
+	matches, _ := filepath.Glob(pattern)
+	sort.Strings(matches)
+	return matches
+}
+
+func clientProfileEnvKeys(client string) []string {
+	switch client {
+	case clientprofiles.ClientCodex:
+		return []string{"CODEX_FLAGS", "CODEX_ARGS", "OPENAI_CODEX_FLAGS"}
+	case clientprofiles.ClientCopilot:
+		return []string{"COPILOT_FLAGS", "COPILOT_ARGS", "GITHUB_COPILOT_FLAGS"}
+	case clientprofiles.ClientGemini:
+		return []string{"GEMINI_FLAGS", "GEMINI_ARGS"}
+	case clientprofiles.ClientPool:
+		return []string{"POOL_FLAGS", "POOL_ARGS"}
+	case clientprofiles.ClientMiniMax:
+		return []string{"MINIMAX_FLAGS", "MINIMAX_ARGS"}
+	case clientprofiles.ClientLocal:
+		return []string{"MILLIWAYS_LOCAL_ENDPOINT", "MILLIWAYS_LOCAL_BIND", "MILLIWAYS_LOCAL_AUTH_TOKEN"}
+	default:
+		return nil
+	}
+}
+
+func dedupeStrings(in []string) []string {
+	out := in[:0]
+	var prev string
+	for _, item := range in {
+		if item == prev {
+			continue
+		}
+		out = append(out, item)
+		prev = item
+	}
+	return out
 }
 
 func (s *Server) securityWorkspaceRoot() string {

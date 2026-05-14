@@ -194,6 +194,7 @@ local client_themes = {
 local default_theme = { accent='#4db51f', cursor='#4db51f', tab_bg='#1d2021', tab_fg='#ebdbb2', bar_bg='#1d2021' }
 
 local last_client = ''
+local last_security_banner_key = ''
 
 local function abbrev_path(path)
   if home ~= '' and path:sub(1, #home) == home then
@@ -234,6 +235,51 @@ local function format_cost(n)
   return string.format('$%.1f', n)
 end
 
+local function security_badge(sec)
+  if type(sec) ~= 'table' then return nil end
+  local mode = sec.mode or 'warn'
+  local posture = string.lower(sec.posture or '')
+  local warnings = as_number(sec.warnings or sec.warning_count)
+  local blocks = as_number(sec.blocks or sec.block_count)
+  if blocks > 0 then
+    posture = 'block'
+  elseif warnings > 0 and posture == '' then
+    posture = 'warn'
+  elseif posture == '' then
+    posture = 'ok'
+  end
+  if sec.installed == false and posture == 'ok' then
+    posture = 'warn'
+  end
+
+  if posture == 'block' then
+    return {
+      label = 'SEC BLOCK ' .. tostring(math.floor(blocks)),
+      color = '#fb4934',
+      key = 'block:' .. tostring(math.floor(blocks)) .. ':' .. tostring(math.floor(warnings)),
+      banner = blocks > 0,
+      message = 'SEC BLOCK ' .. tostring(math.floor(blocks)) .. ' · mode ' .. mode,
+    }
+  end
+  if posture == 'warn' then
+    local suffix = warnings > 0 and (' ' .. tostring(math.floor(warnings))) or ''
+    return {
+      label = 'SEC WARN' .. suffix,
+      color = '#fabd2f',
+      key = 'warn:' .. tostring(math.floor(warnings)) .. ':' .. tostring(math.floor(blocks)),
+      banner = warnings > 0,
+      message = 'SEC WARN' .. suffix .. ' · mode ' .. mode,
+    }
+  end
+  return {
+    label = 'SEC OK',
+    color = '#8ec07c',
+    key = 'ok',
+    banner = false,
+    message = 'SEC OK',
+  }
+end
+
 local function pane_path(pane)
   local uri = pane and pane.current_working_dir
   if uri and uri ~= '' then
@@ -268,6 +314,12 @@ wezterm.on('update-status', function(window, _pane)
   local tokens_out = as_number(data.tout or data.tokens_out)
   local cost = as_number(data.cost or data.cost_usd)
   local errors = as_number(data.errors or data.errors_5m)
+  local sec = security_badge(data.sec or data.security)
+
+  if sec and sec.banner and sec.key ~= last_security_banner_key then
+    last_security_banner_key = sec.key
+    window:toast_notification('MilliWays security', sec.message, nil, 6000)
+  end
 
   -- Apply per-client color theme when client changes.
   local theme = client_themes[current] or default_theme
@@ -338,6 +390,13 @@ wezterm.on('update-status', function(window, _pane)
     table.insert(cells, { Text = '│' })
     table.insert(cells, { Foreground = { Color = '#fb4934' } })
     table.insert(cells, { Text = ' err:' .. tostring(math.floor(errors)) .. ' ' })
+  end
+
+  if sec then
+    table.insert(cells, { Foreground = { Color = '#504945' } })
+    table.insert(cells, { Text = '│' })
+    table.insert(cells, { Foreground = { Color = sec.color } })
+    table.insert(cells, { Text = ' ' .. sec.label .. ' ' })
   end
 
   table.insert(cells, { Foreground = { Color = '#504945' } })

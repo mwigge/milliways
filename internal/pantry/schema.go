@@ -370,3 +370,25 @@ CREATE INDEX IF NOT EXISTS idx_mw_security_quarantine_actions_status ON mw_secur
 
 INSERT OR IGNORE INTO mw_schema (version) VALUES (11);
 `
+
+const schemaV12 = `
+CREATE TABLE IF NOT EXISTS mw_security_client_profiles (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace        TEXT NOT NULL DEFAULT '',
+    client           TEXT NOT NULL,
+    config_hash      TEXT NOT NULL,
+    warning_count    INTEGER NOT NULL DEFAULT 0,
+    block_count      INTEGER NOT NULL DEFAULT 0,
+    status           TEXT NOT NULL DEFAULT 'completed',
+    result_json      TEXT NOT NULL DEFAULT '{}',
+    error            TEXT NOT NULL DEFAULT '',
+    first_checked_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_checked_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(workspace, client, config_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_client_profiles_workspace_client
+    ON mw_security_client_profiles(workspace, client, last_checked_at);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (12);
+`

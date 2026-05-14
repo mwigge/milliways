@@ -370,6 +370,68 @@ func TestSecurityStore_RecordAndListQuarantineActions(t *testing.T) {
 	}
 }
 
+func TestSecurityStore_UpsertGetAndListClientProfiles(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	profile := SecurityClientProfile{
+		Workspace:    "/repo",
+		Client:       "claude",
+		ConfigHash:   "sha256:a",
+		WarningCount: 2,
+		BlockCount:   1,
+		Status:       "completed",
+		ResultJSON:   `{"client":"claude","warnings":[{"id":"a"}]}`,
+	}
+	if err := ss.UpsertClientProfile(profile); err != nil {
+		t.Fatalf("UpsertClientProfile: %v", err)
+	}
+	profile.WarningCount = 3
+	profile.ResultJSON = `{"client":"claude","warnings":[{"id":"a"},{"id":"b"}]}`
+	if err := ss.UpsertClientProfile(profile); err != nil {
+		t.Fatalf("second UpsertClientProfile: %v", err)
+	}
+
+	got, ok, err := ss.GetClientProfile("/repo", "claude", "sha256:a")
+	if err != nil {
+		t.Fatalf("GetClientProfile: %v", err)
+	}
+	if !ok {
+		t.Fatal("GetClientProfile ok = false, want true")
+	}
+	if got.WarningCount != 3 || got.BlockCount != 1 || got.Status != "completed" {
+		t.Fatalf("profile counts/status mismatch: %#v", got)
+	}
+	if got.FirstCheckedAt.IsZero() || got.LastCheckedAt.IsZero() {
+		t.Fatalf("timestamps not persisted: %#v", got)
+	}
+
+	if _, ok, err := ss.GetClientProfile("/repo", "claude", "sha256:b"); err != nil {
+		t.Fatalf("GetClientProfile stale hash: %v", err)
+	} else if ok {
+		t.Fatal("GetClientProfile stale hash ok = true, want false")
+	}
+
+	if err := ss.UpsertClientProfile(SecurityClientProfile{
+		Workspace:    "/repo",
+		Client:       "claude",
+		ConfigHash:   "sha256:b",
+		WarningCount: 0,
+		Status:       "completed",
+		ResultJSON:   `{"client":"claude","warnings":[]}`,
+	}); err != nil {
+		t.Fatalf("UpsertClientProfile second hash: %v", err)
+	}
+	profiles, err := ss.ListClientProfiles("/repo", "claude")
+	if err != nil {
+		t.Fatalf("ListClientProfiles: %v", err)
+	}
+	if len(profiles) != 2 {
+		t.Fatalf("ListClientProfiles len = %d, want 2", len(profiles))
+	}
+}
+
 func TestSecurityStore_UpsertWarningIdempotent(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)

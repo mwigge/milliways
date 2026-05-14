@@ -32,6 +32,8 @@ import (
 	"strings"
 
 	"github.com/mwigge/milliways/internal/provider"
+	"github.com/mwigge/milliways/internal/security"
+	"github.com/mwigge/milliways/internal/security/firewall"
 	"github.com/mwigge/milliways/internal/tools"
 )
 
@@ -131,6 +133,42 @@ type LoopOptions struct {
 	// StopOnUserInputRequest prevents the loop from executing tool calls when
 	// the assistant's same turn asks the user for confirmation or missing input.
 	StopOnUserInputRequest bool
+	// CommandFirewall, when configured, evaluates Bash tool commands before
+	// execution. Nil preserves existing behavior.
+	CommandFirewall CommandFirewall
+}
+
+// CommandFirewall evaluates shell commands before the runner executes them.
+type CommandFirewall interface {
+	EvaluateCommand(ctx context.Context, req CommandFirewallRequest) (firewall.Result, error)
+}
+
+// CommandFirewallRequest carries the runner/tool-call metadata available at
+// the execution hook.
+type CommandFirewallRequest struct {
+	Command   string
+	ToolName  string
+	SessionID string
+}
+
+// StaticCommandFirewall adapts the deterministic security firewall for callers
+// that already know the policy for the current workspace/session.
+type StaticCommandFirewall struct {
+	Policy   firewall.Policy
+	RunnerID string
+	CWD      string
+	Posture  security.Posture
+}
+
+// EvaluateCommand implements CommandFirewall.
+func (f StaticCommandFirewall) EvaluateCommand(_ context.Context, req CommandFirewallRequest) (firewall.Result, error) {
+	return firewall.Evaluate(firewall.Request{
+		Command:  req.Command,
+		RunnerID: f.RunnerID,
+		CWD:      f.CWD,
+		Policy:   f.Policy,
+		Posture:  f.Posture,
+	}), nil
 }
 
 // LoopResult summarises one RunAgenticLoop invocation.
@@ -260,7 +298,7 @@ func RunAgenticLoop(ctx context.Context, client Client, registry *tools.Registry
 		if opts.XMLToolMode {
 			results := make([]string, 0, len(t.ToolCalls))
 			for _, call := range t.ToolCalls {
-				content := executeOneToolCall(ctx, registry, opts.SessionID, call)
+				content := executeOneToolCall(ctx, registry, opts.SessionID, call, opts.CommandFirewall, opts.Logger)
 				results = append(results, fmt.Sprintf(
 					`{"name":%q,"output":%s}`,
 					call.Name,
@@ -275,7 +313,7 @@ func RunAgenticLoop(ctx context.Context, client Client, registry *tools.Registry
 			// Tool output is wrapped in structural markers so the model treats
 			// it as untrusted data rather than as instructions.
 			for _, call := range t.ToolCalls {
-				content := executeOneToolCall(ctx, registry, opts.SessionID, call)
+				content := executeOneToolCall(ctx, registry, opts.SessionID, call, opts.CommandFirewall, opts.Logger)
 				*messages = append(*messages, Message{
 					Role:       RoleTool,
 					ToolCallID: call.ID,
@@ -415,7 +453,7 @@ func wrapToolResult(toolName, content string) string {
 // executeOneToolCall parses the call's args, looks up the handler, and runs
 // it. Any failure becomes an "error: <detail>" string suitable for sending
 // back to the model as a tool result.
-func executeOneToolCall(ctx context.Context, registry *tools.Registry, sessionID string, call ToolCall) string {
+func executeOneToolCall(ctx context.Context, registry *tools.Registry, sessionID string, call ToolCall, commandFirewall CommandFirewall, logger *slog.Logger) string {
 	if registry == nil {
 		return "error: no tool registry configured"
 	}
@@ -428,6 +466,9 @@ func executeOneToolCall(ctx context.Context, registry *tools.Registry, sessionID
 			return fmt.Sprintf("error: invalid JSON arguments: %v", err)
 		}
 	}
+	if blockMsg := evaluateCommandFirewall(ctx, commandFirewall, sessionID, call.Name, args, logger); blockMsg != "" {
+		return blockMsg
+	}
 	toolCtx, toolSpan := startToolSpan(ctx, call.Name)
 	result, err := registry.ExecTool(toolCtx, sessionID, call.Name, args)
 	if err != nil {
@@ -436,4 +477,61 @@ func executeOneToolCall(ctx context.Context, registry *tools.Registry, sessionID
 	}
 	endToolSpan(toolSpan, "")
 	return result
+}
+
+func evaluateCommandFirewall(ctx context.Context, commandFirewall CommandFirewall, sessionID, toolName string, args map[string]any, logger *slog.Logger) string {
+	if commandFirewall == nil || !strings.EqualFold(toolName, "Bash") {
+		return ""
+	}
+	command, ok := args["command"].(string)
+	if !ok || strings.TrimSpace(command) == "" {
+		return ""
+	}
+	result, err := commandFirewall.EvaluateCommand(ctx, CommandFirewallRequest{
+		Command:   command,
+		ToolName:  toolName,
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return fmt.Sprintf("error: command firewall check failed: %v", err)
+	}
+	switch result.Decision {
+	case firewall.DecisionBlock, firewall.DecisionNeedsConfirmation:
+		reason := strings.TrimSpace(result.Reason)
+		if reason == "" {
+			reason = "command is not allowed by current security policy"
+		}
+		if logger != nil {
+			logger.Warn("command firewall blocked tool execution",
+				"tool", toolName,
+				"session_id", sessionID,
+				"mode", result.Mode,
+				"reason", reason,
+				"risk_categories", commandFirewallRiskCategories(result.Risks),
+			)
+		}
+		return "error: command blocked by security firewall: " + reason
+	default:
+		if result.Decision == firewall.DecisionWarn && logger != nil {
+			logger.Warn("command firewall warning",
+				"tool", toolName,
+				"session_id", sessionID,
+				"mode", result.Mode,
+				"reason", result.Reason,
+				"risk_categories", commandFirewallRiskCategories(result.Risks),
+			)
+		}
+		return ""
+	}
+}
+
+func commandFirewallRiskCategories(risks []firewall.Risk) []string {
+	if len(risks) == 0 {
+		return nil
+	}
+	categories := make([]string, 0, len(risks))
+	for _, risk := range risks {
+		categories = append(categories, string(risk.Category))
+	}
+	return categories
 }
