@@ -393,6 +393,7 @@ func (s *Server) securityCRA(enc *json.Encoder, req *Request) {
 			"source_url":       check.SourceURL,
 			"present_evidence": check.PresentEvidence,
 			"missing_evidence": check.MissingEvidence,
+			"next_actions":     craNextActions(workspace, check.ID, check.MissingEvidence),
 		})
 	}
 	writeResult(enc, req.ID, map[string]any{
@@ -405,6 +406,51 @@ func (s *Server) securityCRA(enc *json.Encoder, req *Request) {
 func securityCRAStatus(workspace string, status pantry.SecurityStatus, scannerStatus any) map[string]any {
 	_, summary := evaluateCRAReadiness(workspace, status, scannerStatus)
 	return summary
+}
+
+func craNextActions(workspace, checkID string, missing []string) []string {
+	if len(missing) == 0 {
+		return nil
+	}
+	var actions []string
+	hasMissing := func(field string) bool {
+		for _, item := range missing {
+			if item == field {
+				return true
+			}
+		}
+		return false
+	}
+	switch checkID {
+	case "cra-sbom":
+		actions = append(actions, "Generate SBOM evidence: milliwaysctl security sbom --output dist/milliways.spdx.json")
+	case "cra-vulnerability-handling":
+		if hasMissing(adapters.CRAEvidenceFieldVulnerabilityPolicy) || hasMissing(adapters.CRAEvidenceFieldReportingContact) || hasMissing(adapters.CRAEvidenceFieldReportingProcess) {
+			actions = append(actions, "Document vulnerability reporting in SECURITY.md with contact, triage process, response target, and disclosure policy")
+		}
+	case "cra-secure-by-default":
+		if hasMissing(adapters.CRAEvidenceFieldSecureByDefault) {
+			actions = append(actions, "Run milliwaysctl security startup-scan --strict and keep security mode at warn or stricter")
+		}
+		if hasMissing(adapters.CRAEvidenceFieldAutomaticUpdates) {
+			actions = append(actions, "Document security update delivery in docs/update-policy.md or SECURITY.md")
+		}
+	case "cra-scanner-coverage":
+		actions = append(actions, "Install and verify security scanners: milliwaysctl security status")
+	case "cra-support-period":
+		actions = append(actions, "Add SUPPORT.md with an explicit security support-until date")
+	case "cra-conformity-documentation":
+		actions = append(actions, "Create docs/cra-technical-file.md with product scope, security controls, risk assessment, and evidence links")
+	}
+	if len(actions) == 0 {
+		actions = append(actions, "Add evidence for: "+strings.Join(missing, ", "))
+	}
+	if strings.TrimSpace(workspace) != "" {
+		for i := range actions {
+			actions[i] = strings.ReplaceAll(actions[i], "$WORKSPACE", workspace)
+		}
+	}
+	return actions
 }
 
 func evaluateCRAReadiness(workspace string, status pantry.SecurityStatus, scannerStatus any) (adapters.CRAReport, map[string]any) {

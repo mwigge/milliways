@@ -249,6 +249,9 @@ func renderSecurityCRA(stdout io.Writer, label string, result map[string]any) {
 		if missing := stringListField(check, "missing_evidence"); len(missing) > 0 {
 			fmt.Fprintf(stdout, "      missing: %s\n", strings.Join(missing, ", "))
 		}
+		for _, action := range stringListField(check, "next_actions") {
+			fmt.Fprintf(stdout, "      next: %s\n", action)
+		}
 	}
 }
 

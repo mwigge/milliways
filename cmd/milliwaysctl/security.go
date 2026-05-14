@@ -505,6 +505,10 @@ func renderSecurityCRA(result map[string]any, stdout io.Writer) {
 		if len(missing) > 0 {
 			fmt.Fprintf(stdout, "      missing: %s\n", strings.Join(missing, ", "))
 		}
+		nextActions := stringSliceMapField(check, "next_actions")
+		for _, action := range nextActions {
+			fmt.Fprintf(stdout, "      next: %s\n", action)
+		}
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mwigge/milliways/internal/daemon/observability"
@@ -252,6 +253,18 @@ func TestSecurityCRARPCReturnsSummaryAndChecks(t *testing.T) {
 	if first["id"] == "" || first["status"] == "" {
 		t.Fatalf("check missing id/status: %#v", first)
 	}
+	for _, raw := range checks {
+		check := raw.(map[string]any)
+		if check["id"] != "cra-sbom" {
+			continue
+		}
+		actions, _ := check["next_actions"].([]any)
+		if len(actions) == 0 || !strings.Contains(actions[0].(string), "milliwaysctl security sbom") {
+			t.Fatalf("cra-sbom next_actions missing SBOM command: %#v", check)
+		}
+		return
+	}
+	t.Fatalf("cra-sbom check missing: %v", checks)
 }
 
 func TestSecurityCRAUsesSupportUntilEvidence(t *testing.T) {

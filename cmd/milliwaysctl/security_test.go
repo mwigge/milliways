@@ -461,6 +461,7 @@ func TestRunSecurityCRARendersReadinessAndGaps(t *testing.T) {
 					"title":            "Vulnerability handling and reporting evidence",
 					"status":           "partial",
 					"missing_evidence": []any{"vulnerability_reporting_process"},
+					"next_actions":     []any{"Document vulnerability reporting in SECURITY.md"},
 				},
 				map[string]any{
 					"id":     "cra-sbom",
@@ -488,6 +489,7 @@ func TestRunSecurityCRARendersReadinessAndGaps(t *testing.T) {
 		"Article 14 reporting: 2026-09-11",
 		"WARN  cra-vulnerability-handling",
 		"missing: vulnerability_reporting_process",
+		"next: Document vulnerability reporting in SECURITY.md",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("security cra missing %q; got:\n%s", want, stdout.String())

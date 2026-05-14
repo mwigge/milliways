@@ -284,6 +284,7 @@ func TestHandleSecurityCRACallsRPC(t *testing.T) {
 					"title":            "SBOM evidence",
 					"status":           "missing",
 					"missing_evidence": []any{"sbom_paths"},
+					"next_actions":     []any{"Generate SBOM evidence: milliwaysctl security sbom --output dist/milliways.spdx.json"},
 				},
 			},
 		},
@@ -297,7 +298,7 @@ func TestHandleSecurityCRACallsRPC(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("unexpected stderr: %s", stderr.String())
 	}
-	for _, want := range []string{"CRA readiness", "evidence: 58%", "vulnerability/reporting: 2/3 not ready", "design evidence: partial", "Article 14 reporting: 2026-09-11", "MISS  cra-sbom"} {
+	for _, want := range []string{"CRA readiness", "evidence: 58%", "vulnerability/reporting: 2/3 not ready", "design evidence: partial", "Article 14 reporting: 2026-09-11", "MISS  cra-sbom", "next: Generate SBOM evidence"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("CRA output missing %q:\n%s", want, stdout.String())
 		}
