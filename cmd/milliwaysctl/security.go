@@ -71,6 +71,8 @@ func runSecurity(args []string, stdout, stderr io.Writer, socketOverride ...stri
 		return runSecurityToggle(false, stdout, stderr, sock)
 	case "status":
 		return runSecurityStatusCmd(stdout, stderr, sock)
+	case "cra":
+		return runSecurityCRA(rest, stdout, stderr, sock)
 	case "scan":
 		return runSecurityScan(rest, stdout, stderr, sock)
 	case "startup-scan":
@@ -113,6 +115,7 @@ func printSecurityUsage(w io.Writer) {
 	fmt.Fprintln(w, "  enable                 enable OSV security scanning")
 	fmt.Fprintln(w, "  disable                disable OSV security scanning")
 	fmt.Fprintln(w, "  status                 show scanner status (enabled, installed, path)")
+	fmt.Fprintln(w, "  cra [--json]           show EU Cyber Resilience Act readiness evidence")
 	fmt.Fprintln(w, "  scan [--json]          run dependency security scan")
 	fmt.Fprintln(w, "  startup-scan [--json] [--strict]")
 	fmt.Fprintln(w, "    run startup posture scan when supported by the daemon")
@@ -423,6 +426,92 @@ func runSecurityStatusCmd(stdout, stderr io.Writer, sock string) int {
 		fmt.Fprintf(stdout, "[security] last dependency scan: %s\n", lastDependency)
 	}
 	return 0
+}
+
+func runSecurityCRA(args []string, stdout, stderr io.Writer, sock string) int {
+	fs := flag.NewFlagSet("security cra", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw JSON result")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+
+	c, err := rpc.Dial(sock)
+	if err != nil {
+		fmt.Fprintf(stderr, "milliwaysctl security cra: dial %s: %v\n", sock, err)
+		return 1
+	}
+	defer func() { _ = c.Close() }()
+
+	var result map[string]any
+	if err := c.Call("security.cra", map[string]any{}, &result); err != nil {
+		fmt.Fprintf(stderr, "milliwaysctl security cra: %v\n", err)
+		return 1
+	}
+	if *asJSON {
+		data, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Fprintln(stdout, string(data))
+		return 0
+	}
+	renderSecurityCRA(result, stdout)
+	return 0
+}
+
+func renderSecurityCRA(result map[string]any, stdout io.Writer) {
+	summary, _ := result["summary"].(map[string]any)
+	fmt.Fprintln(stdout, "[security] CRA readiness")
+	if workspace := stringMapField(result, "workspace"); workspace != "" {
+		fmt.Fprintf(stdout, "workspace: %s\n", workspace)
+	}
+	score := intMapField(summary, "evidence_score")
+	present := intMapField(summary, "checks_present")
+	total := intMapField(summary, "checks_total")
+	partial := intMapField(summary, "checks_partial")
+	missing := intMapField(summary, "checks_missing")
+	reportingPresent := intMapField(summary, "reporting_present")
+	reportingTotal := intMapField(summary, "reporting_total")
+	reportingReady, _ := summary["reporting_ready"].(bool)
+	design := stringMapField(summary, "design_evidence_status")
+	if design == "" {
+		design = "missing"
+	}
+	fmt.Fprintf(stdout, "evidence: %d%% (%d/%d present, %d partial, %d missing)\n", score, present, total, partial, missing)
+	ready := "not ready"
+	if reportingReady {
+		ready = "ready"
+	}
+	fmt.Fprintf(stdout, "vulnerability/reporting: %d/%d %s\n", reportingPresent, reportingTotal, ready)
+	fmt.Fprintf(stdout, "design evidence: %s\n", design)
+	if deadline := stringMapField(summary, "reporting_deadline"); deadline != "" {
+		fmt.Fprintf(stdout, "Article 14 reporting: %s\n", deadline)
+	}
+	fmt.Fprintln(stdout, "checks:")
+	checks, _ := result["checks"].([]any)
+	for _, raw := range checks {
+		check, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		status := stringMapField(check, "status")
+		id := stringMapField(check, "id")
+		title := stringMapField(check, "title")
+		fmt.Fprintf(stdout, "  %s  %s — %s\n", craStatusMark(status), id, title)
+		missing := stringSliceMapField(check, "missing_evidence")
+		if len(missing) > 0 {
+			fmt.Fprintf(stdout, "      missing: %s\n", strings.Join(missing, ", "))
+		}
+	}
+}
+
+func craStatusMark(status string) string {
+	switch status {
+	case "present":
+		return "OK"
+	case "partial":
+		return "WARN"
+	default:
+		return "MISS"
+	}
 }
 
 func runSecurityScan(args []string, stdout, stderr io.Writer, sock string) int {
@@ -965,6 +1054,23 @@ func intMapField(m map[string]any, keys ...string) int {
 		}
 	}
 	return 0
+}
+
+func stringSliceMapField(m map[string]any, key string) []string {
+	switch v := m[key].(type) {
+	case []string:
+		return append([]string(nil), v...)
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func renderSecurityScanners(raw any) string {

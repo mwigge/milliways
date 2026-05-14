@@ -385,6 +385,8 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		s.securityDisable(enc, req)
 	case "security.status":
 		s.securityStatus(enc, req)
+	case "security.cra":
+		s.securityCRA(enc, req)
 	case "security.startup_scan":
 		s.securityStartupScan(enc, req)
 	case "security.warnings":

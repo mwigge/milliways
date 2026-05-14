@@ -439,6 +439,62 @@ func TestRunSecurityStatusRendersExtendedFields(t *testing.T) {
 	}
 }
 
+func TestRunSecurityCRARendersReadinessAndGaps(t *testing.T) {
+	sock, calls := startSecurityRPCTestServer(t, map[string]any{
+		"security.cra": map[string]any{
+			"workspace": "/repo",
+			"summary": map[string]any{
+				"evidence_score":         67,
+				"checks_present":         3,
+				"checks_total":           6,
+				"checks_partial":         2,
+				"checks_missing":         1,
+				"reporting_present":      2,
+				"reporting_total":        3,
+				"reporting_ready":        false,
+				"design_evidence_status": "partial",
+				"reporting_deadline":     "2026-09-11",
+			},
+			"checks": []any{
+				map[string]any{
+					"id":               "cra-vulnerability-handling",
+					"title":            "Vulnerability handling and reporting evidence",
+					"status":           "partial",
+					"missing_evidence": []any{"vulnerability_reporting_process"},
+				},
+				map[string]any{
+					"id":     "cra-sbom",
+					"title":  "SBOM evidence",
+					"status": "present",
+				},
+			},
+		},
+	})
+
+	var stdout bytes.Buffer
+	if rc := runSecurity([]string{"cra"}, &stdout, &bytes.Buffer{}, sock); rc != 0 {
+		t.Fatalf("expected rc=0, got %d", rc)
+	}
+	call := <-calls
+	if call.Method != "security.cra" {
+		t.Fatalf("expected security.cra, got %q", call.Method)
+	}
+	for _, want := range []string{
+		"CRA readiness",
+		"workspace: /repo",
+		"evidence: 67% (3/6 present, 2 partial, 1 missing)",
+		"vulnerability/reporting: 2/3 not ready",
+		"design evidence: partial",
+		"Article 14 reporting: 2026-09-11",
+		"WARN  cra-vulnerability-handling",
+		"missing: vulnerability_reporting_process",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("security cra missing %q; got:\n%s", want, stdout.String())
+		}
+	}
+}
+
 func TestRunSecurityHardenNPMDryRunDoesNotWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".npmrc")
 	var stdout bytes.Buffer

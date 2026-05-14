@@ -370,11 +370,47 @@ func (s *Server) securityStatus(enc *json.Encoder, req *Request) {
 	writeResult(enc, req.ID, result)
 }
 
+func (s *Server) securityCRA(enc *json.Encoder, req *Request) {
+	scanners := securityScannerAdapterStatus(context.Background())
+	workspace := s.securityWorkspaceRoot()
+	var status pantry.SecurityStatus
+	if s.pantryDB != nil {
+		if st, err := s.pantryDB.Security().SecurityStatus(workspace); err == nil {
+			status = st
+		}
+	}
+	report, summary := evaluateCRAReadiness(workspace, status, scanners)
+	checks := make([]map[string]any, 0, len(report.Checks))
+	for _, check := range report.Checks {
+		checks = append(checks, map[string]any{
+			"id":               check.ID,
+			"title":            check.Title,
+			"category":         string(check.Category),
+			"article":          check.Article,
+			"status":           string(check.Status),
+			"due_date":         check.DueDate,
+			"deadline_status":  string(check.DeadlineStatus),
+			"source_url":       check.SourceURL,
+			"present_evidence": check.PresentEvidence,
+			"missing_evidence": check.MissingEvidence,
+		})
+	}
+	writeResult(enc, req.ID, map[string]any{
+		"workspace": workspace,
+		"summary":   summary,
+		"checks":    checks,
+	})
+}
+
 func securityCRAStatus(workspace string, status pantry.SecurityStatus, scannerStatus any) map[string]any {
-	now := time.Now().UTC()
+	_, summary := evaluateCRAReadiness(workspace, status, scannerStatus)
+	return summary
+}
+
+func evaluateCRAReadiness(workspace string, status pantry.SecurityStatus, scannerStatus any) (adapters.CRAReport, map[string]any) {
 	report := adapters.NewCRAAdapter().Evaluate(adapters.CRAEvidenceInput{
 		ProductName:                     "MilliWays",
-		AsOf:                            now,
+		AsOf:                            time.Now().UTC(),
 		SBOMPaths:                       findCRAEvidenceFiles(workspace, "sbom"),
 		VulnerabilityHandlingPolicy:     firstCRAEvidenceFile(workspace, "security-policy"),
 		VulnerabilityReportingContact:   firstCRAEvidenceFile(workspace, "security-contact"),
@@ -415,7 +451,7 @@ func securityCRAStatus(workspace string, status pantry.SecurityStatus, scannerSt
 	if total > 0 {
 		score = int((float64(present)+0.5*float64(partial))/float64(total)*100 + 0.5)
 	}
-	return map[string]any{
+	summary := map[string]any{
 		"regulation":                report.Regulation,
 		"evidence_score":            score,
 		"checks_total":              total,
@@ -431,6 +467,7 @@ func securityCRAStatus(workspace string, status pantry.SecurityStatus, scannerSt
 		"reporting_deadline_status": reportingDeadlineStatus,
 		"full_deadline":             "2027-12-11",
 	}
+	return report, summary
 }
 
 func findCRAEvidenceFiles(workspace, kind string) []string {

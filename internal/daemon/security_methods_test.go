@@ -42,7 +42,7 @@ func TestSecurityStartupScanPersistsWarningsForStatus(t *testing.T) {
 }`)
 	writeSecurityMethodFile(t, filepath.Join(workspace, "setup.mjs"), `fetch("https://getsession.org/x")`)
 
-	s := &Server{pantryDB: db}
+	s := &Server{pantryDB: db, spans: observability.NewRing(10)}
 	enc, buf := newCapturingEncoder()
 	s.securityStartupScan(enc, &Request{
 		ID:     mustSecurityMethodParams(t, 1),
@@ -81,7 +81,7 @@ func TestSecurityStatusReportsStartupScanState(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
 
-	s := &Server{pantryDB: db}
+	s := &Server{pantryDB: db, spans: observability.NewRing(10)}
 	enc, buf := newCapturingEncoder()
 	s.securityStatus(enc, &Request{ID: mustSecurityMethodParams(t, 1)})
 	resp := decodeSecurityMethodResponse(t, buf.Bytes())
@@ -211,6 +211,46 @@ func TestSecurityStatusIncludesCRAReadinessKPIs(t *testing.T) {
 	}
 	if deadline, _ := cra["reporting_deadline"].(string); deadline != "2026-09-11" {
 		t.Fatalf("cra reporting_deadline = %q, want 2026-09-11; cra=%v", deadline, cra)
+	}
+}
+
+func TestSecurityCRARPCReturnsSummaryAndChecks(t *testing.T) {
+	oldAdapters := securityStatusAdapters
+	securityStatusAdapters = func() []adapters.ScannerAdapter {
+		return []adapters.ScannerAdapter{
+			fakeSecurityStatusAdapter{name: "osv-scanner", installed: true, version: "osv-scanner 2.0.0"},
+		}
+	}
+	t.Cleanup(func() { securityStatusAdapters = oldAdapters })
+
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	writeSecurityMethodFile(t, filepath.Join(workspace, "SECURITY.md"), "Report vulnerabilities to security@example.test.\n")
+
+	s := &Server{pantryDB: db, spans: observability.NewRing(10)}
+	enc, buf := newCapturingEncoder()
+	s.dispatch(enc, &Request{Method: "security.cra", ID: mustSecurityMethodParams(t, 1)})
+
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	if _, ok := resp["error"]; ok {
+		t.Fatalf("security.cra returned error: %v", resp)
+	}
+	result := resp["result"].(map[string]any)
+	summary, ok := result["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary missing: %v", result)
+	}
+	if _, ok := summary["evidence_score"].(float64); !ok {
+		t.Fatalf("summary evidence_score missing: %v", summary)
+	}
+	checks, _ := result["checks"].([]any)
+	if len(checks) == 0 {
+		t.Fatalf("checks empty: %v", result)
+	}
+	first := checks[0].(map[string]any)
+	if first["id"] == "" || first["status"] == "" {
+		t.Fatalf("check missing id/status: %#v", first)
 	}
 }
 
