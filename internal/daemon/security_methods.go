@@ -475,6 +475,7 @@ func evaluateCRAReadiness(workspace string, status pantry.SecurityStatus, scanne
 	daysToReporting := 0
 	reportingDeadlineStatus := string(adapters.CRADeadlineUnknown)
 	designEvidenceStatus := string(adapters.CRAEvidenceMissing)
+	nextAction := ""
 	for _, check := range report.Checks {
 		switch check.Status {
 		case adapters.CRAEvidencePresent:
@@ -492,6 +493,11 @@ func evaluateCRAReadiness(workspace string, status pantry.SecurityStatus, scanne
 		}
 		if check.ID == "cra-secure-by-default" {
 			designEvidenceStatus = string(check.Status)
+		}
+		if nextAction == "" {
+			if actions := craNextActions(workspace, check.ID, check.MissingEvidence); len(actions) > 0 {
+				nextAction = actions[0]
+			}
 		}
 	}
 	score := 0
@@ -513,6 +519,7 @@ func evaluateCRAReadiness(workspace string, status pantry.SecurityStatus, scanne
 		"reporting_deadline":        "2026-09-11",
 		"reporting_deadline_status": reportingDeadlineStatus,
 		"full_deadline":             "2027-12-11",
+		"next_action":               nextAction,
 	}
 	return report, summary
 }

@@ -111,6 +111,7 @@ type observeRenderCRA struct {
 	ReportingDeadline       string `json:"reporting_deadline"`
 	ReportingDeadlineStatus string `json:"reporting_deadline_status"`
 	FullDeadline            string `json:"full_deadline"`
+	NextAction              string `json:"next_action"`
 }
 
 // observeRender opens an observability.subscribe stream and writes a
@@ -328,6 +329,9 @@ func formatObservabilityFrame(now time.Time, spans []observeRenderSpan, usage ob
 	if cra := formatObserveCRA(usage.Security.CRA); cra != "" {
 		fmt.Fprintf(&b, "│   cra:           %s\n", cra)
 	}
+	if next := strings.TrimSpace(usage.Security.CRA.NextAction); next != "" {
+		fmt.Fprintf(&b, "│   cra next:      %s\n", truncateObserveText(next, 84))
+	}
 	bars := computeLatencyBars(spans, latencyTopN)
 	if len(bars) == 0 {
 		bars = []charts.Bar{
@@ -409,6 +413,17 @@ func formatObserveCRA(cra observeRenderCRA) string {
 		design = "missing"
 	}
 	return fmt.Sprintf("%d%% evidence, reporting %s %s, design %s%s", score, reporting, ready, design, deadline)
+}
+
+func truncateObserveText(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return strings.TrimSpace(s[:max-3]) + "..."
 }
 
 func formatObserveTokenCount(n int) string {

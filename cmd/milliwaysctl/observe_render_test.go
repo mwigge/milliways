@@ -197,6 +197,7 @@ func TestFormatObservabilityFrame_ShowsCRAReadinessKPIs(t *testing.T) {
 				DesignEvidenceStatus: "partial",
 				DaysToReporting:      120,
 				ReportingDeadline:    "2026-09-11",
+				NextAction:           "Generate SBOM evidence: milliwaysctl security sbom --output dist/milliways.spdx.json",
 			},
 		},
 	}
@@ -205,6 +206,9 @@ func TestFormatObservabilityFrame_ShowsCRAReadinessKPIs(t *testing.T) {
 	want := "cra:           67% evidence, reporting 2/3 not ready, design partial, Article 14 2026-09-11"
 	if !strings.Contains(got, want) {
 		t.Fatalf("frame missing CRA KPIs %q:\n%s", want, got)
+	}
+	if !strings.Contains(got, "cra next:      Generate SBOM evidence: milliwaysctl security sbom") {
+		t.Fatalf("frame missing CRA next action:\n%s", got)
 	}
 	if strings.Contains(got, "120d to 2026-09-11") {
 		t.Fatalf("frame should not render CRA as a countdown:\n%s", got)

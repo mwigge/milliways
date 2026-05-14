@@ -213,6 +213,9 @@ func TestSecurityStatusIncludesCRAReadinessKPIs(t *testing.T) {
 	if deadline, _ := cra["reporting_deadline"].(string); deadline != "2026-09-11" {
 		t.Fatalf("cra reporting_deadline = %q, want 2026-09-11; cra=%v", deadline, cra)
 	}
+	if next, _ := cra["next_action"].(string); next == "" {
+		t.Fatalf("cra next_action missing; cra=%v", cra)
+	}
 }
 
 func TestSecurityCRARPCReturnsSummaryAndChecks(t *testing.T) {
