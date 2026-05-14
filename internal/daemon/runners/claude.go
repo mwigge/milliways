@@ -39,6 +39,9 @@ type claudeStreamEvent struct {
 	Type    string               `json:"type"`
 	Message *claudeStreamMessage `json:"message,omitempty"`
 
+	// stream_event fields
+	Event *claudeStreamEventPayload `json:"event,omitempty"`
+
 	// rate_limit_event fields
 	RateLimitInfo *claudeStreamRateLimit `json:"rate_limit_info,omitempty"`
 
@@ -46,6 +49,19 @@ type claudeStreamEvent struct {
 	TotalCostUSD float64            `json:"total_cost_usd,omitempty"`
 	IsError      bool               `json:"is_error,omitempty"`
 	Usage        *claudeStreamUsage `json:"usage,omitempty"`
+}
+
+// claudeStreamEventPayload mirrors the inner event of a stream_event.
+type claudeStreamEventPayload struct {
+	Type   string            `json:"type"`
+	Delta  claudeStreamDelta `json:"delta,omitempty"`
+}
+
+// claudeStreamDelta carries content_block_delta event deltas.
+type claudeStreamDelta struct {
+	Type     string `json:"type"`
+	Thinking string `json:"thinking,omitempty"`
+	Text     string `json:"text,omitempty"`
 }
 
 // claudeStreamRateLimit carries the rate-limit status surfaced by claude
@@ -216,6 +232,10 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		if model := extractModelFromJSONLine(line); model != "" {
 			pushObservedModel(stream, model)
 		}
+		if think, ok := extractThinkingText(line); ok {
+			stream.Push(encodeThinking(think))
+			continue
+		}
 		if text, ok := extractAssistantText(line); ok {
 			stream.Push(encodeData(text))
 			continue
@@ -288,6 +308,23 @@ func extractAssistantText(line string) (string, bool) {
 	}
 	out := strings.Join(parts, "")
 	return out, out != ""
+}
+
+// extractThinkingText returns the thinking content from a thinking_delta
+// content block, or false if the line is not such an event.
+func extractThinkingText(line string) (string, bool) {
+	var evt claudeStreamEvent
+	if err := json.Unmarshal([]byte(line), &evt); err != nil {
+		return "", false
+	}
+	if evt.Type != "stream_event" || evt.Event == nil || evt.Event.Type != "content_block_delta" {
+		return "", false
+	}
+	delta := evt.Event.Delta
+	if delta.Type != "thinking_delta" || delta.Thinking == "" {
+		return "", false
+	}
+	return delta.Thinking, true
 }
 
 // extractResult returns the per-response cost + token counts from a

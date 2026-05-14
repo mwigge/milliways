@@ -491,6 +491,7 @@ type deckProviderInfo struct {
 	QueueDepth   int
 	LastError    string
 	LastThink    string
+	UsedPct      float64 // percentage of daily quota consumed (0-100)
 }
 
 func renderDeckNavigator(w int, providers []deckProviderInfo, selected int, active string, polled bool, quotas map[string]parallel.QuotaSummary) string {
@@ -564,7 +565,11 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 		if i == selected {
 			prefix = "▶ " + prefix
 		}
-		meta := fmt.Sprintf("turns %d", p.Turns)
+		quotaStr := ""
+		if p.UsedPct > 0 {
+			quotaStr = fmt.Sprintf(" %.0f%%", p.UsedPct)
+		}
+		meta := fmt.Sprintf("turns %d%v", p.Turns, quotaStr)
 		if p.LastError != "" {
 			meta = "err"
 		} else if p.LastThink != "" {
@@ -927,6 +932,7 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 				QueueDepth:   d.QueueDepth,
 				LastError:    d.LastError,
 				LastThink:    d.LastThinking,
+				UsedPct:      func() float64 { if q, ok := quotas[a.ID]; ok { return q.UsedPct() }; return 0 }(),
 			})
 		}
 		updated = orderDeckProviders(updated)
@@ -1106,6 +1112,13 @@ func pollDeckNavigatorSnapshot(ctx context.Context, client *rpc.Client) ([]deckP
 			}
 		}
 	}
+	// Fetch quotas before populating deckProviderInfo so UsedPct can reference them
+	var quotas map[string]parallel.QuotaSummary
+	var snapshots []rpc.QuotaSnapshot
+	if err := client.Call("quota.get", nil, &snapshots); err == nil {
+		quotas = buildQuotasFromSnapshots(snapshots)
+	}
+
 	updated := make([]deckProviderInfo, 0, len(agents))
 	for _, a := range agents {
 		d := deckByAgent[a.ID]
@@ -1131,12 +1144,8 @@ func pollDeckNavigatorSnapshot(ctx context.Context, client *rpc.Client) ([]deckP
 			QueueDepth:   d.QueueDepth,
 			LastError:    d.LastError,
 			LastThink:    d.LastThinking,
+			UsedPct:      func() float64 { if q, ok := quotas[a.ID]; ok { return q.UsedPct() }; return 0 }(),
 		})
-	}
-	var quotas map[string]parallel.QuotaSummary
-	var snapshots []rpc.QuotaSnapshot
-	if err := client.Call("quota.get", nil, &snapshots); err == nil {
-		quotas = buildQuotasFromSnapshots(snapshots)
 	}
 	return orderDeckProviders(updated), active, true, quotas
 }
