@@ -584,7 +584,8 @@ func TestRunSecurityCRARendersReadinessAndGaps(t *testing.T) {
 				"reporting_total":        3,
 				"reporting_ready":        false,
 				"design_evidence_status": "partial",
-				"reporting_deadline":     "2026-09-11",
+				"security_warnings":      2,
+				"security_blocks":        1,
 			},
 			"checks": []any{
 				map[string]any{
@@ -616,8 +617,8 @@ func TestRunSecurityCRARendersReadinessAndGaps(t *testing.T) {
 		"workspace: /repo",
 		"evidence: 67% (3/6 present, 2 partial, 1 missing)",
 		"vulnerability/reporting: 2/3 not ready",
+		"security issues: 2 warnings, 1 blocks",
 		"design evidence: partial",
-		"Article 14 reporting: 2026-09-11",
 		"WARN  cra-vulnerability-handling",
 		"missing: vulnerability_reporting_process",
 		"next: Document vulnerability reporting in SECURITY.md",
@@ -625,6 +626,9 @@ func TestRunSecurityCRARendersReadinessAndGaps(t *testing.T) {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("security cra missing %q; got:\n%s", want, stdout.String())
 		}
+	}
+	if strings.Contains(stdout.String(), "Article 14") || strings.Contains(stdout.String(), "2026-09-11") {
+		t.Fatalf("security cra should not render Article 14 date metadata:\n%s", stdout.String())
 	}
 }
 

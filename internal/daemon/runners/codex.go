@@ -127,7 +127,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		spanErr = "security profile blocked handoff"
 		return
 	}
-	cmd := exec.CommandContext(ctx, codexBinary, buildCodexCmdArgsWithSession(text, cwd, codexModelExtraArgs(model), state.sessionID)...)
+	cmd := exec.CommandContext(ctx, resolveRunnerBinary(codexBinary), buildCodexCmdArgsWithSession(text, cwd, codexModelExtraArgs(model), state.sessionID)...)
 	cmd.Env = safeRunnerEnv()
 	cmd.WaitDelay = 5 * time.Second
 	if cwd != "" {
@@ -304,22 +304,23 @@ func buildCodexCmdArgs(prompt, cwd string, extra []string) []string {
 }
 
 // buildCodexCmdArgsWithSession assembles the codex CLI argv. Root-level
-// defaults (`--sandbox workspace-write --ask-for-approval never`) are placed
+// defaults (`--sandbox workspace-write --ask-for-approval on-request`) are placed
 // before `exec`, because recent Codex CLIs reject --ask-for-approval when it
 // appears after `codex exec`.
 //
 // -C sets the working root so codex sees the project directory regardless
 // of what directory the daemon was launched from.
 //
-// Without --sandbox/--ask-for-approval, recent codex CLI versions run in
-// read-only / on-request mode and silently refuse tool execution.
+// Without --sandbox/--ask-for-approval, recent codex CLI versions can vary by
+// installation. MilliWays pins a writable sandbox while preserving human
+// approval instead of silently enabling full auto-approval.
 func buildCodexCmdArgsWithSession(prompt, cwd string, extra []string, sessionID string) []string {
 	rootArgs, execExtra := codexSplitRootArgs(extra)
 	if !codexHasAnyFlag(extra, "--sandbox", "-s", "--full-auto", "--dangerously-bypass-approvals-and-sandbox") {
 		rootArgs = append(rootArgs, "--sandbox", "workspace-write")
 	}
 	if !codexHasAnyFlag(extra, "--ask-for-approval", "-a", "--full-auto", "--dangerously-bypass-approvals-and-sandbox") {
-		rootArgs = append(rootArgs, "--ask-for-approval", "never")
+		rootArgs = append(rootArgs, "--ask-for-approval", "on-request")
 	}
 
 	args := append([]string(nil), rootArgs...)

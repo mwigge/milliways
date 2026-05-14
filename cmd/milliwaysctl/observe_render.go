@@ -122,6 +122,8 @@ type observeRenderCRA struct {
 	ReportingDeadline       string `json:"reporting_deadline"`
 	ReportingDeadlineStatus string `json:"reporting_deadline_status"`
 	FullDeadline            string `json:"full_deadline"`
+	SecurityWarnings        int    `json:"security_warnings"`
+	SecurityBlocks          int    `json:"security_blocks"`
 	NextAction              string `json:"next_action"`
 }
 
@@ -404,7 +406,7 @@ func formatObserveSecurity(sec observeRenderSecurity) string {
 		if posture == "ok" || posture == "" {
 			label = "SEC WARN"
 		}
-		return fmt.Sprintf("%s (mode %s, osv missing)", label, mode)
+		return fmt.Sprintf("%s (mode %s, osv scanner missing)", label, mode)
 	}
 	return fmt.Sprintf("%s (mode %s)", label, mode)
 }
@@ -418,7 +420,7 @@ func formatObserveSecurityDetail(sec observeRenderSecurity) string {
 		parts = append(parts, "startup scan required")
 	}
 	if missing := missingObserveScanners(sec.Scanners); len(missing) > 0 {
-		parts = append(parts, "missing "+strings.Join(missing, ", "))
+		parts = append(parts, "missing local scanners "+strings.Join(missing, ", "))
 	}
 	return strings.Join(parts, "; ")
 }
@@ -451,10 +453,6 @@ func formatObserveCRA(cra observeRenderCRA) string {
 	if cra.ReportingTotal > 0 {
 		reporting = fmt.Sprintf("%d/%d", cra.ReportingPresent, cra.ReportingTotal)
 	}
-	deadline := ""
-	if cra.ReportingDeadline != "" {
-		deadline = ", Article 14 " + cra.ReportingDeadline
-	}
 	ready := "not ready"
 	if cra.ReportingReady {
 		ready = "ready"
@@ -463,7 +461,8 @@ func formatObserveCRA(cra observeRenderCRA) string {
 	if design == "" {
 		design = "missing"
 	}
-	return fmt.Sprintf("%d%% evidence, reporting %s %s, design %s%s", score, reporting, ready, design, deadline)
+	return fmt.Sprintf("%d%% evidence, reporting %s %s, security %dw/%db, design %s",
+		score, reporting, ready, cra.SecurityWarnings, cra.SecurityBlocks, design)
 }
 
 func truncateObserveText(s string, max int) string {

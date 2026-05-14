@@ -197,8 +197,6 @@ func TestBuildCopilotCmdArgs_ModelAndDirectoryFlags(t *testing.T) {
 	got := buildCopilotCmdArgs("hello", "/tmp/project")
 	want := []string{
 		"-p", "hello",
-		"--allow-all-tools",
-		"--allow-all-paths",
 		"--model", "gpt-test",
 		"--add-dir", "/tmp/project",
 	}
@@ -211,7 +209,7 @@ func TestBuildCopilotCmdArgs_OmitsOptionalFlags(t *testing.T) {
 	t.Setenv("COPILOT_MODEL", "")
 
 	got := buildCopilotCmdArgs("hello", "")
-	want := []string{"-p", "hello", "--allow-all-tools", "--allow-all-paths"}
+	want := []string{"-p", "hello"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("args = %#v, want %#v", got, want)
 	}

@@ -28,6 +28,7 @@ package runners
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -140,4 +141,59 @@ func splitPath(path string) []string {
 		}
 	}
 	return parts
+}
+
+func resolveRunnerBinary(binary string) string {
+	if binary == "" || strings.ContainsRune(binary, os.PathSeparator) {
+		return binary
+	}
+	if path, err := execLookPathInRunnerPath(binary); err == nil {
+		return path
+	}
+	return binary
+}
+
+func execLookPathInRunnerPath(binary string) (string, error) {
+	for _, dir := range runnerBinarySearchDirs() {
+		candidate := filepath.Join(dir, binary)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
+			return candidate, nil
+		}
+	}
+	return "", os.ErrNotExist
+}
+
+func runnerBinarySearchDirs() []string {
+	var paths []string
+	addPath := func(path string) {
+		for _, part := range splitPath(path) {
+			paths = append(paths, part)
+		}
+	}
+	addPath(os.Getenv("MILLIWAYS_PATH"))
+	addPath(os.Getenv("PATH"))
+	home := os.Getenv("HOME")
+	if home != "" {
+		paths = append(paths,
+			filepath.Join(home, ".local", "bin"),
+			filepath.Join(home, ".npm-global", "bin"),
+			filepath.Join(home, ".bun", "bin"),
+			filepath.Join(home, "go", "bin"),
+			filepath.Join(home, ".cargo", "bin"),
+		)
+		if matches, err := filepath.Glob(filepath.Join(home, ".nvm", "versions", "node", "*", "bin")); err == nil {
+			paths = append(paths, matches...)
+		}
+	}
+	addPath(ensureRunnerSystemPath(""))
+	seen := make(map[string]bool, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	return out
 }

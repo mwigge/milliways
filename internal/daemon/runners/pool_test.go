@@ -25,28 +25,25 @@ import (
 
 func TestPoolArgsBuilder_DefaultCommand(t *testing.T) {
 	got := poolArgsBuilder("hello pool", "/tmp/project")
-	want := []string{"exec", "--unsafe-auto-allow", "--output", "markdown", "-p", "hello pool", "--directory", "/tmp/project"}
+	want := []string{"exec", "--output", "markdown", "-p", "hello pool", "--directory", "/tmp/project"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("poolArgsBuilder() = %v, want %v", got, want)
 	}
 
 	got = poolArgsBuilder("hello pool", "")
-	want = []string{"exec", "--unsafe-auto-allow", "--output", "markdown", "-p", "hello pool"}
+	want = []string{"exec", "--output", "markdown", "-p", "hello pool"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("poolArgsBuilder(empty dir) = %v, want %v", got, want)
 	}
 }
 
-func TestPoolArgsBuilder_AutoAllowEnabled(t *testing.T) {
-	// milliways drives pool non-interactively, so --unsafe-auto-allow must
-	// always be present — pool refuses to execute tools otherwise.
+func TestPoolArgsBuilder_AutoAllowDisabledByDefault(t *testing.T) {
 	got := poolArgsBuilder("hello pool", "/tmp/project")
 	for _, arg := range got {
 		if arg == "--unsafe-auto-allow" {
-			return
+			t.Fatalf("poolArgsBuilder() must not inject --unsafe-auto-allow: %v", got)
 		}
 	}
-	t.Fatalf("poolArgsBuilder() missing --unsafe-auto-allow: %v", got)
 }
 
 func TestPoolRequestTimeout_DefaultAndEnv(t *testing.T) {

@@ -26,8 +26,8 @@ func TestBuildCodexCmdArgs_DefaultsInjectSandboxAndApproval(t *testing.T) {
 	if !containsCodexPair(args, "--sandbox", "workspace-write") {
 		t.Errorf("missing --sandbox workspace-write default in %v", args)
 	}
-	if !containsCodexPair(args, "--ask-for-approval", "never") {
-		t.Errorf("missing --ask-for-approval never default in %v", args)
+	if !containsCodexPair(args, "--ask-for-approval", "on-request") {
+		t.Errorf("missing --ask-for-approval on-request default in %v", args)
 	}
 	idxExec := slices.Index(args, "exec")
 	if idxExec < 0 {
@@ -59,8 +59,8 @@ func TestBuildCodexCmdArgs_RespectsExtraOverride(t *testing.T) {
 	if !containsCodexPair(args, "--sandbox", "read-only") {
 		t.Errorf("user --sandbox read-only not present: %v", args)
 	}
-	if !containsCodexPair(args, "--ask-for-approval", "never") {
-		t.Errorf("default --ask-for-approval never should still be injected: %v", args)
+	if !containsCodexPair(args, "--ask-for-approval", "on-request") {
+		t.Errorf("default --ask-for-approval on-request should still be injected: %v", args)
 	}
 }
 

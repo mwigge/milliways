@@ -485,6 +485,8 @@ func renderSecurityCRA(result map[string]any, stdout io.Writer) {
 	missing := intMapField(summary, "checks_missing")
 	reportingPresent := intMapField(summary, "reporting_present")
 	reportingTotal := intMapField(summary, "reporting_total")
+	securityWarnings := intMapField(summary, "security_warnings")
+	securityBlocks := intMapField(summary, "security_blocks")
 	reportingReady, _ := summary["reporting_ready"].(bool)
 	design := stringMapField(summary, "design_evidence_status")
 	if design == "" {
@@ -496,10 +498,8 @@ func renderSecurityCRA(result map[string]any, stdout io.Writer) {
 		ready = "ready"
 	}
 	fmt.Fprintf(stdout, "vulnerability/reporting: %d/%d %s\n", reportingPresent, reportingTotal, ready)
+	fmt.Fprintf(stdout, "security issues: %d warnings, %d blocks\n", securityWarnings, securityBlocks)
 	fmt.Fprintf(stdout, "design evidence: %s\n", design)
-	if deadline := stringMapField(summary, "reporting_deadline"); deadline != "" {
-		fmt.Fprintf(stdout, "Article 14 reporting: %s\n", deadline)
-	}
 	fmt.Fprintln(stdout, "checks:")
 	checks, _ := result["checks"].([]any)
 	for _, raw := range checks {

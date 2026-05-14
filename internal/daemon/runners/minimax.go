@@ -122,7 +122,8 @@ var (
 )
 
 type minimaxSessionState struct {
-	messages []Message
+	messages        []Message
+	pendingApproval *approvalGatePending
 }
 
 func minimaxRegistry() *tools.Registry {
@@ -165,6 +166,25 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	if state == nil {
 		state = &minimaxSessionState{}
 	}
+	if state.pendingApproval != nil {
+		approved, rejected := approvalGateDecision(text)
+		switch {
+		case approved:
+			text = approvalGateImplementPrompt(state.pendingApproval.OriginalPrompt, state.pendingApproval.Plan)
+			state.pendingApproval = nil
+		case rejected:
+			state.pendingApproval = nil
+			approvalGateCancelled(stream)
+			return
+		default:
+			original := state.pendingApproval.OriginalPrompt
+			text = approvalGatePlanPrompt(original + "\n\nUser feedback:\n" + text)
+			state.pendingApproval = &approvalGatePending{OriginalPrompt: original}
+		}
+	} else if approvalGateNeedsPlan(text) {
+		state.pendingApproval = &approvalGatePending{OriginalPrompt: text}
+		text = approvalGatePlanPrompt(text)
+	}
 
 	url := strings.TrimSpace(os.Getenv("MINIMAX_API_URL"))
 	if url == "" {
@@ -185,7 +205,11 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		defer cancel()
 	}
 
+	planningOnly := state.pendingApproval != nil && state.pendingApproval.Plan == ""
 	registry := minimaxRegistry()
+	if planningOnly {
+		registry = nil
+	}
 	if len(state.messages) == 0 {
 		state.messages = []Message{{Role: RoleSystem, Content: minimaxSystemPrompt}}
 	}
@@ -236,6 +260,13 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	}
 	if result.StoppedAt == StopReasonNeedsInput {
 		push["needs_input"] = true
+	}
+	if planningOnly {
+		if state.pendingApproval != nil {
+			state.pendingApproval.Plan = strings.TrimSpace(result.FinalContent)
+		}
+		approvalGateNeedsInput(stream, push)
+		return
 	}
 	stream.Push(push)
 }

@@ -201,7 +201,7 @@ func TestFormatObservabilityFrame_ShowsStartupScanAndScannerGapsCompactly(t *tes
 	}
 
 	got := formatObservabilityFrame(fixedNow, nil, usage)
-	want := "sec detail:    startup scan stale; missing gitleaks, govulncheck"
+	want := "sec detail:    startup scan stale; missing local scanners gitleaks, govulncheck"
 	if !strings.Contains(got, want) {
 		t.Fatalf("frame missing compact security detail %q:\n%s", want, got)
 	}
@@ -227,6 +227,8 @@ func TestFormatObservabilityFrame_ShowsCRAReadinessKPIs(t *testing.T) {
 				ReportingPresent:     2,
 				ReportingTotal:       3,
 				DesignEvidenceStatus: "partial",
+				SecurityWarnings:     2,
+				SecurityBlocks:       1,
 				DaysToReporting:      120,
 				ReportingDeadline:    "2026-09-11",
 				NextAction:           "Generate SBOM evidence: milliwaysctl security sbom --output dist/milliways.spdx.json",
@@ -235,7 +237,7 @@ func TestFormatObservabilityFrame_ShowsCRAReadinessKPIs(t *testing.T) {
 	}
 
 	got := formatObservabilityFrame(fixedNow, nil, usage)
-	want := "cra:           67% evidence, reporting 2/3 not ready, design partial, Article 14 2026-09-11"
+	want := "cra:           67% evidence, reporting 2/3 not ready, security 2w/1b, design partial"
 	if !strings.Contains(got, want) {
 		t.Fatalf("frame missing CRA KPIs %q:\n%s", want, got)
 	}
@@ -244,6 +246,9 @@ func TestFormatObservabilityFrame_ShowsCRAReadinessKPIs(t *testing.T) {
 	}
 	if strings.Contains(got, "120d to 2026-09-11") {
 		t.Fatalf("frame should not render CRA as a countdown:\n%s", got)
+	}
+	if strings.Contains(got, "Article 14 2026-09-11") {
+		t.Fatalf("frame should treat Article 14 as active posture, not a date KPI:\n%s", got)
 	}
 }
 

@@ -767,6 +767,8 @@ func evaluateCRAReadiness(workspace string, status pantry.SecurityStatus, scanne
 	if total > 0 {
 		score = int((float64(present)+0.5*float64(partial))/float64(total)*100 + 0.5)
 	}
+	securityWarnings := status.CountsBySeverity["WARN"] + status.CountsBySeverity["HIGH"] + status.CountsBySeverity["CRITICAL"]
+	securityBlocks := status.CountsBySeverity["BLOCK"]
 	summary := map[string]any{
 		"regulation":                report.Regulation,
 		"evidence_score":            score,
@@ -782,6 +784,8 @@ func evaluateCRAReadiness(workspace string, status pantry.SecurityStatus, scanne
 		"reporting_deadline":        "2026-09-11",
 		"reporting_deadline_status": reportingDeadlineStatus,
 		"full_deadline":             "2027-12-11",
+		"security_warnings":         securityWarnings,
+		"security_blocks":           securityBlocks,
 		"next_action":               nextAction,
 	}
 	return report, summary

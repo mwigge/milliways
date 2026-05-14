@@ -34,8 +34,7 @@ var poolBinary = "pool"
 // `pool exec -p <prompt> --directory <dir>`. Tests can swap it.
 var poolArgsBuilder = func(prompt, dir string) []string {
 	// --output markdown: clean markdown output without indented thinking blocks.
-	// --unsafe-auto-allow: bypass interactive tool approval in headless mode.
-	args := []string{"exec", "--unsafe-auto-allow", "--output", "markdown", "-p", prompt}
+	args := []string{"exec", "--output", "markdown", "-p", prompt}
 	if dir != "" {
 		args = append(args, "--directory", dir)
 	}
@@ -114,7 +113,7 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 		spanErr = "security profile blocked handoff"
 		return
 	}
-	cmd := exec.CommandContext(ctx, poolBinary, poolArgsBuilder(text, cwd)...)
+	cmd := exec.CommandContext(ctx, resolveRunnerBinary(poolBinary), poolArgsBuilder(text, cwd)...)
 	cmd.Env = safeRunnerEnv()
 	if cwd != "" {
 		cmd.Dir = cwd

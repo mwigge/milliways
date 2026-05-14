@@ -517,12 +517,13 @@ func TestGeminiArgsBuilderYOLOToggle(t *testing.T) {
 		envVal    string
 		wantDashY bool
 	}{
-		{"default (empty) includes -y", "", true},
+		{"default (empty) omits -y", "", false},
 		{"off omits -y", "off", false},
 		{"OFF case-insensitive omits -y", "OFF", false},
 		{"false omits -y", "false", false},
 		{"FALSE case-insensitive omits -y", "FALSE", false},
 		{"on includes -y", "on", true},
+		{"true includes -y", "true", true},
 	}
 
 	for _, c := range cases {

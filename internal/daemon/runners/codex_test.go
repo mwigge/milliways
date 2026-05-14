@@ -263,7 +263,7 @@ func TestBuildCodexCmdArgs_DefaultsAreRootFlags(t *testing.T) {
 	t.Parallel()
 
 	args := buildCodexCmdArgs("do it", "/repo", nil)
-	wantPrefix := []string{"--sandbox", "workspace-write", "--ask-for-approval", "never", "exec", "--json", "--color", "never", "--skip-git-repo-check", "-C", "/repo"}
+	wantPrefix := []string{"--sandbox", "workspace-write", "--ask-for-approval", "on-request", "exec", "--json", "--color", "never", "--skip-git-repo-check", "-C", "/repo"}
 	if len(args) < len(wantPrefix) {
 		t.Fatalf("args too short: %v", args)
 	}
@@ -286,7 +286,8 @@ func TestBuildCodexCmdArgs_RespectsRootOverrides(t *testing.T) {
 	extra := []string{"--ask-for-approval", "on-request", "--sandbox=read-only", "--model", "gpt-5"}
 	args := buildCodexCmdArgs("p", "/repo", extra)
 	joined := strings.Join(args, "\x00")
-	if strings.Contains(joined, "--ask-for-approval\x00never") {
+	if strings.Contains(joined, "--ask-for-approval\x00on-request\x00--ask-for-approval") ||
+		strings.Contains(joined, "--ask-for-approval\x00never") {
 		t.Fatalf("default approval injected despite override: %v", args)
 	}
 	if strings.Contains(joined, "--sandbox\x00workspace-write") {
@@ -524,6 +525,30 @@ func TestRunCodex_NoBinary(t *testing.T) {
 	}
 }
 
+func TestRunCodex_ResolvesBinaryFromMilliwaysPath(t *testing.T) {
+	prev := codexBinary
+	codexBinary = "codex"
+	t.Cleanup(func() { codexBinary = prev })
+
+	dir := t.TempDir()
+	argsFile := filepath.Join(t.TempDir(), "args.tsv")
+	script := codexRecorderScript(argsFile, `printf '%s\n' '{"type":"message","content":"local codex"}'`)
+	path := filepath.Join(dir, "codex")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write codex fixture: %v", err)
+	}
+	t.Setenv("MILLIWAYS_PATH", dir)
+	t.Setenv("PATH", "/usr/bin:/bin")
+
+	pusher, _ := runCodexPrompts(t, context.Background(), "hi")
+	if got := decodeCodexData(pusher.snapshot()); got != "local codex" {
+		t.Fatalf("decoded data = %q, want local codex; events=%v", got, pusher.snapshot())
+	}
+	if calls := readCodexArgCalls(t, argsFile); len(calls) != 1 {
+		t.Fatalf("codex calls = %v, want one", calls)
+	}
+}
+
 func TestRunCodex_StreamsJSONAndRecordsArgs(t *testing.T) {
 	argsFile := filepath.Join(t.TempDir(), "args.tsv")
 	withCodexTestBinary(t, codexRecorderScript(argsFile, strings.Join([]string{
@@ -548,7 +573,7 @@ func TestRunCodex_StreamsJSONAndRecordsArgs(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("arg calls = %v, want one call", calls)
 	}
-	if !containsCodexSubsequence(calls[0], []string{"--ask-for-approval", "never", "exec", "--json", "--color", "never", "--skip-git-repo-check"}) {
+	if !containsCodexSubsequence(calls[0], []string{"--ask-for-approval", "on-request", "exec", "--json", "--color", "never", "--skip-git-repo-check"}) {
 		t.Fatalf("first call missing expected argv shape: %v", calls[0])
 	}
 	if calls[0][len(calls[0])-1] != "say hi" {

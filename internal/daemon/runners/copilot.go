@@ -39,7 +39,7 @@ var copilotArgsBuilder = buildCopilotCmdArgs
 const copilotChunkSize = 4 * 1024
 
 // RunCopilot is the daemon-side copilot session loop. It reads prompts
-// from `input`, spawns one `copilot -p <prompt> --allow-all-tools
+// from `input`, spawns one `copilot -p <prompt>`
 // --add-dir <cwd>` per prompt, and streams stdout+stderr bytes (plain
 // text, no JSON) as {"t":"data","b64":...} events. After the subprocess
 // exits a final {"t":"chunk_end","cost_usd":0} marks end-of-response.
@@ -102,7 +102,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		spanErr = "security profile blocked handoff"
 		return
 	}
-	cmd := exec.CommandContext(ctx, copilotBinary, copilotArgsBuilder(text, cwd)...)
+	cmd := exec.CommandContext(ctx, resolveRunnerBinary(copilotBinary), copilotArgsBuilder(text, cwd)...)
 	cmd.Env = safeRunnerEnv()
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -190,7 +190,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 func buildCopilotCmdArgs(prompt, cwd string) []string {
 	// --add-dir scopes file search to the project directory, avoiding system
 	// paths that produce permission errors when file search expands broadly.
-	args := []string{"-p", prompt, "--allow-all-tools", "--allow-all-paths"}
+	args := []string{"-p", prompt}
 	if model := strings.TrimSpace(os.Getenv("COPILOT_MODEL")); model != "" {
 		args = append(args, "--model", model)
 	}

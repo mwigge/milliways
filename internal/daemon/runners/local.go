@@ -142,7 +142,8 @@ var (
 )
 
 type localSessionState struct {
-	messages []Message
+	messages        []Message
+	pendingApproval *approvalGatePending
 }
 
 func localRegistry() *tools.Registry {
@@ -222,13 +223,36 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	if state == nil {
 		state = &localSessionState{}
 	}
+	if state.pendingApproval != nil {
+		approved, rejected := approvalGateDecision(text)
+		switch {
+		case approved:
+			text = approvalGateImplementPrompt(state.pendingApproval.OriginalPrompt, state.pendingApproval.Plan)
+			state.pendingApproval = nil
+		case rejected:
+			state.pendingApproval = nil
+			approvalGateCancelled(stream)
+			return
+		default:
+			original := state.pendingApproval.OriginalPrompt
+			text = approvalGatePlanPrompt(original + "\n\nUser feedback:\n" + text)
+			state.pendingApproval = &approvalGatePending{OriginalPrompt: original}
+		}
+	} else if approvalGateNeedsPlan(text) {
+		state.pendingApproval = &approvalGatePending{OriginalPrompt: text}
+		text = approvalGatePlanPrompt(text)
+	}
 	timeout := runnerRequestTimeout("MILLIWAYS_LOCAL_TIMEOUT")
 
 	spanCtx, span := startDispatchSpan(parent, AgentIDLocal, model)
 	ctx, cancel := contextWithOptionalTimeout(spanCtx, timeout)
 	defer cancel()
 
+	planningOnly := state.pendingApproval != nil && state.pendingApproval.Plan == ""
 	registry := localRegistry()
+	if planningOnly {
+		registry = nil
+	}
 	xmlMode := isXMLToolModel(model)
 	if len(state.messages) == 0 {
 		var sysPrompt string
@@ -293,6 +317,13 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	}
 	if result.StoppedAt == StopReasonNeedsInput {
 		push["needs_input"] = true
+	}
+	if planningOnly {
+		if state.pendingApproval != nil {
+			state.pendingApproval.Plan = strings.TrimSpace(result.FinalContent)
+		}
+		approvalGateNeedsInput(stream, push)
+		return
 	}
 	stream.Push(push)
 }

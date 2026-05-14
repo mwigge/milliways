@@ -31,30 +31,30 @@ import (
 var geminiBinary = "gemini"
 
 // geminiArgsBuilder constructs the argv passed to the gemini CLI for a given
-// prompt. Default builds the headless invocation `gemini -p <prompt> -y`.
+// prompt. Default builds the headless invocation `gemini -p <prompt>`.
 // Tests can swap it to rewrite the command (e.g. point at /bin/sh).
 var geminiArgsBuilder = func(prompt string) []string {
 	return geminiDefaultArgs(prompt)
 }
 
 // geminiDefaultArgs builds the argv for a normal gemini invocation.
-// The -y flag auto-approves all tool use (YOLO mode). Set
-// MILLIWAYS_GEMINI_YOLO=off (or =false) to omit it — useful when gemini
-// aggressively invokes tools for simple questions. Default is to include -y.
+// The -y flag auto-approves all tool use (YOLO mode). MilliWays does not
+// enable it by default; set MILLIWAYS_GEMINI_YOLO=on or =true only when you
+// explicitly want the external CLI to bypass its own confirmations.
 func geminiDefaultArgs(prompt string) []string {
 	yolo := os.Getenv("MILLIWAYS_GEMINI_YOLO")
-	yoloOff := strings.EqualFold(yolo, "off") || strings.EqualFold(yolo, "false")
-	if yoloOff {
-		return []string{"-p", prompt}
+	yoloOn := strings.EqualFold(yolo, "on") || strings.EqualFold(yolo, "true") || strings.EqualFold(yolo, "1")
+	if yoloOn {
+		return []string{"-p", prompt, "-y"}
 	}
-	return []string{"-p", prompt, "-y"}
+	return []string{"-p", prompt}
 }
 
 // geminiChunkSize is the raw stdout buffer size; each Read up to this size
 // becomes one {"t":"data","b64":...} event.
 const geminiChunkSize = 4 * 1024
 
-// RunGemini drains the input channel, spawning one `gemini -p <prompt> -y`
+// RunGemini drains the input channel, spawning one `gemini -p <prompt>`
 // subprocess per prompt. Stdout streams as {"t":"data","b64":...} events;
 // stderr is consumed in parallel and inspected for session-limit signals
 // (quota/rate-limit/context-window exhaustion). On subprocess exit, a
@@ -125,7 +125,7 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		spanErr = "security profile blocked handoff"
 		return
 	}
-	cmd := exec.CommandContext(ctx, geminiBinary, geminiArgsBuilder(text)...)
+	cmd := exec.CommandContext(ctx, resolveRunnerBinary(geminiBinary), geminiArgsBuilder(text)...)
 	cmd.Env = safeRunnerEnv()
 	if cwd != "" {
 		cmd.Dir = cwd

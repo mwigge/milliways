@@ -53,8 +53,8 @@ type claudeStreamEvent struct {
 
 // claudeStreamEventPayload mirrors the inner event of a stream_event.
 type claudeStreamEventPayload struct {
-	Type   string            `json:"type"`
-	Delta  claudeStreamDelta `json:"delta,omitempty"`
+	Type  string            `json:"type"`
+	Delta claudeStreamDelta `json:"delta,omitempty"`
 }
 
 // claudeStreamDelta carries content_block_delta event deltas.
@@ -166,14 +166,13 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		"--print",
 		"--output-format", "stream-json",
 		"--verbose",
-		"--dangerously-skip-permissions",
 	}
 	if cwd != "" {
 		args = append(args, "--add-dir", cwd)
 	}
 	// "--" stops flag parsing so --add-dir (variadic) does not consume the prompt.
 	args = append(args, "--", text)
-	cmd := exec.CommandContext(ctx, claudeBinary, args...)
+	cmd := exec.CommandContext(ctx, resolveRunnerBinary(claudeBinary), args...)
 	cmd.Env = safeRunnerEnv()
 	if cwd != "" {
 		cmd.Dir = cwd
