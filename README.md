@@ -924,6 +924,7 @@ Milliways wraps Claude, Codex, Copilot, Gemini, Pool, MiniMax, and local models 
 | Output gate | `milliwaysctl security output-plan` | Classifies generated and staged paths into secret, SAST, and dependency scan requests before output is trusted or committed. |
 | Quarantine planner | `milliwaysctl security quarantine` | Dry-run remediation planning for suspicious workspace files and auto-run tasks. Apply-style actions require explicit confirmation through the daemon surface that supports them. |
 | Rule packs | `milliwaysctl security rules list\|update` | Bundled and local rules for IOC, startup, command, package, and persistence checks. Offline mode uses local rule packs only. |
+| SBOM generation | `milliwaysctl security sbom --output dist/milliways.spdx.json` | Offline SPDX JSON generation from local Go and Cargo manifests so CRA evidence can be produced without an external compliance service. |
 | CRA readiness | `milliwaysctl security cra`, `/security cra` | Tracks EU Cyber Resilience Act evidence: SBOM presence, vulnerability handling process, secure-by-default posture, scanner coverage, support-period metadata, and reporting readiness. CRA is a policy/evidence layer; OSV, Gitleaks, Semgrep, govulncheck, and optional NVD enrichment feed it. |
 | Status and warnings | `milliwaysctl security status`, `warnings`, `mode` | One posture summary for CLI, terminal cockpit, and future release smoke checks: mode, scanner state, last scan times, warnings, blocks, and client profile state. |
 
@@ -982,6 +983,7 @@ Implementation note: MilliWays currently attaches to the `osv-scanner` CLI for l
 ```bash
 milliwaysctl security status
 milliwaysctl security cra
+milliwaysctl security sbom --output dist/milliways.spdx.json
 milliwaysctl security startup-scan --strict
 milliwaysctl security scan
 milliwaysctl security warnings

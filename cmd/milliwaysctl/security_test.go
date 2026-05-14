@@ -495,6 +495,43 @@ func TestRunSecurityCRARendersReadinessAndGaps(t *testing.T) {
 	}
 }
 
+func TestRunSecuritySBOMWritesSPDX(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "go.mod"), []byte("module example.test/app\n\nrequire github.com/acme/lib v1.2.3\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if rc := runSecurity([]string{"sbom", "--workspace", workspace}, &stdout, &stderr, ""); rc != 0 {
+		t.Fatalf("expected rc=0, got %d; stderr:\n%s", rc, stderr.String())
+	}
+	for _, want := range []string{`"spdxVersion": "SPDX-2.3"`, `"name": "github.com/acme/lib"`, `"versionInfo": "v1.2.3"`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("sbom output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestRunSecuritySBOMWritesOutputFile(t *testing.T) {
+	workspace := t.TempDir()
+	outPath := filepath.Join(workspace, "dist", "milliways.spdx.json")
+
+	var stdout, stderr bytes.Buffer
+	if rc := runSecurity([]string{"sbom", "--workspace", workspace, "--output", outPath}, &stdout, &stderr, ""); rc != 0 {
+		t.Fatalf("expected rc=0, got %d; stderr:\n%s", rc, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "wrote SBOM") {
+		t.Fatalf("missing success output:\n%s", stdout.String())
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("ReadFile output: %v", err)
+	}
+	if !strings.Contains(string(data), `"spdxVersion": "SPDX-2.3"`) {
+		t.Fatalf("output is not SPDX JSON:\n%s", string(data))
+	}
+}
+
 func TestRunSecurityHardenNPMDryRunDoesNotWrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".npmrc")
 	var stdout bytes.Buffer

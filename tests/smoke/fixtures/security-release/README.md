@@ -7,6 +7,7 @@ Smoke coverage should be able to find the documented command surface:
 ```bash
 milliwaysctl security status
 milliwaysctl security cra
+milliwaysctl security sbom --output dist/milliways.spdx.json
 milliwaysctl security startup-scan --strict
 milliwaysctl security command-check --mode strict -- npm install left-pad
 milliwaysctl security output-plan --generated cmd/app/main.go --staged .env.local

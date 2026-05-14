@@ -35,6 +35,7 @@ import (
 
 	"github.com/mwigge/milliways/internal/rpc"
 	"github.com/mwigge/milliways/internal/security/outputgate"
+	"github.com/mwigge/milliways/internal/security/sbom"
 )
 
 // runSecurity dispatches `milliwaysctl security <verb> [args...]`.
@@ -73,6 +74,8 @@ func runSecurity(args []string, stdout, stderr io.Writer, socketOverride ...stri
 		return runSecurityStatusCmd(stdout, stderr, sock)
 	case "cra":
 		return runSecurityCRA(rest, stdout, stderr, sock)
+	case "sbom":
+		return runSecuritySBOM(rest, stdout, stderr)
 	case "scan":
 		return runSecurityScan(rest, stdout, stderr, sock)
 	case "startup-scan":
@@ -116,6 +119,8 @@ func printSecurityUsage(w io.Writer) {
 	fmt.Fprintln(w, "  disable                disable OSV security scanning")
 	fmt.Fprintln(w, "  status                 show scanner status (enabled, installed, path)")
 	fmt.Fprintln(w, "  cra [--json]           show EU Cyber Resilience Act readiness evidence")
+	fmt.Fprintln(w, "  sbom [--workspace <dir>] [--output <path>]")
+	fmt.Fprintln(w, "    generate an offline SPDX JSON SBOM from local Go and Cargo manifests")
 	fmt.Fprintln(w, "  scan [--json]          run dependency security scan")
 	fmt.Fprintln(w, "  startup-scan [--json] [--strict]")
 	fmt.Fprintln(w, "    run startup posture scan when supported by the daemon")
@@ -512,6 +517,53 @@ func craStatusMark(status string) string {
 	default:
 		return "MISS"
 	}
+}
+
+func runSecuritySBOM(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("security sbom", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	workspace := fs.String("workspace", ".", "workspace root")
+	output := fs.String("output", "", "output SPDX JSON path")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "security sbom: unexpected positional arguments")
+		return 1
+	}
+	doc, err := sbom.GenerateSPDX(sbom.GenerateOptions{Workspace: *workspace})
+	if err != nil {
+		fmt.Fprintf(stderr, "security sbom: %v\n", err)
+		return 1
+	}
+	if strings.TrimSpace(*output) == "" {
+		if err := sbom.WriteSPDXJSON(stdout, doc); err != nil {
+			fmt.Fprintf(stderr, "security sbom: write stdout: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	if err := os.MkdirAll(filepath.Dir(*output), 0o755); err != nil {
+		fmt.Fprintf(stderr, "security sbom: create output dir: %v\n", err)
+		return 1
+	}
+	f, err := os.Create(*output)
+	if err != nil {
+		fmt.Fprintf(stderr, "security sbom: create %s: %v\n", *output, err)
+		return 1
+	}
+	err = sbom.WriteSPDXJSON(f, doc)
+	closeErr := f.Close()
+	if err != nil {
+		fmt.Fprintf(stderr, "security sbom: write %s: %v\n", *output, err)
+		return 1
+	}
+	if closeErr != nil {
+		fmt.Fprintf(stderr, "security sbom: close %s: %v\n", *output, closeErr)
+		return 1
+	}
+	fmt.Fprintf(stdout, "[security] wrote SBOM -> %s (%d packages)\n", *output, len(doc.Packages))
+	return 0
 }
 
 func runSecurityScan(args []string, stdout, stderr io.Writer, sock string) int {
