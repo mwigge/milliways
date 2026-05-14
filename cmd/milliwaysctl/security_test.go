@@ -470,6 +470,7 @@ func TestRunSecurityStatusRendersExtendedFields(t *testing.T) {
 			"installed":               false,
 			"enabled":                 true,
 			"mode":                    "warn",
+			"security_workspace":      "/repo/service",
 			"posture":                 "warn",
 			"warning_count":           2,
 			"block_count":             1,
@@ -488,7 +489,7 @@ func TestRunSecurityStatusRendersExtendedFields(t *testing.T) {
 	if rc := runSecurity([]string{"status"}, &stdout, &bytes.Buffer{}, sock); rc != 0 {
 		t.Fatalf("expected rc=0, got %d", rc)
 	}
-	for _, want := range []string{"mode: warn", "posture: WARN", "warnings: 2  blocks: 1", "last startup scan", "last dependency scan", "scanners: installed osv-scanner (osv-scanner 2.0.0), semgrep; missing gitleaks, govulncheck"} {
+	for _, want := range []string{"mode: warn", "workspace: /repo/service", "posture: WARN", "warnings: 2  blocks: 1", "last startup scan", "last dependency scan", "scanners: installed osv-scanner (osv-scanner 2.0.0), semgrep; missing gitleaks, govulncheck"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("status missing %q; got:\n%s", want, stdout.String())
 		}

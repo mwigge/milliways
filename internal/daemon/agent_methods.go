@@ -42,7 +42,8 @@ type agentOpenParams struct {
 }
 
 type agentOpenResult struct {
-	Handle int64 `json:"handle"`
+	Handle            int64  `json:"handle"`
+	SecurityWorkspace string `json:"security_workspace,omitempty"`
 	// PtySize is reserved for future PTY allocation negotiation.
 	PtySize ptySize `json:"pty_size"`
 }
@@ -64,6 +65,17 @@ func (s *Server) agentOpen(enc *json.Encoder, req *Request) {
 		writeError(enc, req.ID, ErrInvalidParams, "agent.open requires agent_id")
 		return
 	}
+	securityWorkspace := ""
+	if !strings.HasPrefix(p.AgentID, "_") && s.pantryDB != nil {
+		gateCtx, gateCancel := context.WithTimeout(context.Background(), 6*time.Second)
+		workspace, err := s.ensureStartupSecurityGate(gateCtx, p.AgentID)
+		gateCancel()
+		if err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, err.Error())
+			return
+		}
+		securityWorkspace = workspace
+	}
 	sess, err := s.agents.Open(p.AgentID)
 	if err != nil {
 		// Reserved/known agent_ids that aren't implemented yet hit here.
@@ -79,6 +91,10 @@ func (s *Server) agentOpen(enc *json.Encoder, req *Request) {
 	if strings.TrimSpace(p.SessionID) != "" {
 		sess.SessionID = strings.TrimSpace(p.SessionID)
 	}
+	if securityWorkspace == "" {
+		securityWorkspace = s.securityWorkspaceRoot()
+	}
+	sess.SecurityWorkspace = securityWorkspace
 	// Track current agent for the status bar.
 	s.statusMu.Lock()
 	s.currentAgent = p.AgentID
@@ -150,9 +166,43 @@ func (s *Server) agentOpen(enc *json.Encoder, req *Request) {
 	}
 
 	writeResult(enc, req.ID, agentOpenResult{
-		Handle:  int64(sess.Handle),
-		PtySize: ptySize{Cols: 80, Rows: 24},
+		Handle:            int64(sess.Handle),
+		SecurityWorkspace: securityWorkspace,
+		PtySize:           ptySize{Cols: 80, Rows: 24},
 	})
+}
+
+func (s *Server) ensureStartupSecurityGate(ctx context.Context, agentID string) (string, error) {
+	workspace := s.securityWorkspaceRoot()
+	if s.pantryDB == nil {
+		return workspace, nil
+	}
+	store := s.pantryDB.Security()
+	status, err := store.SecurityStatus(workspace)
+	if err != nil {
+		return workspace, fmt.Errorf("security startup gate: %w", err)
+	}
+	mode := security.Mode(strings.TrimSpace(status.Mode))
+	if mode == "" {
+		mode = security.ModeWarn
+	}
+	if mode == security.ModeOff {
+		return workspace, nil
+	}
+	_, _, required := startupScanState(status, startupScanConfigHash(workspace))
+	if required {
+		if _, err := s.runStartupSecurityScan(ctx, workspace, mode == security.ModeStrict || mode == security.ModeCI); err != nil {
+			return workspace, fmt.Errorf("security startup gate: %w", err)
+		}
+		status, err = store.SecurityStatus(workspace)
+		if err != nil {
+			return workspace, fmt.Errorf("security startup gate status: %w", err)
+		}
+	}
+	if (mode == security.ModeStrict || mode == security.ModeCI) && status.CountsBySeverity["BLOCK"] > 0 {
+		return workspace, fmt.Errorf("security startup gate blocked %s for workspace %s: %d block finding(s); run `milliwaysctl security warnings`", agentID, workspace, status.CountsBySeverity["BLOCK"])
+	}
+	return workspace, nil
 }
 
 type agentSendParams struct {

@@ -337,6 +337,7 @@ func (s *Server) securityStatus(enc *json.Encoder, req *Request) {
 		"scanner_path":           scannerPath,
 		"installed":              scannerPath != "",
 		"scanners":               securityScannerAdapterStatus(context.Background()),
+		"security_workspace":     s.securityWorkspaceRoot(),
 		"mode":                   string(security.ModeWarn),
 		"posture":                string(security.PostureOK),
 		"warnings":               0,
@@ -350,6 +351,7 @@ func (s *Server) securityStatus(enc *json.Encoder, req *Request) {
 		status, err := s.pantryDB.Security().SecurityStatus(workspace)
 		if err == nil {
 			result["workspace"] = status.Workspace
+			result["security_workspace"] = status.Workspace
 			result["mode"] = status.Mode
 			result["posture"] = status.Posture
 			result["warnings"] = status.CountsBySeverity["WARN"] + status.CountsBySeverity["HIGH"] + status.CountsBySeverity["CRITICAL"]

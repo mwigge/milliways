@@ -122,6 +122,53 @@ func TestSecurityStartupScanPreservesStrictModeAndResolvesStaleWarnings(t *testi
 	}
 }
 
+func TestStartupSecurityGateRunsRequiredScanAndPreservesStrictMode(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	writeSecurityMethodFile(t, filepath.Join(workspace, "package.json"), `{
+  "scripts": {"postinstall": "node setup.mjs"}
+}`)
+	if err := db.Security().SetWorkspaceStatus(workspace, string(security.ModeStrict), "codex"); err != nil {
+		t.Fatalf("SetWorkspaceStatus: %v", err)
+	}
+
+	s := &Server{pantryDB: db, currentAgent: "codex", spans: observability.NewRing(10)}
+	gotWorkspace, err := s.ensureStartupSecurityGate(context.Background(), "codex")
+	if err != nil {
+		t.Fatalf("ensureStartupSecurityGate: %v", err)
+	}
+	if gotWorkspace != workspace {
+		t.Fatalf("workspace = %q, want %q", gotWorkspace, workspace)
+	}
+	status, err := db.Security().SecurityStatus(workspace)
+	if err != nil {
+		t.Fatalf("SecurityStatus: %v", err)
+	}
+	if status.Mode != string(security.ModeStrict) {
+		t.Fatalf("mode = %q, want strict", status.Mode)
+	}
+	if status.StartupScanCompletedAt.IsZero() {
+		t.Fatalf("startup scan was not completed by gate")
+	}
+}
+
+func TestStartupSecurityGateBlocksStrictBlockFindings(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	writeSecurityMethodFile(t, filepath.Join(workspace, "setup.mjs"), `fetch("https://getsession.org/x")`)
+	if err := db.Security().SetWorkspaceStatus(workspace, string(security.ModeStrict), "codex"); err != nil {
+		t.Fatalf("SetWorkspaceStatus: %v", err)
+	}
+
+	s := &Server{pantryDB: db, currentAgent: "codex", spans: observability.NewRing(10)}
+	_, err := s.ensureStartupSecurityGate(context.Background(), "codex")
+	if err == nil || !strings.Contains(err.Error(), "blocked codex") {
+		t.Fatalf("ensureStartupSecurityGate err = %v, want block", err)
+	}
+}
+
 func TestSecurityStatusReportsStartupScanState(t *testing.T) {
 	db := openSecurityMethodTestDB(t)
 	workspace := t.TempDir()

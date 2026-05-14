@@ -84,6 +84,8 @@ type observeRenderUsage struct {
 type observeRenderSecurity struct {
 	Installed            bool                   `json:"installed"`
 	Enabled              bool                   `json:"enabled"`
+	Workspace            string                 `json:"workspace"`
+	SecurityWorkspace    string                 `json:"security_workspace"`
 	Mode                 string                 `json:"mode"`
 	Posture              string                 `json:"posture"`
 	Warnings             int                    `json:"warnings"`
@@ -338,6 +340,9 @@ func formatObservabilityFrame(now time.Time, spans []observeRenderSpan, usage ob
 	if detail := formatObserveSecurityDetail(usage.Security); detail != "" {
 		fmt.Fprintf(&b, "│   sec detail:    %s\n", detail)
 	}
+	if workspace := observeSecurityWorkspace(usage.Security); workspace != "" {
+		fmt.Fprintf(&b, "│   sec workspace: %s\n", truncateObserveText(workspace, 84))
+	}
 	if cra := formatObserveCRA(usage.Security.CRA); cra != "" {
 		fmt.Fprintf(&b, "│   cra:           %s\n", cra)
 	}
@@ -358,6 +363,13 @@ func formatObservabilityFrame(now time.Time, spans []observeRenderSpan, usage ob
 	fmt.Fprintf(&b, "│   %s\n", charts.KittyEscape(png, 0))
 	fmt.Fprintln(&b, "╰──")
 	return b.String()
+}
+
+func observeSecurityWorkspace(sec observeRenderSecurity) string {
+	if workspace := strings.TrimSpace(sec.SecurityWorkspace); workspace != "" {
+		return workspace
+	}
+	return strings.TrimSpace(sec.Workspace)
 }
 
 func formatObserveSecurity(sec observeRenderSecurity) string {

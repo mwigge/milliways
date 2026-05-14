@@ -158,18 +158,20 @@ func TestFormatObservabilityFrame_ShowsSecurityPosture(t *testing.T) {
 	fixedNow := time.Date(2026, 4, 27, 12, 34, 56, 0, time.UTC)
 	usage := observeRenderUsage{
 		Security: observeRenderSecurity{
-			Installed: true,
-			Enabled:   true,
-			Mode:      "strict",
-			Posture:   "block",
-			Warnings:  2,
-			Blocks:    1,
+			Installed:         true,
+			Enabled:           true,
+			Mode:              "strict",
+			Posture:           "block",
+			Warnings:          2,
+			Blocks:            1,
+			SecurityWorkspace: "/repo/service",
 		},
 	}
 
 	got := formatObservabilityFrame(fixedNow, nil, usage)
 	for _, want := range []string{
 		"security:      SEC BLOCK 1 (mode strict)",
+		"sec workspace: /repo/service",
 		"milliways observability",
 	} {
 		if !strings.Contains(got, want) {

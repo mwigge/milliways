@@ -198,6 +198,9 @@ func (h *agentMethodsHarness) openEcho() {
 		h.t.Fatalf("agent.open result: %v", resp)
 	}
 	h.handle = int64(result["handle"].(float64))
+	if workspace, _ := result["security_workspace"].(string); workspace == "" {
+		h.t.Fatalf("agent.open security_workspace empty: %v", result)
+	}
 
 	// agent.stream
 	h.send("agent.stream", map[string]any{"handle": h.handle}, 2)

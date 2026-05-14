@@ -937,7 +937,7 @@ The layers are intentionally additive. Startup scan is deterministic and local; 
 |---|---|---|
 | HTTP/local tool-loop runners | Command firewall, workspace jail, credential denylist, SSRF guard, output gate recommendations. | Optional external scanner gaps and accepted-risk context. |
 | CLI runners such as Claude, Codex, Gemini, Copilot, Pool | Daemon-side client profile checks, command pre-flight when commands pass through MilliWays, startup scan status, output/security commands. | Tool execution performed inside the external CLI itself unless that CLI exposes a controllable sandbox path. |
-| Terminal/app startup | First-workspace startup scan is recorded automatically and status shows required/stale until current. | It is not a hard startup lock yet; strict/ci mode is preserved for controlled command and scan decisions. |
+| Terminal/app startup | First-workspace startup scan is recorded automatically and status shows required/stale until current. | Agent opens wait for a current startup scan; `strict`/`ci` block real client handoff when BLOCK findings remain. |
 
 CRA readiness is treated as more important than NVD enrichment. NVD can improve CVE metadata, but the EU Cyber Resilience Act defines process obligations and evidence a product team must be able to show: cybersecurity risk assessment, secure defaults, vulnerability handling, machine-readable SBOM, support/update posture, and incident reporting readiness. MilliWays should therefore use NVD as one optional input, not as the compliance model.
 

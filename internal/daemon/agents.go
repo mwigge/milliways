@@ -51,12 +51,13 @@ type AgentHandle int64
 // AgentSession is one open agent. Bytes arrive on input via agent.send;
 // runner-emitted bytes are pushed to stream via Stream.Push().
 type AgentSession struct {
-	Handle    AgentHandle
-	AgentID   string
-	SessionID string
-	stream    *Stream // first subscriber stream; nil until agent.stream is called
-	streams   map[int64]*Stream
-	server    *Server
+	Handle            AgentHandle
+	AgentID           string
+	SessionID         string
+	SecurityWorkspace string
+	stream            *Stream // first subscriber stream; nil until agent.stream is called
+	streams           map[int64]*Stream
+	server            *Server
 
 	mu              sync.Mutex
 	ctx             context.Context
@@ -125,31 +126,32 @@ type DeckBlock struct {
 
 // DeckSessionSnapshot is the daemon-backed status for one open agent session.
 type DeckSessionSnapshot struct {
-	AgentID       string      `json:"agent_id"`
-	Handle        int64       `json:"handle"`
-	SessionID     string      `json:"session_id,omitempty"`
-	Status        string      `json:"status"`
-	PromptCount   int         `json:"prompt_count"`
-	TurnCount     int         `json:"turn_count"`
-	InputTokens   int         `json:"input_tokens"`
-	OutputTokens  int         `json:"output_tokens"`
-	TotalTokens   int         `json:"total_tokens"`
-	CostUSD       float64     `json:"cost_usd"`
-	CurrentTrace  string      `json:"current_trace,omitempty"`
-	CurrentTurnID string      `json:"current_turn_id,omitempty"`
-	LastTrace     string      `json:"last_trace,omitempty"`
-	LatencyMS     float64     `json:"latency_ms,omitempty"`
-	TTFTMS        float64     `json:"ttft_ms,omitempty"`
-	TokenRate     float64     `json:"token_rate,omitempty"`
-	ErrorCount    int         `json:"error_count,omitempty"`
-	QueueDepth    int         `json:"queue_depth,omitempty"`
-	Model         string      `json:"model,omitempty"`
-	ModelSource   string      `json:"model_source,omitempty"`
-	LastThinking  string      `json:"last_thinking,omitempty"`
-	LastError     string      `json:"last_error,omitempty"`
-	LastPrompt    string      `json:"last_prompt,omitempty"`
-	LastUpdated   time.Time   `json:"last_updated,omitempty"`
-	Buffer        []DeckBlock `json:"buffer,omitempty"`
+	AgentID           string      `json:"agent_id"`
+	Handle            int64       `json:"handle"`
+	SessionID         string      `json:"session_id,omitempty"`
+	SecurityWorkspace string      `json:"security_workspace,omitempty"`
+	Status            string      `json:"status"`
+	PromptCount       int         `json:"prompt_count"`
+	TurnCount         int         `json:"turn_count"`
+	InputTokens       int         `json:"input_tokens"`
+	OutputTokens      int         `json:"output_tokens"`
+	TotalTokens       int         `json:"total_tokens"`
+	CostUSD           float64     `json:"cost_usd"`
+	CurrentTrace      string      `json:"current_trace,omitempty"`
+	CurrentTurnID     string      `json:"current_turn_id,omitempty"`
+	LastTrace         string      `json:"last_trace,omitempty"`
+	LatencyMS         float64     `json:"latency_ms,omitempty"`
+	TTFTMS            float64     `json:"ttft_ms,omitempty"`
+	TokenRate         float64     `json:"token_rate,omitempty"`
+	ErrorCount        int         `json:"error_count,omitempty"`
+	QueueDepth        int         `json:"queue_depth,omitempty"`
+	Model             string      `json:"model,omitempty"`
+	ModelSource       string      `json:"model_source,omitempty"`
+	LastThinking      string      `json:"last_thinking,omitempty"`
+	LastError         string      `json:"last_error,omitempty"`
+	LastPrompt        string      `json:"last_prompt,omitempty"`
+	LastUpdated       time.Time   `json:"last_updated,omitempty"`
+	Buffer            []DeckBlock `json:"buffer,omitempty"`
 }
 
 // DeckSnapshot is the daemon-backed deck state returned by deck.snapshot.
@@ -818,31 +820,32 @@ func (s *AgentSession) deckSnapshot() DeckSessionSnapshot {
 	}
 	buffer := append([]DeckBlock(nil), s.buffer...)
 	return DeckSessionSnapshot{
-		AgentID:       s.AgentID,
-		Handle:        int64(s.Handle),
-		SessionID:     s.SessionID,
-		Status:        status,
-		PromptCount:   s.promptCount,
-		TurnCount:     s.turnCount,
-		InputTokens:   s.inputTokens,
-		OutputTokens:  s.outputTokens,
-		TotalTokens:   s.inputTokens + s.outputTokens,
-		CostUSD:       s.costUSD,
-		CurrentTrace:  s.currentTrace,
-		CurrentTurnID: s.currentTurnID,
-		LastTrace:     s.lastTrace,
-		LatencyMS:     s.latencyMS,
-		TTFTMS:        s.ttftMS,
-		TokenRate:     s.tokenRate,
-		ErrorCount:    s.errorCount,
-		QueueDepth:    len(s.input),
-		Model:         s.model,
-		ModelSource:   s.modelSource,
-		LastThinking:  s.lastThinking,
-		LastError:     s.lastError,
-		LastPrompt:    s.lastPrompt,
-		LastUpdated:   s.lastUpdated,
-		Buffer:        buffer,
+		AgentID:           s.AgentID,
+		Handle:            int64(s.Handle),
+		SessionID:         s.SessionID,
+		SecurityWorkspace: s.SecurityWorkspace,
+		Status:            status,
+		PromptCount:       s.promptCount,
+		TurnCount:         s.turnCount,
+		InputTokens:       s.inputTokens,
+		OutputTokens:      s.outputTokens,
+		TotalTokens:       s.inputTokens + s.outputTokens,
+		CostUSD:           s.costUSD,
+		CurrentTrace:      s.currentTrace,
+		CurrentTurnID:     s.currentTurnID,
+		LastTrace:         s.lastTrace,
+		LatencyMS:         s.latencyMS,
+		TTFTMS:            s.ttftMS,
+		TokenRate:         s.tokenRate,
+		ErrorCount:        s.errorCount,
+		QueueDepth:        len(s.input),
+		Model:             s.model,
+		ModelSource:       s.modelSource,
+		LastThinking:      s.lastThinking,
+		LastError:         s.lastError,
+		LastPrompt:        s.lastPrompt,
+		LastUpdated:       s.lastUpdated,
+		Buffer:            buffer,
 	}
 }
 

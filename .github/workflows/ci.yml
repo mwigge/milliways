@@ -52,6 +52,7 @@ jobs:
         with: { go-version: '1.26' }
       - run: go build -o /tmp/milliways ./cmd/milliways
       - run: MILLIWAYS_BIN=/tmp/milliways bash scripts/smoke.sh
+      - run: bash tests/smoke/smoke_security_release.sh
 
   integration-smoke-linux:
     runs-on: ubuntu-latest

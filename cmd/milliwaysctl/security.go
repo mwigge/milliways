@@ -400,6 +400,7 @@ func runSecurityStatusCmd(stdout, stderr io.Writer, sock string) int {
 	enabled, _ := result["enabled"].(bool)
 	path, _ := result["scanner_path"].(string)
 	mode := stringMapField(result, "mode")
+	workspace := firstStringField(result, "security_workspace", "workspace")
 	state := firstStringField(result, "state", "posture", "level")
 	lastStartup := firstStringField(result, "last_startup_scan", "last_startup_scan_at")
 	lastDependency := firstStringField(result, "last_dependency_scan", "last_dependency_scan_at", "scanned_at")
@@ -422,6 +423,9 @@ func runSecurityStatusCmd(stdout, stderr io.Writer, sock string) int {
 	}
 	if mode != "" {
 		fmt.Fprintf(stdout, "[security] mode: %s\n", mode)
+	}
+	if workspace != "" {
+		fmt.Fprintf(stdout, "[security] workspace: %s\n", workspace)
 	}
 	if state != "" {
 		fmt.Fprintf(stdout, "[security] posture: %s\n", strings.ToUpper(state))
