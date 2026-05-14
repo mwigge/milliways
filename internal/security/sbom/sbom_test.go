@@ -104,6 +104,25 @@ func TestWriteSPDXJSON(t *testing.T) {
 	}
 }
 
+func TestWriteSPDXJSONFileCreatesParentDirectory(t *testing.T) {
+	root := t.TempDir()
+	doc, err := GenerateSPDX(GenerateOptions{Workspace: root})
+	if err != nil {
+		t.Fatalf("GenerateSPDX: %v", err)
+	}
+	path := filepath.Join(root, "dist", "milliways.spdx.json")
+	if err := WriteSPDXJSONFile(path, doc); err != nil {
+		t.Fatalf("WriteSPDXJSONFile: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !bytes.Contains(data, []byte(`"spdxVersion": "SPDX-2.3"`)) {
+		t.Fatalf("output is not SPDX JSON:\n%s", string(data))
+	}
+}
+
 func hasPackage(doc SPDXDocument, name, version, source string) bool {
 	for _, pkg := range doc.Packages {
 		if pkg.Name == name && pkg.VersionInfo == version && pkg.Source == source {

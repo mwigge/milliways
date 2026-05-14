@@ -108,6 +108,25 @@ func WriteSPDXJSON(w io.Writer, doc SPDXDocument) error {
 	return enc.Encode(doc)
 }
 
+func WriteSPDXJSONFile(path string, doc SPDXDocument) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", path, err)
+	}
+	err = WriteSPDXJSON(f, doc)
+	closeErr := f.Close()
+	if err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close %s: %w", path, closeErr)
+	}
+	return nil
+}
+
 func rootPackage(workspace string) SPDXPackage {
 	return SPDXPackage{
 		Name:             filepath.Base(workspace),

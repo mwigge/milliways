@@ -19,8 +19,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/mwigge/milliways/internal/security/sbom"
@@ -106,23 +104,8 @@ func (l *chatLoop) handleSecuritySBOM(args []string) {
 		}
 		return
 	}
-	if err := os.MkdirAll(filepath.Dir(*output), 0o755); err != nil {
-		fmt.Fprintf(l.errw, "security sbom: create output dir: %v\n", err)
-		return
-	}
-	f, err := os.Create(*output)
-	if err != nil {
-		fmt.Fprintf(l.errw, "security sbom: create %s: %v\n", *output, err)
-		return
-	}
-	err = sbom.WriteSPDXJSON(f, doc)
-	closeErr := f.Close()
-	if err != nil {
-		fmt.Fprintf(l.errw, "security sbom: write %s: %v\n", *output, err)
-		return
-	}
-	if closeErr != nil {
-		fmt.Fprintf(l.errw, "security sbom: close %s: %v\n", *output, closeErr)
+	if err := sbom.WriteSPDXJSONFile(*output, doc); err != nil {
+		fmt.Fprintf(l.errw, "security sbom: %v\n", err)
 		return
 	}
 	fmt.Fprintf(l.out, "[security] wrote SBOM -> %s (%d packages)\n", *output, len(doc.Packages))

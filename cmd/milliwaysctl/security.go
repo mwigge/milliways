@@ -547,23 +547,8 @@ func runSecuritySBOM(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	if err := os.MkdirAll(filepath.Dir(*output), 0o755); err != nil {
-		fmt.Fprintf(stderr, "security sbom: create output dir: %v\n", err)
-		return 1
-	}
-	f, err := os.Create(*output)
-	if err != nil {
-		fmt.Fprintf(stderr, "security sbom: create %s: %v\n", *output, err)
-		return 1
-	}
-	err = sbom.WriteSPDXJSON(f, doc)
-	closeErr := f.Close()
-	if err != nil {
-		fmt.Fprintf(stderr, "security sbom: write %s: %v\n", *output, err)
-		return 1
-	}
-	if closeErr != nil {
-		fmt.Fprintf(stderr, "security sbom: close %s: %v\n", *output, closeErr)
+	if err := sbom.WriteSPDXJSONFile(*output, doc); err != nil {
+		fmt.Fprintf(stderr, "security sbom: %v\n", err)
 		return 1
 	}
 	fmt.Fprintf(stdout, "[security] wrote SBOM -> %s (%d packages)\n", *output, len(doc.Packages))
