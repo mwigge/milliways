@@ -23,7 +23,7 @@ import (
 	"time"
 )
 
-func TestGenerateSPDXIncludesGoAndCargoPackages(t *testing.T) {
+func TestGenerateSPDXIncludesGoCargoAndNPMPackages(t *testing.T) {
 	workspace := t.TempDir()
 	write(t, workspace, "go.mod", `module example.test/app
 
@@ -44,6 +44,16 @@ version = "1.0.12"
 name = "serde"
 version = "1.0.203"
 `)
+	write(t, workspace, "package-lock.json", `{
+  "name": "fixture",
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"name": "fixture", "version": "0.1.0"},
+    "node_modules/@tanstack/router": {"version": "1.120.0"},
+    "node_modules/left-pad": {"version": "1.3.0"},
+    "node_modules/nested/node_modules/ignored": {"version": "9.9.9"}
+  }
+}`)
 
 	doc, err := GenerateSPDX(GenerateOptions{
 		Workspace: workspace,
@@ -64,10 +74,15 @@ version = "1.0.203"
 		{"golang.org/x/tools", "v0.30.0", "go.mod"},
 		{"milliways-term", "1.0.12", "Cargo.lock"},
 		{"serde", "1.0.203", "Cargo.lock"},
+		{"@tanstack/router", "1.120.0", "package-lock.json"},
+		{"left-pad", "1.3.0", "package-lock.json"},
 	} {
 		if !hasPackage(doc, want.name, want.version, want.source) {
 			t.Fatalf("missing package %s %s from %s: %#v", want.name, want.version, want.source, doc.Packages)
 		}
+	}
+	if hasPackage(doc, "ignored", "9.9.9", "package-lock.json") {
+		t.Fatalf("nested node_modules package should be skipped: %#v", doc.Packages)
 	}
 }
 

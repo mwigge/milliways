@@ -120,7 +120,7 @@ func printSecurityUsage(w io.Writer) {
 	fmt.Fprintln(w, "  status                 show scanner status (enabled, installed, path)")
 	fmt.Fprintln(w, "  cra [--json]           show EU Cyber Resilience Act readiness evidence")
 	fmt.Fprintln(w, "  sbom [--workspace <dir>] [--output <path>]")
-	fmt.Fprintln(w, "    generate an offline SPDX JSON SBOM from local Go and Cargo manifests")
+	fmt.Fprintln(w, "    generate an offline SPDX JSON SBOM from local Go, Cargo, and npm package-lock manifests")
 	fmt.Fprintln(w, "  scan [--json]          run dependency security scan")
 	fmt.Fprintln(w, "  startup-scan [--json] [--strict]")
 	fmt.Fprintln(w, "    run startup posture scan when supported by the daemon")

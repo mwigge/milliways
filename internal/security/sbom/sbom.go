@@ -80,6 +80,7 @@ func GenerateSPDX(opts GenerateOptions) (SPDXDocument, error) {
 	packages := []SPDXPackage{rootPackage(abs)}
 	packages = append(packages, readGoPackages(abs)...)
 	packages = append(packages, readCargoPackages(abs)...)
+	packages = append(packages, readNPMPackages(abs)...)
 	sort.Slice(packages, func(i, j int) bool {
 		if packages[i].Name == packages[j].Name {
 			return packages[i].VersionInfo < packages[j].VersionInfo
@@ -185,6 +186,60 @@ func readCargoPackages(workspace string) []SPDXPackage {
 	}
 	flush()
 	return out
+}
+
+func readNPMPackages(workspace string) []SPDXPackage {
+	data, err := os.ReadFile(filepath.Join(workspace, "package-lock.json"))
+	if err != nil {
+		return nil
+	}
+	var lock struct {
+		Packages map[string]struct {
+			Version string `json:"version"`
+		} `json:"packages"`
+		Dependencies map[string]struct {
+			Version string `json:"version"`
+		} `json:"dependencies"`
+	}
+	if err := json.Unmarshal(data, &lock); err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []SPDXPackage
+	for path, pkg := range lock.Packages {
+		if path == "" || pkg.Version == "" {
+			continue
+		}
+		name := npmPackageNameFromPath(path)
+		if name == "" || seen[name+"@"+pkg.Version] {
+			continue
+		}
+		seen[name+"@"+pkg.Version] = true
+		out = append(out, packageRef("npm", name, pkg.Version, "package-lock.json"))
+	}
+	for name, pkg := range lock.Dependencies {
+		if name == "" || pkg.Version == "" || seen[name+"@"+pkg.Version] {
+			continue
+		}
+		seen[name+"@"+pkg.Version] = true
+		out = append(out, packageRef("npm", name, pkg.Version, "package-lock.json"))
+	}
+	return out
+}
+
+func npmPackageNameFromPath(path string) string {
+	path = strings.TrimPrefix(strings.TrimSpace(path), "node_modules/")
+	if path == "" || strings.Contains(path, "/node_modules/") {
+		return ""
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) == 0 {
+		return ""
+	}
+	if strings.HasPrefix(parts[0], "@") && len(parts) >= 2 {
+		return parts[0] + "/" + parts[1]
+	}
+	return parts[0]
 }
 
 func packageRef(ecosystem, name, version, source string) SPDXPackage {
