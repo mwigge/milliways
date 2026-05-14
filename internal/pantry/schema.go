@@ -260,3 +260,57 @@ CREATE INDEX IF NOT EXISTS idx_mw_security_accepted_risks_expires_at ON mw_secur
 
 INSERT OR IGNORE INTO mw_schema (version) VALUES (7);
 `
+
+const schemaV8 = `
+ALTER TABLE mw_security_findings ADD COLUMN category TEXT NOT NULL DEFAULT 'dependency';
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_findings_category_status ON mw_security_findings(category, status);
+
+CREATE TABLE IF NOT EXISTS mw_security_workspace_status (
+    workspace   TEXT PRIMARY KEY,
+    mode        TEXT NOT NULL DEFAULT 'warn',
+    active_client TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS mw_security_scan_runs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind           TEXT NOT NULL,
+    workspace      TEXT NOT NULL DEFAULT '',
+    status         TEXT NOT NULL DEFAULT 'running',
+    started_at     TEXT NOT NULL,
+    completed_at   TEXT NOT NULL DEFAULT '',
+    tool_name      TEXT NOT NULL DEFAULT '',
+    tool_version   TEXT NOT NULL DEFAULT '',
+    findings_total INTEGER NOT NULL DEFAULT 0,
+    warn_count     INTEGER NOT NULL DEFAULT 0,
+    block_count    INTEGER NOT NULL DEFAULT 0,
+    error          TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_scan_runs_workspace_kind ON mw_security_scan_runs(workspace, kind);
+CREATE INDEX IF NOT EXISTS idx_mw_security_scan_runs_started_at ON mw_security_scan_runs(started_at);
+
+CREATE TABLE IF NOT EXISTS mw_security_warnings (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace     TEXT NOT NULL DEFAULT '',
+    category      TEXT NOT NULL,
+    severity      TEXT NOT NULL DEFAULT 'WARN',
+    source        TEXT NOT NULL DEFAULT '',
+    message       TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'active',
+    scan_run_id   INTEGER NOT NULL DEFAULT 0,
+    first_seen    TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen     TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at   TEXT NOT NULL DEFAULT '',
+    evidence_hash TEXT NOT NULL DEFAULT '',
+    remediation   TEXT NOT NULL DEFAULT '',
+    UNIQUE(workspace, category, source, message)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_warnings_workspace_status ON mw_security_warnings(workspace, status);
+CREATE INDEX IF NOT EXISTS idx_mw_security_warnings_category ON mw_security_warnings(category);
+CREATE INDEX IF NOT EXISTS idx_mw_security_warnings_severity ON mw_security_warnings(severity);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (8);
+`

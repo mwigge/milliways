@@ -18,6 +18,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mwigge/milliways/internal/pantry"
@@ -303,9 +306,229 @@ func (s *Server) securityDisable(enc *json.Encoder, req *Request) {
 func (s *Server) securityStatus(enc *json.Encoder, req *Request) {
 	scannerPath := security.ScannerPath()
 	enabled := s.secRunner != nil && s.secRunner.IsEnabled()
-	writeResult(enc, req.ID, map[string]any{
+	result := map[string]any{
 		"enabled":      enabled,
 		"scanner_path": scannerPath,
 		"installed":    scannerPath != "",
+		"mode":         string(security.ModeWarn),
+		"posture":      string(security.PostureOK),
+		"warnings":     0,
+		"blocks":       0,
+	}
+	if s.pantryDB != nil {
+		workspace := s.securityWorkspaceRoot()
+		status, err := s.pantryDB.Security().SecurityStatus(workspace)
+		if err == nil {
+			result["workspace"] = status.Workspace
+			result["mode"] = status.Mode
+			result["posture"] = status.Posture
+			result["warnings"] = status.CountsBySeverity["WARN"] + status.CountsBySeverity["HIGH"] + status.CountsBySeverity["CRITICAL"]
+			result["blocks"] = status.CountsBySeverity["BLOCK"]
+			result["warning_count"] = result["warnings"]
+			result["block_count"] = result["blocks"]
+			result["active_client"] = status.ActiveClient
+			if status.LastStartupScan != nil && !status.LastStartupScan.CompletedAt.IsZero() {
+				result["last_startup_scan_at"] = status.LastStartupScan.CompletedAt.UTC().Format(time.RFC3339)
+			}
+			if status.LastDependencyScan != nil && !status.LastDependencyScan.CompletedAt.IsZero() {
+				result["last_dependency_scan_at"] = status.LastDependencyScan.CompletedAt.UTC().Format(time.RFC3339)
+			}
+		}
+	}
+	writeResult(enc, req.ID, result)
+}
+
+// securityStartupScan handles "security.startup_scan" by running the fast
+// deterministic local scanner and persisting warnings into pantry.
+func (s *Server) securityStartupScan(enc *json.Encoder, req *Request) {
+	if s.pantryDB == nil {
+		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		return
+	}
+	var p struct {
+		Workspace string `json:"workspace,omitempty"`
+		Strict    bool   `json:"strict,omitempty"`
+	}
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+	}
+	workspace := strings.TrimSpace(p.Workspace)
+	if workspace == "" {
+		workspace = s.securityWorkspaceRoot()
+	}
+	store := s.pantryDB.Security()
+	runID, _ := store.InsertScanRun(pantry.SecurityScanRun{
+		Kind:      string(security.ScanStartup),
+		Workspace: workspace,
+		Status:    "running",
+		ToolName:  "milliways-startup-scan",
 	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := security.RunStartupScan(ctx, security.StartupScanOptions{
+		WorkspaceRoot:        workspace,
+		UserPersistenceRoots: startupPersistenceRoots(),
+	})
+	if err != nil {
+		if runID > 0 {
+			_ = store.CompleteScanRun(runID, "error", 0, 0, 0, err.Error())
+		}
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("startup scan: %v", err))
+		return
+	}
+	warnCount, blockCount := 0, 0
+	warnings := make([]map[string]any, 0, len(result.Findings))
+	for _, f := range result.Findings {
+		sev := startupSeverityToStored(f.Severity)
+		if sev == "BLOCK" {
+			blockCount++
+		} else {
+			warnCount++
+		}
+		if err := store.UpsertWarning(pantry.SecurityWarning{
+			Workspace:   result.WorkspaceRoot,
+			Category:    string(f.Category),
+			Severity:    sev,
+			Source:      f.RelPath,
+			Message:     f.Title,
+			Status:      string(security.FindingActive),
+			ScanRunID:   runID,
+			Remediation: f.Remediation,
+		}); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("persist warning: %v", err))
+			return
+		}
+		warnings = append(warnings, map[string]any{
+			"rule_id":     f.RuleID,
+			"category":    string(f.Category),
+			"severity":    sev,
+			"title":       f.Title,
+			"path":        f.RelPath,
+			"line":        f.Line,
+			"remediation": f.Remediation,
+		})
+	}
+	if runID > 0 {
+		_ = store.CompleteScanRun(runID, "completed", len(result.Findings), warnCount, blockCount, "")
+	}
+	posture := string(security.PostureOK)
+	if blockCount > 0 || (p.Strict && warnCount > 0) {
+		posture = string(security.PostureBlock)
+	} else if warnCount > 0 {
+		posture = string(security.PostureWarn)
+	}
+	_ = store.SetWorkspaceStatus(result.WorkspaceRoot, string(security.ModeWarn), s.currentAgent)
+	writeResult(enc, req.ID, map[string]any{
+		"workspace":     result.WorkspaceRoot,
+		"scanned_at":    result.CompletedAt.UTC().Format(time.RFC3339),
+		"files":         result.FilesScanned,
+		"findings":      warnings,
+		"warnings":      warnCount,
+		"blocks":        blockCount,
+		"warning_count": warnCount,
+		"block_count":   blockCount,
+		"posture":       posture,
+	})
+}
+
+// securityWarnings handles "security.warnings".
+func (s *Server) securityWarnings(enc *json.Encoder, req *Request) {
+	if s.pantryDB == nil {
+		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		return
+	}
+	warnings, err := s.pantryDB.Security().ListActiveWarnings(s.securityWorkspaceRoot())
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("list warnings: %v", err))
+		return
+	}
+	out := make([]map[string]any, 0, len(warnings))
+	for _, w := range warnings {
+		out = append(out, map[string]any{
+			"id":          w.ID,
+			"workspace":   w.Workspace,
+			"category":    w.Category,
+			"severity":    w.Severity,
+			"source":      w.Source,
+			"message":     w.Message,
+			"remediation": w.Remediation,
+			"last_seen":   w.LastSeen.UTC().Format(time.RFC3339),
+		})
+	}
+	writeResult(enc, req.ID, map[string]any{"warnings": out})
+}
+
+// securityMode handles "security.mode" get/set for the current workspace.
+func (s *Server) securityMode(enc *json.Encoder, req *Request) {
+	if s.pantryDB == nil {
+		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		return
+	}
+	var p struct {
+		Mode string `json:"mode,omitempty"`
+	}
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+	}
+	workspace := s.securityWorkspaceRoot()
+	if p.Mode != "" {
+		mode := security.NormalizeMode(security.Mode(p.Mode))
+		if string(mode) != p.Mode {
+			writeError(enc, req.ID, ErrInvalidParams, "invalid security mode")
+			return
+		}
+		if err := s.pantryDB.Security().SetWorkspaceStatus(workspace, string(mode), s.currentAgent); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("set mode: %v", err))
+			return
+		}
+	}
+	status, err := s.pantryDB.Security().SecurityStatus(workspace)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("security status: %v", err))
+		return
+	}
+	writeResult(enc, req.ID, map[string]any{
+		"workspace": status.Workspace,
+		"mode":      status.Mode,
+		"posture":   status.Posture,
+	})
+}
+
+func (s *Server) securityWorkspaceRoot() string {
+	if root := strings.TrimSpace(os.Getenv("MILLIWAYS_WORKSPACE_ROOT")); root != "" {
+		if abs, err := filepath.Abs(root); err == nil {
+			return abs
+		}
+		return root
+	}
+	if wd, err := os.Getwd(); err == nil {
+		return wd
+	}
+	return "."
+}
+
+func startupPersistenceRoots() []security.StartupScanRoot {
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	if home == "" {
+		return nil
+	}
+	return []security.StartupScanRoot{
+		{Name: "systemd-user", Path: filepath.Join(home, ".config", "systemd", "user")},
+		{Name: "launch-agents", Path: filepath.Join(home, "Library", "LaunchAgents")},
+	}
+}
+
+func startupSeverityToStored(sev any) string {
+	switch strings.ToLower(fmt.Sprint(sev)) {
+	case "block":
+		return "BLOCK"
+	default:
+		return "WARN"
+	}
 }

@@ -145,6 +145,32 @@ func TestFormatObservabilityFrame_ShowsUsageAndTimeToLimit(t *testing.T) {
 		"tokens:        in 1.2k / out 800 / total 2.0k",
 		"cost:          $0.01",
 		"time to limit: claude 1.0h",
+		"security:      SEC WARN",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("frame missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestFormatObservabilityFrame_ShowsSecurityPosture(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 4, 27, 12, 34, 56, 0, time.UTC)
+	usage := observeRenderUsage{
+		Security: observeRenderSecurity{
+			Installed: true,
+			Enabled:   true,
+			Mode:      "strict",
+			Posture:   "block",
+			Warnings:  2,
+			Blocks:    1,
+		},
+	}
+
+	got := formatObservabilityFrame(fixedNow, nil, usage)
+	for _, want := range []string{
+		"security:      SEC BLOCK 1 (mode strict)",
+		"milliways observability",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("frame missing %q:\n%s", want, got)
@@ -184,7 +210,7 @@ func TestFormatObservabilityFrame_StaysCompact(t *testing.T) {
 	if !strings.Contains(got, "latest: rpc.observe.latest") {
 		t.Fatalf("frame missing compact latest span:\n%s", got)
 	}
-	if lines := strings.Count(got, "\n"); lines > 18 {
+	if lines := strings.Count(got, "\n"); lines > 19 {
 		t.Fatalf("frame too tall for lower-left pane: %d lines\n%s", lines, got)
 	}
 }

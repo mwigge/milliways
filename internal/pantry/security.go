@@ -26,6 +26,7 @@ import (
 // SecurityFinding is one persisted OSV vulnerability finding.
 type SecurityFinding struct {
 	ID               int64
+	Category         string
 	CVEID            string
 	PackageName      string
 	InstalledVersion string
@@ -49,7 +50,54 @@ type AcceptedRisk struct {
 	ExpiresAt   time.Time
 }
 
-// SecurityStore provides access to mw_security_findings and mw_security_accepted_risks.
+// SecurityScanRun is one persisted security scan attempt.
+type SecurityScanRun struct {
+	ID            int64
+	Kind          string
+	Workspace     string
+	Status        string
+	StartedAt     time.Time
+	CompletedAt   time.Time
+	ToolName      string
+	ToolVersion   string
+	FindingsTotal int
+	WarnCount     int
+	BlockCount    int
+	Error         string
+}
+
+// SecurityWarning is a non-CVE security posture warning or block.
+type SecurityWarning struct {
+	ID           int64
+	Workspace    string
+	Category     string
+	Severity     string
+	Source       string
+	Message      string
+	Status       string
+	ScanRunID    int64
+	FirstSeen    time.Time
+	LastSeen     time.Time
+	ResolvedAt   time.Time
+	EvidenceHash string
+	Remediation  string
+}
+
+// SecurityStatus is the durable workspace security summary.
+type SecurityStatus struct {
+	Workspace          string
+	Mode               string
+	ActiveClient       string
+	UpdatedAt          time.Time
+	Posture            string
+	LastStartupScan    *SecurityScanRun
+	LastDependencyScan *SecurityScanRun
+	CountsByCategory   map[string]int
+	CountsBySeverity   map[string]int
+	Warnings           []SecurityWarning
+}
+
+// SecurityStore provides access to durable security posture tables.
 type SecurityStore struct {
 	db *sql.DB
 }
@@ -79,18 +127,25 @@ func (s *SecurityStore) UpsertFinding(f SecurityFinding) error {
 	if firstSeen == "" {
 		firstSeen = now
 	}
+	if f.Category == "" {
+		f.Category = "dependency"
+	}
+	if f.Status == "" {
+		f.Status = "active"
+	}
 	_, err := s.db.Exec(`
 		INSERT INTO mw_security_findings
-			(cve_id, package_name, installed_version, fixed_in_version, severity,
+			(category, cve_id, package_name, installed_version, fixed_in_version, severity,
 			 ecosystem, summary, scan_source, status, first_seen, last_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(cve_id, package_name, installed_version, ecosystem) DO UPDATE SET
+			category         = excluded.category,
 			fixed_in_version = excluded.fixed_in_version,
 			severity         = excluded.severity,
 			summary          = excluded.summary,
 			scan_source      = excluded.scan_source,
 			last_seen        = excluded.last_seen`,
-		f.CVEID, f.PackageName, f.InstalledVersion, f.FixedInVersion,
+		f.Category, f.CVEID, f.PackageName, f.InstalledVersion, f.FixedInVersion,
 		f.Severity, f.Ecosystem, f.Summary, f.ScanSource, f.Status,
 		firstSeen, now,
 	)
@@ -108,7 +163,7 @@ func (s *SecurityStore) ListActive(severities []string) ([]SecurityFinding, erro
 	query := `
 		SELECT f.id, f.cve_id, f.package_name, f.installed_version,
 		       f.fixed_in_version, f.severity, f.ecosystem, f.summary,
-		       f.scan_source, f.status, f.first_seen, f.last_seen
+		       f.scan_source, f.status, f.first_seen, f.last_seen, f.category
 		FROM mw_security_findings f
 		WHERE f.status = 'active'
 		  AND NOT EXISTS (
@@ -140,7 +195,7 @@ func (s *SecurityStore) ListActive(severities []string) ([]SecurityFinding, erro
 func (s *SecurityStore) ListAll() ([]SecurityFinding, error) {
 	return s.queryFindings(`
 		SELECT id, cve_id, package_name, installed_version, fixed_in_version,
-		       severity, ecosystem, summary, scan_source, status, first_seen, last_seen
+		       severity, ecosystem, summary, scan_source, status, first_seen, last_seen, category
 		FROM mw_security_findings
 		ORDER BY first_seen DESC`)
 }
@@ -149,7 +204,7 @@ func (s *SecurityStore) ListAll() ([]SecurityFinding, error) {
 func (s *SecurityStore) GetByCVE(cveID string) (SecurityFinding, error) {
 	findings, err := s.queryFindings(`
 		SELECT id, cve_id, package_name, installed_version, fixed_in_version,
-		       severity, ecosystem, summary, scan_source, status, first_seen, last_seen
+		       severity, ecosystem, summary, scan_source, status, first_seen, last_seen, category
 		FROM mw_security_findings WHERE cve_id = ? LIMIT 1`, cveID)
 	if err != nil {
 		return SecurityFinding{}, err
@@ -268,6 +323,166 @@ func (s *SecurityStore) CVEExists(cveID string) (bool, error) {
 	return n > 0, err
 }
 
+// SetWorkspaceStatus upserts the mode and active client for a workspace.
+func (s *SecurityStore) SetWorkspaceStatus(workspace, mode, activeClient string) error {
+	if mode == "" {
+		mode = "warn"
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO mw_security_workspace_status (workspace, mode, active_client, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(workspace) DO UPDATE SET
+			mode = excluded.mode,
+			active_client = excluded.active_client,
+			updated_at = excluded.updated_at`,
+		workspace, mode, activeClient, secFormatTime(time.Now().UTC()))
+	if err != nil {
+		return fmt.Errorf("set workspace security status: %w", err)
+	}
+	return nil
+}
+
+// InsertScanRun records the start of a security scan and returns its row ID.
+func (s *SecurityStore) InsertScanRun(run SecurityScanRun) (int64, error) {
+	if run.Status == "" {
+		run.Status = "running"
+	}
+	if run.StartedAt.IsZero() {
+		run.StartedAt = time.Now().UTC()
+	}
+	res, err := s.db.Exec(`
+		INSERT INTO mw_security_scan_runs
+			(kind, workspace, status, started_at, completed_at, tool_name, tool_version,
+			 findings_total, warn_count, block_count, error)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		run.Kind, run.Workspace, run.Status, secFormatTime(run.StartedAt),
+		secFormatTime(run.CompletedAt), run.ToolName, run.ToolVersion,
+		run.FindingsTotal, run.WarnCount, run.BlockCount, run.Error)
+	if err != nil {
+		return 0, fmt.Errorf("insert security scan run: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("security scan run id: %w", err)
+	}
+	return id, nil
+}
+
+// CompleteScanRun updates the terminal metadata for an existing scan run.
+func (s *SecurityStore) CompleteScanRun(id int64, status string, findingsTotal, warnCount, blockCount int, scanErr string) error {
+	if status == "" {
+		status = "completed"
+	}
+	_, err := s.db.Exec(`
+		UPDATE mw_security_scan_runs
+		SET status = ?, completed_at = ?, findings_total = ?, warn_count = ?, block_count = ?, error = ?
+		WHERE id = ?`,
+		status, secFormatTime(time.Now().UTC()), findingsTotal, warnCount, blockCount, scanErr, id)
+	if err != nil {
+		return fmt.Errorf("complete security scan run: %w", err)
+	}
+	return nil
+}
+
+// UpsertWarning inserts or refreshes an active security warning.
+func (s *SecurityStore) UpsertWarning(w SecurityWarning) error {
+	now := secFormatTime(time.Now().UTC())
+	firstSeen := secFormatTime(w.FirstSeen)
+	if firstSeen == "" {
+		firstSeen = now
+	}
+	if w.Status == "" {
+		w.Status = "active"
+	}
+	if w.Severity == "" {
+		w.Severity = "WARN"
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO mw_security_warnings
+			(workspace, category, severity, source, message, status, scan_run_id,
+			 first_seen, last_seen, resolved_at, evidence_hash, remediation)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(workspace, category, source, message) DO UPDATE SET
+			severity = excluded.severity,
+			status = excluded.status,
+			scan_run_id = excluded.scan_run_id,
+			last_seen = excluded.last_seen,
+			resolved_at = excluded.resolved_at,
+			evidence_hash = excluded.evidence_hash,
+			remediation = excluded.remediation`,
+		w.Workspace, w.Category, w.Severity, w.Source, w.Message, w.Status, w.ScanRunID,
+		firstSeen, now, secFormatTime(w.ResolvedAt), w.EvidenceHash, w.Remediation)
+	if err != nil {
+		return fmt.Errorf("upsert security warning: %w", err)
+	}
+	return nil
+}
+
+// ListActiveWarnings returns active warnings for one workspace. Empty workspace
+// matches global warnings only.
+func (s *SecurityStore) ListActiveWarnings(workspace string) ([]SecurityWarning, error) {
+	return s.queryWarnings(`
+		SELECT id, workspace, category, severity, source, message, status, scan_run_id,
+		       first_seen, last_seen, resolved_at, evidence_hash, remediation
+		FROM mw_security_warnings
+		WHERE workspace = ? AND status = 'active'
+		ORDER BY CASE severity
+			WHEN 'BLOCK' THEN 1 WHEN 'CRITICAL' THEN 2 WHEN 'HIGH' THEN 3
+			WHEN 'WARN' THEN 4 WHEN 'MEDIUM' THEN 5 WHEN 'LOW' THEN 6 ELSE 7 END,
+			last_seen DESC`, workspace)
+}
+
+// SecurityStatus returns the aggregated workspace security status.
+func (s *SecurityStore) SecurityStatus(workspace string) (SecurityStatus, error) {
+	st := SecurityStatus{
+		Workspace:        workspace,
+		Mode:             "warn",
+		CountsByCategory: make(map[string]int),
+		CountsBySeverity: make(map[string]int),
+		Posture:          "ok",
+	}
+
+	var updatedAt string
+	err := s.db.QueryRow(`
+		SELECT mode, active_client, updated_at
+		FROM mw_security_workspace_status WHERE workspace = ?`, workspace).
+		Scan(&st.Mode, &st.ActiveClient, &updatedAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return SecurityStatus{}, fmt.Errorf("query workspace security status: %w", err)
+	}
+	st.UpdatedAt = secParseTime(updatedAt)
+
+	startup, err := s.lastScanRun(workspace, "startup")
+	if err != nil {
+		return SecurityStatus{}, err
+	}
+	st.LastStartupScan = startup
+	dep, err := s.lastScanRun(workspace, "dependency")
+	if err != nil {
+		return SecurityStatus{}, err
+	}
+	st.LastDependencyScan = dep
+
+	if err := s.addFindingCounts(st.CountsByCategory, st.CountsBySeverity); err != nil {
+		return SecurityStatus{}, err
+	}
+	warnings, err := s.ListActiveWarnings(workspace)
+	if err != nil {
+		return SecurityStatus{}, err
+	}
+	st.Warnings = warnings
+	for _, w := range warnings {
+		st.CountsByCategory[w.Category]++
+		st.CountsBySeverity[w.Severity]++
+	}
+	if st.CountsBySeverity["BLOCK"] > 0 {
+		st.Posture = "block"
+	} else if len(warnings) > 0 || hasAnyCount(st.CountsBySeverity) {
+		st.Posture = "warn"
+	}
+	return st, nil
+}
+
 func (s *SecurityStore) queryFindings(query string, args ...any) ([]SecurityFinding, error) {
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -281,7 +496,7 @@ func (s *SecurityStore) queryFindings(query string, args ...any) ([]SecurityFind
 		var firstSeen, lastSeen string
 		if err := rows.Scan(&f.ID, &f.CVEID, &f.PackageName, &f.InstalledVersion,
 			&f.FixedInVersion, &f.Severity, &f.Ecosystem, &f.Summary,
-			&f.ScanSource, &f.Status, &firstSeen, &lastSeen); err != nil {
+			&f.ScanSource, &f.Status, &firstSeen, &lastSeen, &f.Category); err != nil {
 			return nil, fmt.Errorf("scan finding: %w", err)
 		}
 		f.FirstSeen = secParseTime(firstSeen)
@@ -289,4 +504,100 @@ func (s *SecurityStore) queryFindings(query string, args ...any) ([]SecurityFind
 		findings = append(findings, f)
 	}
 	return findings, rows.Err()
+}
+
+func (s *SecurityStore) queryWarnings(query string, args ...any) ([]SecurityWarning, error) {
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query security warnings: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var warnings []SecurityWarning
+	for rows.Next() {
+		var w SecurityWarning
+		var firstSeen, lastSeen, resolvedAt string
+		if err := rows.Scan(&w.ID, &w.Workspace, &w.Category, &w.Severity, &w.Source,
+			&w.Message, &w.Status, &w.ScanRunID, &firstSeen, &lastSeen, &resolvedAt,
+			&w.EvidenceHash, &w.Remediation); err != nil {
+			return nil, fmt.Errorf("scan security warning: %w", err)
+		}
+		w.FirstSeen = secParseTime(firstSeen)
+		w.LastSeen = secParseTime(lastSeen)
+		w.ResolvedAt = secParseTime(resolvedAt)
+		warnings = append(warnings, w)
+	}
+	return warnings, rows.Err()
+}
+
+func (s *SecurityStore) lastScanRun(workspace, kind string) (*SecurityScanRun, error) {
+	rows, err := s.db.Query(`
+		SELECT id, kind, workspace, status, started_at, completed_at, tool_name, tool_version,
+		       findings_total, warn_count, block_count, error
+		FROM mw_security_scan_runs
+		WHERE workspace = ? AND kind = ?
+		ORDER BY started_at DESC, id DESC
+		LIMIT 1`, workspace, kind)
+	if err != nil {
+		return nil, fmt.Errorf("query last security scan run: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		return nil, rows.Err()
+	}
+	run, err := scanSecurityRun(rows)
+	if err != nil {
+		return nil, err
+	}
+	return &run, rows.Err()
+}
+
+func scanSecurityRun(rows *sql.Rows) (SecurityScanRun, error) {
+	var run SecurityScanRun
+	var startedAt, completedAt string
+	if err := rows.Scan(&run.ID, &run.Kind, &run.Workspace, &run.Status, &startedAt,
+		&completedAt, &run.ToolName, &run.ToolVersion, &run.FindingsTotal,
+		&run.WarnCount, &run.BlockCount, &run.Error); err != nil {
+		return SecurityScanRun{}, fmt.Errorf("scan security run: %w", err)
+	}
+	run.StartedAt = secParseTime(startedAt)
+	run.CompletedAt = secParseTime(completedAt)
+	return run, nil
+}
+
+func (s *SecurityStore) addFindingCounts(byCategory, bySeverity map[string]int) error {
+	rows, err := s.db.Query(`
+		SELECT category, severity, COUNT(*)
+		FROM mw_security_findings f
+		WHERE f.status = 'active'
+		  AND NOT EXISTS (
+		      SELECT 1 FROM mw_security_accepted_risks r
+		      WHERE r.cve_id = f.cve_id
+		        AND r.package_name = f.package_name
+		        AND r.expires_at > datetime('now')
+		  )
+		GROUP BY category, severity`)
+	if err != nil {
+		return fmt.Errorf("query finding counts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var category, severity string
+		var count int
+		if err := rows.Scan(&category, &severity, &count); err != nil {
+			return fmt.Errorf("scan finding counts: %w", err)
+		}
+		byCategory[category] += count
+		bySeverity[severity] += count
+	}
+	return rows.Err()
+}
+
+func hasAnyCount(counts map[string]int) bool {
+	for _, count := range counts {
+		if count > 0 {
+			return true
+		}
+	}
+	return false
 }

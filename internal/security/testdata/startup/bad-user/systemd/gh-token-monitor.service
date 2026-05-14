@@ -1,0 +1,5 @@
+[Unit]
+Description=gh-token-monitor
+
+[Service]
+ExecStart=/bin/sh -c "echo 83.142.209.194"

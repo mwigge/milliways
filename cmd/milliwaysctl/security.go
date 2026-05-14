@@ -24,9 +24,12 @@ package main
 //             --expires <YYYY-MM-DD>
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -67,6 +70,20 @@ func runSecurity(args []string, stdout, stderr io.Writer, socketOverride ...stri
 		return runSecurityToggle(false, stdout, stderr, sock)
 	case "status":
 		return runSecurityStatusCmd(stdout, stderr, sock)
+	case "scan":
+		return runSecurityScan(rest, stdout, stderr, sock)
+	case "startup-scan":
+		return runSecurityStartupScan(rest, stdout, stderr, sock)
+	case "warnings":
+		return runSecurityWarnings(rest, stdout, stderr, sock)
+	case "mode":
+		return runSecurityMode(rest, stdout, stderr, sock)
+	case "harden":
+		return runSecurityHarden(rest, stdout, stderr)
+	case "quarantine":
+		return runSecurityQuarantine(rest, stdout, stderr, sock)
+	case "rules":
+		return runSecurityRules(rest, stdout, stderr, sock)
 	case "install-scanner":
 		return runInstallScanner(stdout, stderr)
 	default:
@@ -87,6 +104,18 @@ func printSecurityUsage(w io.Writer) {
 	fmt.Fprintln(w, "  enable                 enable OSV security scanning")
 	fmt.Fprintln(w, "  disable                disable OSV security scanning")
 	fmt.Fprintln(w, "  status                 show scanner status (enabled, installed, path)")
+	fmt.Fprintln(w, "  scan [--json]          run dependency security scan")
+	fmt.Fprintln(w, "  startup-scan [--json] [--strict]")
+	fmt.Fprintln(w, "    run startup posture scan when supported by the daemon")
+	fmt.Fprintln(w, "  warnings [--json]      show active security warnings")
+	fmt.Fprintln(w, "  mode [off|observe|warn|strict|ci]")
+	fmt.Fprintln(w, "    show or set MilliWays security policy mode")
+	fmt.Fprintln(w, "  harden npm [--dry-run|--apply] [--path <.npmrc>]")
+	fmt.Fprintln(w, "    preview or write safer npm defaults")
+	fmt.Fprintln(w, "  quarantine [--dry-run|--apply] [--json]")
+	fmt.Fprintln(w, "    plan or apply quarantine actions when supported by the daemon")
+	fmt.Fprintln(w, "  rules list|update [--json]")
+	fmt.Fprintln(w, "    list or update security rule packs when supported by the daemon")
 	fmt.Fprintln(w, "  install-scanner        install osv-scanner via 'go install'")
 }
 
@@ -340,6 +369,12 @@ func runSecurityStatusCmd(stdout, stderr io.Writer, sock string) int {
 	installed, _ := result["installed"].(bool)
 	enabled, _ := result["enabled"].(bool)
 	path, _ := result["scanner_path"].(string)
+	mode := stringMapField(result, "mode")
+	state := firstStringField(result, "state", "posture", "level")
+	lastStartup := firstStringField(result, "last_startup_scan", "last_startup_scan_at")
+	lastDependency := firstStringField(result, "last_dependency_scan", "last_dependency_scan_at", "scanned_at")
+	warnCount := intMapField(result, "warnings", "warn_count", "warning_count")
+	blockCount := intMapField(result, "blocks", "block_count", "blocked_count")
 
 	if !installed {
 		fmt.Fprintln(stdout, "[security] osv-scanner: not installed")
@@ -352,13 +387,309 @@ func runSecurityStatusCmd(stdout, stderr io.Writer, sock string) int {
 	} else {
 		fmt.Fprintln(stdout, "[security] scanning: disabled  (enable: milliwaysctl security enable)")
 	}
+	if mode != "" {
+		fmt.Fprintf(stdout, "[security] mode: %s\n", mode)
+	}
+	if state != "" {
+		fmt.Fprintf(stdout, "[security] posture: %s\n", strings.ToUpper(state))
+	}
+	if warnCount > 0 || blockCount > 0 {
+		fmt.Fprintf(stdout, "[security] warnings: %d  blocks: %d\n", warnCount, blockCount)
+	}
+	if lastStartup != "" {
+		fmt.Fprintf(stdout, "[security] last startup scan: %s\n", lastStartup)
+	}
+	if lastDependency != "" {
+		fmt.Fprintf(stdout, "[security] last dependency scan: %s\n", lastDependency)
+	}
+	return 0
+}
+
+func runSecurityScan(args []string, stdout, stderr io.Writer, sock string) int {
+	fs := flag.NewFlagSet("security scan", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw JSON result")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	return callSecurityRPC("security scan", "security.scan", map[string]any{}, *asJSON, stdout, stderr, sock)
+}
+
+func runSecurityStartupScan(args []string, stdout, stderr io.Writer, sock string) int {
+	fs := flag.NewFlagSet("security startup-scan", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw JSON result")
+	strict := fs.Bool("strict", false, "request strict startup posture checks")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	return callSecurityRPC("security startup-scan", "security.startup_scan", map[string]any{
+		"strict": *strict,
+	}, *asJSON, stdout, stderr, sock)
+}
+
+func runSecurityWarnings(args []string, stdout, stderr io.Writer, sock string) int {
+	fs := flag.NewFlagSet("security warnings", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw JSON result")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	return callSecurityRPC("security warnings", "security.warnings", map[string]any{}, *asJSON, stdout, stderr, sock)
+}
+
+func runSecurityMode(args []string, stdout, stderr io.Writer, sock string) int {
+	if len(args) > 1 {
+		fmt.Fprintln(stderr, "security mode: expected zero args or one of off|observe|warn|strict|ci")
+		return 1
+	}
+	params := map[string]any{}
+	if len(args) == 1 {
+		mode := args[0]
+		if !validSecurityMode(mode) {
+			fmt.Fprintf(stderr, "security mode: invalid mode %q (want off, observe, warn, strict, or ci)\n", mode)
+			return 1
+		}
+		params["mode"] = mode
+	}
+	return callSecurityRPC("security mode", "security.mode", params, false, stdout, stderr, sock)
+}
+
+func validSecurityMode(mode string) bool {
+	switch mode {
+	case "off", "observe", "warn", "strict", "ci":
+		return true
+	default:
+		return false
+	}
+}
+
+func runSecurityQuarantine(args []string, stdout, stderr io.Writer, sock string) int {
+	fs := flag.NewFlagSet("security quarantine", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw JSON result")
+	dryRun := fs.Bool("dry-run", true, "plan actions without changing files")
+	apply := fs.Bool("apply", false, "apply planned quarantine actions")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if *apply {
+		*dryRun = false
+	}
+	return callSecurityRPC("security quarantine", "security.quarantine", map[string]any{
+		"dry_run": *dryRun,
+		"apply":   *apply,
+	}, *asJSON, stdout, stderr, sock)
+}
+
+func runSecurityRules(args []string, stdout, stderr io.Writer, sock string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "security rules: expected list or update")
+		return 1
+	}
+	verb := args[0]
+	rest := args[1:]
+	fs := flag.NewFlagSet("security rules "+verb, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw JSON result")
+	if err := fs.Parse(rest); err != nil {
+		return 1
+	}
+	switch verb {
+	case "list":
+		return callSecurityRPC("security rules list", "security.rules_list", map[string]any{}, *asJSON, stdout, stderr, sock)
+	case "update":
+		return callSecurityRPC("security rules update", "security.rules_update", map[string]any{}, *asJSON, stdout, stderr, sock)
+	default:
+		fmt.Fprintf(stderr, "security rules: unknown action %q\n", verb)
+		return 1
+	}
+}
+
+func callSecurityRPC(label, method string, params map[string]any, asJSON bool, stdout, stderr io.Writer, sock string) int {
+	c, err := rpc.Dial(sock)
+	if err != nil {
+		fmt.Fprintf(stderr, "milliwaysctl %s: dial %s: %v\n", label, sock, err)
+		return 1
+	}
+	defer func() { _ = c.Close() }()
+
+	var result map[string]any
+	if err := c.Call(method, params, &result); err != nil {
+		fmt.Fprintf(stderr, "milliwaysctl %s: %v\n", label, err)
+		if strings.Contains(err.Error(), "method not found") || strings.Contains(err.Error(), "-32601") {
+			fmt.Fprintln(stderr, "  this command surface is present in milliwaysctl and will activate when milliwaysd exposes the matching Secure MilliWays RPC")
+		}
+		return 1
+	}
+	if asJSON {
+		out, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			fmt.Fprintf(stderr, "milliwaysctl %s: encode result: %v\n", label, err)
+			return 1
+		}
+		fmt.Fprintln(stdout, string(out))
+		return 0
+	}
+	renderSecurityGenericResult(stdout, label, result)
+	return 0
+}
+
+func renderSecurityGenericResult(stdout io.Writer, label string, result map[string]any) {
+	if len(result) == 0 {
+		fmt.Fprintf(stdout, "[%s] ok\n", label)
+		return
+	}
+	if mode := stringMapField(result, "mode"); mode != "" {
+		fmt.Fprintf(stdout, "[%s] mode: %s\n", label, mode)
+		return
+	}
+	if findings, ok := result["findings"].([]any); ok {
+		fmt.Fprintf(stdout, "[%s] %d finding(s)\n", label, len(findings))
+		return
+	}
+	if warnings, ok := result["warnings"].([]any); ok {
+		fmt.Fprintf(stdout, "[%s] %d warning(s)\n", label, len(warnings))
+		return
+	}
+	if actions, ok := result["actions"].([]any); ok {
+		fmt.Fprintf(stdout, "[%s] %d action(s)\n", label, len(actions))
+		return
+	}
+	if ok, _ := result["ok"].(bool); ok {
+		fmt.Fprintf(stdout, "[%s] ok\n", label)
+		return
+	}
+	out, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Fprintln(stdout, string(out))
+}
+
+func runSecurityHarden(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "security harden: expected npm")
+		return 1
+	}
+	if args[0] != "npm" {
+		fmt.Fprintf(stderr, "security harden: unsupported target %q (want npm)\n", args[0])
+		return 1
+	}
+	return runSecurityHardenNPM(args[1:], stdout, stderr)
+}
+
+func runSecurityHardenNPM(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("security harden npm", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	dryRun := fs.Bool("dry-run", true, "preview changes without writing")
+	apply := fs.Bool("apply", false, "write safer npm defaults")
+	path := fs.String("path", ".npmrc", "npm config path")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if *apply {
+		*dryRun = false
+	}
+
+	settings := []string{
+		"ignore-scripts=true",
+		"audit=true",
+		"fund=false",
+		"package-lock=true",
+	}
+	if *dryRun {
+		fmt.Fprintf(stdout, "[security harden npm] dry-run for %s\n", *path)
+		for _, line := range settings {
+			fmt.Fprintf(stdout, "  ensure: %s\n", line)
+		}
+		fmt.Fprintln(stdout, "  apply: milliwaysctl security harden npm --apply")
+		return 0
+	}
+
+	if err := ensureNPMRCSettings(*path, settings); err != nil {
+		fmt.Fprintf(stderr, "security harden npm: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "[security harden npm] wrote safer defaults to %s\n", *path)
+	return 0
+}
+
+func ensureNPMRCSettings(path string, settings []string) error {
+	dir := filepath.Dir(path)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+
+	existingBytes, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	lines := strings.Split(string(existingBytes), "\n")
+	seenKeys := make(map[string]bool, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		key, _, ok := strings.Cut(trimmed, "=")
+		if ok {
+			seenKeys[strings.TrimSpace(key)] = true
+		}
+	}
+
+	var missing []string
+	for _, setting := range settings {
+		key, _, _ := strings.Cut(setting, "=")
+		if !seenKeys[key] {
+			missing = append(missing, setting)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+
+	content := string(existingBytes)
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	content += "# Added by MilliWays security hardening.\n"
+	content += strings.Join(missing, "\n")
+	content += "\n"
+	return os.WriteFile(path, []byte(content), 0o644)
+}
+
+func stringMapField(m map[string]any, key string) string {
+	v, _ := m[key].(string)
+	return v
+}
+
+func firstStringField(m map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if v := stringMapField(m, key); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func intMapField(m map[string]any, keys ...string) int {
+	for _, key := range keys {
+		switch v := m[key].(type) {
+		case int:
+			return v
+		case int64:
+			return int(v)
+		case float64:
+			return int(v)
+		case []any:
+			return len(v)
+		}
+	}
 	return 0
 }
 
 // runInstallScanner installs osv-scanner via go install.
 func runInstallScanner(stdout, stderr io.Writer) int {
-	import_exec := "os/exec"
-	_ = import_exec
 	fmt.Fprintln(stdout, "[security] installing osv-scanner via go install...")
 	fmt.Fprintln(stdout, "  running: go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest")
 

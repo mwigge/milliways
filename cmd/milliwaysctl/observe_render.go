@@ -76,8 +76,24 @@ type observeRenderQuota struct {
 }
 
 type observeRenderUsage struct {
-	Status observeRenderStatus
-	Quotas []observeRenderQuota
+	Status   observeRenderStatus
+	Quotas   []observeRenderQuota
+	Security observeRenderSecurity
+}
+
+type observeRenderSecurity struct {
+	Installed            bool   `json:"installed"`
+	Enabled              bool   `json:"enabled"`
+	Mode                 string `json:"mode"`
+	Posture              string `json:"posture"`
+	Warnings             int    `json:"warnings"`
+	Blocks               int    `json:"blocks"`
+	WarningCount         int    `json:"warning_count"`
+	BlockCount           int    `json:"block_count"`
+	LastStartupScanAt    string `json:"last_startup_scan_at"`
+	LastDependencyScanAt string `json:"last_dependency_scan_at"`
+	LastStartupScan      string `json:"last_startup_scan"`
+	LastDependencyScan   string `json:"last_dependency_scan"`
 }
 
 // observeRender opens an observability.subscribe stream and writes a
@@ -137,6 +153,7 @@ func fetchObserveRenderUsage(c *rpc.Client) observeRenderUsage {
 	var usage observeRenderUsage
 	_ = c.Call("status.get", nil, &usage.Status)
 	_ = c.Call("quota.get", nil, &usage.Quotas)
+	_ = c.Call("security.status", nil, &usage.Security)
 	return usage
 }
 
@@ -290,6 +307,7 @@ func formatObservabilityFrame(now time.Time, spans []observeRenderSpan, usage ob
 		formatObserveTokenCount(usage.Status.TokensIn+usage.Status.TokensOut))
 	fmt.Fprintf(&b, "│   cost:          %s (last 5m)\n", formatObserveCost(usage.Status.CostUSD))
 	fmt.Fprintf(&b, "│   time to limit: %s\n", formatTimeToLimit(usage.Quotas))
+	fmt.Fprintf(&b, "│   security:      %s\n", formatObserveSecurity(usage.Security))
 	bars := computeLatencyBars(spans, latencyTopN)
 	if len(bars) == 0 {
 		bars = []charts.Bar{
@@ -304,6 +322,43 @@ func formatObservabilityFrame(now time.Time, spans []observeRenderSpan, usage ob
 	fmt.Fprintf(&b, "│   %s\n", charts.KittyEscape(png, 0))
 	fmt.Fprintln(&b, "╰──")
 	return b.String()
+}
+
+func formatObserveSecurity(sec observeRenderSecurity) string {
+	mode := strings.TrimSpace(sec.Mode)
+	if mode == "" {
+		mode = "warn"
+	}
+	posture := strings.ToLower(strings.TrimSpace(sec.Posture))
+	warnings := sec.Warnings
+	if warnings == 0 {
+		warnings = sec.WarningCount
+	}
+	blocks := sec.Blocks
+	if blocks == 0 {
+		blocks = sec.BlockCount
+	}
+	switch {
+	case blocks > 0:
+		posture = "block"
+	case warnings > 0 && posture == "":
+		posture = "warn"
+	case posture == "":
+		posture = "ok"
+	}
+	label := "SEC OK"
+	if posture == "block" {
+		label = fmt.Sprintf("SEC BLOCK %d", blocks)
+	} else if posture == "warn" {
+		label = fmt.Sprintf("SEC WARN %d", warnings)
+	}
+	if !sec.Installed {
+		if posture == "ok" || posture == "" {
+			label = "SEC WARN"
+		}
+		return fmt.Sprintf("%s (mode %s, osv missing)", label, mode)
+	}
+	return fmt.Sprintf("%s (mode %s)", label, mode)
 }
 
 func formatObserveTokenCount(n int) string {

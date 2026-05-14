@@ -78,6 +78,9 @@ func TestSecurityStore_UpsertIdempotent(t *testing.T) {
 	if all[0].Summary != "updated summary" {
 		t.Errorf("Summary not updated: %q", all[0].Summary)
 	}
+	if all[0].Category != "dependency" {
+		t.Errorf("Category = %q, want dependency", all[0].Category)
+	}
 }
 
 func TestSecurityStore_GetByCVE(t *testing.T) {
@@ -204,5 +207,131 @@ func TestSecurityStore_ListActive_ExcludesAccepted(t *testing.T) {
 		if a.CVEID == "CVE-2024-44444" {
 			t.Error("accepted-risk finding still appears in ListActive")
 		}
+	}
+}
+
+func TestSecurityStore_ScanRunLifecycle(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	id, err := ss.InsertScanRun(SecurityScanRun{
+		Kind:      "startup",
+		Workspace: "/repo",
+		ToolName:  "milliways",
+	})
+	if err != nil {
+		t.Fatalf("InsertScanRun: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("InsertScanRun returned id 0")
+	}
+	if err := ss.CompleteScanRun(id, "completed", 3, 2, 1, ""); err != nil {
+		t.Fatalf("CompleteScanRun: %v", err)
+	}
+
+	status, err := ss.SecurityStatus("/repo")
+	if err != nil {
+		t.Fatalf("SecurityStatus: %v", err)
+	}
+	if status.LastStartupScan == nil {
+		t.Fatal("LastStartupScan is nil")
+	}
+	if status.LastStartupScan.ID != id {
+		t.Fatalf("LastStartupScan.ID = %d, want %d", status.LastStartupScan.ID, id)
+	}
+	if status.LastStartupScan.FindingsTotal != 3 {
+		t.Fatalf("FindingsTotal = %d, want 3", status.LastStartupScan.FindingsTotal)
+	}
+}
+
+func TestSecurityStore_UpsertWarningIdempotent(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	w := SecurityWarning{
+		Workspace:   "/repo",
+		Category:    "ioc",
+		Severity:    "WARN",
+		Source:      "package.json",
+		Message:     "suspicious package script",
+		Remediation: "review script",
+	}
+	if err := ss.UpsertWarning(w); err != nil {
+		t.Fatalf("UpsertWarning: %v", err)
+	}
+	w.Severity = "BLOCK"
+	w.Remediation = "remove script"
+	if err := ss.UpsertWarning(w); err != nil {
+		t.Fatalf("second UpsertWarning: %v", err)
+	}
+
+	warnings, err := ss.ListActiveWarnings("/repo")
+	if err != nil {
+		t.Fatalf("ListActiveWarnings: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings len = %d, want 1", len(warnings))
+	}
+	if warnings[0].Severity != "BLOCK" {
+		t.Fatalf("Severity = %q, want BLOCK", warnings[0].Severity)
+	}
+	if warnings[0].Remediation != "remove script" {
+		t.Fatalf("Remediation = %q, want remove script", warnings[0].Remediation)
+	}
+}
+
+func TestSecurityStore_SecurityStatusAggregatesFindingsAndWarnings(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	if err := ss.SetWorkspaceStatus("/repo", "strict", "codex"); err != nil {
+		t.Fatalf("SetWorkspaceStatus: %v", err)
+	}
+	if err := ss.UpsertFinding(SecurityFinding{
+		CVEID:            "CVE-2026-11111",
+		PackageName:      "pkg",
+		InstalledVersion: "v1",
+		Severity:         "HIGH",
+		Ecosystem:        "Go",
+	}); err != nil {
+		t.Fatalf("UpsertFinding: %v", err)
+	}
+	if err := ss.UpsertWarning(SecurityWarning{
+		Workspace: "/repo",
+		Category:  "client-profile",
+		Severity:  "BLOCK",
+		Source:    "codex",
+		Message:   "unsafe approval mode",
+	}); err != nil {
+		t.Fatalf("UpsertWarning: %v", err)
+	}
+
+	status, err := ss.SecurityStatus("/repo")
+	if err != nil {
+		t.Fatalf("SecurityStatus: %v", err)
+	}
+	if status.Mode != "strict" {
+		t.Fatalf("Mode = %q, want strict", status.Mode)
+	}
+	if status.ActiveClient != "codex" {
+		t.Fatalf("ActiveClient = %q, want codex", status.ActiveClient)
+	}
+	if status.Posture != "block" {
+		t.Fatalf("Posture = %q, want block", status.Posture)
+	}
+	if status.CountsByCategory["dependency"] != 1 {
+		t.Fatalf("dependency count = %d, want 1", status.CountsByCategory["dependency"])
+	}
+	if status.CountsByCategory["client-profile"] != 1 {
+		t.Fatalf("client-profile count = %d, want 1", status.CountsByCategory["client-profile"])
+	}
+	if status.CountsBySeverity["HIGH"] != 1 {
+		t.Fatalf("HIGH count = %d, want 1", status.CountsBySeverity["HIGH"])
+	}
+	if status.CountsBySeverity["BLOCK"] != 1 {
+		t.Fatalf("BLOCK count = %d, want 1", status.CountsBySeverity["BLOCK"])
 	}
 }
