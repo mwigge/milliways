@@ -34,6 +34,7 @@ import (
 	"github.com/mwigge/milliways/internal/provider"
 	"github.com/mwigge/milliways/internal/security"
 	"github.com/mwigge/milliways/internal/security/firewall"
+	"github.com/mwigge/milliways/internal/security/outputgate"
 	"github.com/mwigge/milliways/internal/tools"
 )
 
@@ -136,6 +137,20 @@ type LoopOptions struct {
 	// CommandFirewall, when configured, evaluates Bash tool commands before
 	// execution. Nil preserves existing behavior.
 	CommandFirewall CommandFirewall
+	// OutputGate scans files generated or modified by MilliWays-controlled
+	// tools before folding the tool result back into the conversation.
+	OutputGate OutputGateOptions
+}
+
+// OutputGateOptions configures post-tool security scanning for generated files.
+// Zero value disables the gate unless it can be derived from a StaticCommandFirewall.
+type OutputGateOptions struct {
+	Workspace string
+	Mode      security.Mode
+	Scanners  []outputgate.Scanner
+	// UseDefaultScanners asks the gate to use the real local adapters when
+	// Scanners is nil. Tests can leave this false and pass an explicit scanner set.
+	UseDefaultScanners bool
 }
 
 // CommandFirewall evaluates shell commands before the runner executes them.
@@ -220,6 +235,7 @@ func RunAgenticLoop(ctx context.Context, client Client, registry *tools.Registry
 	}
 
 	var result LoopResult
+	outputGate := deriveOutputGateOptions(opts.OutputGate, opts.CommandFirewall)
 	for turn := 0; turn < maxTurns; turn++ {
 		if err := ctx.Err(); err != nil {
 			return result, err
@@ -298,7 +314,7 @@ func RunAgenticLoop(ctx context.Context, client Client, registry *tools.Registry
 		if opts.XMLToolMode {
 			results := make([]string, 0, len(t.ToolCalls))
 			for _, call := range t.ToolCalls {
-				content := executeOneToolCall(ctx, registry, opts.SessionID, call, opts.CommandFirewall, opts.Logger)
+				content := executeOneToolCall(ctx, registry, opts.SessionID, call, opts.CommandFirewall, outputGate, opts.Logger)
 				results = append(results, fmt.Sprintf(
 					`{"name":%q,"output":%s}`,
 					call.Name,
@@ -313,7 +329,7 @@ func RunAgenticLoop(ctx context.Context, client Client, registry *tools.Registry
 			// Tool output is wrapped in structural markers so the model treats
 			// it as untrusted data rather than as instructions.
 			for _, call := range t.ToolCalls {
-				content := executeOneToolCall(ctx, registry, opts.SessionID, call, opts.CommandFirewall, opts.Logger)
+				content := executeOneToolCall(ctx, registry, opts.SessionID, call, opts.CommandFirewall, outputGate, opts.Logger)
 				*messages = append(*messages, Message{
 					Role:       RoleTool,
 					ToolCallID: call.ID,
@@ -453,7 +469,7 @@ func wrapToolResult(toolName, content string) string {
 // executeOneToolCall parses the call's args, looks up the handler, and runs
 // it. Any failure becomes an "error: <detail>" string suitable for sending
 // back to the model as a tool result.
-func executeOneToolCall(ctx context.Context, registry *tools.Registry, sessionID string, call ToolCall, commandFirewall CommandFirewall, logger *slog.Logger) string {
+func executeOneToolCall(ctx context.Context, registry *tools.Registry, sessionID string, call ToolCall, commandFirewall CommandFirewall, outputGate OutputGateOptions, logger *slog.Logger) string {
 	if registry == nil {
 		return "error: no tool registry configured"
 	}
@@ -469,14 +485,164 @@ func executeOneToolCall(ctx context.Context, registry *tools.Registry, sessionID
 	if blockMsg := evaluateCommandFirewall(ctx, commandFirewall, sessionID, call.Name, args, logger); blockMsg != "" {
 		return blockMsg
 	}
+	var before outputgate.WorkspaceSnapshot
+	var haveBefore bool
+	if outputGateEnabled(outputGate) {
+		var err error
+		before, err = outputgate.CaptureWorkspace(outputGate.Workspace)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("output gate pre-tool snapshot failed", "tool", call.Name, "session_id", sessionID, "error", err)
+			}
+		} else {
+			haveBefore = true
+		}
+	}
 	toolCtx, toolSpan := startToolSpan(ctx, call.Name)
 	result, err := registry.ExecTool(toolCtx, sessionID, call.Name, args)
 	if err != nil {
 		endToolSpan(toolSpan, err.Error())
-		return fmt.Sprintf("error: %v", err)
+		result = fmt.Sprintf("error: %v", err)
+	} else {
+		endToolSpan(toolSpan, "")
 	}
-	endToolSpan(toolSpan, "")
+	if haveBefore {
+		result = appendOutputGateResult(ctx, outputGate, before, result, logger, sessionID, call.Name)
+	}
 	return result
+}
+
+func deriveOutputGateOptions(gate OutputGateOptions, commandFirewall CommandFirewall) OutputGateOptions {
+	if strings.TrimSpace(gate.Workspace) != "" {
+		return gate
+	}
+	static, ok := commandFirewall.(StaticCommandFirewall)
+	if !ok || strings.TrimSpace(static.CWD) == "" {
+		return gate
+	}
+	return OutputGateOptions{
+		Workspace:          static.CWD,
+		Mode:               static.Policy.Mode,
+		UseDefaultScanners: true,
+	}
+}
+
+func outputGateEnabled(gate OutputGateOptions) bool {
+	if strings.TrimSpace(gate.Workspace) == "" {
+		return false
+	}
+	return security.NormalizeMode(gate.Mode) != security.ModeOff
+}
+
+func outputGateScanners(gate OutputGateOptions) []outputgate.Scanner {
+	if gate.Scanners != nil {
+		return gate.Scanners
+	}
+	if gate.UseDefaultScanners {
+		return outputgate.DefaultScanners()
+	}
+	return nil
+}
+
+func appendOutputGateResult(ctx context.Context, gate OutputGateOptions, before outputgate.WorkspaceSnapshot, toolResult string, logger *slog.Logger, sessionID, toolName string) string {
+	after, err := outputgate.CaptureWorkspace(gate.Workspace)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("output gate post-tool snapshot failed", "tool", toolName, "session_id", sessionID, "error", err)
+		}
+		return toolResult
+	}
+	plan := outputgate.PlanSnapshotDiff(before, after)
+	if len(plan.Requests) == 0 {
+		return toolResult
+	}
+	exec := outputgate.ExecutePlan(ctx, gate.Workspace, plan, outputGateScanners(gate))
+	if len(exec.Results) == 0 && len(exec.Warnings) == 0 {
+		return toolResult
+	}
+	report := formatOutputGateReport(exec)
+	if outputGateShouldBlock(gate.Mode, exec) {
+		report += "\nerror: output gate blocked generated file changes"
+	}
+	if logger != nil {
+		logger.Warn("output gate scanned generated files",
+			"tool", toolName,
+			"session_id", sessionID,
+			"scan_results", len(exec.Results),
+			"warnings", len(exec.Warnings),
+			"blocked", outputGateShouldBlock(gate.Mode, exec),
+		)
+	}
+	if strings.TrimSpace(toolResult) == "" {
+		return report
+	}
+	return toolResult + "\n\n" + report
+}
+
+func formatOutputGateReport(exec outputgate.ExecutionResult) string {
+	var b strings.Builder
+	b.WriteString("security output gate:\n")
+	for _, warning := range exec.Warnings {
+		b.WriteString("- warning: " + warning.Message + "\n")
+	}
+	for _, result := range exec.Results {
+		for _, finding := range result.Findings {
+			b.WriteString("- finding: " + formatOutputGateFinding(result, finding) + "\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func formatOutputGateFinding(result security.ScanResult, finding security.Finding) string {
+	toolName := strings.TrimSpace(finding.ToolName)
+	if toolName == "" {
+		toolName = strings.TrimSpace(result.ToolName)
+	}
+	parts := make([]string, 0, 6)
+	if toolName != "" {
+		parts = append(parts, toolName)
+	}
+	if finding.Severity != "" {
+		parts = append(parts, strings.ToUpper(finding.Severity))
+	}
+	if finding.Category != "" {
+		parts = append(parts, string(finding.Category))
+	}
+	if finding.FilePath != "" {
+		loc := finding.FilePath
+		if finding.Line > 0 {
+			loc += ":" + strconv.Itoa(finding.Line)
+		}
+		parts = append(parts, loc)
+	}
+	if finding.ID != "" {
+		parts = append(parts, finding.ID)
+	} else if finding.CVEID != "" {
+		parts = append(parts, finding.CVEID)
+	}
+	if finding.Summary != "" {
+		parts = append(parts, finding.Summary)
+	}
+	return strings.Join(parts, " ")
+}
+
+func outputGateShouldBlock(mode security.Mode, exec outputgate.ExecutionResult) bool {
+	mode = security.NormalizeMode(mode)
+	if mode != security.ModeStrict && mode != security.ModeCI {
+		return false
+	}
+	for _, result := range exec.Results {
+		for _, finding := range result.Findings {
+			if finding.Status == security.FindingBlocked {
+				return true
+			}
+			switch strings.ToUpper(strings.TrimSpace(finding.Severity)) {
+			case "CRITICAL", "HIGH":
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func evaluateCommandFirewall(ctx context.Context, commandFirewall CommandFirewall, sessionID, toolName string, args map[string]any, logger *slog.Logger) string {

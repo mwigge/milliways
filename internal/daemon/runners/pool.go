@@ -110,6 +110,10 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 	pushModel(stream, AgentIDPool)
 
 	cwd, _ := os.Getwd()
+	if !runExternalCLIPreflight(ctx, AgentIDPool, cwd, stream, metrics) {
+		spanErr = "security profile blocked handoff"
+		return
+	}
 	cmd := exec.CommandContext(ctx, poolBinary, poolArgsBuilder(text, cwd)...)
 	cmd.Env = safeRunnerEnv()
 	if cwd != "" {

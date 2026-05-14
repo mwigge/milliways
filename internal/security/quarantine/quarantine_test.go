@@ -91,6 +91,90 @@ func TestPlanActionsFindsDryRunActions(t *testing.T) {
 	}
 }
 
+func TestPlanActionsFindsLinuxUserSystemdUnitDryRun(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	systemd := filepath.Join(root, ".config", "systemd", "user")
+	unitPath := filepath.Join(systemd, "gh-token-monitor.service")
+	writeFile(t, systemd, "gh-token-monitor.service", `[Unit]
+Description=GitHub token monitor
+
+[Service]
+ExecStart=/bin/sh -c "gh-token-monitor --background"
+`)
+
+	plan, err := quarantine.PlanActions(context.Background(), quarantine.Options{
+		WorkspaceRoot: root,
+		SystemdRoots:  []quarantine.Root{{Name: "user-systemd", Path: systemd}},
+		Now:           fixedTime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	action := onlyAction(t, plan.Actions)
+	if action.Kind != quarantine.ActionDisableSystemdUnit {
+		t.Fatalf("kind = %q, want systemd disable", action.Kind)
+	}
+	if action.SourcePath != unitPath {
+		t.Fatalf("source = %q, want %q", action.SourcePath, unitPath)
+	}
+	if !strings.HasSuffix(action.DestinationPath, filepath.Join(".milliways", "quarantine", "20260514T120000Z", ".config", "systemd", "user", "gh-token-monitor.service.bak")) {
+		t.Fatalf("backup = %q", action.DestinationPath)
+	}
+	if !action.ApplyRequired {
+		t.Fatal("systemd dry-run should require explicit confirmation")
+	}
+	if !strings.Contains(action.RollbackHint, "re-enable the user systemd unit") {
+		t.Fatalf("rollback hint = %q", action.RollbackHint)
+	}
+	assertHash(t, action.Hash)
+}
+
+func TestPlanActionsFindsMacOSLaunchAgentDryRun(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	agents := filepath.Join(root, "Users", "alice", "Library", "LaunchAgents")
+	plistPath := filepath.Join(agents, "com.user.gh-token-monitor.plist")
+	writeFile(t, agents, "com.user.gh-token-monitor.plist", `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.user.gh-token-monitor</string>
+  <key>ProgramArguments</key><array><string>gh-token-monitor</string></array>
+</dict></plist>
+`)
+
+	plan, err := quarantine.PlanActions(context.Background(), quarantine.Options{
+		WorkspaceRoot: root,
+		LaunchAgentRoots: []quarantine.Root{
+			{Name: "launch-agents", Path: agents},
+		},
+		Now: fixedTime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	action := onlyAction(t, plan.Actions)
+	if action.Kind != quarantine.ActionDisableLaunchAgent {
+		t.Fatalf("kind = %q, want LaunchAgent disable", action.Kind)
+	}
+	if action.SourcePath != plistPath {
+		t.Fatalf("source = %q, want %q", action.SourcePath, plistPath)
+	}
+	if !strings.HasSuffix(action.DestinationPath, filepath.Join(".milliways", "quarantine", "20260514T120000Z", "Users", "alice", "Library", "LaunchAgents", "com.user.gh-token-monitor.plist.bak")) {
+		t.Fatalf("backup = %q", action.DestinationPath)
+	}
+	if !action.ApplyRequired {
+		t.Fatal("LaunchAgent dry-run should require explicit confirmation")
+	}
+	if !strings.Contains(action.RollbackHint, "load the LaunchAgent plist") {
+		t.Fatalf("rollback hint = %q", action.RollbackHint)
+	}
+	assertHash(t, action.Hash)
+}
+
 func TestPlanActionsRequiresWorkspaceRoot(t *testing.T) {
 	t.Parallel()
 
@@ -283,12 +367,106 @@ func TestApplyPlanLeavesApplyRequiredPersistenceActionsUntouched(t *testing.T) {
 	}
 }
 
+func TestApplyPlanRefusesServiceDisableWithoutExplicitConfirmation(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	systemd := filepath.Join(root, ".config", "systemd", "user")
+	writeFile(t, systemd, "gh-token-monitor.service", "[Service]\nExecStart=gh-token-monitor\n")
+
+	plan, err := quarantine.PlanActions(context.Background(), quarantine.Options{
+		WorkspaceRoot: root,
+		SystemdRoots:  []quarantine.Root{{Name: "user-systemd", Path: systemd}},
+		Now:           fixedTime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := quarantine.ApplyPlan(context.Background(), plan, quarantine.ApplyOptions{Now: fixedTime})
+	if err != nil {
+		t.Fatalf("ApplyPlan: %v", err)
+	}
+	action := onlyAppliedAction(t, result.Actions)
+	if action.Status != quarantine.ApplyStatusRequiresConfirmation {
+		t.Fatalf("status = %q, want requires-confirmation: %#v", action.Status, action)
+	}
+	if action.Error == "" || !strings.Contains(action.Error, "explicit confirmation") {
+		t.Fatalf("error = %q, want explicit confirmation message", action.Error)
+	}
+	if _, err := os.Stat(action.SourcePath); err != nil {
+		t.Fatalf("systemd source should remain present: %v", err)
+	}
+	if _, err := os.Stat(action.DestinationPath); !os.IsNotExist(err) {
+		t.Fatalf("systemd backup should not be created without explicit confirmation: %v", err)
+	}
+}
+
+func TestApplyPlanDisablesServiceWithExplicitConfirmation(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	launchDaemons := filepath.Join(root, "Library", "LaunchDaemons")
+	writeFile(t, launchDaemons, "com.user.gh-token-monitor.plist", "<plist><string>gh-token-monitor</string></plist>\n")
+
+	plan, err := quarantine.PlanActions(context.Background(), quarantine.Options{
+		WorkspaceRoot:    root,
+		LaunchAgentRoots: []quarantine.Root{{Name: "launch-daemons", Path: launchDaemons}},
+		Now:              fixedTime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := quarantine.ApplyPlan(context.Background(), plan, quarantine.ApplyOptions{
+		Now:                   fixedTime,
+		ConfirmServiceDisable: true,
+	})
+	if err != nil {
+		t.Fatalf("ApplyPlan: %v", err)
+	}
+	action := onlyAppliedAction(t, result.Actions)
+	if action.Status != quarantine.ApplyStatusApplied {
+		t.Fatalf("status = %q, want applied: %#v", action.Status, action)
+	}
+	if _, err := os.Stat(action.SourcePath); !os.IsNotExist(err) {
+		t.Fatalf("service source should be removed after confirmed disable: %v", err)
+	}
+	backup, err := os.ReadFile(action.DestinationPath)
+	if err != nil {
+		t.Fatalf("read service backup: %v", err)
+	}
+	if string(backup) != "<plist><string>gh-token-monitor</string></plist>\n" {
+		t.Fatalf("backup contents = %q", backup)
+	}
+	assertHash(t, action.AppliedHash)
+	if action.AppliedHash != action.Hash {
+		t.Fatalf("applied hash = %q, want original hash %q", action.AppliedHash, action.Hash)
+	}
+}
+
 func actionsByKind(actions []quarantine.Action) map[quarantine.ActionKind]quarantine.Action {
 	out := make(map[quarantine.ActionKind]quarantine.Action, len(actions))
 	for _, action := range actions {
 		out[action.Kind] = action
 	}
 	return out
+}
+
+func onlyAction(t *testing.T, actions []quarantine.Action) quarantine.Action {
+	t.Helper()
+	if len(actions) != 1 {
+		t.Fatalf("actions = %d, want 1: %#v", len(actions), actions)
+	}
+	return actions[0]
+}
+
+func onlyAppliedAction(t *testing.T, actions []quarantine.AppliedAction) quarantine.AppliedAction {
+	t.Helper()
+	if len(actions) != 1 {
+		t.Fatalf("applied actions = %d, want 1: %#v", len(actions), actions)
+	}
+	return actions[0]
 }
 
 func actionsByApplyKind(actions []quarantine.AppliedAction) map[quarantine.ActionKind]quarantine.AppliedAction {

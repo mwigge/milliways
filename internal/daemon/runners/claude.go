@@ -139,6 +139,10 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	pushModel(stream, AgentIDClaude)
 
 	cwd, _ := os.Getwd()
+	if !runExternalCLIPreflight(ctx, AgentIDClaude, cwd, stream, metrics) {
+		endDispatchSpan(span, 0, 0, 0, "security profile blocked handoff")
+		return
+	}
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",

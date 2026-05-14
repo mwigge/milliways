@@ -91,7 +91,8 @@ const (
 
 // ApplyOptions controls local quarantine mutation.
 type ApplyOptions struct {
-	Now func() time.Time
+	Now                   func() time.Time
+	ConfirmServiceDisable bool
 }
 
 // ApplyResult summarizes a local quarantine apply attempt.
@@ -190,7 +191,12 @@ func ApplyPlan(ctx context.Context, plan Plan, opts ApplyOptions) (ApplyResult, 
 		case ActionDisableVSCodeFolderOpen:
 			applied = applyDisableVSCodeFolderOpen(action, appliedAt)
 		case ActionDisableSystemdUnit, ActionDisableLaunchAgent:
-			applied.Status = ApplyStatusRequiresConfirmation
+			if !opts.ConfirmServiceDisable {
+				applied.Status = ApplyStatusRequiresConfirmation
+				applied.Error = "explicit confirmation required to disable user services"
+				break
+			}
+			applied = applyDisableService(action, appliedAt)
 		default:
 			applied.Status = ApplyStatusFailed
 			applied.Error = "unsupported quarantine action kind"
@@ -385,6 +391,9 @@ func rollbackHint(kind ActionKind, path string) string {
 	case ActionDisableSystemdUnit:
 		return "restore backup and re-enable the user systemd unit for " + filepath.Base(path)
 	case ActionDisableLaunchAgent:
+		if strings.Contains(filepath.ToSlash(path), "/LaunchDaemons/") {
+			return "restore backup and load the LaunchDaemon plist for " + filepath.Base(path)
+		}
 		return "restore backup and load the LaunchAgent plist for " + filepath.Base(path)
 	default:
 		return "restore backup to " + path
@@ -455,6 +464,30 @@ func applyDisableVSCodeFolderOpen(action Action, appliedAt time.Time) AppliedAct
 	}
 	applied.Status = ApplyStatusApplied
 	applied.AppliedHash = hashBytes(rewritten)
+	return applied
+}
+
+func applyDisableService(action Action, appliedAt time.Time) AppliedAction {
+	applied := AppliedAction{Action: action, AppliedAt: appliedAt}
+	data, mode, err := readActionSource(action)
+	if err != nil {
+		return failedAction(applied, err)
+	}
+	if err := ensureExpectedHash(action, data); err != nil {
+		return failedAction(applied, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(action.DestinationPath), 0o700); err != nil {
+		return failedAction(applied, fmt.Errorf("create backup directory: %w", err))
+	}
+	if err := writeNewFile(action.DestinationPath, data, mode); err != nil {
+		return failedAction(applied, fmt.Errorf("write backup: %w", err))
+	}
+	if err := os.Remove(action.SourcePath); err != nil {
+		_ = os.Remove(action.DestinationPath)
+		return failedAction(applied, fmt.Errorf("remove service definition after backup: %w", err))
+	}
+	applied.Status = ApplyStatusApplied
+	applied.AppliedHash = hashBytes(data)
 	return applied
 }
 

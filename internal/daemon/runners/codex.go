@@ -119,6 +119,10 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	pushModel(stream, AgentIDCodex)
 
 	cwd, _ := os.Getwd()
+	if !runExternalCLIPreflight(ctx, AgentIDCodex, cwd, stream, metrics) {
+		spanErr = "security profile blocked handoff"
+		return
+	}
 	cmd := exec.CommandContext(ctx, codexBinary, buildCodexCmdArgsWithSession(text, cwd, codexModelExtraArgs(model), state.sessionID)...)
 	cmd.Env = safeRunnerEnv()
 	cmd.WaitDelay = 5 * time.Second

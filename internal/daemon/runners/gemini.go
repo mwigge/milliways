@@ -117,6 +117,10 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	pushModel(stream, AgentIDGemini)
 
 	cwd, _ := os.Getwd()
+	if !runExternalCLIPreflight(ctx, AgentIDGemini, cwd, stream, metrics) {
+		spanErr = "security profile blocked handoff"
+		return
+	}
 	cmd := exec.CommandContext(ctx, geminiBinary, geminiArgsBuilder(text)...)
 	cmd.Env = safeRunnerEnv()
 	if cwd != "" {

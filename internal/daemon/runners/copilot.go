@@ -94,6 +94,10 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	pushModel(stream, AgentIDCopilot)
 
 	cwd, _ := os.Getwd()
+	if !runExternalCLIPreflight(ctx, AgentIDCopilot, cwd, stream, metrics) {
+		spanErr = "security profile blocked handoff"
+		return
+	}
 	cmd := exec.CommandContext(ctx, copilotBinary, copilotArgsBuilder(text, cwd)...)
 	cmd.Env = safeRunnerEnv()
 	if cwd != "" {

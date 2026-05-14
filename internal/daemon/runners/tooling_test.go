@@ -17,12 +17,15 @@ package runners
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mwigge/milliways/internal/provider"
 	"github.com/mwigge/milliways/internal/security"
 	"github.com/mwigge/milliways/internal/security/firewall"
+	"github.com/mwigge/milliways/internal/security/outputgate"
 	"github.com/mwigge/milliways/internal/tools"
 )
 
@@ -224,6 +227,143 @@ func TestRunAgenticLoop_CommandFirewallIgnoresNonBashTools(t *testing.T) {
 	}
 	if len(messages) < 3 || !strings.Contains(messages[2].Content, "npm install left-pad") {
 		t.Fatalf("non-Bash tool result was unexpectedly blocked; messages = %+v", messages)
+	}
+}
+
+func TestRunAgenticLoop_OutputGateScansGeneratedSecretAndSASTFiles(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "WriteApp", Args: `{}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	registry.Register("WriteApp", func(context.Context, map[string]any) (string, error) {
+		if err := os.WriteFile(workspace+"/app.go", []byte("package main\n"), 0o644); err != nil {
+			return "", err
+		}
+		return "wrote app", nil
+	}, provider.ToolDef{Name: "WriteApp"})
+	secret := &outputGateFakeAdapter{
+		name:      "secret-tool",
+		installed: true,
+		result: security.ScanResult{Findings: []security.Finding{{
+			ID:       "secret-1",
+			Severity: "HIGH",
+			FilePath: "app.go",
+			Summary:  "generated token",
+		}}},
+	}
+	sast := &outputGateFakeAdapter{
+		name:      "sast-tool",
+		installed: true,
+		result: security.ScanResult{Findings: []security.Finding{{
+			ID:       "sast-1",
+			Severity: "MEDIUM",
+			FilePath: "app.go",
+			Summary:  "generated issue",
+		}}},
+	}
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		OutputGate: OutputGateOptions{
+			Workspace: workspace,
+			Mode:      security.ModeWarn,
+			Scanners: []outputgate.Scanner{
+				{Kind: security.ScanSecret, Adapter: secret},
+				{Kind: security.ScanSAST, Adapter: sast},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	assertOutputGateCall(t, secret, workspace, []string{"app.go"})
+	assertOutputGateCall(t, sast, workspace, []string{"app.go"})
+	content := messages[2].Content
+	if !strings.Contains(content, "wrote app") || !strings.Contains(content, "security output gate:") {
+		t.Fatalf("tool content missing output gate report: %q", content)
+	}
+	if !strings.Contains(content, "secret-1") || !strings.Contains(content, "sast-1") {
+		t.Fatalf("tool content missing scanner findings: %q", content)
+	}
+}
+
+func TestRunAgenticLoop_OutputGateWarnsWhenScannerMissing(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "WriteApp", Args: `{}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	registry.Register("WriteApp", func(context.Context, map[string]any) (string, error) {
+		return "wrote app", os.WriteFile(workspace+"/app.go", []byte("package main\n"), 0o644)
+	}, provider.ToolDef{Name: "WriteApp"})
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		OutputGate: OutputGateOptions{
+			Workspace: workspace,
+			Mode:      security.ModeWarn,
+			Scanners:  []outputgate.Scanner{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	content := messages[2].Content
+	if !strings.Contains(content, "secret scan skipped: no secret scanner adapter configured") {
+		t.Fatalf("tool content missing secret scanner warning: %q", content)
+	}
+	if !strings.Contains(content, "sast scan skipped: no sast scanner adapter configured") {
+		t.Fatalf("tool content missing sast scanner warning: %q", content)
+	}
+}
+
+func TestRunAgenticLoop_OutputGateNoopWhenNoModifiedFiles(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "Noop", Args: `{}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	registry.Register("Noop", func(context.Context, map[string]any) (string, error) {
+		return "nothing changed", nil
+	}, provider.ToolDef{Name: "Noop"})
+	secret := &outputGateFakeAdapter{name: "secret-tool", installed: true}
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		OutputGate: OutputGateOptions{
+			Workspace: workspace,
+			Mode:      security.ModeWarn,
+			Scanners:  []outputgate.Scanner{{Kind: security.ScanSecret, Adapter: secret}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	if len(secret.calls) != 0 {
+		t.Fatalf("scanner calls = %#v, want none", secret.calls)
+	}
+	content := messages[2].Content
+	if strings.Contains(content, "security output gate:") {
+		t.Fatalf("tool content included output gate report despite no changes: %q", content)
 	}
 }
 
@@ -445,5 +585,59 @@ func TestRunAgenticLoop_MaxTurnsEnvVar(t *testing.T) {
 	}
 	if result.Turns != 3 {
 		t.Errorf("turns = %d, want 3 (from MILLIWAYS_MAX_TURNS=3)", result.Turns)
+	}
+}
+
+type outputGateFakeAdapter struct {
+	name      string
+	installed bool
+	result    security.ScanResult
+	err       error
+	calls     []outputGateScanCall
+}
+
+type outputGateScanCall struct {
+	workspace string
+	targets   []string
+}
+
+func (a *outputGateFakeAdapter) Name() string {
+	return a.name
+}
+
+func (a *outputGateFakeAdapter) Installed() bool {
+	return a.installed
+}
+
+func (a *outputGateFakeAdapter) Version(context.Context) (string, error) {
+	return "", nil
+}
+
+func (a *outputGateFakeAdapter) Scan(_ context.Context, workspace string, targets []string) (security.ScanResult, error) {
+	a.calls = append(a.calls, outputGateScanCall{workspace: workspace, targets: append([]string(nil), targets...)})
+	if a.err != nil {
+		return security.ScanResult{}, a.err
+	}
+	result := a.result
+	if result.ScannedAt.IsZero() {
+		result.ScannedAt = time.Unix(1, 0).UTC()
+	}
+	return result, nil
+}
+
+func (a *outputGateFakeAdapter) RenderFinding(security.Finding) string {
+	return ""
+}
+
+func assertOutputGateCall(t *testing.T, adapter *outputGateFakeAdapter, workspace string, targets []string) {
+	t.Helper()
+	if len(adapter.calls) != 1 {
+		t.Fatalf("%s calls = %#v, want one call", adapter.name, adapter.calls)
+	}
+	if adapter.calls[0].workspace != workspace {
+		t.Fatalf("%s workspace = %q, want %q", adapter.name, adapter.calls[0].workspace, workspace)
+	}
+	if strings.Join(adapter.calls[0].targets, ",") != strings.Join(targets, ",") {
+		t.Fatalf("%s targets = %#v, want %#v", adapter.name, adapter.calls[0].targets, targets)
 	}
 }
