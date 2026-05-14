@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/mwigge/milliways/internal/rpc"
+	"github.com/mwigge/milliways/internal/security/cra/evidence"
 	"github.com/mwigge/milliways/internal/security/outputgate"
 	"github.com/mwigge/milliways/internal/security/sbom"
 )
@@ -74,6 +75,8 @@ func runSecurity(args []string, stdout, stderr io.Writer, socketOverride ...stri
 		return runSecurityStatusCmd(stdout, stderr, sock)
 	case "cra":
 		return runSecurityCRA(rest, stdout, stderr, sock)
+	case "cra-scaffold":
+		return runSecurityCRAScaffold(rest, stdout, stderr)
 	case "sbom":
 		return runSecuritySBOM(rest, stdout, stderr)
 	case "scan":
@@ -119,6 +122,8 @@ func printSecurityUsage(w io.Writer) {
 	fmt.Fprintln(w, "  disable                disable OSV security scanning")
 	fmt.Fprintln(w, "  status                 show scanner status (enabled, installed, path)")
 	fmt.Fprintln(w, "  cra [--json]           show EU Cyber Resilience Act readiness evidence")
+	fmt.Fprintln(w, "  cra-scaffold [--workspace <dir>] [--dry-run] [--force]")
+	fmt.Fprintln(w, "    create missing CRA evidence files: SECURITY.md, SUPPORT.md, docs/update-policy.md, docs/cra-technical-file.md")
 	fmt.Fprintln(w, "  sbom [--workspace <dir>] [--output <path>]")
 	fmt.Fprintln(w, "    generate an offline SPDX JSON SBOM from local Go, Cargo, and npm package-lock manifests")
 	fmt.Fprintln(w, "  scan [--json]          run dependency security scan")
@@ -523,6 +528,53 @@ func craStatusMark(status string) string {
 	}
 }
 
+func runSecurityCRAScaffold(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("security cra-scaffold", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	workspace := fs.String("workspace", ".", "workspace root")
+	dryRun := fs.Bool("dry-run", false, "show files that would be created without writing them")
+	force := fs.Bool("force", false, "overwrite existing scaffold files")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "security cra-scaffold: unexpected positional arguments")
+		return 1
+	}
+	result, err := evidence.Scaffold(evidence.Options{
+		Workspace: *workspace,
+		DryRun:    *dryRun,
+		Force:     *force,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "security cra-scaffold: %v\n", err)
+		return 1
+	}
+	renderCRAScaffoldResult(stdout, result, *dryRun)
+	return 0
+}
+
+func renderCRAScaffoldResult(stdout io.Writer, result evidence.Result, dryRun bool) {
+	label := "[security] CRA evidence scaffold"
+	if dryRun {
+		label += " (dry-run)"
+	}
+	fmt.Fprintf(stdout, "%s workspace: %s\n", label, result.Workspace)
+	for _, action := range result.Actions {
+		status := action.Status
+		if dryRun {
+			switch action.Status {
+			case "create":
+				status = "would create"
+			case "overwrite":
+				status = "would overwrite"
+			}
+		}
+		fmt.Fprintf(stdout, "%s %s\n", status, action.RelPath)
+	}
+	fmt.Fprintf(stdout, "[security] %d created, %d existing, %d overwritten\n", result.Created, result.Existing, result.Overwritten)
+}
+
 func runSecuritySBOM(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("security sbom", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -894,6 +946,9 @@ func renderSecurityScanPlan(stdout io.Writer, label string, plan outputgate.Plan
 		if req.Reason != "" {
 			fmt.Fprintf(stdout, "    reason: %s\n", req.Reason)
 		}
+	}
+	for _, recommendation := range plan.Recommendations {
+		fmt.Fprintf(stdout, "  recommend: %s\n", recommendation)
 	}
 }
 

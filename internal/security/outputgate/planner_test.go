@@ -71,6 +71,20 @@ func TestPlanScansIncludesWorkflowAndDockerfileForSAST(t *testing.T) {
 	assertPlanFiles(t, plan, want)
 }
 
+func TestPlanScansRecommendsSBOMRefreshForGeneratedDependencyFiles(t *testing.T) {
+	t.Parallel()
+
+	plan := outputgate.PlanScans([]outputgate.FileChange{
+		{Path: "package-lock.json", Status: outputgate.StatusModified, Source: outputgate.SourceGenerated},
+		{Path: "go.sum", Status: outputgate.StatusModified, Source: outputgate.SourceStaged},
+	})
+
+	want := "Generated dependency file changed; refresh SBOM evidence with: milliwaysctl security sbom --output dist/milliways.spdx.json"
+	if !reflect.DeepEqual(plan.Recommendations, []string{want}) {
+		t.Fatalf("Recommendations = %#v, want %#v", plan.Recommendations, []string{want})
+	}
+}
+
 func TestPlanScansEmptyForDocsOnly(t *testing.T) {
 	t.Parallel()
 

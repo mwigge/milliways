@@ -21,6 +21,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/mwigge/milliways/internal/security/cra/evidence"
 	"github.com/mwigge/milliways/internal/security/sbom"
 )
 
@@ -33,6 +34,10 @@ func (l *chatLoop) handleSecurity(rest string) {
 	}
 	if args[0] == "sbom" {
 		l.handleSecuritySBOM(args[1:])
+		return
+	}
+	if args[0] == "cra-scaffold" {
+		l.handleSecurityCRAScaffold(args[1:])
 		return
 	}
 	if l.client == nil {
@@ -205,6 +210,7 @@ func printSecurityUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: /security <command>")
 	fmt.Fprintln(w, "  /security status")
 	fmt.Fprintln(w, "  /security cra")
+	fmt.Fprintln(w, "  /security cra-scaffold [--workspace <dir>] [--dry-run] [--force]")
 	fmt.Fprintln(w, "  /security sbom [--workspace <dir>] [--output <path>]")
 	fmt.Fprintln(w, "  /security scan")
 	fmt.Fprintln(w, "  /security startup-scan [--strict]")
@@ -212,6 +218,49 @@ func printSecurityUsage(w io.Writer) {
 	fmt.Fprintln(w, "  /security client <name>")
 	fmt.Fprintln(w, "  /security command-check [--mode <mode>] [--cwd <dir>] [--client <name>] -- <command...>")
 	fmt.Fprintln(w, "  /security warnings")
+}
+
+func (l *chatLoop) handleSecurityCRAScaffold(args []string) {
+	fs := flag.NewFlagSet("security cra-scaffold", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	workspace := fs.String("workspace", ".", "workspace root")
+	dryRun := fs.Bool("dry-run", false, "show files that would be created without writing them")
+	force := fs.Bool("force", false, "overwrite existing scaffold files")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(l.errw, "security cra-scaffold: %v\n", err)
+		return
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(l.errw, "usage: /security cra-scaffold [--workspace <dir>] [--dry-run] [--force]")
+		return
+	}
+	result, err := evidence.Scaffold(evidence.Options{Workspace: *workspace, DryRun: *dryRun, Force: *force})
+	if err != nil {
+		fmt.Fprintf(l.errw, "security cra-scaffold: %v\n", err)
+		return
+	}
+	renderCRAScaffoldResult(l.out, result, *dryRun)
+}
+
+func renderCRAScaffoldResult(stdout io.Writer, result evidence.Result, dryRun bool) {
+	label := "[security] CRA evidence scaffold"
+	if dryRun {
+		label += " (dry-run)"
+	}
+	fmt.Fprintf(stdout, "%s workspace: %s\n", label, result.Workspace)
+	for _, action := range result.Actions {
+		status := action.Status
+		if dryRun {
+			switch action.Status {
+			case "create":
+				status = "would create"
+			case "overwrite":
+				status = "would overwrite"
+			}
+		}
+		fmt.Fprintf(stdout, "%s %s\n", status, action.RelPath)
+	}
+	fmt.Fprintf(stdout, "[security] %d created, %d existing, %d overwritten\n", result.Created, result.Existing, result.Overwritten)
 }
 
 func validSecurityMode(mode string) bool {

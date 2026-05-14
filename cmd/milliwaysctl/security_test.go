@@ -98,10 +98,49 @@ func TestRunSecurityHelpIncludesSecureSurface(t *testing.T) {
 	if rc := runSecurity([]string{"help"}, &stdout, &bytes.Buffer{}); rc != 0 {
 		t.Fatalf("expected rc=0, got %d", rc)
 	}
-	for _, want := range []string{"startup-scan", "warnings", "mode", "client <name>", "command-check", "harden npm", "quarantine", "rules list|update", "output-plan"} {
+	for _, want := range []string{"startup-scan", "warnings", "mode", "client <name>", "command-check", "harden npm", "quarantine", "rules list|update", "output-plan", "cra-scaffold"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("help missing %q; got:\n%s", want, stdout.String())
 		}
+	}
+}
+
+func TestRunSecurityCRAScaffoldCreatesMissingEvidence(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	rc := runSecurity([]string{"cra-scaffold", "--workspace", workspace}, &stdout, &stderr)
+	if rc != 0 {
+		t.Fatalf("expected rc=0, got %d; stderr:\n%s", rc, stderr.String())
+	}
+	for _, rel := range []string{"SECURITY.md", "SUPPORT.md", "docs/update-policy.md", "docs/cra-technical-file.md"} {
+		if _, err := os.Stat(filepath.Join(workspace, rel)); err != nil {
+			t.Fatalf("expected %s to exist: %v", rel, err)
+		}
+		if !strings.Contains(stdout.String(), rel) {
+			t.Fatalf("stdout missing %s:\n%s", rel, stdout.String())
+		}
+	}
+	if !strings.Contains(stdout.String(), "4 created") {
+		t.Fatalf("stdout missing created summary:\n%s", stdout.String())
+	}
+}
+
+func TestRunSecurityCRAScaffoldDryRun(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	rc := runSecurity([]string{"cra-scaffold", "--workspace", workspace, "--dry-run"}, &stdout, &stderr)
+	if rc != 0 {
+		t.Fatalf("expected rc=0, got %d; stderr:\n%s", rc, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "SECURITY.md")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run should not write SECURITY.md, stat err=%v", err)
+	}
+	if !strings.Contains(stdout.String(), "would create SECURITY.md") {
+		t.Fatalf("stdout missing dry-run action:\n%s", stdout.String())
 	}
 }
 
@@ -405,6 +444,23 @@ func TestRunSecurityPrecommitPlanReportsGitFailure(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "read staged files") || !strings.Contains(stderr.String(), "--staged") {
 		t.Fatalf("expected staged fallback guidance, got:\n%s", stderr.String())
+	}
+}
+
+func TestRunSecurityOutputPlanRendersSBOMRefreshRecommendation(t *testing.T) {
+	var stdout bytes.Buffer
+
+	if rc := runSecurity([]string{"output-plan", "--generated", "package-lock.json"}, &stdout, &bytes.Buffer{}); rc != 0 {
+		t.Fatalf("expected rc=0, got %d", rc)
+	}
+	for _, want := range []string{
+		"dependency: package-lock.json",
+		"recommend: Generated dependency file changed; refresh SBOM evidence",
+		"milliwaysctl security sbom --output dist/milliways.spdx.json",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("output-plan missing %q; got:\n%s", want, stdout.String())
+		}
 	}
 }
 

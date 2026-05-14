@@ -921,12 +921,13 @@ Milliways wraps Claude, Codex, Copilot, Gemini, Pool, MiniMax, and local models 
 | Client profiles | `milliwaysctl security client <name>` | Per-client checks for risky configuration such as broad sandbox/write roots, auto-approval modes, unsafe local model endpoints, hooks, MCP config, and CLI path/version state. |
 | Dependency scanning | `milliwaysctl security scan` | OSV-backed dependency findings for lockfiles and manifests, with accepted-risk tracking through `security accept`. |
 | Command firewall | `milliwaysctl security command-check -- <command...>` | Pre-flight classification for package install, persistence, exfiltration, secret-read, network-download, shell-eval, IOC, and complex-unparsed command risks. |
-| Output gate | `milliwaysctl security output-plan` | Classifies generated and staged paths into secret, SAST, and dependency scan requests before output is trusted or committed. |
+| Output gate | `milliwaysctl security output-plan` | Classifies generated and staged paths into secret, SAST, and dependency scan requests before output is trusted or committed. Generated dependency files should trigger an SBOM refresh recommendation. |
 | Quarantine planner | `milliwaysctl security quarantine` | Dry-run remediation planning for suspicious workspace files and auto-run tasks. Apply-style actions require explicit confirmation through the daemon surface that supports them. |
 | Rule packs | `milliwaysctl security rules list\|update` | Bundled and local rules for IOC, startup, command, package, and persistence checks. Offline mode uses local rule packs only. |
 | SBOM generation | `milliwaysctl security sbom --output dist/milliways.spdx.json` | Offline SPDX JSON generation from local Go, Cargo, and npm package-lock manifests so CRA evidence can be produced without an external compliance service. |
+| CRA evidence scaffold | `milliwaysctl security cra-scaffold` | Creates missing CRA evidence placeholders in a workspace: `SECURITY.md`, `SUPPORT.md`, `docs/update-policy.md`, and `docs/cra-technical-file.md`. Use `--dry-run` to preview and `--force` only when replacing existing placeholders is intentional. |
 | CRA readiness | `milliwaysctl security cra`, `/security cra` | Tracks EU Cyber Resilience Act evidence: SBOM presence, vulnerability handling process, secure-by-default posture, scanner coverage, support-period metadata, and reporting readiness. CRA is a policy/evidence layer; OSV, Gitleaks, Semgrep, govulncheck, and optional NVD enrichment feed it. |
-| Status and warnings | `milliwaysctl security status`, `warnings`, `mode` | One posture summary for CLI, terminal cockpit, and future release smoke checks: mode, scanner state, last scan times, warnings, blocks, and client profile state. |
+| Status and warnings | `milliwaysctl security status`, `warnings`, `mode` | One posture summary for CLI, terminal cockpit, and future release smoke checks: mode, scanner state, startup scan required/stale state, scanner gaps, last scan times, warnings, blocks, and client profile state. |
 
 The layers are intentionally additive. Startup scan is deterministic and local; external scanners add dependency, secret, and SAST depth when installed; client profiles and command checks reduce the risk of handing unsafe work to external CLIs that execute their own tools.
 
@@ -983,6 +984,7 @@ Implementation note: MilliWays currently attaches to the `osv-scanner` CLI for l
 ```bash
 milliwaysctl security status
 milliwaysctl security cra
+milliwaysctl security cra-scaffold --dry-run
 milliwaysctl security sbom --output dist/milliways.spdx.json
 milliwaysctl security startup-scan --strict
 milliwaysctl security scan
@@ -1000,6 +1002,7 @@ Inside the MilliWays terminal, the same core posture controls are available with
 ```text
 /security status
 /security cra
+/security cra-scaffold --dry-run
 /security sbom --output dist/milliways.spdx.json
 /security startup-scan --strict
 /security scan

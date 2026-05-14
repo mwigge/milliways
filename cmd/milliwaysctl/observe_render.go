@@ -82,19 +82,28 @@ type observeRenderUsage struct {
 }
 
 type observeRenderSecurity struct {
-	Installed            bool             `json:"installed"`
-	Enabled              bool             `json:"enabled"`
-	Mode                 string           `json:"mode"`
-	Posture              string           `json:"posture"`
-	Warnings             int              `json:"warnings"`
-	Blocks               int              `json:"blocks"`
-	WarningCount         int              `json:"warning_count"`
-	BlockCount           int              `json:"block_count"`
-	LastStartupScanAt    string           `json:"last_startup_scan_at"`
-	LastDependencyScanAt string           `json:"last_dependency_scan_at"`
-	LastStartupScan      string           `json:"last_startup_scan"`
-	LastDependencyScan   string           `json:"last_dependency_scan"`
-	CRA                  observeRenderCRA `json:"cra"`
+	Installed            bool                   `json:"installed"`
+	Enabled              bool                   `json:"enabled"`
+	Mode                 string                 `json:"mode"`
+	Posture              string                 `json:"posture"`
+	Warnings             int                    `json:"warnings"`
+	Blocks               int                    `json:"blocks"`
+	WarningCount         int                    `json:"warning_count"`
+	BlockCount           int                    `json:"block_count"`
+	StartupScanCompleted bool                   `json:"startup_scan_completed"`
+	StartupScanRequired  bool                   `json:"startup_scan_required"`
+	StartupScanStale     bool                   `json:"startup_scan_stale"`
+	LastStartupScanAt    string                 `json:"last_startup_scan_at"`
+	LastDependencyScanAt string                 `json:"last_dependency_scan_at"`
+	LastStartupScan      string                 `json:"last_startup_scan"`
+	LastDependencyScan   string                 `json:"last_dependency_scan"`
+	Scanners             []observeRenderScanner `json:"scanners"`
+	CRA                  observeRenderCRA       `json:"cra"`
+}
+
+type observeRenderScanner struct {
+	Name      string `json:"name"`
+	Installed bool   `json:"installed"`
 }
 
 type observeRenderCRA struct {
@@ -326,6 +335,9 @@ func formatObservabilityFrame(now time.Time, spans []observeRenderSpan, usage ob
 	fmt.Fprintf(&b, "│   cost:          %s (last 5m)\n", formatObserveCost(usage.Status.CostUSD))
 	fmt.Fprintf(&b, "│   time to limit: %s\n", formatTimeToLimit(usage.Quotas))
 	fmt.Fprintf(&b, "│   security:      %s\n", formatObserveSecurity(usage.Security))
+	if detail := formatObserveSecurityDetail(usage.Security); detail != "" {
+		fmt.Fprintf(&b, "│   sec detail:    %s\n", detail)
+	}
 	if cra := formatObserveCRA(usage.Security.CRA); cra != "" {
 		fmt.Fprintf(&b, "│   cra:           %s\n", cra)
 	}
@@ -383,6 +395,33 @@ func formatObserveSecurity(sec observeRenderSecurity) string {
 		return fmt.Sprintf("%s (mode %s, osv missing)", label, mode)
 	}
 	return fmt.Sprintf("%s (mode %s)", label, mode)
+}
+
+func formatObserveSecurityDetail(sec observeRenderSecurity) string {
+	var parts []string
+	switch {
+	case sec.StartupScanStale:
+		parts = append(parts, "startup scan stale")
+	case sec.StartupScanRequired:
+		parts = append(parts, "startup scan required")
+	}
+	if missing := missingObserveScanners(sec.Scanners); len(missing) > 0 {
+		parts = append(parts, "missing "+strings.Join(missing, ", "))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func missingObserveScanners(scanners []observeRenderScanner) []string {
+	var missing []string
+	for _, scanner := range scanners {
+		name := strings.TrimSpace(scanner.Name)
+		if name == "" || scanner.Installed {
+			continue
+		}
+		missing = append(missing, name)
+	}
+	sort.Strings(missing)
+	return missing
 }
 
 func formatObserveCRA(cra observeRenderCRA) string {

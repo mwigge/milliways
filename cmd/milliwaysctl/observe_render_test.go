@@ -178,6 +178,36 @@ func TestFormatObservabilityFrame_ShowsSecurityPosture(t *testing.T) {
 	}
 }
 
+func TestFormatObservabilityFrame_ShowsStartupScanAndScannerGapsCompactly(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	usage := observeRenderUsage{
+		Security: observeRenderSecurity{
+			Installed:           true,
+			Enabled:             true,
+			Mode:                "warn",
+			Posture:             "warn",
+			StartupScanRequired: true,
+			StartupScanStale:    true,
+			Scanners: []observeRenderScanner{
+				{Name: "osv-scanner", Installed: true},
+				{Name: "gitleaks", Installed: false},
+				{Name: "semgrep", Installed: true},
+				{Name: "govulncheck", Installed: false},
+			},
+		},
+	}
+
+	got := formatObservabilityFrame(fixedNow, nil, usage)
+	want := "sec detail:    startup scan stale; missing gitleaks, govulncheck"
+	if !strings.Contains(got, want) {
+		t.Fatalf("frame missing compact security detail %q:\n%s", want, got)
+	}
+	if strings.Contains(got, "osv-scanner") || strings.Contains(got, "semgrep") {
+		t.Fatalf("security detail should only include scanner gaps:\n%s", got)
+	}
+}
+
 func TestFormatObservabilityFrame_ShowsCRAReadinessKPIs(t *testing.T) {
 	t.Parallel()
 	fixedNow := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)

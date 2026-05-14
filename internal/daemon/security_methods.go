@@ -1323,7 +1323,7 @@ func clientProfileConfigHash(workspace, client string) string {
 	}
 
 	h := sha256.New()
-	writeHashPart(h, "client-profile-v1")
+	writeHashPart(h, "client-profile-v2")
 	writeHashPart(h, "workspace="+workspace)
 	writeHashPart(h, "client="+client)
 	for _, env := range clientProfileEnvKeys(client) {
@@ -1365,7 +1365,13 @@ func clientProfileConfigPaths(workspace, home, configDir, client string) []strin
 	}
 	switch client {
 	case clientprofiles.ClientClaude:
+		if home != "" {
+			add(filepath.Join(home, ".claude", "settings.json"))
+			add(filepath.Join(home, ".claude", "settings.local.json"))
+			add(filepath.Join(home, ".claude", "mcp.json"))
+		}
 		addWorkspace(".claude/settings.json")
+		addWorkspace(".claude/settings.local.json")
 		addWorkspace(".claude/mcp.json")
 		addConfig(filepath.Join("claude", "settings.json"))
 		addConfig(filepath.Join("claude", "mcp.json"))
@@ -1382,11 +1388,19 @@ func clientProfileConfigPaths(workspace, home, configDir, client string) []strin
 		addConfig(filepath.Join("codex", "config.toml"))
 		addConfig(filepath.Join("codex", "config.json"))
 	case clientprofiles.ClientCopilot:
+		if home != "" {
+			add(filepath.Join(home, ".copilot", "config.json"))
+			add(filepath.Join(home, ".copilot", "settings.json"))
+		}
 		addWorkspace(".copilot/config.json")
 		addWorkspace(".copilot/settings.json")
 		addConfig(filepath.Join("github-copilot", "config.json"))
 		addConfig(filepath.Join("copilot", "config.json"))
 	case clientprofiles.ClientGemini:
+		if home != "" {
+			add(filepath.Join(home, ".gemini", "settings.json"))
+			add(filepath.Join(home, ".gemini", "config.json"))
+		}
 		addWorkspace(".gemini/settings.json")
 		addWorkspace(".gemini/config.json")
 		addConfig(filepath.Join("gemini", "settings.json"))
@@ -1397,6 +1411,10 @@ func clientProfileConfigPaths(workspace, home, configDir, client string) []strin
 		addConfig(filepath.Join("pool", "config.json"))
 		addConfig(filepath.Join("pool", "settings.json"))
 	case clientprofiles.ClientMiniMax:
+		if home != "" {
+			add(filepath.Join(home, ".minimax", "config.json"))
+			add(filepath.Join(home, ".minimax", "settings.json"))
+		}
 		addWorkspace(".minimax/config.json")
 		addWorkspace(".minimax/settings.json")
 		addConfig(filepath.Join("minimax", "config.json"))

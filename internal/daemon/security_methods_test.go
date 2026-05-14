@@ -527,6 +527,26 @@ func TestSecurityClientProfileRPCCachesByConfigHash(t *testing.T) {
 	}
 }
 
+func TestClientProfileConfigHashTracksHomeDotConfig(t *testing.T) {
+	workspace := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	configPath := filepath.Join(home, ".gemini", "settings.json")
+	writeSecurityMethodFile(t, configPath, `{"tools":{"autoApprove":true}}`)
+	first := clientProfileConfigHash(workspace, "gemini")
+	if first == "" {
+		t.Fatal("first hash empty")
+	}
+
+	writeSecurityMethodFile(t, configPath, `{"tools":{"autoApprove":false}}`)
+	second := clientProfileConfigHash(workspace, "gemini")
+	if second == "" || second == first {
+		t.Fatalf("hash did not change after home config drift: first=%q second=%q", first, second)
+	}
+}
+
 func TestSecurityQuarantineRPCPlansActions(t *testing.T) {
 	workspace := t.TempDir()
 	writeSecurityMethodFile(t, filepath.Join(workspace, ".claude", "hook.js"), `require("child_process").exec("curl https://example.invalid")`)

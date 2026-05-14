@@ -86,6 +86,144 @@ version = "1.0.203"
 	}
 }
 
+func TestGenerateSPDXIncludesPNPMYarnAndPythonPackages(t *testing.T) {
+	workspace := t.TempDir()
+	write(t, workspace, "pnpm-lock.yaml", `lockfileVersion: '9.0'
+
+packages:
+
+  '@scope/widget@1.2.3':
+    resolution: {integrity: sha512-fixture}
+
+  left-pad@1.3.0:
+    resolution: {integrity: sha512-fixture}
+
+  slashy@npm:2.0.0:
+    resolution: {integrity: sha512-fixture}
+`)
+	write(t, workspace, "yarn.lock", `# yarn lockfile v1
+
+"@babel/core@^7.24.0":
+  version "7.24.4"
+
+left-pad@^1.3.0:
+  version "1.3.0"
+
+slashy@npm:^2.0.0:
+  version: "2.0.0"
+`)
+	write(t, workspace, "requirements.txt", `# direct pins only
+requests==2.31.0
+flask[async]==3.0.2 ; python_version >= "3.11"
+unpinned>=1.0.0
+`)
+
+	doc, err := GenerateSPDX(GenerateOptions{
+		Workspace: workspace,
+		Now:       time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("GenerateSPDX: %v", err)
+	}
+	for _, want := range []struct {
+		name    string
+		version string
+		source  string
+	}{
+		{"@scope/widget", "1.2.3", "pnpm-lock.yaml"},
+		{"left-pad", "1.3.0", "pnpm-lock.yaml"},
+		{"slashy", "2.0.0", "pnpm-lock.yaml"},
+		{"@babel/core", "7.24.4", "yarn.lock"},
+		{"left-pad", "1.3.0", "yarn.lock"},
+		{"slashy", "2.0.0", "yarn.lock"},
+		{"requests", "2.31.0", "requirements.txt"},
+		{"flask", "3.0.2", "requirements.txt"},
+	} {
+		if !hasPackage(doc, want.name, want.version, want.source) {
+			t.Fatalf("missing package %s %s from %s: %#v", want.name, want.version, want.source, doc.Packages)
+		}
+	}
+	if hasPackage(doc, "unpinned", "1.0.0", "requirements.txt") {
+		t.Fatalf("non-exact requirements entry should be skipped: %#v", doc.Packages)
+	}
+}
+
+func TestGenerateSPDXIncludesBunLockPackages(t *testing.T) {
+	workspace := t.TempDir()
+	write(t, workspace, "bun.lock", `{
+  "lockfileVersion": 1,
+  "packages": {
+    "@scope/widget": ["@scope/widget@1.2.3", "", {}, "sha512-fixture"],
+    "left-pad": ["left-pad@1.3.0", "", {}, "sha512-fixture"],
+    "git-dep": ["git-dep@git+https://example.test/repo", "", {}, ""]
+  }
+}`)
+
+	doc, err := GenerateSPDX(GenerateOptions{Workspace: workspace})
+	if err != nil {
+		t.Fatalf("GenerateSPDX: %v", err)
+	}
+	for _, want := range []struct {
+		name    string
+		version string
+		source  string
+	}{
+		{"@scope/widget", "1.2.3", "bun.lock"},
+		{"left-pad", "1.3.0", "bun.lock"},
+	} {
+		if !hasPackage(doc, want.name, want.version, want.source) {
+			t.Fatalf("missing package %s %s from %s: %#v", want.name, want.version, want.source, doc.Packages)
+		}
+	}
+	if hasPackage(doc, "git-dep", "git+https://example.test/repo", "bun.lock") {
+		t.Fatalf("non-version bun entry should be skipped: %#v", doc.Packages)
+	}
+}
+
+func TestGenerateSPDXIncludesPythonProjectAndLockPackages(t *testing.T) {
+	workspace := t.TempDir()
+	write(t, workspace, "pyproject.toml", `[project]
+dependencies = [
+  "httpx==0.27.0",
+  "anyio>=4.0.0",
+]
+`)
+	write(t, workspace, "poetry.lock", `[[package]]
+name = "click"
+version = "8.1.7"
+
+[[package]]
+name = "packaging"
+version = "24.0"
+`)
+	write(t, workspace, "uv.lock", `[[package]]
+name = "ruff"
+version = "0.4.4"
+`)
+
+	doc, err := GenerateSPDX(GenerateOptions{Workspace: workspace})
+	if err != nil {
+		t.Fatalf("GenerateSPDX: %v", err)
+	}
+	for _, want := range []struct {
+		name    string
+		version string
+		source  string
+	}{
+		{"httpx", "0.27.0", "pyproject.toml"},
+		{"click", "8.1.7", "poetry.lock"},
+		{"packaging", "24.0", "poetry.lock"},
+		{"ruff", "0.4.4", "uv.lock"},
+	} {
+		if !hasPackage(doc, want.name, want.version, want.source) {
+			t.Fatalf("missing package %s %s from %s: %#v", want.name, want.version, want.source, doc.Packages)
+		}
+	}
+	if hasPackage(doc, "anyio", "4.0.0", "pyproject.toml") {
+		t.Fatalf("non-exact pyproject dependency should be skipped: %#v", doc.Packages)
+	}
+}
+
 func TestWriteSPDXJSON(t *testing.T) {
 	doc, err := GenerateSPDX(GenerateOptions{Workspace: t.TempDir()})
 	if err != nil {

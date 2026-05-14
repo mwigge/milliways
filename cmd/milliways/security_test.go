@@ -162,6 +162,28 @@ func TestHandleSecuritySBOMWorksWithoutDaemon(t *testing.T) {
 	}
 }
 
+func TestHandleSecurityCRAScaffoldWorksWithoutDaemon(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	loop := &chatLoop{out: &stdout, errw: &stderr}
+
+	loop.handleSlash("/security cra-scaffold --workspace " + workspace)
+
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected stderr: %s", stderr.String())
+	}
+	for _, rel := range []string{"SECURITY.md", "SUPPORT.md", "docs/update-policy.md", "docs/cra-technical-file.md"} {
+		if _, err := os.Stat(filepath.Join(workspace, rel)); err != nil {
+			t.Fatalf("expected %s to exist: %v", rel, err)
+		}
+	}
+	if !strings.Contains(stdout.String(), "4 created") {
+		t.Fatalf("stdout missing created summary:\n%s", stdout.String())
+	}
+}
+
 func TestHandleSecurityStatusCallsRPC(t *testing.T) {
 	t.Parallel()
 

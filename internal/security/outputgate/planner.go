@@ -58,7 +58,8 @@ type ScanRequest struct {
 
 // Plan is the output gate's scanner worklist.
 type Plan struct {
-	Requests []ScanRequest `json:"requests"`
+	Requests        []ScanRequest `json:"requests"`
+	Recommendations []string      `json:"recommendations,omitempty"`
 }
 
 // PlanScans determines which scanner families should run for a set of changed
@@ -66,6 +67,7 @@ type Plan struct {
 func PlanScans(changes []FileChange) Plan {
 	filesByKind := map[security.ScanKind]map[string]struct{}{}
 	reasons := map[security.ScanKind]string{}
+	recommendations := map[string]struct{}{}
 	add := func(kind security.ScanKind, path, reason string) {
 		if filesByKind[kind] == nil {
 			filesByKind[kind] = map[string]struct{}{}
@@ -81,6 +83,9 @@ func PlanScans(changes []FileChange) Plan {
 		}
 		if isDependencyFile(path) {
 			add(security.ScanDependency, path, "dependency manifest or lockfile changed")
+			if change.Source == SourceGenerated {
+				recommendations["Generated dependency file changed; refresh SBOM evidence with: milliwaysctl security sbom --output dist/milliways.spdx.json"] = struct{}{}
+			}
 		}
 		if isSecretRelevant(path) {
 			add(security.ScanSecret, path, "changed file may contain credentials or tokens")
@@ -104,7 +109,19 @@ func PlanScans(changes []FileChange) Plan {
 		sort.Strings(files)
 		requests = append(requests, ScanRequest{Kind: kind, Files: files, Reason: reasons[kind]})
 	}
-	return Plan{Requests: requests}
+	return Plan{Requests: requests, Recommendations: sortedKeys(recommendations)}
+}
+
+func sortedKeys(set map[string]struct{}) []string {
+	if len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for key := range set {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func normalizedPath(path string) string {

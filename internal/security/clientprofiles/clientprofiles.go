@@ -167,6 +167,7 @@ func (p profileCheck) checkClaude(ctx context.Context, workspace string) []Profi
 	warnings = append(warnings, p.checkBinary(ClientClaude, "claude")...)
 	for _, path := range p.candidatePaths(workspace,
 		".claude/settings.json",
+		".claude/settings.local.json",
 		".claude/mcp.json",
 		filepath.Join(".config", "claude", "settings.json"),
 		filepath.Join(".config", "claude", "mcp.json"),
@@ -338,7 +339,7 @@ func (p profileCheck) candidatePaths(workspace string, rels ...string) []string 
 			}
 			continue
 		}
-		if strings.HasPrefix(rel, ".codex"+string(filepath.Separator)) && p.opts.HomeDir != "" {
+		if strings.HasPrefix(rel, ".") && p.opts.HomeDir != "" {
 			paths = append(paths, filepath.Join(p.opts.HomeDir, rel))
 		}
 		if workspace != "" {
@@ -379,7 +380,191 @@ func scanConfigFile(client, path, family string) []ProfileWarning {
 	if containsAny(lower, []string{"0.0.0.0", "::", "host = \"0.", "bind = \"0."}) && !containsAny(lower, []string{"auth_token", "bearer", "api_key"}) {
 		warnings = append(warnings, warning(client, family+"-public-bind-no-auth", SeverityCritical, "Config exposes a local service on a public bind address without an obvious auth setting.", path, "bind"))
 	}
+	warnings = append(warnings, scanStructuredConfigSignals(client, path, family, data)...)
 	return warnings
+}
+
+func scanStructuredConfigSignals(client, path, family string, data []byte) []ProfileWarning {
+	var warnings []ProfileWarning
+	var parsed any
+	if err := json.Unmarshal(data, &parsed); err == nil {
+		seen := map[string]bool{}
+		walkConfigValue(parsed, "", func(key string, value any) {
+			warnings = appendConfigSignal(warnings, seen, client, path, family, key, value)
+		})
+		return warnings
+	}
+
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, value, ok := splitConfigLine(line)
+		if !ok {
+			continue
+		}
+		warnings = appendConfigSignal(warnings, seen, client, path, family, key, value)
+	}
+	return warnings
+}
+
+func walkConfigValue(value any, key string, visit func(string, any)) {
+	visit(key, value)
+	switch typed := value.(type) {
+	case map[string]any:
+		for childKey, childValue := range typed {
+			fullKey := childKey
+			if key != "" {
+				fullKey = key + "." + childKey
+			}
+			walkConfigValue(childValue, fullKey, visit)
+		}
+	case []any:
+		for _, childValue := range typed {
+			walkConfigValue(childValue, key, visit)
+		}
+	}
+}
+
+func appendConfigSignal(warnings []ProfileWarning, seen map[string]bool, client, path, family, key string, value any) []ProfileWarning {
+	normalizedKey := normalizeConfigKey(key)
+	if isAutoApprovalSetting(normalizedKey, value) {
+		warnings = appendOnce(warnings, seen, warning(client, family+"-auto-approval", SeverityHigh, "Client config auto-approves tools or bypasses approval prompts.", path, key))
+	}
+	if isBroadPathSetting(normalizedKey, value) {
+		warnings = appendOnce(warnings, seen, warning(client, family+"-broad-path-scope", SeverityHigh, "Client config appears to grant broad root filesystem scope.", path, key))
+	}
+	if configKeyOrValueMentionsRiskyEnv(normalizedKey, value) {
+		warnings = appendOnce(warnings, seen, warning(client, family+"-risky-env-var", SeverityHigh, "Client config references environment variables that commonly carry secrets.", path, key))
+	}
+	return warnings
+}
+
+func appendOnce(warnings []ProfileWarning, seen map[string]bool, w ProfileWarning) []ProfileWarning {
+	key := w.ID + "\x00" + w.Path + "\x00" + w.Key
+	if seen[key] {
+		return warnings
+	}
+	seen[key] = true
+	return append(warnings, w)
+}
+
+func normalizeConfigKey(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	replacer := strings.NewReplacer("_", "", "-", "", " ", "", ".", "")
+	return replacer.Replace(key)
+}
+
+func isAutoApprovalSetting(key string, value any) bool {
+	if !truthyConfigValue(value) {
+		if key != "permissionsallow" {
+			return false
+		}
+		return configValueContainsAny(value, []string{"*", "bash(*)", "read(/)", "write(/)"})
+	}
+	return containsAny(key, []string{
+		"autoapprove",
+		"autoapproval",
+		"autoallow",
+		"allowall",
+		"allowalltools",
+		"dangerouslybypassapprovalsandsandbox",
+		"dangerouslyskippermissions",
+		"skippermissions",
+		"yolo",
+	})
+}
+
+func isBroadPathSetting(key string, value any) bool {
+	if !containsAny(key, []string{"writableroots", "workspaceroots", "adddirs", "allowpaths", "allowedpaths", "workspace", "workspacepath", "root", "indexroot"}) {
+		return false
+	}
+	return configValueHasRootPath(value)
+}
+
+func configKeyOrValueMentionsRiskyEnv(key string, value any) bool {
+	if riskyEnvKey(key) {
+		return true
+	}
+	return configValueContainsAny(value, []string{
+		"github_token",
+		"gh_token",
+		"aws_access_key_id",
+		"aws_secret_access_key",
+		"npm_token",
+		"slack_bot_token",
+		"stripe_secret_key",
+		"google_application_credentials",
+	})
+}
+
+func riskyEnvKey(key string) bool {
+	switch key {
+	case "githubtoken", "ghtoken", "awsaccesskeyid", "awssecretaccesskey", "npmtoken", "slackbottoken", "stripesecretkey", "googleapplicationcredentials":
+		return true
+	default:
+		return false
+	}
+}
+
+func truthyConfigValue(value any) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case string:
+		switch strings.ToLower(strings.Trim(strings.TrimSpace(typed), `"'`)) {
+		case "true", "yes", "on", "1", "always", "never":
+			return true
+		default:
+			return false
+		}
+	default:
+		return false
+	}
+}
+
+func configValueContainsAny(value any, needles []string) bool {
+	switch typed := value.(type) {
+	case string:
+		return containsAny(strings.ToLower(typed), needles)
+	case []any:
+		for _, item := range typed {
+			if configValueContainsAny(item, needles) {
+				return true
+			}
+		}
+	case map[string]any:
+		for k, item := range typed {
+			if containsAny(strings.ToLower(k), needles) || configValueContainsAny(item, needles) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func configValueHasRootPath(value any) bool {
+	switch typed := value.(type) {
+	case string:
+		for _, part := range strings.FieldsFunc(typed, func(r rune) bool {
+			return r == '[' || r == ']' || r == ',' || r == '\'' || r == '"' || r == ' ' || r == '\t'
+		}) {
+			if strings.TrimSpace(part) == "/" {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if configValueHasRootPath(item) {
+				return true
+			}
+		}
+	case map[string]any:
+		for _, item := range typed {
+			if configValueHasRootPath(item) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func scanGlob(client, pattern, family string) []ProfileWarning {

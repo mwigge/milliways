@@ -323,7 +323,7 @@ func buildCompleter(agentID string) []string {
 	items = append(items,
 		"/switch", "/takeover", "/login", "/briefing", "/model", "/agents", "/quota",
 		"/parallel", "/parallel --providers", "/scan", "/security", "/security status",
-		"/security client", "/security command-check --", "/security warnings", "/help", "/exit",
+		"/security cra-scaffold", "/security client", "/security command-check --", "/security warnings", "/help", "/exit",
 		// Install / Upgrade
 		"/install", "/install claude", "/install codex", "/install copilot", "/install gemini", "/install local",
 		"/install-local-server", "/install-local-swap",
@@ -3337,6 +3337,7 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /login [client]               auth setup — API key prompt or CLI steps")
 	fmt.Fprintln(l.out, "  /scan                         scan workspace dependencies for known CVEs")
 	fmt.Fprintln(l.out, "  /security status              show Secure MilliWays posture")
+	fmt.Fprintln(l.out, "  /security cra-scaffold        create missing CRA evidence files")
 	fmt.Fprintln(l.out, "  /security client <name>       check per-client security profile")
 	fmt.Fprintln(l.out, "  /security command-check -- <cmd>  evaluate a command before running it")
 	fmt.Fprintln(l.out, "  /security warnings            show active security warnings")
