@@ -917,19 +917,27 @@ Milliways wraps Claude, Codex, Copilot, Gemini, Pool, MiniMax, and local models 
 
 | Layer | Surface | Purpose |
 |---|---|---|
-| Startup posture scan | `milliwaysctl security startup-scan` | Fast local scan of workspace and user persistence surfaces before agents get useful context. It checks `.claude/`, `.vscode/tasks.json`, package manifests, package-manager policy, known IOC paths/domains/IPs, user systemd units, and macOS LaunchAgents. |
+| Startup posture scan | `milliwaysctl security startup-scan` | Fast local scan of workspace and user persistence surfaces. The daemon runs it automatically on first startup per workspace and marks status required/stale until a current scan completes. It checks `.claude/`, `.vscode/tasks.json`, package manifests, package-manager policy, known IOC paths/domains/IPs, user systemd units, and macOS LaunchAgents. |
 | Client profiles | `milliwaysctl security client <name>` | Per-client checks for risky configuration such as broad sandbox/write roots, auto-approval modes, unsafe local model endpoints, hooks, MCP config, and CLI path/version state. |
 | Dependency scanning | `milliwaysctl security scan` | OSV-backed dependency findings for lockfiles and manifests, with accepted-risk tracking through `security accept`. |
 | Command firewall | `milliwaysctl security command-check -- <command...>` | Pre-flight classification for package install, persistence, exfiltration, secret-read, network-download, shell-eval, IOC, and complex-unparsed command risks. |
 | Output gate | `milliwaysctl security output-plan` | Classifies generated and staged paths into secret, SAST, and dependency scan requests before output is trusted or committed. Generated dependency files should trigger an SBOM refresh recommendation. |
-| Quarantine planner | `milliwaysctl security quarantine` | Dry-run remediation planning for suspicious workspace files and auto-run tasks. Apply-style actions require explicit confirmation through the daemon surface that supports them. |
+| Quarantine planner | `milliwaysctl security quarantine` | Dry-run remediation planning for suspicious workspace files and auto-run tasks. `--apply` mutates safe local file actions and records the outcome; service/LaunchAgent changes require explicit operator confirmation. |
 | Rule packs | `milliwaysctl security rules list\|update` | Bundled and local rules for IOC, startup, command, package, and persistence checks. Offline mode uses local rule packs only. |
-| SBOM generation | `milliwaysctl security sbom --output dist/milliways.spdx.json` | Offline SPDX JSON generation from local Go, Cargo, and npm package-lock manifests so CRA evidence can be produced without an external compliance service. |
+| SBOM generation | `milliwaysctl security sbom --output dist/milliways.spdx.json` | Offline SPDX JSON generation from local Go, Cargo, npm, pnpm, yarn, Bun, and Python manifests so CRA evidence can be produced without an external compliance service. |
 | CRA evidence scaffold | `milliwaysctl security cra-scaffold` | Creates missing CRA evidence placeholders in a workspace: `SECURITY.md`, `SUPPORT.md`, `docs/update-policy.md`, and `docs/cra-technical-file.md`. Use `--dry-run` to preview and `--force` only when replacing existing placeholders is intentional. |
 | CRA readiness | `milliwaysctl security cra`, `/security cra` | Tracks EU Cyber Resilience Act evidence: SBOM presence, vulnerability handling process, secure-by-default posture, scanner coverage, support-period metadata, and reporting readiness. CRA is a policy/evidence layer; OSV, Gitleaks, Semgrep, govulncheck, and optional NVD enrichment feed it. |
 | Status and warnings | `milliwaysctl security status`, `warnings`, `mode` | One posture summary for CLI, terminal cockpit, and future release smoke checks: mode, scanner state, startup scan required/stale state, scanner gaps, last scan times, warnings, blocks, and client profile state. |
 
 The layers are intentionally additive. Startup scan is deterministic and local; external scanners add dependency, secret, and SAST depth when installed; client profiles and command checks reduce the risk of handing unsafe work to external CLIs that execute their own tools.
+
+### Enforcement coverage
+
+| Surface | MilliWays can block directly | MilliWays currently warns/reports |
+|---|---|---|
+| HTTP/local tool-loop runners | Command firewall, workspace jail, credential denylist, SSRF guard, output gate recommendations. | Optional external scanner gaps and accepted-risk context. |
+| CLI runners such as Claude, Codex, Gemini, Copilot, Pool | Daemon-side client profile checks, command pre-flight when commands pass through MilliWays, startup scan status, output/security commands. | Tool execution performed inside the external CLI itself unless that CLI exposes a controllable sandbox path. |
+| Terminal/app startup | First-workspace startup scan is recorded automatically and status shows required/stale until current. | It is not a hard startup lock yet; strict/ci mode is preserved for controlled command and scan decisions. |
 
 CRA readiness is treated as more important than NVD enrichment. NVD can improve CVE metadata, but the EU Cyber Resilience Act defines process obligations and evidence a product team must be able to show: cybersecurity risk assessment, secure defaults, vulnerability handling, machine-readable SBOM, support/update posture, and incident reporting readiness. MilliWays should therefore use NVD as one optional input, not as the compliance model.
 

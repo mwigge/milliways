@@ -492,6 +492,55 @@ func (s *SecurityStore) UpsertWarning(w SecurityWarning) error {
 	return nil
 }
 
+// ResolveWarningsNotSeen marks previously active warnings as resolved when a
+// new scan over the same warning ownership surface no longer reports them.
+func (s *SecurityStore) ResolveWarningsNotSeen(workspace string, categories []string, sourcePrefix string, active []SecurityWarning) error {
+	if len(categories) == 0 {
+		return nil
+	}
+	cats := make(map[string]struct{}, len(categories))
+	for _, c := range categories {
+		c = strings.TrimSpace(c)
+		if c != "" {
+			cats[c] = struct{}{}
+		}
+	}
+	if len(cats) == 0 {
+		return nil
+	}
+	keep := make(map[string]struct{}, len(active))
+	for _, w := range active {
+		keep[warningKey(w)] = struct{}{}
+	}
+	warnings, err := s.ListActiveWarnings(workspace)
+	if err != nil {
+		return err
+	}
+	now := secFormatTime(time.Now().UTC())
+	for _, w := range warnings {
+		if _, ok := cats[w.Category]; !ok {
+			continue
+		}
+		if sourcePrefix != "" && !strings.HasPrefix(w.Source, sourcePrefix) {
+			continue
+		}
+		if _, ok := keep[warningKey(w)]; ok {
+			continue
+		}
+		if _, err := s.db.Exec(`
+			UPDATE mw_security_warnings
+			SET status = 'resolved', resolved_at = ?
+			WHERE id = ? AND status = 'active'`, now, w.ID); err != nil {
+			return fmt.Errorf("resolve stale security warning: %w", err)
+		}
+	}
+	return nil
+}
+
+func warningKey(w SecurityWarning) string {
+	return w.Category + "\x00" + w.Source + "\x00" + w.Message
+}
+
 // ListActiveWarnings returns active warnings for one workspace. Empty workspace
 // matches global warnings only.
 func (s *SecurityStore) ListActiveWarnings(workspace string) ([]SecurityWarning, error) {

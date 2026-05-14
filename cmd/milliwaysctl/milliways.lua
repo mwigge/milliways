@@ -549,6 +549,12 @@ local ctl_choices = {
   { label = 'status                    fetch live cockpit state',                  id = 'status' },
   { label = 'routing                   peek recent sommelier decisions',           id = 'routing' },
   { label = 'spans                     recent OTel spans',                         id = 'spans' },
+  -- Secure MilliWays
+  { label = 'security status           show Secure MilliWays posture',             id = 'security status' },
+  { label = 'security startup-scan      run startup posture scan',                  id = 'security startup-scan ' },
+  { label = 'security cra              show CRA readiness',                        id = 'security cra' },
+  { label = 'security cra-scaffold     create CRA evidence placeholders',          id = 'security cra-scaffold ' },
+  { label = 'security client …         run client profile checks',                 id = 'security client ' },
   -- OpenSpec (opsx) — thin shell over the openspec CLI
   { label = '/opsx-list                list openspec changes',                     id = 'opsx list' },
   { label = '/opsx-status …            show change progress',                     id = 'opsx status ' },

@@ -469,6 +469,55 @@ func TestSecurityStore_UpsertWarningIdempotent(t *testing.T) {
 	}
 }
 
+func TestSecurityStore_ResolveWarningsNotSeen(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	kept := SecurityWarning{
+		Workspace: "/repo",
+		Category:  "package",
+		Severity:  "WARN",
+		Source:    "package.json",
+		Message:   "lifecycle script",
+	}
+	stale := SecurityWarning{
+		Workspace: "/repo",
+		Category:  "package",
+		Severity:  "WARN",
+		Source:    "old-package.json",
+		Message:   "old lifecycle script",
+	}
+	other := SecurityWarning{
+		Workspace: "/repo",
+		Category:  "client-profile",
+		Severity:  "WARN",
+		Source:    "codex:config",
+		Message:   "client warning",
+	}
+	for _, w := range []SecurityWarning{kept, stale, other} {
+		if err := ss.UpsertWarning(w); err != nil {
+			t.Fatalf("UpsertWarning: %v", err)
+		}
+	}
+
+	if err := ss.ResolveWarningsNotSeen("/repo", []string{"package"}, "", []SecurityWarning{kept}); err != nil {
+		t.Fatalf("ResolveWarningsNotSeen: %v", err)
+	}
+	warnings, err := ss.ListActiveWarnings("/repo")
+	if err != nil {
+		t.Fatalf("ListActiveWarnings: %v", err)
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("warnings len = %d, want 2: %#v", len(warnings), warnings)
+	}
+	for _, w := range warnings {
+		if w.Source == stale.Source {
+			t.Fatalf("stale warning remained active: %#v", w)
+		}
+	}
+}
+
 func TestSecurityStore_SecurityStatusAggregatesFindingsAndWarnings(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)

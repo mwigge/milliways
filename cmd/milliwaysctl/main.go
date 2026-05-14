@@ -817,9 +817,11 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  parallel list                              — list recent parallel dispatch groups")
 	fmt.Fprintln(os.Stderr, "  parallel status <group-id>                 — show per-slot status for a group")
 	fmt.Fprintln(os.Stderr, "  parallel consensus <group-id>              — print the consensus aggregate summary")
-	fmt.Fprintln(os.Stderr, "  security list [--include-accepted]         — list active security findings (CVE/OSV)")
-	fmt.Fprintln(os.Stderr, "  security show <cve-id>                     — show full CVE detail")
-	fmt.Fprintln(os.Stderr, "  security accept <cve-id> --package <name> --reason <text> --expires <YYYY-MM-DD>")
+	fmt.Fprintln(os.Stderr, "  security status                            — show Secure MilliWays posture")
+	fmt.Fprintln(os.Stderr, "  security startup-scan [--strict]           — run startup posture scan")
+	fmt.Fprintln(os.Stderr, "  security cra | cra-scaffold | sbom         — CRA readiness and evidence")
+	fmt.Fprintln(os.Stderr, "  security client <name> | command-check --  — client profile and command firewall")
+	fmt.Fprintln(os.Stderr, "  security list/show/accept                  — CVE/OSV finding management")
 	fmt.Fprintln(os.Stderr, "  daemon stop                                — stop the running milliwaysd")
 }
 

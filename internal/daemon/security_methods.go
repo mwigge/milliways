@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mwigge/milliways/internal/pantry"
@@ -33,6 +34,7 @@ import (
 	"github.com/mwigge/milliways/internal/security/firewall"
 	"github.com/mwigge/milliways/internal/security/quarantine"
 	"github.com/mwigge/milliways/internal/security/rulepacks"
+	"github.com/mwigge/milliways/internal/security/rules"
 )
 
 var securityStatusAdapters = func() []adapters.ScannerAdapter {
@@ -43,6 +45,13 @@ var securityStatusAdapters = func() []adapters.ScannerAdapter {
 		adapters.NewGovulncheck(),
 	}
 }
+
+var securityScannerStatusCache = struct {
+	sync.Mutex
+	signature string
+	expires   time.Time
+	statuses  []map[string]any
+}{}
 
 // securityFindingWire is the JSON wire type for a security finding.
 type securityFindingWire struct {
@@ -672,25 +681,63 @@ func craScannerKind(name string) string {
 func securityScannerAdapterStatus(ctx context.Context) []map[string]any {
 	scannerAdapters := securityStatusAdapters()
 	statuses := make([]map[string]any, 0, len(scannerAdapters))
+	var signature strings.Builder
 	for _, adapter := range scannerAdapters {
+		installed := adapter.Installed()
+		signature.WriteString(adapter.Name())
+		signature.WriteByte('=')
+		if installed {
+			signature.WriteByte('1')
+		} else {
+			signature.WriteByte('0')
+		}
+		signature.WriteByte(';')
 		status := map[string]any{
 			"name":      adapter.Name(),
-			"installed": adapter.Installed(),
+			"installed": installed,
 		}
-		installed, _ := status["installed"].(bool)
+		statuses = append(statuses, status)
+	}
+	cacheKey := signature.String()
+	now := time.Now()
+	securityScannerStatusCache.Lock()
+	if securityScannerStatusCache.signature == cacheKey && now.Before(securityScannerStatusCache.expires) {
+		cached := cloneScannerStatuses(securityScannerStatusCache.statuses)
+		securityScannerStatusCache.Unlock()
+		return cached
+	}
+	securityScannerStatusCache.Unlock()
+	for i, adapter := range scannerAdapters {
+		installed, _ := statuses[i]["installed"].(bool)
 		if installed {
 			versionCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			version, err := adapter.Version(versionCtx)
 			cancel()
 			if err != nil {
-				status["version_error"] = err.Error()
+				statuses[i]["version_error"] = err.Error()
 			} else if version != "" {
-				status["version"] = version
+				statuses[i]["version"] = version
 			}
 		}
-		statuses = append(statuses, status)
 	}
+	securityScannerStatusCache.Lock()
+	securityScannerStatusCache.signature = cacheKey
+	securityScannerStatusCache.expires = now.Add(30 * time.Second)
+	securityScannerStatusCache.statuses = cloneScannerStatuses(statuses)
+	securityScannerStatusCache.Unlock()
 	return statuses
+}
+
+func cloneScannerStatuses(in []map[string]any) []map[string]any {
+	out := make([]map[string]any, len(in))
+	for i, status := range in {
+		cp := make(map[string]any, len(status))
+		for k, v := range status {
+			cp[k] = v
+		}
+		out[i] = cp
+	}
+	return out
 }
 
 // securityStartupScan handles "security.startup_scan" by running the fast
@@ -750,6 +797,7 @@ func (s *Server) runStartupSecurityScan(ctx context.Context, workspace string, s
 	}
 	warnCount, blockCount := 0, 0
 	warnings := make([]map[string]any, 0, len(result.Findings))
+	activeWarnings := make([]pantry.SecurityWarning, 0, len(result.Findings))
 	for _, f := range result.Findings {
 		sev := startupSeverityToStored(f.Severity)
 		if sev == "BLOCK" {
@@ -757,7 +805,7 @@ func (s *Server) runStartupSecurityScan(ctx context.Context, workspace string, s
 		} else {
 			warnCount++
 		}
-		if err := store.UpsertWarning(pantry.SecurityWarning{
+		warning := pantry.SecurityWarning{
 			Workspace:   result.WorkspaceRoot,
 			Category:    string(f.Category),
 			Severity:    sev,
@@ -766,9 +814,11 @@ func (s *Server) runStartupSecurityScan(ctx context.Context, workspace string, s
 			Status:      string(security.FindingActive),
 			ScanRunID:   runID,
 			Remediation: f.Remediation,
-		}); err != nil {
+		}
+		if err := store.UpsertWarning(warning); err != nil {
 			return nil, fmt.Errorf("persist warning: %w", err)
 		}
+		activeWarnings = append(activeWarnings, warning)
 		warnings = append(warnings, map[string]any{
 			"rule_id":     f.RuleID,
 			"category":    string(f.Category),
@@ -778,6 +828,9 @@ func (s *Server) runStartupSecurityScan(ctx context.Context, workspace string, s
 			"line":        f.Line,
 			"remediation": f.Remediation,
 		})
+	}
+	if err := store.ResolveWarningsNotSeen(result.WorkspaceRoot, startupScanWarningCategories(), "", activeWarnings); err != nil {
+		return nil, fmt.Errorf("resolve stale startup warnings: %w", err)
 	}
 	if runID > 0 {
 		_ = store.CompleteScanRun(runID, "completed", len(result.Findings), warnCount, blockCount, "")
@@ -791,7 +844,7 @@ func (s *Server) runStartupSecurityScan(ctx context.Context, workspace string, s
 	} else if warnCount > 0 {
 		posture = string(security.PostureWarn)
 	}
-	_ = store.SetWorkspaceStatus(result.WorkspaceRoot, string(security.ModeWarn), s.currentAgent)
+	_ = setWorkspaceStatusPreservingMode(store, result.WorkspaceRoot, string(security.ModeWarn), s.currentAgent)
 	return map[string]any{
 		"workspace":     result.WorkspaceRoot,
 		"scanned_at":    result.CompletedAt.UTC().Format(time.RFC3339),
@@ -803,6 +856,24 @@ func (s *Server) runStartupSecurityScan(ctx context.Context, workspace string, s
 		"block_count":   blockCount,
 		"posture":       posture,
 	}, nil
+}
+
+func startupScanWarningCategories() []string {
+	return []string{
+		string(rules.CategoryClientProfile),
+		string(rules.CategoryIOC),
+		string(rules.CategoryPackage),
+		string(rules.CategoryPersistence),
+		string(rules.CategoryPolicy),
+	}
+}
+
+func setWorkspaceStatusPreservingMode(store *pantry.SecurityStore, workspace, fallbackMode, activeClient string) error {
+	mode := fallbackMode
+	if status, err := store.SecurityStatus(workspace); err == nil && strings.TrimSpace(status.Mode) != "" {
+		mode = status.Mode
+	}
+	return store.SetWorkspaceStatus(workspace, mode, activeClient)
 }
 
 // securityWarnings handles "security.warnings".
@@ -1039,10 +1110,6 @@ func (s *Server) securityQuarantine(enc *json.Encoder, req *Request) {
 			return
 		}
 	}
-	if p.Apply {
-		writeError(enc, req.ID, ErrInvalidParams, "security.quarantine apply is not implemented; run dry-run and apply manually")
-		return
-	}
 	workspace := strings.TrimSpace(p.Workspace)
 	if workspace == "" {
 		workspace = s.securityWorkspaceRoot()
@@ -1056,6 +1123,41 @@ func (s *Server) securityQuarantine(enc *json.Encoder, req *Request) {
 	})
 	if err != nil {
 		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("plan quarantine: %v", err))
+		return
+	}
+	if p.Apply {
+		applied, err := quarantine.ApplyPlan(ctx, plan, quarantine.ApplyOptions{})
+		if err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("apply quarantine: %v", err))
+			return
+		}
+		actions := make([]map[string]any, 0, len(applied.Actions))
+		for _, a := range applied.Actions {
+			if s.pantryDB != nil {
+				_ = s.pantryDB.Security().RecordQuarantineAction(pantry.SecurityQuarantineAction{
+					Workspace:        plan.WorkspaceRoot,
+					Kind:             string(a.Kind),
+					SourcePath:       a.SourcePath,
+					DestinationPath:  a.DestinationPath,
+					OriginalHash:     a.Hash,
+					AppliedHash:      a.AppliedHash,
+					Status:           string(a.Status),
+					Error:            a.Error,
+					RollbackHint:     a.RollbackHint,
+					AdditionalFields: a.AdditionalFields,
+					AppliedAt:        a.AppliedAt,
+				})
+			}
+			actions = append(actions, quarantineAppliedActionWire(a))
+		}
+		writeResult(enc, req.ID, map[string]any{
+			"workspace":       plan.WorkspaceRoot,
+			"quarantine_root": plan.QuarantineRoot,
+			"planned_at":      plan.PlannedAt.UTC().Format(time.RFC3339),
+			"applied_at":      applied.AppliedAt.UTC().Format(time.RFC3339),
+			"dry_run":         false,
+			"actions":         actions,
+		})
 		return
 	}
 	actions := make([]map[string]any, 0, len(plan.Actions))
@@ -1078,6 +1180,23 @@ func (s *Server) securityQuarantine(enc *json.Encoder, req *Request) {
 		"dry_run":         true,
 		"actions":         actions,
 	})
+}
+
+func quarantineAppliedActionWire(a quarantine.AppliedAction) map[string]any {
+	return map[string]any{
+		"kind":              string(a.Kind),
+		"reason":            a.Reason,
+		"source_path":       a.SourcePath,
+		"destination_path":  a.DestinationPath,
+		"hash":              a.Hash,
+		"applied_hash":      a.AppliedHash,
+		"status":            string(a.Status),
+		"error":             a.Error,
+		"apply_required":    a.ApplyRequired,
+		"rollback_hint":     a.RollbackHint,
+		"additional_fields": a.AdditionalFields,
+		"applied_at":        a.AppliedAt.UTC().Format(time.RFC3339),
+	}
 }
 
 // securityRulesList handles "security.rules_list".
@@ -1215,7 +1334,7 @@ func (s *Server) runClientProfileSecurity(ctx context.Context, workspace, client
 		if err := json.Unmarshal([]byte(cached.ResultJSON), &result); err != nil {
 			return nil, fmt.Errorf("decode cached client profile: %w", err)
 		}
-		if err := store.SetWorkspaceStatus(workspace, string(security.ModeWarn), client); err != nil {
+		if err := setWorkspaceStatusPreservingMode(store, workspace, string(security.ModeWarn), client); err != nil {
 			return nil, err
 		}
 		result["cached"] = true
@@ -1232,6 +1351,7 @@ func (s *Server) runClientProfileSecurity(ctx context.Context, workspace, client
 		ToolName:  "milliways-client-profile",
 	})
 	warnCount, blockCount := 0, 0
+	activeWarnings := make([]pantry.SecurityWarning, 0, len(result.Warnings))
 	for _, warning := range result.Warnings {
 		sev := profileSeverityToStored(warning.Severity)
 		if sev == "BLOCK" {
@@ -1246,7 +1366,7 @@ func (s *Server) runClientProfileSecurity(ctx context.Context, workspace, client
 		if source == "" {
 			source = warning.ID
 		}
-		if err := store.UpsertWarning(pantry.SecurityWarning{
+		storedWarning := pantry.SecurityWarning{
 			Workspace:   workspace,
 			Category:    string(security.FindingClient),
 			Severity:    sev,
@@ -1255,9 +1375,14 @@ func (s *Server) runClientProfileSecurity(ctx context.Context, workspace, client
 			Status:      string(security.FindingActive),
 			ScanRunID:   runID,
 			Remediation: "Review the client configuration before using this client in the workspace.",
-		}); err != nil {
+		}
+		if err := store.UpsertWarning(storedWarning); err != nil {
 			return nil, err
 		}
+		activeWarnings = append(activeWarnings, storedWarning)
+	}
+	if err := store.ResolveWarningsNotSeen(workspace, []string{string(security.FindingClient)}, client+":", activeWarnings); err != nil {
+		return nil, err
 	}
 	status := "completed"
 	scanErr := result.Error
@@ -1267,7 +1392,7 @@ func (s *Server) runClientProfileSecurity(ctx context.Context, workspace, client
 	if runID > 0 {
 		_ = store.CompleteScanRun(runID, status, len(result.Warnings), warnCount, blockCount, scanErr)
 	}
-	if err := store.SetWorkspaceStatus(workspace, string(security.ModeWarn), client); err != nil {
+	if err := setWorkspaceStatusPreservingMode(store, workspace, string(security.ModeWarn), client); err != nil {
 		return nil, err
 	}
 	warnings := make([]map[string]any, 0, len(result.Warnings))
