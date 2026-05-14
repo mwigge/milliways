@@ -392,3 +392,46 @@ CREATE INDEX IF NOT EXISTS idx_mw_security_client_profiles_workspace_client
 
 INSERT OR IGNORE INTO mw_schema (version) VALUES (12);
 `
+
+const schemaV13 = `
+CREATE TABLE IF NOT EXISTS mw_security_findings_v13 (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace         TEXT NOT NULL DEFAULT '',
+    category          TEXT NOT NULL DEFAULT 'dependency',
+    cve_id            TEXT NOT NULL,
+    package_name      TEXT NOT NULL,
+    installed_version TEXT NOT NULL,
+    fixed_in_version  TEXT NOT NULL DEFAULT '',
+    severity          TEXT NOT NULL DEFAULT '',
+    ecosystem         TEXT NOT NULL DEFAULT '',
+    summary           TEXT NOT NULL DEFAULT '',
+    scan_source       TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL DEFAULT 'active',
+    first_seen        TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen         TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(workspace, cve_id, package_name, installed_version, ecosystem)
+);
+
+INSERT OR IGNORE INTO mw_security_findings_v13
+    (id, workspace, category, cve_id, package_name, installed_version,
+     fixed_in_version, severity, ecosystem, summary, scan_source, status,
+     first_seen, last_seen)
+SELECT id, '', category, cve_id, package_name, installed_version,
+       fixed_in_version, severity, ecosystem, summary, scan_source, status,
+       first_seen, last_seen
+FROM mw_security_findings;
+
+DROP TABLE mw_security_findings;
+ALTER TABLE mw_security_findings_v13 RENAME TO mw_security_findings;
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_findings_workspace_status
+    ON mw_security_findings(workspace, status);
+CREATE INDEX IF NOT EXISTS idx_mw_security_findings_workspace_severity
+    ON mw_security_findings(workspace, severity);
+CREATE INDEX IF NOT EXISTS idx_mw_security_findings_workspace_cve_id
+    ON mw_security_findings(workspace, cve_id);
+CREATE INDEX IF NOT EXISTS idx_mw_security_findings_category_status
+    ON mw_security_findings(category, status);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (13);
+`

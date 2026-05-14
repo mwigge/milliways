@@ -197,7 +197,9 @@ func NewGitleaks(opts ...Option) ScannerAdapter {
 	a.scanArgs = func(workspace string, targets []string) []string {
 		source := workspace
 		if len(targets) == 1 {
-			source = scanTargetPath(workspace, targets[0])
+			if target := scanTargetPath(workspace, targets[0]); target != "" {
+				source = target
+			}
 		}
 		return []string{"detect", "--source", source, "--report-format", "json", "--no-banner", "--exit-code", "1"}
 	}
@@ -223,7 +225,9 @@ func NewSemgrep(opts ...Option) ScannerAdapter {
 			return append(args, workspace)
 		}
 		for _, target := range targets {
-			args = append(args, scanTargetPath(workspace, target))
+			if path := scanTargetPath(workspace, target); path != "" {
+				args = append(args, path)
+			}
 		}
 		return args
 	}
@@ -239,7 +243,12 @@ func NewGovulncheck(opts ...Option) ScannerAdapter {
 		if len(targets) == 0 {
 			return append(args, filepath.Join(workspace, "..."))
 		}
-		return append(args, targets...)
+		for _, target := range targets {
+			if path := scanTargetPath(workspace, target); path != "" {
+				args = append(args, path)
+			}
+		}
+		return args
 	}
 	a.parse = parseGovulncheck
 	a.render = renderDependencyFinding
@@ -249,13 +258,17 @@ func NewGovulncheck(opts ...Option) ScannerAdapter {
 // NewOSVScanner returns an adapter for osv-scanner dependency scanning.
 func NewOSVScanner(opts ...Option) ScannerAdapter {
 	a := newBaseAdapter("osv-scanner", "osv-scanner", security.ScanDependency, security.FindingDependency, opts...)
-	a.scanArgs = func(_ string, targets []string) []string {
+	a.scanArgs = func(workspace string, targets []string) []string {
 		args := []string{"--format", "json"}
 		for _, target := range targets {
-			if isOSVManifest(target) {
-				args = append(args, "--manifest", target)
+			path := scanTargetPath(workspace, target)
+			if path == "" {
+				continue
+			}
+			if isOSVManifest(path) {
+				args = append(args, "--manifest", path)
 			} else {
-				args = append(args, "--lockfile", target)
+				args = append(args, "--lockfile", path)
 			}
 		}
 		return args
@@ -266,14 +279,33 @@ func NewOSVScanner(opts ...Option) ScannerAdapter {
 }
 
 func scanTargetPath(workspace, target string) string {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		workspace = "."
+	}
+	absWorkspace, err := filepath.Abs(workspace)
+	if err != nil {
+		absWorkspace = filepath.Clean(workspace)
+	}
 	target = strings.TrimSpace(target)
 	if target == "" {
-		return workspace
+		return absWorkspace
 	}
+	var path string
 	if filepath.IsAbs(target) {
-		return filepath.Clean(target)
+		path = filepath.Clean(target)
+	} else {
+		path = filepath.Join(absWorkspace, target)
 	}
-	return filepath.Join(workspace, target)
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return absWorkspace
+	}
+	rel, err := filepath.Rel(absWorkspace, absPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return absPath
 }
 
 func isOSVManifest(path string) bool {

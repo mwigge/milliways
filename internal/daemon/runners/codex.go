@@ -79,19 +79,23 @@ type codexSessionState struct {
 //   - When `input` is closed, RunCodex pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
 func RunCodex(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
+	RunCodexWithSecurityWorkspace(ctx, input, stream, metrics, "")
+}
+
+func RunCodexWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
 	state := &codexSessionState{}
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runCodexOnce(ctx, prompt, stream, metrics, state)
+		runCodexOnce(ctx, prompt, stream, metrics, state, securityWorkspace)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
-func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *codexSessionState) {
+func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *codexSessionState, securityWorkspace string) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		stream.Push(zeroUsageChunkEnd())
@@ -118,7 +122,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	state.model = model
 	pushModel(stream, AgentIDCodex)
 
-	cwd, _ := os.Getwd()
+	cwd := runnerWorkspaceCWD(securityWorkspace)
 	if !runExternalCLIPreflight(ctx, AgentIDCodex, cwd, stream, metrics) {
 		spanErr = "security profile blocked handoff"
 		return

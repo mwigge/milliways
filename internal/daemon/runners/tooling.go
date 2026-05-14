@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -37,6 +38,7 @@ import (
 	"github.com/mwigge/milliways/internal/security/firewall"
 	"github.com/mwigge/milliways/internal/security/outputgate"
 	"github.com/mwigge/milliways/internal/tools"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // DefaultMaxTurns is the safety bound on assistant→tool→assistant turns
@@ -317,7 +319,10 @@ func RunAgenticLoop(ctx context.Context, client Client, registry *tools.Registry
 		if opts.XMLToolMode {
 			results := make([]string, 0, len(t.ToolCalls))
 			for _, call := range t.ToolCalls {
-				content := executeOneToolCall(ctx, registry, opts.SessionID, call, opts.CommandFirewall, outputGate, opts.Logger)
+				content, blocked := executeOneToolCall(ctx, registry, opts.SessionID, call, opts.CommandFirewall, outputGate, opts.Logger)
+				if blocked {
+					return result, fmt.Errorf("output gate blocked generated file changes")
+				}
 				results = append(results, fmt.Sprintf(
 					`{"name":%q,"output":%s}`,
 					call.Name,
@@ -332,7 +337,10 @@ func RunAgenticLoop(ctx context.Context, client Client, registry *tools.Registry
 			// Tool output is wrapped in structural markers so the model treats
 			// it as untrusted data rather than as instructions.
 			for _, call := range t.ToolCalls {
-				content := executeOneToolCall(ctx, registry, opts.SessionID, call, opts.CommandFirewall, outputGate, opts.Logger)
+				content, blocked := executeOneToolCall(ctx, registry, opts.SessionID, call, opts.CommandFirewall, outputGate, opts.Logger)
+				if blocked {
+					return result, fmt.Errorf("output gate blocked generated file changes")
+				}
 				*messages = append(*messages, Message{
 					Role:       RoleTool,
 					ToolCallID: call.ID,
@@ -472,21 +480,24 @@ func wrapToolResult(toolName, content string) string {
 // executeOneToolCall parses the call's args, looks up the handler, and runs
 // it. Any failure becomes an "error: <detail>" string suitable for sending
 // back to the model as a tool result.
-func executeOneToolCall(ctx context.Context, registry *tools.Registry, sessionID string, call ToolCall, commandFirewall CommandFirewall, outputGate OutputGateOptions, logger *slog.Logger) string {
+func executeOneToolCall(ctx context.Context, registry *tools.Registry, sessionID string, call ToolCall, commandFirewall CommandFirewall, outputGate OutputGateOptions, logger *slog.Logger) (string, bool) {
 	if registry == nil {
-		return "error: no tool registry configured"
+		return "error: no tool registry configured", false
 	}
 	if _, ok := registry.Get(call.Name); !ok {
-		return fmt.Sprintf("error: tool %q not found", call.Name)
+		return fmt.Sprintf("error: tool %q not found", call.Name), false
 	}
 	args := map[string]any{}
 	if call.Args != "" {
 		if err := json.Unmarshal([]byte(call.Args), &args); err != nil {
-			return fmt.Sprintf("error: invalid JSON arguments: %v", err)
+			return fmt.Sprintf("error: invalid JSON arguments: %v", err), false
 		}
 	}
+	toolCtx, toolSpan := startToolSpan(ctx, call.Name)
 	if blockMsg := evaluateCommandFirewall(ctx, commandFirewall, sessionID, call.Name, args, logger); blockMsg != "" {
-		return blockMsg
+		toolSpan.SetAttributes(attribute.Bool("ai.tool.blocked", true))
+		endToolSpan(toolSpan, blockMsg)
+		return blockMsg, false
 	}
 	var before outputgate.WorkspaceSnapshot
 	var haveBefore bool
@@ -501,7 +512,6 @@ func executeOneToolCall(ctx context.Context, registry *tools.Registry, sessionID
 			haveBefore = true
 		}
 	}
-	toolCtx, toolSpan := startToolSpan(ctx, call.Name)
 	result, err := registry.ExecTool(toolCtx, sessionID, call.Name, args)
 	if err != nil {
 		endToolSpan(toolSpan, err.Error())
@@ -510,9 +520,11 @@ func executeOneToolCall(ctx context.Context, registry *tools.Registry, sessionID
 		endToolSpan(toolSpan, "")
 	}
 	if haveBefore {
-		result = appendOutputGateResult(ctx, outputGate, before, result, logger, sessionID, call.Name)
+		var blocked bool
+		result, blocked = appendOutputGateResult(ctx, outputGate, before, result, logger, sessionID, call.Name)
+		return result, blocked
 	}
-	return result
+	return result, false
 }
 
 func deriveOutputGateOptions(gate OutputGateOptions, commandFirewall CommandFirewall) OutputGateOptions {
@@ -548,27 +560,30 @@ func outputGateScanners(gate OutputGateOptions) []outputgate.Scanner {
 	return nil
 }
 
-func appendOutputGateResult(ctx context.Context, gate OutputGateOptions, before outputgate.WorkspaceSnapshot, toolResult string, logger *slog.Logger, sessionID, toolName string) string {
+func appendOutputGateResult(ctx context.Context, gate OutputGateOptions, before outputgate.WorkspaceSnapshot, toolResult string, logger *slog.Logger, sessionID, toolName string) (string, bool) {
 	after, err := outputgate.CaptureWorkspace(gate.Workspace)
 	if err != nil {
 		if logger != nil {
 			logger.Warn("output gate post-tool snapshot failed", "tool", toolName, "session_id", sessionID, "error", err)
 		}
-		return toolResult
+		return toolResult, false
 	}
-	plan := outputgate.PlanSnapshotDiff(before, after)
+	changes := outputgate.DiffSnapshots(before, after)
+	plan := outputgate.PlanScans(changes)
 	if len(plan.Requests) == 0 {
-		return toolResult
+		return toolResult, false
 	}
 	exec := outputgate.ExecutePlan(ctx, gate.Workspace, plan, outputGateScanners(gate))
 	if len(exec.Results) == 0 && len(exec.Warnings) == 0 {
-		return toolResult
+		return toolResult, false
 	}
 	if gate.Store != nil {
 		persistOutputGateResult(gate.Store, gate.Workspace, exec, logger)
 	}
 	report := formatOutputGateReport(exec)
-	if outputGateShouldBlock(gate.Mode, exec) {
+	blocked := outputGateShouldBlock(gate.Mode, exec)
+	if blocked {
+		quarantineGeneratedAdds(gate.Workspace, changes, logger)
 		report += "\nerror: output gate blocked generated file changes"
 	}
 	if logger != nil {
@@ -577,13 +592,53 @@ func appendOutputGateResult(ctx context.Context, gate OutputGateOptions, before 
 			"session_id", sessionID,
 			"scan_results", len(exec.Results),
 			"warnings", len(exec.Warnings),
-			"blocked", outputGateShouldBlock(gate.Mode, exec),
+			"blocked", blocked,
 		)
 	}
 	if strings.TrimSpace(toolResult) == "" {
-		return report
+		return report, blocked
 	}
-	return toolResult + "\n\n" + report
+	if blocked {
+		return report, true
+	}
+	return toolResult + "\n\n" + report, false
+}
+
+func quarantineGeneratedAdds(workspace string, changes []outputgate.FileChange, logger *slog.Logger) {
+	for _, change := range changes {
+		if change.Source != outputgate.SourceGenerated || change.Status != outputgate.StatusAdded {
+			continue
+		}
+		path := workspaceBoundGeneratedPath(workspace, change.Path)
+		if path == "" {
+			continue
+		}
+		if err := os.Remove(path); err != nil && logger != nil {
+			logger.Warn("output gate quarantine failed", "path", change.Path, "error", err)
+		}
+	}
+}
+
+func workspaceBoundGeneratedPath(workspace, rel string) string {
+	workspace = strings.TrimSpace(workspace)
+	rel = strings.TrimSpace(rel)
+	if workspace == "" || rel == "" || filepath.IsAbs(rel) {
+		return ""
+	}
+	root, err := filepath.Abs(workspace)
+	if err != nil {
+		return ""
+	}
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	r, err := filepath.Rel(root, abs)
+	if err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return abs
 }
 
 func persistOutputGateResult(store *pantry.SecurityStore, workspace string, exec outputgate.ExecutionResult, logger *slog.Logger) {
@@ -634,6 +689,7 @@ func outputGateSecurityFinding(workspace string, result security.ScanResult, fin
 		source = "output-gate"
 	}
 	return pantry.SecurityFinding{
+		Workspace:        workspace,
 		Category:         category,
 		CVEID:            outputGateFindingID(finding),
 		PackageName:      outputGateFindingPackage(result, finding),

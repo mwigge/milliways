@@ -176,10 +176,13 @@ func TestSemgrepScanScopesTargetsWhenProvided(t *testing.T) {
 		t.Fatalf("Scan: %v", err)
 	}
 	joined := strings.Join(got, " ")
-	for _, want := range []string{"/work/app/cmd/app/main.go", "/tmp/generated.go"} {
+	for _, want := range []string{"/work/app/cmd/app/main.go"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("args = %v, missing scoped target %s", got, want)
 		}
+	}
+	if strings.Contains(joined, "/tmp/generated.go") {
+		t.Fatalf("args = %v, scanned target outside workspace", got)
 	}
 	if strings.HasSuffix(joined, " /work/app") {
 		t.Fatalf("args = %v, unexpectedly scanned workspace root", got)
@@ -251,7 +254,7 @@ func TestOSVScannerUsesManifestAndLockfileArgs(t *testing.T) {
 		t.Fatalf("Scan: %v", err)
 	}
 	joined := strings.Join(got, " ")
-	for _, want := range []string{"--manifest package.json", "--lockfile package-lock.json"} {
+	for _, want := range []string{"--manifest /work/app/package.json", "--lockfile /work/app/package-lock.json"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("args = %v, missing %s", got, want)
 		}

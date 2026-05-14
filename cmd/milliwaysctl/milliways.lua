@@ -243,6 +243,8 @@ local function security_badge(sec)
   local blocks = as_number(sec.blocks or sec.block_count)
   if blocks > 0 then
     posture = 'block'
+  elseif (sec.startup_scan_required == true or sec.startup_scan_stale == true) and posture == 'ok' then
+    posture = 'warn'
   elseif warnings > 0 and posture == '' then
     posture = 'warn'
   elseif posture == '' then

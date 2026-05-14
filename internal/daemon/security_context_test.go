@@ -147,15 +147,17 @@ func TestAgentOpen_SecurityContextInjected(t *testing.T) {
 	}
 	defer db.Close()
 
+	workspace, _ := os.Getwd()
 	if err := db.Security().UpsertFinding(pantry.SecurityFinding{
-		CVEID:    "CVE-2024-TEST",
-		Severity: "CRITICAL",
-		PackageName:  "github.com/vuln/pkg",
-		InstalledVersion:  "v1.0.0",
-		FixedInVersion:  "v1.0.1",
-		Summary:  "Test vulnerability for priming injection",
-		Status:   "active",
-		FirstSeen: time.Now(),
+		Workspace:        workspace,
+		CVEID:            "CVE-2024-TEST",
+		Severity:         "CRITICAL",
+		PackageName:      "github.com/vuln/pkg",
+		InstalledVersion: "v1.0.0",
+		FixedInVersion:   "v1.0.1",
+		Summary:          "Test vulnerability for priming injection",
+		Status:           "active",
+		FirstSeen:        time.Now(),
 	}); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
@@ -229,13 +231,15 @@ func TestAgentOpen_SecurityContextSuppressed(t *testing.T) {
 	}
 	defer db.Close()
 
+	workspace, _ := os.Getwd()
 	if err := db.Security().UpsertFinding(pantry.SecurityFinding{
-		CVEID:    "CVE-2024-SUPPRESS",
-		Severity: "CRITICAL",
-		PackageName:  "github.com/vuln/pkg",
-		InstalledVersion:  "v1.0.0",
-		Status:   "active",
-		FirstSeen: time.Now(),
+		Workspace:        workspace,
+		CVEID:            "CVE-2024-SUPPRESS",
+		Severity:         "CRITICAL",
+		PackageName:      "github.com/vuln/pkg",
+		InstalledVersion: "v1.0.0",
+		Status:           "active",
+		FirstSeen:        time.Now(),
 	}); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}

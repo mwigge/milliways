@@ -392,7 +392,7 @@ func runClaude(sess *AgentSession, metrics runners.MetricsObserver) {
 	if stream == nil {
 		return
 	}
-	runners.RunClaude(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	runners.RunClaudeWithSecurityWorkspace(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics, sess.SecurityWorkspace)
 	sess.closeStreams()
 	slog.Debug("claude session ended", "handle", sess.Handle)
 }
@@ -407,7 +407,7 @@ func runCodex(sess *AgentSession, metrics runners.MetricsObserver) {
 	if stream == nil {
 		return
 	}
-	runners.RunCodex(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	runners.RunCodexWithSecurityWorkspace(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics, sess.SecurityWorkspace)
 	sess.closeStreams()
 	slog.Debug("codex session ended", "handle", sess.Handle)
 }
@@ -422,7 +422,7 @@ func runCopilot(sess *AgentSession, metrics runners.MetricsObserver) {
 	if stream == nil {
 		return
 	}
-	runners.RunCopilot(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	runners.RunCopilotWithSecurityWorkspace(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics, sess.SecurityWorkspace)
 	sess.closeStreams()
 	slog.Debug("copilot session ended", "handle", sess.Handle)
 }
@@ -437,7 +437,7 @@ func runMiniMax(sess *AgentSession, metrics runners.MetricsObserver) {
 	if stream == nil {
 		return
 	}
-	runners.RunMiniMax(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	runners.RunMiniMaxWithSecurityWorkspace(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics, sess.SecurityWorkspace)
 	sess.closeStreams()
 	slog.Debug("minimax session ended", "handle", sess.Handle)
 }
@@ -447,7 +447,7 @@ func runLocal(sess *AgentSession, metrics runners.MetricsObserver) {
 	if stream == nil {
 		return
 	}
-	runners.RunLocal(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	runners.RunLocalWithSecurityWorkspace(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics, sess.SecurityWorkspace)
 	sess.closeStreams()
 	slog.Debug("local session ended", "handle", sess.Handle)
 }
@@ -462,7 +462,7 @@ func runGemini(sess *AgentSession, metrics runners.MetricsObserver) {
 	if stream == nil {
 		return
 	}
-	runners.RunGemini(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	runners.RunGeminiWithSecurityWorkspace(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics, sess.SecurityWorkspace)
 	sess.closeStreams()
 	slog.Debug("gemini session ended", "handle", sess.Handle)
 }

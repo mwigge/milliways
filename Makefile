@@ -131,7 +131,7 @@ bundle-macos: daemon ctl repl
 		exit 1; \
 	}
 	rm -rf "$(APP_DIR)"
-	mkdir -p "$(APP_DIR)/Contents/MacOS" "$(APP_DIR)/Contents/Resources"
+	mkdir -p "$(APP_DIR)/Contents/MacOS" "$(APP_DIR)/Contents/Resources" "$(APP_DIR)/Contents/Resources/milliways"
 	# wezterm binaries
 	cp "$(WEZTERM_SRC)/wezterm-gui"        "$(APP_DIR)/Contents/MacOS/"
 	cp "$(WEZTERM_SRC)/wezterm-mux-server" "$(APP_DIR)/Contents/MacOS/"
@@ -146,6 +146,8 @@ bundle-macos: daemon ctl repl
 	          "$(APP_DIR)/Contents/MacOS/milliwaysd"
 	# resources
 	cp "$(BUNDLE_DIR)/milliways.icns" "$(APP_DIR)/Contents/Resources/"
+	cp "$(CURDIR)/cmd/milliwaysctl/milliways.lua" \
+		"$(APP_DIR)/Contents/Resources/milliways/wezterm.lua"
 	sed "s/__VERSION__/$(VERSION)/g" "$(BUNDLE_DIR)/Info.plist" \
 		> "$(APP_DIR)/Contents/Info.plist"
 	# Strip ONLY quarantine (not all xattrs — `xattr -cr` would wipe the

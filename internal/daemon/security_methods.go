@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -32,6 +33,7 @@ import (
 	"github.com/mwigge/milliways/internal/security/adapters"
 	"github.com/mwigge/milliways/internal/security/clientprofiles"
 	"github.com/mwigge/milliways/internal/security/firewall"
+	"github.com/mwigge/milliways/internal/security/outputgate"
 	"github.com/mwigge/milliways/internal/security/quarantine"
 	"github.com/mwigge/milliways/internal/security/rulepacks"
 	"github.com/mwigge/milliways/internal/security/rules"
@@ -45,6 +47,8 @@ var securityStatusAdapters = func() []adapters.ScannerAdapter {
 		adapters.NewGovulncheck(),
 	}
 }
+
+var securityScanScanners = outputgate.DefaultScanners
 
 var securityScannerStatusCache = struct {
 	sync.Mutex
@@ -279,6 +283,23 @@ func (s *Server) securityScan(enc *json.Encoder, req *Request) {
 		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
 		return
 	}
+	var p securityScanParams
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, "invalid security.scan params: "+err.Error())
+			return
+		}
+	}
+	workspace := s.resolveSecurityWorkspace(p.Workspace)
+	if len(p.Layers) > 0 || p.Staged || strings.TrimSpace(p.Diff) != "" {
+		result, err := s.runLayeredSecurityScan(context.Background(), workspace, p)
+		if err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, "security scan: "+err.Error())
+			return
+		}
+		writeResult(enc, req.ID, result)
+		return
+	}
 
 	var lockfiles []string
 	if s.secRunner != nil {
@@ -290,7 +311,7 @@ func (s *Server) securityScan(enc *json.Encoder, req *Request) {
 		}
 	}
 
-	findings, err := s.pantryDB.Security().ListActive(nil)
+	findings, err := s.pantryDB.Security().ListActiveForWorkspace(workspace, nil)
 	if err != nil {
 		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("list active findings: %v", err))
 		return
@@ -306,6 +327,237 @@ func (s *Server) securityScan(enc *json.Encoder, req *Request) {
 		"lockfiles":  lockfiles,
 		"findings":   wires,
 	})
+}
+
+type securityScanParams struct {
+	Workspace string   `json:"workspace,omitempty"`
+	Layers    []string `json:"layers,omitempty"`
+	Diff      string   `json:"diff,omitempty"`
+	Staged    bool     `json:"staged,omitempty"`
+}
+
+func (s *Server) runLayeredSecurityScan(ctx context.Context, workspace string, p securityScanParams) (map[string]any, error) {
+	workspace = s.resolveSecurityWorkspace(workspace)
+	changes, err := securityScanChanges(workspace, p)
+	if err != nil {
+		return nil, err
+	}
+	plan := outputgate.PlanScans(changes)
+	plan = filterSecurityScanPlan(plan, p.Layers)
+	execResult := outputgate.ExecutePlan(ctx, workspace, plan, securityScanScanners())
+	if s.pantryDB != nil {
+		persistOutputGateScanResult(s.pantryDB.Security(), workspace, execResult)
+	}
+	return map[string]any{
+		"scanned_at": time.Now().UTC().Format(time.RFC3339),
+		"workspace":  workspace,
+		"plan":       plan,
+		"results":    execResult.Results,
+		"warnings":   execResult.Warnings,
+		"findings":   scanResultFindings(execResult.Results),
+	}, nil
+}
+
+func securityScanChanges(workspace string, p securityScanParams) ([]outputgate.FileChange, error) {
+	if p.Staged || strings.EqualFold(strings.TrimSpace(p.Diff), "staged") {
+		changes, err := daemonGitStagedChanges(workspace)
+		if err == nil {
+			return changes, nil
+		}
+		if len(p.Layers) == 0 {
+			return nil, err
+		}
+	}
+	return securityScanLayerChanges(p.Layers), nil
+}
+
+func securityScanLayerChanges(layers []string) []outputgate.FileChange {
+	changes := make([]outputgate.FileChange, 0)
+	for _, layer := range layers {
+		switch security.ScanKind(strings.TrimSpace(layer)) {
+		case security.ScanSecret:
+			changes = append(changes, outputgate.FileChange{Path: ".env.local", Status: outputgate.StatusModified, Source: outputgate.SourceStaged})
+		case security.ScanSAST:
+			changes = append(changes, outputgate.FileChange{Path: "main.go", Status: outputgate.StatusModified, Source: outputgate.SourceStaged})
+		case security.ScanDependency:
+			changes = append(changes, outputgate.FileChange{Path: "go.mod", Status: outputgate.StatusModified, Source: outputgate.SourceStaged})
+		}
+	}
+	return changes
+}
+
+func daemonGitStagedChanges(workspace string) ([]outputgate.FileChange, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "diff", "--cached", "--name-status", "-z")
+	cmd.Dir = workspace
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	fields := strings.Split(strings.TrimRight(string(out), "\x00"), "\x00")
+	changes := make([]outputgate.FileChange, 0, len(fields)/2)
+	for i := 0; i < len(fields); {
+		statusText := strings.TrimSpace(fields[i])
+		i++
+		if statusText == "" || i >= len(fields) {
+			continue
+		}
+		path := fields[i]
+		i++
+		if strings.HasPrefix(statusText, "R") || strings.HasPrefix(statusText, "C") {
+			if i >= len(fields) {
+				continue
+			}
+			path = fields[i]
+			i++
+		}
+		changes = append(changes, outputgate.FileChange{
+			Path:   path,
+			Status: daemonGitStatusKind(statusText),
+			Source: outputgate.SourceStaged,
+		})
+	}
+	return changes, nil
+}
+
+func daemonGitStatusKind(status string) outputgate.ChangeStatus {
+	if status == "" {
+		return outputgate.StatusModified
+	}
+	switch status[0] {
+	case 'A', 'C':
+		return outputgate.StatusAdded
+	case 'D':
+		return outputgate.StatusDeleted
+	case 'R':
+		return outputgate.StatusRenamed
+	default:
+		return outputgate.StatusModified
+	}
+}
+
+func filterSecurityScanPlan(plan outputgate.Plan, layers []string) outputgate.Plan {
+	if len(layers) == 0 {
+		return plan
+	}
+	keep := map[security.ScanKind]struct{}{}
+	for _, layer := range layers {
+		switch security.ScanKind(strings.TrimSpace(layer)) {
+		case security.ScanSecret, security.ScanSAST, security.ScanDependency:
+			keep[security.ScanKind(strings.TrimSpace(layer))] = struct{}{}
+		}
+	}
+	if len(keep) == 0 {
+		return plan
+	}
+	var requests []outputgate.ScanRequest
+	for _, req := range plan.Requests {
+		if _, ok := keep[req.Kind]; ok {
+			requests = append(requests, req)
+		}
+	}
+	plan.Requests = requests
+	return plan
+}
+
+func scanResultFindings(results []security.ScanResult) []security.Finding {
+	var findings []security.Finding
+	for _, result := range results {
+		findings = append(findings, result.Findings...)
+	}
+	return findings
+}
+
+func persistOutputGateScanResult(store *pantry.SecurityStore, workspace string, execResult outputgate.ExecutionResult) {
+	if store == nil {
+		return
+	}
+	for _, warning := range execResult.Warnings {
+		_ = store.UpsertWarning(pantry.SecurityWarning{
+			Workspace:    workspace,
+			Category:     string(warning.Category),
+			Severity:     securityWarningSeverity(warning.Severity),
+			Source:       outputGateWarningSource(warning.Source),
+			Message:      warning.Message,
+			Status:       string(security.FindingActive),
+			FirstSeen:    warning.FirstSeen,
+			LastSeen:     warning.LastSeen,
+			EvidenceHash: warning.EvidenceHash,
+			Remediation:  warning.Remediation,
+		})
+	}
+	for _, result := range execResult.Results {
+		for _, finding := range result.Findings {
+			category := string(finding.Category)
+			if category == "" {
+				category = string(categoryForScanKind(result.Kind))
+			}
+			_ = store.UpsertFinding(pantry.SecurityFinding{
+				Workspace:        workspace,
+				Category:         category,
+				CVEID:            outputGateFindingID(finding),
+				PackageName:      outputGateFindingPackage(result, finding),
+				InstalledVersion: outputGateFindingVersion(finding),
+				Severity:         securityWarningSeverity(finding.Severity),
+				Ecosystem:        string(result.Kind),
+				Summary:          finding.Summary,
+				ScanSource:       firstNonEmpty(finding.ScanSource, finding.FilePath, result.ToolName),
+				Status:           string(security.FindingActive),
+				FirstSeen:        result.ScannedAt,
+				LastSeen:         result.ScannedAt,
+			})
+		}
+	}
+}
+
+func categoryForScanKind(kind security.ScanKind) security.FindingCategory {
+	switch kind {
+	case security.ScanSecret:
+		return security.FindingSecret
+	case security.ScanSAST:
+		return security.FindingSAST
+	default:
+		return security.FindingDependency
+	}
+}
+
+func securityWarningSeverity(sev string) string {
+	sev = strings.ToUpper(strings.TrimSpace(sev))
+	if sev == "" || sev == "WARNING" {
+		return "WARN"
+	}
+	return sev
+}
+
+func outputGateWarningSource(source string) string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return "output-gate"
+	}
+	return "output-gate:" + source
+}
+
+func outputGateFindingID(f security.Finding) string {
+	return firstNonEmpty(f.CVEID, f.ID, f.EvidenceHash, "output-gate")
+}
+
+func outputGateFindingPackage(result security.ScanResult, f security.Finding) string {
+	return firstNonEmpty(f.PackageName, f.FilePath, f.ScanSource, result.ToolName, "output-gate")
+}
+
+func outputGateFindingVersion(f security.Finding) string {
+	return firstNonEmpty(f.InstalledVersion, f.EvidenceHash, "generated")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // securityEnable handles "security.enable" — turns on OSV scanning.
@@ -777,10 +1029,16 @@ func (s *Server) runStartupSecurityScan(ctx context.Context, workspace string, s
 	if s.pantryDB == nil {
 		return nil, fmt.Errorf("pantry not available")
 	}
+	return runStartupSecurityScanWithStore(ctx, s.pantryDB.Security(), workspace, strict, s.activeAgent())
+}
+
+func runStartupSecurityScanWithStore(ctx context.Context, store *pantry.SecurityStore, workspace string, strict bool, activeAgent string) (map[string]any, error) {
+	if store == nil {
+		return nil, fmt.Errorf("pantry not available")
+	}
 	if abs, err := filepath.Abs(workspace); err == nil {
 		workspace = abs
 	}
-	store := s.pantryDB.Security()
 	runID, _ := store.InsertScanRun(pantry.SecurityScanRun{
 		Kind:      string(security.ScanStartup),
 		Workspace: workspace,
@@ -846,7 +1104,7 @@ func (s *Server) runStartupSecurityScan(ctx context.Context, workspace string, s
 	} else if warnCount > 0 {
 		posture = string(security.PostureWarn)
 	}
-	_ = setWorkspaceStatusPreservingMode(store, result.WorkspaceRoot, string(security.ModeWarn), s.currentAgent)
+	_ = setWorkspaceStatusPreservingMode(store, result.WorkspaceRoot, string(security.ModeWarn), activeAgent)
 	return map[string]any{
 		"workspace":     result.WorkspaceRoot,
 		"scanned_at":    result.CompletedAt.UTC().Format(time.RFC3339),
@@ -924,10 +1182,10 @@ func (s *Server) securityMode(enc *json.Encoder, req *Request) {
 	if p.Mode != "" {
 		mode := security.NormalizeMode(security.Mode(p.Mode))
 		if string(mode) != p.Mode {
-			writeError(enc, req.ID, ErrInvalidParams, "invalid security mode")
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("invalid security mode %q (want off, observe, warn, strict, or ci)", p.Mode))
 			return
 		}
-		if err := s.pantryDB.Security().SetWorkspaceStatus(workspace, string(mode), s.currentAgent); err != nil {
+		if err := s.pantryDB.Security().SetWorkspaceStatus(workspace, string(mode), s.activeAgent()); err != nil {
 			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("set mode: %v", err))
 			return
 		}
@@ -1001,7 +1259,7 @@ func (s *Server) runSecurityCommandCheck(p securityCommandCheckParams) (security
 	}
 	client := strings.TrimSpace(p.Client)
 	if client == "" {
-		client = s.currentAgent
+		client = s.activeAgent()
 	}
 
 	mode, posture := security.ModeWarn, security.PostureUnknown
@@ -1019,7 +1277,7 @@ func (s *Server) runSecurityCommandCheck(p securityCommandCheckParams) (security
 		requested := security.Mode(strings.TrimSpace(p.Mode))
 		normalized := security.NormalizeMode(requested)
 		if normalized != requested {
-			return securityCommandCheckResult{}, fmt.Errorf("invalid security mode")
+			return securityCommandCheckResult{}, fmt.Errorf("invalid security mode %q (want off, observe, warn, strict, or ci)", p.Mode)
 		}
 		mode = normalized
 	}

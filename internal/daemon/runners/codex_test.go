@@ -357,13 +357,13 @@ func TestRunCodex_ModelChangeStartsFreshSession(t *testing.T) {
 	withCodexTestBinary(t, codexRecorderScript(argsFile, `printf '%s\n' '{"type":"session_configured","session_id":"sess-1"}'`))
 
 	state := &codexSessionState{}
-	runCodexOnce(context.Background(), []byte("first"), &fakePusher{}, &mockObserver{}, state)
+	runCodexOnce(context.Background(), []byte("first"), &fakePusher{}, &mockObserver{}, state, "")
 	if state.sessionID == "" {
 		t.Fatal("first run did not capture a session id")
 	}
 
 	t.Setenv("CODEX_MODEL", "gpt-5.5")
-	runCodexOnce(context.Background(), []byte("second"), &fakePusher{}, &mockObserver{}, state)
+	runCodexOnce(context.Background(), []byte("second"), &fakePusher{}, &mockObserver{}, state, "")
 
 	data, err := os.ReadFile(argsFile)
 	if err != nil {

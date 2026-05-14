@@ -82,6 +82,7 @@ func main() {
 	watchMs := fs.Int("debounce-ms", 250, "debounce milliseconds for status --watch (min interval between writes)")
 	watchFlag := fs.Bool("watch", false, "watch mode for status: subscribe and write atomic status.cur")
 	agentID := fs.String("agent", "", "agent_id (for `bridge`, `open`, `context`, `context-render`)")
+	workspace := fs.String("workspace", "", "workspace root (for `open`)")
 	handleFlag := fs.Int64("handle", 0, "agent handle (for `bridge` / `apply`)")
 	metricName := fs.String("metric", "", "metric name (for `metrics`)")
 	metricTier := fs.String("tier", "raw", "tier: raw|hourly|daily|weekly|monthly (for `metrics`)")
@@ -127,7 +128,13 @@ func main() {
 		if *agentID == "" {
 			die("open requires --agent <agent_id>")
 		}
-		callJSON(*socket, "agent.open", map[string]any{"agent_id": *agentID})
+		params := map[string]any{"agent_id": *agentID}
+		if strings.TrimSpace(*workspace) != "" {
+			params["workspace"] = strings.TrimSpace(*workspace)
+		} else if cwd, err := os.Getwd(); err == nil {
+			params["workspace"] = cwd
+		}
+		callJSON(*socket, "agent.open", params)
 	case "bridge":
 		if *handleFlag == 0 {
 			die("bridge requires --handle <id>; obtain via `milliwaysctl open --agent <id>`")
@@ -403,6 +410,8 @@ func normalizeObserveSecurityStatus(result map[string]any) map[string]any {
 	blocks := intMapField(result, "blocks", "block_count", "blocked_count")
 	if blocks > 0 {
 		posture = "block"
+	} else if boolMapField(result, "startup_scan_required", "startup_scan_stale") {
+		posture = "warn"
 	} else if warnings > 0 && posture == "" {
 		posture = "warn"
 	} else if posture == "" {
@@ -411,12 +420,14 @@ func normalizeObserveSecurityStatus(result map[string]any) map[string]any {
 	installed, _ := result["installed"].(bool)
 	enabled, _ := result["enabled"].(bool)
 	return map[string]any{
-		"posture":   posture,
-		"warnings":  warnings,
-		"blocks":    blocks,
-		"mode":      mode,
-		"installed": installed,
-		"enabled":   enabled,
+		"posture":               posture,
+		"warnings":              warnings,
+		"blocks":                blocks,
+		"mode":                  mode,
+		"installed":             installed,
+		"enabled":               enabled,
+		"startup_scan_required": boolMapField(result, "startup_scan_required"),
+		"startup_scan_stale":    boolMapField(result, "startup_scan_stale"),
 	}
 }
 

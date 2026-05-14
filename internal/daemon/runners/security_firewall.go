@@ -19,7 +19,7 @@ import "sync"
 // CommandFirewallProvider returns the current command firewall for a runner.
 // It is configured by the daemon so macOS and Linux app launches share the same
 // persisted workspace security policy.
-type CommandFirewallProvider func(agentID string) CommandFirewall
+type CommandFirewallProvider func(agentID, workspace string) CommandFirewall
 
 var commandFirewallProvider struct {
 	mu sync.RWMutex
@@ -35,11 +35,15 @@ func SetCommandFirewallProvider(fn CommandFirewallProvider) {
 }
 
 func commandFirewallForAgent(agentID string) CommandFirewall {
+	return commandFirewallForAgentWorkspace(agentID, "")
+}
+
+func commandFirewallForAgentWorkspace(agentID, workspace string) CommandFirewall {
 	commandFirewallProvider.mu.RLock()
 	fn := commandFirewallProvider.fn
 	commandFirewallProvider.mu.RUnlock()
 	if fn == nil {
 		return nil
 	}
-	return fn(agentID)
+	return fn(agentID, workspace)
 }

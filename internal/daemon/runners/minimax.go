@@ -65,12 +65,16 @@ import (
 // into `metrics` if non-nil; auth-missing, marshal/transport failures, and
 // non-2xx responses each push an error_count tick.
 func RunMiniMax(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
+	RunMiniMaxWithSecurityWorkspace(ctx, input, stream, metrics, "")
+}
+
+func RunMiniMaxWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
 	state := &minimaxSessionState{}
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runMiniMaxOnce(ctx, prompt, stream, metrics, state)
+		runMiniMaxOnce(ctx, prompt, stream, metrics, state, securityWorkspace)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
@@ -140,7 +144,7 @@ func minimaxRegistry() *tools.Registry {
 //
 // chunk_end is always pushed (via defer) so clients waiting on a terminal
 // frame per dispatch never hang, even when an early-return path fires.
-func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *minimaxSessionState) {
+func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *minimaxSessionState, securityWorkspace string) {
 	apiKey := strings.TrimSpace(os.Getenv("MINIMAX_API_KEY"))
 	if apiKey == "" {
 		observeError(metrics, AgentIDMiniMax)
@@ -199,7 +203,7 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		SessionID:              AgentIDMiniMax,
 		Logger:                 slog.Default(),
 		StopOnUserInputRequest: true,
-		CommandFirewall:        commandFirewallForAgent(AgentIDMiniMax),
+		CommandFirewall:        commandFirewallForAgentWorkspace(AgentIDMiniMax, securityWorkspace),
 	})
 	if err != nil {
 		observeError(metrics, AgentIDMiniMax)

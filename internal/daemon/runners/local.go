@@ -175,19 +175,23 @@ var ErrLocalQuota = errors.New("local backend quota or rate limit")
 // chunk_end is always pushed (per dispatch, even on error paths) so
 // clients waiting on a terminal frame per agent.send do not hang.
 func RunLocal(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
+	RunLocalWithSecurityWorkspace(ctx, input, stream, metrics, "")
+}
+
+func RunLocalWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
 	state := &localSessionState{}
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runLocalOnce(ctx, prompt, stream, metrics, state)
+		runLocalOnce(ctx, prompt, stream, metrics, state, securityWorkspace)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
-func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *localSessionState) {
+func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *localSessionState, securityWorkspace string) {
 	endpoint := strings.TrimRight(os.Getenv("MILLIWAYS_LOCAL_ENDPOINT"), "/")
 	if endpoint == "" {
 		endpoint = localDefaultEndpoint
@@ -260,7 +264,7 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		XMLToolMode:            xmlMode,
 		Compaction:             CompactionOptions{CtxTokens: ctxTokens},
 		StopOnUserInputRequest: true,
-		CommandFirewall:        commandFirewallForAgent(AgentIDLocal),
+		CommandFirewall:        commandFirewallForAgentWorkspace(AgentIDLocal, securityWorkspace),
 	})
 	if err != nil {
 		observeError(metrics, AgentIDLocal)

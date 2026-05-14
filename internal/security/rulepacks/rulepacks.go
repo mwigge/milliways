@@ -170,14 +170,21 @@ func LoadManifest(manifestPath string, source Source, allowNetwork bool) (Pack, 
 		return Pack{}, fmt.Errorf("rule pack manifest %q: %w", manifestPath, err)
 	}
 
-	root := filepath.Dir(manifestPath)
+	root, err := filepath.EvalSymlinks(filepath.Dir(manifestPath))
+	if err != nil {
+		return Pack{}, fmt.Errorf("resolve rule pack root %q: %w", filepath.Dir(manifestPath), err)
+	}
 	rulesPath := filepath.Clean(filepath.Join(root, filepath.FromSlash(manifest.RulesFile)))
-	if !withinDir(root, rulesPath) {
+	realRulesPath, err := filepath.EvalSymlinks(rulesPath)
+	if err != nil {
+		return Pack{}, fmt.Errorf("resolve rule pack rules %q: %w", rulesPath, err)
+	}
+	if !withinDir(root, realRulesPath) {
 		return Pack{}, fmt.Errorf("rule pack manifest %q: rules_file escapes pack root", manifestPath)
 	}
-	ruleBytes, err := readBounded(rulesPath)
+	ruleBytes, err := readBounded(realRulesPath)
 	if err != nil {
-		return Pack{}, fmt.Errorf("read rule pack rules %q: %w", rulesPath, err)
+		return Pack{}, fmt.Errorf("read rule pack rules %q: %w", realRulesPath, err)
 	}
 	actual := checksum(ruleBytes)
 	if !checksumMatches(manifest.Checksum, actual) {

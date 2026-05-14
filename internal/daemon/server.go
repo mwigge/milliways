@@ -68,6 +68,7 @@ type Server struct {
 	// Background broadcaster lifecycle.
 	bgCtx    context.Context
 	bgCancel context.CancelFunc
+	bgWG     sync.WaitGroup
 
 	// Status broadcaster.
 	statusMu          sync.Mutex
@@ -185,8 +186,11 @@ func NewServer(socket string) (*Server, error) {
 			}
 		}
 		s.secRunner = security.NewRunner(pdb.Security(), workspaceRoot)
-		runners.SetCommandFirewallProvider(func(agentID string) runners.CommandFirewall {
-			root := s.agentSecurityWorkspace(agentID)
+		runners.SetCommandFirewallProvider(func(agentID, workspace string) runners.CommandFirewall {
+			root := strings.TrimSpace(workspace)
+			if root == "" {
+				root = s.agentSecurityWorkspace(agentID)
+			}
 			if root == "" {
 				root = workspaceRoot
 				if abs, err := filepath.Abs(root); err == nil {
@@ -206,10 +210,13 @@ func NewServer(socket string) (*Server, error) {
 				RunnerID: agentID,
 				CWD:      root,
 				Posture:  posture,
+				Store:    pdb.Security(),
 			}
 		})
 		s.secRunner.Start(bgCtx)
+		s.bgWG.Add(1)
 		go func(root string) {
+			defer s.bgWG.Done()
 			if abs, err := filepath.Abs(root); err == nil {
 				root = abs
 			}
@@ -222,7 +229,7 @@ func NewServer(socket string) (*Server, error) {
 			}
 			scanCtx, scanCancel := context.WithTimeout(bgCtx, 5*time.Second)
 			defer scanCancel()
-			if _, err := s.runStartupSecurityScan(scanCtx, root, false); err != nil {
+			if _, err := runStartupSecurityScanWithStore(scanCtx, pdb.Security(), root, false, s.activeAgent()); err != nil {
 				slog.Warn("security: startup scan failed", "err", err)
 			}
 		}(workspaceRoot)
@@ -253,6 +260,15 @@ func (s *Server) agentSecurityWorkspace(agentID string) string {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	return s.agentSecurityWorkspaces[strings.TrimSpace(agentID)]
+}
+
+func (s *Server) activeAgent() string {
+	if s == nil {
+		return ""
+	}
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	return s.currentAgent
 }
 
 // Serve accepts connections until Shutdown is called.
@@ -390,8 +406,10 @@ func (s *Server) Shutdown() {
 		return
 	}
 	s.bgCancel()
+	runners.SetCommandFirewallProvider(nil)
 	s.listener.Close()
 	s.wg.Wait()
+	s.bgWG.Wait()
 	if s.metrics != nil {
 		if err := s.metrics.Close(); err != nil {
 			slog.Warn("metrics store close", "err", err)

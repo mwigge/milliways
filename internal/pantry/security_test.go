@@ -527,6 +527,7 @@ func TestSecurityStore_SecurityStatusAggregatesFindingsAndWarnings(t *testing.T)
 		t.Fatalf("SetWorkspaceStatus: %v", err)
 	}
 	if err := ss.UpsertFinding(SecurityFinding{
+		Workspace:        "/repo",
 		CVEID:            "CVE-2026-11111",
 		PackageName:      "pkg",
 		InstalledVersion: "v1",

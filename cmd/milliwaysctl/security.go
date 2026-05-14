@@ -1071,10 +1071,6 @@ func renderSecurityGenericResult(stdout io.Writer, label string, result map[stri
 		fmt.Fprintf(stdout, "[%s] ok\n", label)
 		return
 	}
-	if mode := stringMapField(result, "mode"); mode != "" {
-		fmt.Fprintf(stdout, "[%s] mode: %s\n", label, mode)
-		return
-	}
 	if findings, ok := result["findings"].([]any); ok {
 		fmt.Fprintf(stdout, "[%s] %d finding(s)\n", label, len(findings))
 		return
@@ -1099,6 +1095,10 @@ func renderSecurityGenericResult(stdout io.Writer, label string, result map[stri
 				fmt.Fprintf(stdout, "risks: %s\n", strings.Join(parts, ", "))
 			}
 		}
+		return
+	}
+	if mode := stringMapField(result, "mode"); mode != "" {
+		fmt.Fprintf(stdout, "[%s] mode: %s\n", label, mode)
 		return
 	}
 	if actions, ok := result["actions"].([]any); ok {
@@ -1235,6 +1235,15 @@ func intMapField(m map[string]any, keys ...string) int {
 		}
 	}
 	return 0
+}
+
+func boolMapField(m map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if v, ok := m[key].(bool); ok && v {
+			return true
+		}
+	}
+	return false
 }
 
 func stringSliceMapField(m map[string]any, key string) []string {

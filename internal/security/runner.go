@@ -122,6 +122,9 @@ func (r *Runner) ScanNow(ctx context.Context) (ScanResult, error) {
 		r.markReady()
 		return ScanResult{}, err
 	}
+	if result.Workspace == "" {
+		result.Workspace = r.workspaceRoot
+	}
 
 	if upsertErr := r.UpsertFindings(result); upsertErr != nil {
 		slog.Warn("security: upsert findings failed", "err", upsertErr)
@@ -171,6 +174,9 @@ func (r *Runner) PollLoop(ctx context.Context) {
 				slog.Warn("security: poll scan failed", "err", err)
 				continue
 			}
+			if result.Workspace == "" {
+				result.Workspace = r.workspaceRoot
+			}
 
 			if upsertErr := r.UpsertFindings(result); upsertErr != nil {
 				slog.Warn("security: upsert findings failed", "err", upsertErr)
@@ -206,6 +212,7 @@ func (r *Runner) UpsertFindings(result ScanResult) error {
 		activeCVEs := make(map[string]struct{}, len(findings))
 		for _, f := range findings {
 			if err := r.store.UpsertFinding(pantry.SecurityFinding{
+				Workspace:        result.Workspace,
 				CVEID:            f.CVEID,
 				PackageName:      f.PackageName,
 				InstalledVersion: f.InstalledVersion,
@@ -223,7 +230,7 @@ func (r *Runner) UpsertFindings(result ScanResult) error {
 		}
 
 		// Mark stale findings for this source as resolved.
-		if err := r.store.MarkResolvedForSource(src, activeCVEs); err != nil {
+		if err := r.store.MarkResolvedForWorkspaceSource(result.Workspace, src, activeCVEs); err != nil {
 			slog.Warn("security: mark resolved for source", "src", src, "err", err)
 		}
 	}

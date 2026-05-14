@@ -343,8 +343,12 @@ impl AgentDomain {
 async fn open_agent(socket: &Path, agent_id: &str) -> anyhow::Result<i64> {
     use serde_json::json;
     let mut client = crate::rpc::Client::dial(socket).await?;
+    let workspace = std::env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
     let resp: serde_json::Value = client
-        .call("agent.open", json!({"agent_id": agent_id}))
+        .call("agent.open", json!({"agent_id": agent_id, "workspace": workspace}))
         .await?;
     resp.get("handle")
         .and_then(|v| v.as_i64())

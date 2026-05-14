@@ -703,7 +703,11 @@ func openAgentForChat(client *rpc.Client, agentID string) (*chatSession, error) 
 	var openResp struct {
 		Handle int64 `json:"handle"`
 	}
-	if err := client.Call("agent.open", map[string]any{"agent_id": agentID}, &openResp); err != nil {
+	params := map[string]any{"agent_id": agentID}
+	if cwd, err := os.Getwd(); err == nil && strings.TrimSpace(cwd) != "" {
+		params["workspace"] = cwd
+	}
+	if err := client.Call("agent.open", params, &openResp); err != nil {
 		return nil, fmt.Errorf("agent.open %s: %w", agentID, err)
 	}
 	events, cancel, err := client.Subscribe("agent.stream", map[string]any{"handle": openResp.Handle})

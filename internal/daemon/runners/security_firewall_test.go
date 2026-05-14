@@ -26,7 +26,7 @@ func TestCommandFirewallProviderReturnsPerAgentFirewall(t *testing.T) {
 	SetCommandFirewallProvider(nil)
 	defer SetCommandFirewallProvider(nil)
 
-	SetCommandFirewallProvider(func(agentID string) CommandFirewall {
+	SetCommandFirewallProvider(func(agentID, workspace string) CommandFirewall {
 		return StaticCommandFirewall{
 			Policy:   firewall.Policy{Mode: security.ModeStrict},
 			RunnerID: agentID,
@@ -55,7 +55,7 @@ func TestCommandFirewallProviderReturnsPerAgentFirewall(t *testing.T) {
 }
 
 func TestCommandFirewallProviderCanBeDisabled(t *testing.T) {
-	SetCommandFirewallProvider(func(string) CommandFirewall {
+	SetCommandFirewallProvider(func(string, string) CommandFirewall {
 		return StaticCommandFirewall{Policy: firewall.Policy{Mode: security.ModeStrict}}
 	})
 	SetCommandFirewallProvider(nil)

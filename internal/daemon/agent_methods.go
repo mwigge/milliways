@@ -119,7 +119,7 @@ func (s *Server) agentOpen(enc *json.Encoder, req *Request) {
 	// receives it before the client starts sending messages.
 	injectSec := p.SecurityContext == nil || *p.SecurityContext
 	if injectSec && s.pantryDB != nil {
-		findings, err := s.pantryDB.Security().ListActive([]string{"CRITICAL", "HIGH"})
+		findings, err := s.pantryDB.Security().ListActiveForWorkspace(securityWorkspace, []string{"CRITICAL", "HIGH"})
 		if err != nil {
 			slog.Debug("security context: list active findings", "err", err)
 		} else if len(findings) > 0 {

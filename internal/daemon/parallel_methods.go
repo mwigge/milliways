@@ -107,7 +107,7 @@ func (s *Server) parallelDispatch(enc *json.Encoder, req *Request) {
 
 	// Prepend security context block to the preamble (generated once for the group).
 	if s.pantryDB != nil {
-		secFindings, _ := s.pantryDB.Security().ListActive([]string{"CRITICAL", "HIGH"})
+		secFindings, _ := s.pantryDB.Security().ListActiveForWorkspace(s.securityWorkspaceRoot(), []string{"CRITICAL", "HIGH"})
 		if len(secFindings) > 0 {
 			result.ContextPreamble = security.BuildContextBlock(secFindings, security.DefaultTokenCap) + result.ContextPreamble
 		}

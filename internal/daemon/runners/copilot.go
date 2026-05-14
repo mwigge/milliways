@@ -53,6 +53,10 @@ const copilotChunkSize = 4 * 1024
 //   - When `input` is closed, RunCopilot pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
 func RunCopilot(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
+	RunCopilotWithSecurityWorkspace(ctx, input, stream, metrics, "")
+}
+
+func RunCopilotWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -70,12 +74,12 @@ func RunCopilot(ctx context.Context, input <-chan []byte, stream Pusher, metrics
 			if stream == nil {
 				continue
 			}
-			runCopilotOnce(ctx, prompt, stream, metrics)
+			runCopilotOnce(ctx, prompt, stream, metrics, securityWorkspace)
 		}
 	}
 }
 
-func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
+func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		stream.Push(zeroUsageChunkEnd())
@@ -93,7 +97,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	}()
 	pushModel(stream, AgentIDCopilot)
 
-	cwd, _ := os.Getwd()
+	cwd := runnerWorkspaceCWD(securityWorkspace)
 	if !runExternalCLIPreflight(ctx, AgentIDCopilot, cwd, stream, metrics) {
 		spanErr = "security profile blocked handoff"
 		return

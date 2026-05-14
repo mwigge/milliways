@@ -95,6 +95,11 @@ jobs:
           grep -q "args = { mwctl_bin, 'observe-render' }" "$root/share/milliways/wezterm.lua"
           ! grep -q "MILLIWAYS_WEZTERM_CLI" "$root/share/milliways/wezterm.lua"
 
+      - name: Run Secure MilliWays release smoke
+        run: |
+          GOCACHE=/tmp/mw-gocache GOMODCACHE=/tmp/mw-gomodcache go test ./cmd/milliways ./cmd/milliwaysctl ./internal/daemon ./internal/security/... -count=1
+          GOCACHE=/tmp/mw-gocache GOMODCACHE=/tmp/mw-gomodcache bash tests/smoke/smoke_security_release.sh
+
       # ── Package agent toolkit bundle (if sibling repo is present) ────────
       - name: Package agent toolkit bundle
         continue-on-error: true
@@ -190,6 +195,12 @@ jobs:
         run: make bundle-macos WEZTERM_SRC=/tmp/wezterm-bin
         env:
           PREFIX: /tmp/milliways-install
+
+      - name: Verify macOS app Secure MilliWays config
+        run: |
+          test -f dist/MilliWays.app/Contents/Resources/milliways/wezterm.lua
+          grep -q "local function security_badge(sec)" dist/MilliWays.app/Contents/Resources/milliways/wezterm.lua
+          grep -q "args = { mwctl_bin, 'observe-render' }" dist/MilliWays.app/Contents/Resources/milliways/wezterm.lua
 
       # ── Upload macOS assets to the release ────────────────────────────────
       - name: Upload macOS release assets

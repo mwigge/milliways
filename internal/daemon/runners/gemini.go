@@ -76,6 +76,10 @@ const geminiChunkSize = 4 * 1024
 //   - When `input` is closed, RunGemini pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
 func RunGemini(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
+	RunGeminiWithSecurityWorkspace(ctx, input, stream, metrics, "")
+}
+
+func RunGeminiWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -93,12 +97,12 @@ func RunGemini(ctx context.Context, input <-chan []byte, stream Pusher, metrics 
 			if stream == nil {
 				continue
 			}
-			runGeminiOnce(ctx, prompt, stream, metrics)
+			runGeminiOnce(ctx, prompt, stream, metrics, securityWorkspace)
 		}
 	}
 }
 
-func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
+func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		stream.Push(geminiChunkEndEvent())
@@ -116,7 +120,7 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	}()
 	pushModel(stream, AgentIDGemini)
 
-	cwd, _ := os.Getwd()
+	cwd := runnerWorkspaceCWD(securityWorkspace)
 	if !runExternalCLIPreflight(ctx, AgentIDGemini, cwd, stream, metrics) {
 		spanErr = "security profile blocked handoff"
 		return

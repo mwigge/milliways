@@ -83,7 +83,7 @@ func runExternalCLIPreflight(ctx context.Context, agentID, cwd string, stream Pu
 }
 
 func defaultExternalCLIPreflightCheck(ctx context.Context, agentID, cwd string) externalCLIPreflightResult {
-	mode := externalCLIPreflightMode(ctx, agentID)
+	mode := externalCLIPreflightMode(ctx, agentID, cwd)
 	if mode == security.ModeOff || mode == security.ModeObserve {
 		return externalCLIPreflightResult{Mode: mode}
 	}
@@ -104,9 +104,9 @@ func defaultExternalCLIPreflightCheck(ctx context.Context, agentID, cwd string) 
 	return out
 }
 
-func externalCLIPreflightMode(ctx context.Context, agentID string) security.Mode {
+func externalCLIPreflightMode(ctx context.Context, agentID, cwd string) security.Mode {
 	mode := security.NormalizeMode(security.Mode(strings.TrimSpace(os.Getenv("MILLIWAYS_SECURITY_MODE"))))
-	if fw := commandFirewallForAgent(agentID); fw != nil {
+	if fw := commandFirewallForAgentWorkspace(agentID, cwd); fw != nil {
 		result, err := fw.EvaluateCommand(ctx, CommandFirewallRequest{
 			Command:   "true",
 			ToolName:  "external-cli-preflight",

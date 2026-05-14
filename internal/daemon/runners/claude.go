@@ -20,7 +20,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"log/slog"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -112,18 +111,22 @@ const claudeTimeout = 5 * time.Minute
 //   - When `input` is closed, RunClaude pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
 func RunClaude(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
+	RunClaudeWithSecurityWorkspace(ctx, input, stream, metrics, "")
+}
+
+func RunClaudeWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runClaudeOnce(ctx, prompt, stream, metrics)
+		runClaudeOnce(ctx, prompt, stream, metrics, securityWorkspace)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
-func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
+func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		return
@@ -138,7 +141,7 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	defer func() { stream.Push(chunkEnd) }()
 	pushModel(stream, AgentIDClaude)
 
-	cwd, _ := os.Getwd()
+	cwd := runnerWorkspaceCWD(securityWorkspace)
 	if !runExternalCLIPreflight(ctx, AgentIDClaude, cwd, stream, metrics) {
 		endDispatchSpan(span, 0, 0, 0, "security profile blocked handoff")
 		return

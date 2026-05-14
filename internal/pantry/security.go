@@ -27,6 +27,7 @@ import (
 // SecurityFinding is one persisted OSV vulnerability finding.
 type SecurityFinding struct {
 	ID               int64
+	Workspace        string
 	Category         string
 	CVEID            string
 	PackageName      string
@@ -190,10 +191,10 @@ func (s *SecurityStore) UpsertFinding(f SecurityFinding) error {
 	}
 	_, err := s.db.Exec(`
 		INSERT INTO mw_security_findings
-			(category, cve_id, package_name, installed_version, fixed_in_version, severity,
+			(workspace, category, cve_id, package_name, installed_version, fixed_in_version, severity,
 			 ecosystem, summary, scan_source, status, first_seen, last_seen)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(cve_id, package_name, installed_version, ecosystem) DO UPDATE SET
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(workspace, cve_id, package_name, installed_version, ecosystem) DO UPDATE SET
 			category         = excluded.category,
 			fixed_in_version = excluded.fixed_in_version,
 			severity         = excluded.severity,
@@ -201,7 +202,7 @@ func (s *SecurityStore) UpsertFinding(f SecurityFinding) error {
 			scan_source      = excluded.scan_source,
 			status           = excluded.status,
 			last_seen        = excluded.last_seen`,
-		f.Category, f.CVEID, f.PackageName, f.InstalledVersion, f.FixedInVersion,
+		f.Workspace, f.Category, f.CVEID, f.PackageName, f.InstalledVersion, f.FixedInVersion,
 		f.Severity, f.Ecosystem, f.Summary, f.ScanSource, f.Status,
 		firstSeen, now,
 	)
@@ -217,7 +218,7 @@ func (s *SecurityStore) UpsertFinding(f SecurityFinding) error {
 // descending.
 func (s *SecurityStore) ListActive(severities []string) ([]SecurityFinding, error) {
 	query := `
-		SELECT f.id, f.cve_id, f.package_name, f.installed_version,
+		SELECT f.id, f.workspace, f.cve_id, f.package_name, f.installed_version,
 		       f.fixed_in_version, f.severity, f.ecosystem, f.summary,
 		       f.scan_source, f.status, f.first_seen, f.last_seen, f.category
 		FROM mw_security_findings f
@@ -247,19 +248,63 @@ func (s *SecurityStore) ListActive(severities []string) ([]SecurityFinding, erro
 	return s.queryFindings(query, args...)
 }
 
+// ListActiveForWorkspace returns active or blocked findings, optionally
+// filtered to the given severity values, for one workspace.
+func (s *SecurityStore) ListActiveForWorkspace(workspace string, severities []string) ([]SecurityFinding, error) {
+	query := `
+		SELECT f.id, f.workspace, f.cve_id, f.package_name, f.installed_version,
+		       f.fixed_in_version, f.severity, f.ecosystem, f.summary,
+		       f.scan_source, f.status, f.first_seen, f.last_seen, f.category
+		FROM mw_security_findings f
+		WHERE f.workspace = ? AND f.status IN ('active', 'blocked')
+		  AND NOT EXISTS (
+		      SELECT 1 FROM mw_security_accepted_risks r
+		      WHERE r.cve_id = f.cve_id
+		        AND r.package_name = f.package_name
+		        AND r.expires_at > datetime('now')
+		  )`
+
+	args := []any{workspace}
+	if len(severities) > 0 {
+		placeholders := strings.Repeat("?,", len(severities))
+		placeholders = placeholders[:len(placeholders)-1]
+		query += " AND f.severity IN (" + placeholders + ")"
+		for _, sv := range severities {
+			args = append(args, sv)
+		}
+	}
+
+	query += ` ORDER BY CASE f.severity
+		WHEN 'CRITICAL' THEN 1 WHEN 'HIGH' THEN 2
+		WHEN 'MEDIUM' THEN 3 WHEN 'LOW' THEN 4 ELSE 5 END,
+		f.first_seen DESC`
+
+	return s.queryFindings(query, args...)
+}
+
 // ListAll returns all findings regardless of status or accepted risks.
 func (s *SecurityStore) ListAll() ([]SecurityFinding, error) {
 	return s.queryFindings(`
-		SELECT id, cve_id, package_name, installed_version, fixed_in_version,
+		SELECT id, workspace, cve_id, package_name, installed_version, fixed_in_version,
 		       severity, ecosystem, summary, scan_source, status, first_seen, last_seen, category
 		FROM mw_security_findings
 		ORDER BY first_seen DESC`)
 }
 
+// ListAllForWorkspace returns all findings for one workspace regardless of status.
+func (s *SecurityStore) ListAllForWorkspace(workspace string) ([]SecurityFinding, error) {
+	return s.queryFindings(`
+		SELECT id, workspace, cve_id, package_name, installed_version, fixed_in_version,
+		       severity, ecosystem, summary, scan_source, status, first_seen, last_seen, category
+		FROM mw_security_findings
+		WHERE workspace = ?
+		ORDER BY first_seen DESC`, workspace)
+}
+
 // GetByCVE returns the first finding for the given CVE ID.
 func (s *SecurityStore) GetByCVE(cveID string) (SecurityFinding, error) {
 	findings, err := s.queryFindings(`
-		SELECT id, cve_id, package_name, installed_version, fixed_in_version,
+		SELECT id, workspace, cve_id, package_name, installed_version, fixed_in_version,
 		       severity, ecosystem, summary, scan_source, status, first_seen, last_seen, category
 		FROM mw_security_findings WHERE cve_id = ? LIMIT 1`, cveID)
 	if err != nil {
@@ -275,10 +320,15 @@ func (s *SecurityStore) GetByCVE(cveID string) (SecurityFinding, error) {
 // resolved UNLESS their "cve_id:package_name" key appears in keepKeys. Called
 // by the runner after each scan to retire stale findings for one lockfile.
 func (s *SecurityStore) MarkResolvedForSource(scanSource string, keepKeys map[string]struct{}) error {
+	return s.MarkResolvedForWorkspaceSource("", scanSource, keepKeys)
+}
+
+// MarkResolvedForWorkspaceSource marks stale active findings for one source in one workspace.
+func (s *SecurityStore) MarkResolvedForWorkspaceSource(workspace, scanSource string, keepKeys map[string]struct{}) error {
 	rows, err := s.db.Query(`
 		SELECT cve_id, package_name, installed_version, ecosystem
 		FROM mw_security_findings
-		WHERE scan_source = ? AND status = 'active'`, scanSource)
+		WHERE workspace = ? AND scan_source = ? AND status = 'active'`, workspace, scanSource)
 	if err != nil {
 		return fmt.Errorf("query findings for source: %w", err)
 	}
@@ -301,7 +351,7 @@ func (s *SecurityStore) MarkResolvedForSource(scanSource string, keepKeys map[st
 	}
 
 	for _, r := range toResolve {
-		if err := s.MarkResolved(r.cveID, r.pkg, r.ver, r.eco); err != nil {
+		if err := s.MarkResolvedForWorkspace(workspace, r.cveID, r.pkg, r.ver, r.eco); err != nil {
 			slog.Debug("MarkResolvedForSource: skip non-matching", "err", err)
 		}
 	}
@@ -310,10 +360,15 @@ func (s *SecurityStore) MarkResolvedForSource(scanSource string, keepKeys map[st
 
 // MarkResolved sets a finding's status to "resolved".
 func (s *SecurityStore) MarkResolved(cveID, packageName, installedVersion, ecosystem string) error {
+	return s.MarkResolvedForWorkspace("", cveID, packageName, installedVersion, ecosystem)
+}
+
+// MarkResolvedForWorkspace sets a finding's status to "resolved" for one workspace.
+func (s *SecurityStore) MarkResolvedForWorkspace(workspace, cveID, packageName, installedVersion, ecosystem string) error {
 	res, err := s.db.Exec(`
 		UPDATE mw_security_findings SET status = 'resolved'
-		WHERE cve_id = ? AND package_name = ? AND installed_version = ? AND ecosystem = ?`,
-		cveID, packageName, installedVersion, ecosystem,
+		WHERE workspace = ? AND cve_id = ? AND package_name = ? AND installed_version = ? AND ecosystem = ?`,
+		workspace, cveID, packageName, installedVersion, ecosystem,
 	)
 	if err != nil {
 		return fmt.Errorf("mark resolved: %w", err)
@@ -588,7 +643,7 @@ func (s *SecurityStore) SecurityStatus(workspace string) (SecurityStatus, error)
 	}
 	st.LastDependencyScan = dep
 
-	if err := s.addFindingCounts(st.CountsByCategory, st.CountsBySeverity); err != nil {
+	if err := s.addFindingCounts(workspace, st.CountsByCategory, st.CountsBySeverity); err != nil {
 		return SecurityStatus{}, err
 	}
 	warnings, err := s.ListActiveWarnings(workspace)
@@ -836,7 +891,7 @@ func (s *SecurityStore) queryFindings(query string, args ...any) ([]SecurityFind
 	for rows.Next() {
 		var f SecurityFinding
 		var firstSeen, lastSeen string
-		if err := rows.Scan(&f.ID, &f.CVEID, &f.PackageName, &f.InstalledVersion,
+		if err := rows.Scan(&f.ID, &f.Workspace, &f.CVEID, &f.PackageName, &f.InstalledVersion,
 			&f.FixedInVersion, &f.Severity, &f.Ecosystem, &f.Summary,
 			&f.ScanSource, &f.Status, &firstSeen, &lastSeen, &f.Category); err != nil {
 			return nil, fmt.Errorf("scan finding: %w", err)
@@ -924,18 +979,18 @@ func scanSecurityClientProfile(rows securityClientProfileScanner) (SecurityClien
 	return p, nil
 }
 
-func (s *SecurityStore) addFindingCounts(byCategory, bySeverity map[string]int) error {
+func (s *SecurityStore) addFindingCounts(workspace string, byCategory, bySeverity map[string]int) error {
 	rows, err := s.db.Query(`
 		SELECT category, severity, COUNT(*)
 		FROM mw_security_findings f
-		WHERE f.status IN ('active', 'blocked')
+		WHERE f.workspace = ? AND f.status IN ('active', 'blocked')
 		  AND NOT EXISTS (
 		      SELECT 1 FROM mw_security_accepted_risks r
 		      WHERE r.cve_id = f.cve_id
 		        AND r.package_name = f.package_name
 		        AND r.expires_at > datetime('now')
 		  )
-		GROUP BY category, severity`)
+		GROUP BY category, severity`, workspace)
 	if err != nil {
 		return fmt.Errorf("query finding counts: %w", err)
 	}
