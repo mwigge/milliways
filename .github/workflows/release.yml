@@ -147,7 +147,7 @@ jobs:
           else
             gh release create "$TAG" \
               --title "milliways $TAG" \
-              --generate-notes \
+              --notes "Secure MilliWays release $TAG." \
               "${ASSETS[@]}"
           fi
 
@@ -229,6 +229,6 @@ jobs:
           else
             gh release create "$TAG" \
               --title "milliways $TAG" \
-              --generate-notes \
+              --notes "Secure MilliWays release $TAG." \
               "${ASSETS[@]}"
           fi

@@ -1,6 +1,6 @@
 # Milliways
 
-> Secure MilliWays: all clients in one place, shared memory, shared sessions, one security control plane.
+> Secure MilliWays: all clients in one place, shared memory, shared sessions, one security layer, delivered through one security control plane.
 
 Milliways is an AI terminal for macOS and Linux. Claude, Codex, Pool, Gemini, Copilot, MiniMax, and local models all run from the same workspace, with the same observable control plane around them.
 
@@ -934,7 +934,7 @@ Switch at runtime with `/local-temp 0.7` or `/local-temp default` (lets the serv
 
 ## Secure MilliWays
 
-Secure MilliWays is the release security theme, not a separate binary and not a repository rename: all clients in one place, shared memory, shared sessions, one security control plane.
+Secure MilliWays is the release security theme, not a separate binary and not a repository rename: all clients in one place, shared memory, shared sessions, one security layer, delivered through one security control plane.
 
 Milliways wraps Claude, Codex, Copilot, Gemini, Pool, MiniMax, and local models behind one terminal surface. That makes the security model explicit: the runner changes, but the workspace, memory, session handoff, observability, and security posture are managed in one place.
 
