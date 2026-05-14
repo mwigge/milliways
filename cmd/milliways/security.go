@@ -19,7 +19,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
+
+	"github.com/mwigge/milliways/internal/security/sbom"
 )
 
 // handleSecurity implements the /security slash command surface.
@@ -27,6 +31,10 @@ func (l *chatLoop) handleSecurity(rest string) {
 	args := splitFields(rest)
 	if len(args) == 0 || args[0] == "help" {
 		printSecurityUsage(l.out)
+		return
+	}
+	if args[0] == "sbom" {
+		l.handleSecuritySBOM(args[1:])
 		return
 	}
 	if l.client == nil {
@@ -72,6 +80,52 @@ func (l *chatLoop) handleSecurity(rest string) {
 		fmt.Fprintf(l.errw, "unknown security command %q\n", verb)
 		printSecurityUsage(l.errw)
 	}
+}
+
+func (l *chatLoop) handleSecuritySBOM(args []string) {
+	fs := flag.NewFlagSet("security sbom", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	workspace := fs.String("workspace", ".", "workspace root")
+	output := fs.String("output", "", "output SPDX JSON path")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(l.errw, "security sbom: %v\n", err)
+		return
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(l.errw, "usage: /security sbom [--workspace <dir>] [--output <path>]")
+		return
+	}
+	doc, err := sbom.GenerateSPDX(sbom.GenerateOptions{Workspace: *workspace})
+	if err != nil {
+		fmt.Fprintf(l.errw, "security sbom: %v\n", err)
+		return
+	}
+	if strings.TrimSpace(*output) == "" {
+		if err := sbom.WriteSPDXJSON(l.out, doc); err != nil {
+			fmt.Fprintf(l.errw, "security sbom: write stdout: %v\n", err)
+		}
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(*output), 0o755); err != nil {
+		fmt.Fprintf(l.errw, "security sbom: create output dir: %v\n", err)
+		return
+	}
+	f, err := os.Create(*output)
+	if err != nil {
+		fmt.Fprintf(l.errw, "security sbom: create %s: %v\n", *output, err)
+		return
+	}
+	err = sbom.WriteSPDXJSON(f, doc)
+	closeErr := f.Close()
+	if err != nil {
+		fmt.Fprintf(l.errw, "security sbom: write %s: %v\n", *output, err)
+		return
+	}
+	if closeErr != nil {
+		fmt.Fprintf(l.errw, "security sbom: close %s: %v\n", *output, closeErr)
+		return
+	}
+	fmt.Fprintf(l.out, "[security] wrote SBOM -> %s (%d packages)\n", *output, len(doc.Packages))
 }
 
 func (l *chatLoop) handleSecurityStartupScan(args []string) {
@@ -168,6 +222,7 @@ func printSecurityUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: /security <command>")
 	fmt.Fprintln(w, "  /security status")
 	fmt.Fprintln(w, "  /security cra")
+	fmt.Fprintln(w, "  /security sbom [--workspace <dir>] [--output <path>]")
 	fmt.Fprintln(w, "  /security scan")
 	fmt.Fprintln(w, "  /security startup-scan [--strict]")
 	fmt.Fprintln(w, "  /security mode [off|observe|warn|strict|ci]")

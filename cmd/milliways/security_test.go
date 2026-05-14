@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -128,6 +129,36 @@ func TestHandleSecurityNilClientPrintsError(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "[security] not connected") {
 		t.Fatalf("expected not-connected error, got %q", stderr.String())
+	}
+}
+
+func TestHandleSecuritySBOMWorksWithoutDaemon(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "go.mod"), []byte("module example.test/app\n\nrequire github.com/acme/lib v1.2.3\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	outPath := filepath.Join(workspace, "dist", "milliways.spdx.json")
+	var stdout, stderr bytes.Buffer
+	loop := &chatLoop{out: &stdout, errw: &stderr}
+
+	loop.handleSlash("/security sbom --workspace " + workspace + " --output " + outPath)
+
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected stderr: %s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "wrote SBOM") {
+		t.Fatalf("missing success output:\n%s", stdout.String())
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("ReadFile output: %v", err)
+	}
+	for _, want := range []string{`"spdxVersion": "SPDX-2.3"`, `"name": "github.com/acme/lib"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("SBOM missing %q:\n%s", want, string(data))
+		}
 	}
 }
 

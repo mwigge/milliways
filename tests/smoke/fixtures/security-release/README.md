@@ -20,6 +20,7 @@ The terminal slash surface mirrors the core posture controls:
 ```text
 /security status
 /security cra
+/security sbom --output dist/milliways.spdx.json
 /security startup-scan --strict
 /security scan
 /security mode strict

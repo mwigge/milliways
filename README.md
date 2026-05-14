@@ -1000,6 +1000,7 @@ Inside the MilliWays terminal, the same core posture controls are available with
 ```text
 /security status
 /security cra
+/security sbom --output dist/milliways.spdx.json
 /security startup-scan --strict
 /security scan
 /security mode strict
