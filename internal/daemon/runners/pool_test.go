@@ -17,6 +17,8 @@ package runners
 import (
 	"context"
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -223,6 +225,48 @@ func TestRunPool_StreamsStdout(t *testing.T) {
 	}
 	if dataAt < 0 || chunkEndAt < dataAt || endAt < chunkEndAt {
 		t.Errorf("event order data/chunk_end/end invalid: data=%d chunk_end=%d end=%d events=%v", dataAt, chunkEndAt, endAt, events)
+	}
+}
+
+func TestRunPool_ControlledEnvUsesShimPath(t *testing.T) {
+	clearPoolTimeoutEnv(t)
+	SetBrokerPathProvider(nil)
+	t.Cleanup(func() { SetBrokerPathProvider(nil) })
+
+	root := t.TempDir()
+	shimDir := filepath.Join(root, "shims")
+	if err := os.MkdirAll(shimDir, 0o755); err != nil {
+		t.Fatalf("mkdir shim dir: %v", err)
+	}
+	SetBrokerPathProvider(func(agentID string) string {
+		if agentID == AgentIDPool {
+			return shimDir
+		}
+		return ""
+	})
+
+	envFile := filepath.Join(t.TempDir(), "env.tsv")
+	withPoolCommand(t, "/bin/sh", func(prompt, dir string) []string {
+		return []string{"-c", "printf 'ENV\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$MILLIWAYS_CLIENT_ID\" \"$MILLIWAYS_SESSION_ID\" \"$MILLIWAYS_WORKSPACE_ROOT\" \"$MILLIWAYS_SHIM_DIR\" \"$PATH\" >> " + shellQuote(envFile) + "\nprintf 'ok'\n"}
+	})
+
+	runPoolPrompt(t, context.Background(), []byte("hi"), &mockObserver{}, 5*time.Second)
+
+	fields := readEnvCapture(t, envFile)
+	if fields[1] != AgentIDPool {
+		t.Fatalf("MILLIWAYS_CLIENT_ID = %q, want %q", fields[1], AgentIDPool)
+	}
+	if !strings.HasPrefix(fields[2], AgentIDPool+"-") {
+		t.Fatalf("MILLIWAYS_SESSION_ID = %q, want pool-prefixed session", fields[2])
+	}
+	if fields[3] == "" {
+		t.Fatalf("MILLIWAYS_WORKSPACE_ROOT missing from controlled env")
+	}
+	if fields[4] != shimDir {
+		t.Fatalf("MILLIWAYS_SHIM_DIR = %q, want %q", fields[4], shimDir)
+	}
+	if firstPath(fields[5]) != shimDir {
+		t.Fatalf("PATH first entry = %q, want shim dir; PATH=%q", firstPath(fields[5]), fields[5])
 	}
 }
 

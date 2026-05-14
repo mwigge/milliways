@@ -131,18 +131,19 @@ func RunClaude(ctx context.Context, input <-chan []byte, stream Pusher, metrics 
 }
 
 func RunClaudeWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
+	sessionID := newControlledRunnerSessionID(AgentIDClaude)
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runClaudeOnce(ctx, prompt, stream, metrics, securityWorkspace)
+		runClaudeOnce(ctx, prompt, stream, metrics, securityWorkspace, sessionID)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
-func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
+func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace, sessionID string) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		return
@@ -173,7 +174,12 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	// "--" stops flag parsing so --add-dir (variadic) does not consume the prompt.
 	args = append(args, "--", text)
 	cmd := exec.CommandContext(ctx, resolveRunnerBinary(claudeBinary), args...)
-	cmd.Env = safeRunnerEnv()
+	cmd.Env = controlledRunnerEnv(controlledRunnerEnvOptions{
+		ClientID:  AgentIDClaude,
+		SessionID: sessionID,
+		Workspace: cwd,
+		ShimDir:   brokerShimDirForAgent(AgentIDClaude),
+	})
 	if cwd != "" {
 		cmd.Dir = cwd
 	}

@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mwigge/milliways/internal/daemon/runners"
 	"github.com/mwigge/milliways/internal/history"
 	"github.com/mwigge/milliways/internal/parallel"
 	"github.com/mwigge/milliways/internal/security"
@@ -513,6 +514,9 @@ func TestAgentListOverlaysObservedSessionModel(t *testing.T) {
 	}
 	if agents[0].Model != "gpt-5.5" {
 		t.Fatalf("agent model = %q, want observed model", agents[0].Model)
+	}
+	if agents[0].Enforcement.Level != runners.EnforcementBrokered {
+		t.Fatalf("agent enforcement = %q, want %q", agents[0].Enforcement.Level, runners.EnforcementBrokered)
 	}
 }
 

@@ -51,6 +51,50 @@ func TestSecurityStore_UpsertAndListActive(t *testing.T) {
 	}
 }
 
+func TestSecurityStore_RecordAndListPolicyDecisions(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	err := ss.RecordPolicyDecision(SecurityPolicyDecision{
+		Workspace:        "/work",
+		SessionID:        "session-1",
+		Client:           "codex",
+		CWD:              "/work",
+		OperationType:    "command",
+		Command:          "npm install left-pad",
+		ArgvJSON:         `["npm","install","left-pad"]`,
+		EnvSummaryJSON:   `{"PATH":"set"}`,
+		Mode:             "strict",
+		Decision:         "block",
+		Reason:           "package install commands require safe package policy",
+		Parsed:           true,
+		RisksJSON:        `[{"category":"package-install"}]`,
+		EnforcementLevel: "blocking",
+	})
+	if err != nil {
+		t.Fatalf("RecordPolicyDecision: %v", err)
+	}
+
+	decisions, err := ss.ListPolicyDecisions("/work", 10)
+	if err != nil {
+		t.Fatalf("ListPolicyDecisions: %v", err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("decisions = %d, want 1", len(decisions))
+	}
+	got := decisions[0]
+	if got.Workspace != "/work" || got.SessionID != "session-1" || got.Client != "codex" {
+		t.Fatalf("identity fields = %#v", got)
+	}
+	if got.Decision != "block" || got.Mode != "strict" || !got.Parsed {
+		t.Fatalf("decision fields = %#v", got)
+	}
+	if got.EnforcementLevel != "blocking" || got.RisksJSON == "" {
+		t.Fatalf("audit fields = %#v", got)
+	}
+}
+
 func TestSecurityStore_UpsertIdempotent(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)

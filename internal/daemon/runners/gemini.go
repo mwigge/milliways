@@ -80,6 +80,7 @@ func RunGemini(ctx context.Context, input <-chan []byte, stream Pusher, metrics 
 }
 
 func RunGeminiWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
+	sessionID := newControlledRunnerSessionID(AgentIDGemini)
 	for {
 		select {
 		case <-ctx.Done():
@@ -97,12 +98,12 @@ func RunGeminiWithSecurityWorkspace(ctx context.Context, input <-chan []byte, st
 			if stream == nil {
 				continue
 			}
-			runGeminiOnce(ctx, prompt, stream, metrics, securityWorkspace)
+			runGeminiOnce(ctx, prompt, stream, metrics, securityWorkspace, sessionID)
 		}
 	}
 }
 
-func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
+func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace, sessionID string) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		stream.Push(geminiChunkEndEvent())
@@ -126,7 +127,7 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		return
 	}
 	cmd := exec.CommandContext(ctx, resolveRunnerBinary(geminiBinary), geminiArgsBuilder(text)...)
-	cmd.Env = safeRunnerEnv()
+	cmd.Env = controlledExternalCLIEnv(AgentIDGemini, sessionID, cwd)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}

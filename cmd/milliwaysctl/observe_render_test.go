@@ -210,6 +210,58 @@ func TestFormatObservabilityFrame_ShowsStartupScanAndScannerGapsCompactly(t *tes
 	}
 }
 
+func TestFormatObservabilityFrame_ShowsSecurityPolicyAndClientEnforcement(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	usage := observeRenderUsage{
+		Security: observeRenderSecurity{
+			Installed:            true,
+			Enabled:              true,
+			Mode:                 "strict",
+			Posture:              "ok",
+			ActiveClient:         "codex",
+			StartupScanCompleted: true,
+			LastStartupScanAt:    "2026-05-14T10:00:00Z",
+			LastDependencyScanAt: "2026-05-14T10:05:00Z",
+			ClientEnforcement: map[string]observeRenderEnforcement{
+				"codex":   {Level: "brokered", ControlledEnv: true},
+				"local":   {Level: "full"},
+				"minimax": {Level: "full"},
+				"pool":    {Level: "preflight-only"},
+			},
+		},
+	}
+
+	got := formatObservabilityFrame(fixedNow, nil, usage)
+	for _, want := range []string{
+		"sec policy:    active codex; startup complete; last startup 2026-05-14T10:00Z; last deps 2026-05-14T10:05Z",
+		"sec clients:   full 2, brokered 1, preflight-only 1",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("frame missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestFormatObservabilityFrame_UsesStatusClientEnforcementFallback(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	usage := observeRenderUsage{
+		Status: observeRenderStatus{
+			ClientEnforcement: map[string]observeRenderEnforcement{
+				"codex": {Level: "brokered"},
+				"local": {Level: "full"},
+			},
+		},
+		Security: observeRenderSecurity{Installed: true, Mode: "warn"},
+	}
+
+	got := formatObservabilityFrame(fixedNow, nil, usage)
+	if !strings.Contains(got, "sec clients:   full 1, brokered 1") {
+		t.Fatalf("frame missing status enforcement fallback:\n%s", got)
+	}
+}
+
 func TestFormatObservabilityFrame_ShowsCRAReadinessKPIs(t *testing.T) {
 	t.Parallel()
 	fixedNow := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)

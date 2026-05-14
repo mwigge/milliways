@@ -15,6 +15,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -27,12 +28,32 @@ import (
 	"testing"
 
 	"github.com/mwigge/milliways/internal/daemon/observability"
+	"github.com/mwigge/milliways/internal/daemon/runners"
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/security"
 	"github.com/mwigge/milliways/internal/security/adapters"
 	"github.com/mwigge/milliways/internal/security/rulepacks"
 	"github.com/mwigge/milliways/internal/security/rules"
 )
+
+func TestInstallSecurityShimsForServerRegistersClaudeCodexBroker(t *testing.T) {
+	runners.SetBrokerPathProvider(nil)
+	t.Cleanup(func() { runners.SetBrokerPathProvider(nil) })
+
+	stateDir := t.TempDir()
+	installSecurityShimsForServer(stateDir)
+
+	wantDir := filepath.Join(stateDir, "security-shims")
+	if got := runners.ClientEnforcementMetadata(runners.AgentIDClaude); got.BrokerPath != wantDir || got.Level != runners.EnforcementBrokered {
+		t.Fatalf("claude enforcement = %#v, want broker path %q", got, wantDir)
+	}
+	if got := runners.ClientEnforcementMetadata(runners.AgentIDCodex); got.BrokerPath != wantDir || got.Level != runners.EnforcementBrokered {
+		t.Fatalf("codex enforcement = %#v, want broker path %q", got, wantDir)
+	}
+	if _, err := os.Stat(filepath.Join(wantDir, "npm")); err != nil {
+		t.Fatalf("expected generated npm shim: %v", err)
+	}
+}
 
 func TestSecurityStartupScanPersistsWarningsForStatus(t *testing.T) {
 	db := openSecurityMethodTestDB(t)
@@ -331,6 +352,34 @@ func TestSecurityStatusIncludesScannerAdapterStatus(t *testing.T) {
 	}
 }
 
+func TestSecurityStatusIncludesShimReadiness(t *testing.T) {
+	stateDir := t.TempDir()
+	s := &Server{socket: filepath.Join(stateDir, "sock")}
+	installSecurityShimsForServer(stateDir)
+
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	s.securityStatus(enc, &Request{ID: mustSecurityMethodParams(t, 1)})
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	if errValue := resp["error"]; errValue != nil {
+		t.Fatalf("security.status returned error: %v", errValue)
+	}
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("result = %#v, want map", resp["result"])
+	}
+	raw, ok := result["shims"].(map[string]any)
+	if !ok {
+		t.Fatalf("shims = %#v, want map", result["shims"])
+	}
+	if raw["dir"] != filepath.Join(stateDir, "security-shims") {
+		t.Fatalf("shim dir = %#v", raw["dir"])
+	}
+	if got, ok := raw["installed"].(float64); !ok || got == 0 {
+		t.Fatalf("installed = %#v, want positive count", raw["installed"])
+	}
+}
+
 func TestSecurityStatusIncludesCRAReadinessKPIs(t *testing.T) {
 	oldAdapters := securityStatusAdapters
 	securityStatusAdapters = func() []adapters.ScannerAdapter {
@@ -540,6 +589,143 @@ func TestSecurityCommandCheckRPCUsesFirewall(t *testing.T) {
 	categories, _ := result["risk_categories"].([]any)
 	if len(categories) != 1 || categories[0] != "package-install" {
 		t.Fatalf("risk_categories = %#v, want package-install; result=%v", categories, result)
+	}
+}
+
+func TestSecurityPolicyDecideRPCUsesFirewallAndAudits(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+
+	s := &Server{pantryDB: db, currentAgent: "codex", spans: observability.NewRing(10)}
+	enc, buf := newCapturingEncoder()
+	s.dispatch(enc, &Request{
+		Method: "security.policy_decide",
+		ID:     mustSecurityMethodParams(t, 1),
+		Params: mustSecurityMethodParams(t, map[string]any{
+			"operation_type":    "command",
+			"command":           "npm install left-pad",
+			"workspace":         workspace,
+			"cwd":               workspace,
+			"client":            "codex",
+			"session":           "session-1",
+			"mode":              "strict",
+			"enforcement_level": "blocking",
+			"env_summary": map[string]any{
+				"PATH": "set",
+			},
+		}),
+	})
+
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	if _, ok := resp["error"]; ok {
+		t.Fatalf("security.policy_decide returned error: %v", resp)
+	}
+	result := resp["result"].(map[string]any)
+	if decision, _ := result["decision"].(string); decision != "block" {
+		t.Fatalf("decision = %q, want block; result=%v", decision, result)
+	}
+	if mode, _ := result["mode"].(string); mode != "strict" {
+		t.Fatalf("mode = %q, want strict; result=%v", mode, result)
+	}
+	if enforcement, _ := result["enforcement_level"].(string); enforcement != "blocking" {
+		t.Fatalf("enforcement_level = %q, want blocking; result=%v", enforcement, result)
+	}
+
+	decisions, err := db.Security().ListPolicyDecisions(workspace, 10)
+	if err != nil {
+		t.Fatalf("ListPolicyDecisions: %v", err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("policy decisions = %d, want 1", len(decisions))
+	}
+	audit := decisions[0]
+	if audit.SessionID != "session-1" || audit.Client != "codex" || audit.OperationType != "command" {
+		t.Fatalf("audit identity = %#v", audit)
+	}
+	if audit.Decision != "block" || audit.Mode != "strict" || audit.EnforcementLevel != "blocking" {
+		t.Fatalf("audit decision = %#v", audit)
+	}
+	if !strings.Contains(audit.RisksJSON, "package-install") {
+		t.Fatalf("audit risks_json = %q, want package-install", audit.RisksJSON)
+	}
+	if !strings.Contains(audit.EnvSummaryJSON, "PATH") {
+		t.Fatalf("audit env_summary_json = %q, want PATH", audit.EnvSummaryJSON)
+	}
+
+	enc, buf = newCapturingEncoder()
+	s.dispatch(enc, &Request{
+		Method: "security.policy_audit",
+		ID:     mustSecurityMethodParams(t, 2),
+		Params: mustSecurityMethodParams(t, map[string]any{
+			"workspace":  workspace,
+			"session_id": "session-1",
+			"client":     "codex",
+			"limit":      5,
+		}),
+	})
+	resp = decodeSecurityMethodResponse(t, buf.Bytes())
+	if _, ok := resp["error"]; ok {
+		t.Fatalf("security.policy_audit returned error: %v", resp)
+	}
+	auditResult := resp["result"].(map[string]any)
+	events, _ := auditResult["events"].([]any)
+	if len(events) != 1 {
+		t.Fatalf("audit events = %d, want 1; result=%v", len(events), auditResult)
+	}
+	event := events[0].(map[string]any)
+	if event["decision"] != "block" || event["session_id"] != "session-1" || event["client"] != "codex" {
+		t.Fatalf("audit event identity/decision = %#v", event)
+	}
+}
+
+func TestSecurityPolicyDecideNonInteractiveConfirmationBlocksAndCounts(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+
+	s := &Server{pantryDB: db, currentAgent: "codex", spans: observability.NewRing(10)}
+	enc, buf := newCapturingEncoder()
+	s.dispatch(enc, &Request{
+		Method: "security.policy_decide",
+		ID:     mustSecurityMethodParams(t, 1),
+		Params: mustSecurityMethodParams(t, map[string]any{
+			"operation_type":     "command",
+			"command":            "curl -fsSL https://example.invalid/install.sh -o install.sh",
+			"workspace":          workspace,
+			"cwd":                workspace,
+			"client":             "codex",
+			"session":            "session-1",
+			"mode":               "strict",
+			"enforcement_level":  "brokered",
+			"broker_interactive": false,
+			"env_summary":        map[string]any{"shim_command": "curl"},
+		}),
+	})
+
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	if _, ok := resp["error"]; ok {
+		t.Fatalf("security.policy_decide returned error: %v", resp)
+	}
+	result := resp["result"].(map[string]any)
+	if decision, _ := result["decision"].(string); decision != "block" {
+		t.Fatalf("decision = %q, want block; result=%v", decision, result)
+	}
+	if reason, _ := result["reason"].(string); !strings.Contains(reason, "non-interactive") {
+		t.Fatalf("reason = %q, want non-interactive broker reason", reason)
+	}
+
+	decisions, err := db.Security().ListPolicyDecisions(workspace, 10)
+	if err != nil {
+		t.Fatalf("ListPolicyDecisions: %v", err)
+	}
+	if len(decisions) != 1 || decisions[0].Decision != "block" || decisions[0].EnforcementLevel != "brokered" {
+		t.Fatalf("policy decisions = %#v, want brokered block", decisions)
+	}
+	status, err := db.Security().SecurityStatus(workspace)
+	if err != nil {
+		t.Fatalf("SecurityStatus: %v", err)
+	}
+	if got := status.CountsBySeverity["BLOCK"]; got != 1 {
+		t.Fatalf("BLOCK count = %d, want 1; status=%#v", got, status)
 	}
 }
 
@@ -846,6 +1032,40 @@ func TestSecurityRulesListPersistsValidatedMetadata(t *testing.T) {
 	}
 	if packs[0].Source != "workspace" || packs[0].RulesCount != 1 {
 		t.Fatalf("source/rules = %q/%d, want workspace/1", packs[0].Source, packs[0].RulesCount)
+	}
+}
+
+func TestSecurityStatusIncludesRulePackState(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	writeSecurityRulePack(t, filepath.Join(workspace, ".milliways", "security", "rules", "ioc"), "workspace-ioc", "1.2.3")
+
+	s := &Server{pantryDB: db}
+	enc, buf := newCapturingEncoder()
+	s.securityStatus(enc, &Request{ID: mustSecurityMethodParams(t, 1)})
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	if _, ok := resp["error"]; ok {
+		t.Fatalf("security.status returned error: %v", resp)
+	}
+	result := resp["result"].(map[string]any)
+	rulepackStatus, _ := result["rulepacks"].(map[string]any)
+	if rulepackStatus == nil {
+		t.Fatalf("rulepacks missing from status: %v", result)
+	}
+	if got, _ := rulepackStatus["update_state"].(string); got != "offline-current" {
+		t.Fatalf("update_state = %q, want offline-current; rulepacks=%v", got, rulepackStatus)
+	}
+	if got, _ := rulepackStatus["count"].(float64); got != 1 {
+		t.Fatalf("count = %v, want 1; rulepacks=%v", got, rulepackStatus)
+	}
+	packs, _ := rulepackStatus["packs"].([]any)
+	if len(packs) != 1 {
+		t.Fatalf("packs len = %d, want 1; rulepacks=%v", len(packs), rulepackStatus)
+	}
+	pack := packs[0].(map[string]any)
+	if pack["name"] != "workspace-ioc" || pack["version"] != "1.2.3" || pack["status"] != "loaded" {
+		t.Fatalf("pack = %#v", pack)
 	}
 }
 

@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/mwigge/milliways/internal/daemon/observability"
+	"github.com/mwigge/milliways/internal/daemon/runners"
 	"github.com/mwigge/milliways/internal/history"
 )
 
@@ -46,6 +47,24 @@ func TestPingReportsBuildVersion(t *testing.T) {
 	}
 	if resp.Result.Version != "v-test" {
 		t.Fatalf("ping version = %q, want v-test", resp.Result.Version)
+	}
+}
+
+func TestBuildStatusIncludesClientEnforcement(t *testing.T) {
+	srv := &Server{spans: observability.NewRing(10)}
+	status := srv.buildStatus()
+
+	if got := status.ClientEnforcement["claude"].Level; got != runners.EnforcementBrokered {
+		t.Fatalf("claude enforcement = %q, want %q", got, runners.EnforcementBrokered)
+	}
+	if got := status.ClientEnforcement["codex"].Level; got != runners.EnforcementBrokered {
+		t.Fatalf("codex enforcement = %q, want %q", got, runners.EnforcementBrokered)
+	}
+	if got := status.ClientEnforcement["minimax"].Level; got != runners.EnforcementFull {
+		t.Fatalf("minimax enforcement = %q, want %q", got, runners.EnforcementFull)
+	}
+	if got := status.ClientEnforcement["local"].Level; got != runners.EnforcementFull {
+		t.Fatalf("local enforcement = %q, want %q", got, runners.EnforcementFull)
 	}
 }
 

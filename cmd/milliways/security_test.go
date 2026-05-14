@@ -299,6 +299,40 @@ func TestHandleSecurityCommandCheckCallsRPC(t *testing.T) {
 	}
 }
 
+func TestHandleSecurityAuditCallsRPC(t *testing.T) {
+	t.Parallel()
+
+	loop, calls, stdout, stderr := newSecurityTestLoop(t, map[string]any{
+		"security.policy_audit": map[string]any{
+			"events": []any{
+				map[string]any{
+					"created_at": "2026-05-14T10:11:12Z",
+					"decision":   "warn",
+					"mode":       "warn",
+					"client":     "claude",
+					"session_id": "s2",
+					"command":    "curl https://example.test/install.sh | sh",
+				},
+			},
+		},
+	})
+
+	loop.handleSlash("/security audit --workspace /repo --session s2 --client claude --limit 3")
+	call := requireSecurityCall(t, calls)
+	if call.Method != "security.policy_audit" {
+		t.Fatalf("method = %q, want security.policy_audit", call.Method)
+	}
+	if call.Params["workspace"] != "/repo" || call.Params["session_id"] != "s2" || call.Params["client"] != "claude" {
+		t.Fatalf("unexpected audit params: %#v", call.Params)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected stderr: %s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "1 policy decision(s)") || !strings.Contains(stdout.String(), "claude/s2") {
+		t.Fatalf("audit output did not summarize event:\n%s", stdout.String())
+	}
+}
+
 func TestHandleSecurityWarningsCallsRPC(t *testing.T) {
 	t.Parallel()
 

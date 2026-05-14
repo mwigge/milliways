@@ -57,6 +57,7 @@ func RunCopilot(ctx context.Context, input <-chan []byte, stream Pusher, metrics
 }
 
 func RunCopilotWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
+	sessionID := newControlledRunnerSessionID(AgentIDCopilot)
 	for {
 		select {
 		case <-ctx.Done():
@@ -74,12 +75,12 @@ func RunCopilotWithSecurityWorkspace(ctx context.Context, input <-chan []byte, s
 			if stream == nil {
 				continue
 			}
-			runCopilotOnce(ctx, prompt, stream, metrics, securityWorkspace)
+			runCopilotOnce(ctx, prompt, stream, metrics, securityWorkspace, sessionID)
 		}
 	}
 }
 
-func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
+func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace, sessionID string) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		stream.Push(zeroUsageChunkEnd())
@@ -103,7 +104,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		return
 	}
 	cmd := exec.CommandContext(ctx, resolveRunnerBinary(copilotBinary), copilotArgsBuilder(text, cwd)...)
-	cmd.Env = safeRunnerEnv()
+	cmd.Env = controlledExternalCLIEnv(AgentIDCopilot, sessionID, cwd)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}

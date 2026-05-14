@@ -549,6 +549,74 @@ func TestRunCodex_ResolvesBinaryFromMilliwaysPath(t *testing.T) {
 	}
 }
 
+func TestRunCodex_ControlledEnvUsesShimPathWithoutBreakingBinaryDiscovery(t *testing.T) {
+	prev := codexBinary
+	codexBinary = "codex"
+	t.Cleanup(func() { codexBinary = prev })
+	SetBrokerPathProvider(nil)
+	t.Cleanup(func() { SetBrokerPathProvider(nil) })
+
+	root := t.TempDir()
+	shimDir := filepath.Join(root, "shims")
+	realDir := filepath.Join(root, "real-bin")
+	if err := os.MkdirAll(shimDir, 0o755); err != nil {
+		t.Fatalf("mkdir shim dir: %v", err)
+	}
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir real dir: %v", err)
+	}
+	SetBrokerPathProvider(func(agentID string) string {
+		if agentID == AgentIDCodex {
+			return shimDir
+		}
+		return ""
+	})
+
+	envFile := filepath.Join(t.TempDir(), "env.tsv")
+	argsFile := filepath.Join(t.TempDir(), "args.tsv")
+	script := codexRecorderScript(argsFile, strings.Join([]string{
+		"printf 'ENV\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$MILLIWAYS_CLIENT_ID\" \"$MILLIWAYS_SESSION_ID\" \"$MILLIWAYS_WORKSPACE_ROOT\" \"$MILLIWAYS_SHIM_DIR\" \"$PATH\" >> " + shellQuote(envFile),
+		`printf '%s\n' '{"type":"message","content":"shimmed codex"}'`,
+	}, "\n"))
+	if err := os.WriteFile(filepath.Join(realDir, "codex"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write real codex fixture: %v", err)
+	}
+	t.Setenv("MILLIWAYS_PATH", realDir)
+	t.Setenv("PATH", shimDir)
+
+	pusher, _ := runCodexPrompts(t, context.Background(), "hi")
+	if got := decodeCodexData(pusher.snapshot()); got != "shimmed codex" {
+		t.Fatalf("decoded data = %q, want shimmed codex; events=%v", got, pusher.snapshot())
+	}
+
+	raw, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+	fields := strings.Split(strings.TrimSpace(string(raw)), "\t")
+	if len(fields) != 6 || fields[0] != "ENV" {
+		t.Fatalf("bad env capture: %q", raw)
+	}
+	if fields[1] != AgentIDCodex {
+		t.Fatalf("MILLIWAYS_CLIENT_ID = %q, want %q", fields[1], AgentIDCodex)
+	}
+	if !strings.HasPrefix(fields[2], AgentIDCodex+"-") {
+		t.Fatalf("MILLIWAYS_SESSION_ID = %q, want codex-prefixed session", fields[2])
+	}
+	if fields[3] == "" {
+		t.Fatalf("MILLIWAYS_WORKSPACE_ROOT missing from controlled env")
+	}
+	if fields[4] != shimDir {
+		t.Fatalf("MILLIWAYS_SHIM_DIR = %q, want %q", fields[4], shimDir)
+	}
+	if firstPath(fields[5]) != shimDir {
+		t.Fatalf("PATH first entry = %q, want shim dir; PATH=%q", firstPath(fields[5]), fields[5])
+	}
+	if !pathContains(fields[5], realDir) {
+		t.Fatalf("real binary dir missing from controlled PATH=%q", fields[5])
+	}
+}
+
 func TestRunCodex_StreamsJSONAndRecordsArgs(t *testing.T) {
 	argsFile := filepath.Join(t.TempDir(), "args.tsv")
 	withCodexTestBinary(t, codexRecorderScript(argsFile, strings.Join([]string{

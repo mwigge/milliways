@@ -469,7 +469,7 @@ func runGemini(sess *AgentSession, metrics runners.MetricsObserver) {
 
 // runPool waits for the sidecar to attach, then hands the session's
 // input channel + stream to runners.RunPool. Each agent.send call
-// triggers one `pool exec -p <prompt> --unsafe-auto-allow` subprocess;
+// triggers one `pool exec -p <prompt>` subprocess;
 // the session stays open across sends and ends only when the registry
 // closes the input channel. `metrics` may be nil.
 func runPool(sess *AgentSession, metrics runners.MetricsObserver) {
@@ -477,7 +477,7 @@ func runPool(sess *AgentSession, metrics runners.MetricsObserver) {
 	if stream == nil {
 		return
 	}
-	runners.RunPool(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	runners.RunPoolWithSecurityWorkspace(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics, sess.SecurityWorkspace)
 	sess.closeStreams()
 	slog.Debug("pool session ended", "handle", sess.Handle)
 }

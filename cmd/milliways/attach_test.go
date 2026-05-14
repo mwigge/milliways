@@ -396,20 +396,42 @@ func TestRenderDeckNavigatorShowsRequestedPanels(t *testing.T) {
 	t.Parallel()
 
 	got := stripANSI(renderDeckNavigator(34, []deckProviderInfo{
-		{ID: "claude", AuthStatus: "ok", Model: "sonnet"},
-		{ID: "codex", AuthStatus: "ok", Model: "gpt-5.5"},
+		{ID: "claude", AuthStatus: "ok", Model: "sonnet", Enforcement: deckEnforcementInfo{Level: "brokered"}},
+		{ID: "codex", AuthStatus: "ok", Model: "gpt-5.5", Enforcement: deckEnforcementInfo{Level: "brokered"}},
 	}, 1, "codex", true, map[string]parallel.QuotaSummary{
 		"codex": {UsedToday: 25, LimitDay: 100},
 	}))
 
 	wantFragments := []string{
 		"Clients",
-		"codex active",
+		"codex (protected) active",
 		"↑↓ move",
 	}
 	for _, want := range wantFragments {
 		if !strings.Contains(got, want) {
 			t.Errorf("renderDeckNavigator() missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderDeckNavigatorShowsClientProtectionState(t *testing.T) {
+	t.Parallel()
+
+	got := stripANSI(renderDeckNavigatorSized(54, 30, []deckProviderInfo{
+		{ID: "claude", AuthStatus: "ok", Status: "idle", Enforcement: deckEnforcementInfo{Level: "brokered"}},
+		{ID: "minimax", AuthStatus: "ok", Status: "idle", Enforcement: deckEnforcementInfo{Level: "full"}},
+		{ID: "custom", AuthStatus: "ok", Status: "idle", Enforcement: deckEnforcementInfo{Level: "preflight-only"}},
+		{ID: "unknown", AuthStatus: "ok", Status: "idle"},
+	}, 0, "claude", true, nil))
+
+	for _, want := range []string{
+		"claude (protected)",
+		"minimax (protected)",
+		"custom (unprotected)",
+		"unknown (unprotected)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("navigator missing %q:\n%s", want, got)
 		}
 	}
 }
@@ -431,7 +453,7 @@ func TestRenderDeckNavigatorSizedKeepsActiveControlsVisible(t *testing.T) {
 	if lines := strings.Count(got, "\r\n"); lines > 22 {
 		t.Fatalf("rendered %d lines, want <= 22:\n%s", lines, got)
 	}
-	for _, want := range []string{"Clients", "pool", "pool active", "↑↓ move"} {
+	for _, want := range []string{"Clients", "pool", "pool (unprotected) active", "↑↓ move"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("render missing %q:\n%s", want, got)
 		}
@@ -569,8 +591,8 @@ func TestRenderDeckNavigatorPlainHasNoANSIOrBoxDrawing(t *testing.T) {
 	for _, want := range []string{
 		"milliways deck",
 		"Clients",
-		"1 claude active auth ok model sonnet",
-		"2 codex thinking auth missing",
+		"1 claude (unprotected) active auth ok model sonnet",
+		"2 codex (unprotected) thinking auth missing",
 		"Controls",
 		"up/down move; enter switch; q quit",
 	} {
@@ -637,7 +659,7 @@ func TestRenderDeckNavigatorObservabilityActiveProviders(t *testing.T) {
 	}
 	got := stripANSI(renderDeckNavigator(90, providers, 0, "claude", true, nil))
 
-	for _, want := range []string{"Clients", "claude", "codex", "gemini", "claude thinking"} {
+	for _, want := range []string{"Clients", "claude", "codex", "gemini", "claude (unprotected) thinking"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("navigator missing %q:\n%s", want, got)
 		}

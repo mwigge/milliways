@@ -241,9 +241,20 @@ local function security_badge(sec)
   local posture = string.lower(sec.posture or '')
   local warnings = as_number(sec.warnings or sec.warning_count)
   local blocks = as_number(sec.blocks or sec.block_count)
+  local startup_stale = sec.startup_scan_stale == true
+  local startup_required = sec.startup_scan_required == true
+  local enforcement = sec.client_enforcement or {}
+  local preflight = 0
+  if type(enforcement) == 'table' then
+    for _, meta in pairs(enforcement) do
+      if type(meta) == 'table' and meta.level == 'preflight-only' then
+        preflight = preflight + 1
+      end
+    end
+  end
   if blocks > 0 then
     posture = 'block'
-  elseif (sec.startup_scan_required == true or sec.startup_scan_stale == true) and posture == 'ok' then
+  elseif (startup_required or startup_stale) and posture == 'ok' then
     posture = 'warn'
   elseif warnings > 0 and posture == '' then
     posture = 'warn'
@@ -255,22 +266,28 @@ local function security_badge(sec)
   end
 
   if posture == 'block' then
+    local detail = startup_stale and ' · startup stale' or ''
     return {
       label = 'SEC BLOCK ' .. tostring(math.floor(blocks)),
       color = '#fb4934',
-      key = 'block:' .. tostring(math.floor(blocks)) .. ':' .. tostring(math.floor(warnings)),
+      key = 'block:' .. tostring(math.floor(blocks)) .. ':' .. tostring(math.floor(warnings)) .. ':' .. tostring(startup_stale),
       banner = blocks > 0,
-      message = 'SEC BLOCK ' .. tostring(math.floor(blocks)) .. ' · mode ' .. mode,
+      message = 'SEC BLOCK ' .. tostring(math.floor(blocks)) .. ' · mode ' .. mode .. detail,
     }
   end
   if posture == 'warn' then
     local suffix = warnings > 0 and (' ' .. tostring(math.floor(warnings))) or ''
+    if startup_stale then suffix = suffix .. ' stale' end
+    local detail = ''
+    if startup_stale then detail = detail .. ' · startup stale'
+    elseif startup_required then detail = detail .. ' · startup required' end
+    if preflight > 0 then detail = detail .. ' · preflight clients ' .. tostring(preflight) end
     return {
       label = 'SEC WARN' .. suffix,
       color = '#fabd2f',
-      key = 'warn:' .. tostring(math.floor(warnings)) .. ':' .. tostring(math.floor(blocks)),
-      banner = warnings > 0,
-      message = 'SEC WARN' .. suffix .. ' · mode ' .. mode,
+      key = 'warn:' .. tostring(math.floor(warnings)) .. ':' .. tostring(math.floor(blocks)) .. ':' .. tostring(startup_stale) .. ':' .. tostring(startup_required) .. ':' .. tostring(preflight),
+      banner = warnings > 0 or startup_stale or startup_required,
+      message = 'SEC WARN' .. suffix .. ' · mode ' .. mode .. detail,
     }
   end
   return {

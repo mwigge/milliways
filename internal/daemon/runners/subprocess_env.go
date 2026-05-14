@@ -29,7 +29,11 @@ package runners
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
+
+	"github.com/mwigge/milliways/internal/security/shims"
 )
 
 var runnerSystemPathFallbacks = []string{
@@ -72,6 +76,24 @@ var safeRunnerEnvKeys = map[string]bool{
 	"CLAUDECODE": true, "CLAUDE_CODE_ENTRYPOINT": true, "CLAUDE_CODE_EXECPATH": true,
 }
 
+type controlledRunnerEnvOptions struct {
+	ClientID  string
+	SessionID string
+	Workspace string
+	ShimDir   string
+}
+
+var controlledRunnerSessionCounter atomic.Uint64
+
+func newControlledRunnerSessionID(agentID string) string {
+	n := controlledRunnerSessionCounter.Add(1)
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		agentID = "runner"
+	}
+	return agentID + "-" + strconv.FormatUint(n, 10)
+}
+
 // safeRunnerEnv returns a filtered environment for runner subprocess
 // execution. Uses os.Environ() as the source and keeps only entries
 // whose key appears in safeRunnerEnvKeys.
@@ -81,6 +103,10 @@ var safeRunnerEnvKeys = map[string]bool{
 // (e.g. ~/.local/bin, /opt/homebrew/bin) are found when milliways is
 // launched from a GUI app bundle whose PATH is minimal.
 func safeRunnerEnv() []string {
+	return controlledRunnerEnv(controlledRunnerEnvOptions{})
+}
+
+func controlledRunnerEnv(opts controlledRunnerEnvOptions) []string {
 	var env []string
 	for _, e := range os.Environ() {
 		key := e
@@ -101,17 +127,62 @@ func safeRunnerEnv() []string {
 				filtered = append(filtered, e)
 			}
 		}
-		env = append(filtered, "PATH="+ensureRunnerSystemPath(p))
+		env = append(filtered, "PATH="+controlledRunnerPath(ensureRunnerSystemPath(p), opts.ShimDir))
 	} else {
 		for i, e := range env {
 			if strings.HasPrefix(e, "PATH=") {
-				env[i] = "PATH=" + ensureRunnerSystemPath(strings.TrimPrefix(e, "PATH="))
-				return env
+				env[i] = "PATH=" + controlledRunnerPath(ensureRunnerSystemPath(strings.TrimPrefix(e, "PATH=")), opts.ShimDir)
+				return appendControlledRunnerMetadata(env, opts)
 			}
 		}
-		env = append(env, "PATH="+ensureRunnerSystemPath(""))
+		env = append(env, "PATH="+controlledRunnerPath(ensureRunnerSystemPath(""), opts.ShimDir))
+	}
+	return appendControlledRunnerMetadata(env, opts)
+}
+
+func controlledExternalCLIEnv(agentID, sessionID, workspace string) []string {
+	return controlledRunnerEnv(controlledRunnerEnvOptions{
+		ClientID:  agentID,
+		SessionID: sessionID,
+		Workspace: workspace,
+		ShimDir:   brokerShimDirForAgent(agentID),
+	})
+}
+
+func controlledRunnerPath(path, shimDir string) string {
+	if shimDir == "" {
+		return path
+	}
+	return shims.PrependPath(path, shimDir)
+}
+
+func appendControlledRunnerMetadata(env []string, opts controlledRunnerEnvOptions) []string {
+	add := func(key, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		env = append(envWithoutKey(env, key), key+"="+value)
+	}
+	add("MILLIWAYS_CLIENT_ID", opts.ClientID)
+	add("MILLIWAYS_SESSION_ID", opts.SessionID)
+	add("MILLIWAYS_WORKSPACE_ROOT", opts.Workspace)
+	if opts.ShimDir != "" {
+		add("MILLIWAYS_SHIM_DIR", opts.ShimDir)
+		add("MILLIWAYS_SHIMS_ENABLED", "1")
 	}
 	return env
+}
+
+func envWithoutKey(env []string, key string) []string {
+	prefix := key + "="
+	out := env[:0]
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, prefix) {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 func ensureRunnerSystemPath(path string) string {
@@ -155,6 +226,27 @@ func resolveRunnerBinary(binary string) string {
 
 func execLookPathInRunnerPath(binary string) (string, error) {
 	for _, dir := range runnerBinarySearchDirs() {
+		candidate := filepath.Join(dir, binary)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
+			return candidate, nil
+		}
+	}
+	return "", os.ErrNotExist
+}
+
+func execLookPathInRunnerPathExcluding(binary string, excludedDirs ...string) (string, error) {
+	excluded := make(map[string]bool, len(excludedDirs))
+	for _, dir := range excludedDirs {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		excluded[filepath.Clean(dir)] = true
+	}
+	for _, dir := range runnerBinarySearchDirs() {
+		if excluded[filepath.Clean(dir)] {
+			continue
+		}
 		candidate := filepath.Join(dir, binary)
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
 			return candidate, nil

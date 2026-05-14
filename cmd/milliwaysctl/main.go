@@ -419,16 +419,36 @@ func normalizeObserveSecurityStatus(result map[string]any) map[string]any {
 	}
 	installed, _ := result["installed"].(bool)
 	enabled, _ := result["enabled"].(bool)
-	return map[string]any{
-		"posture":               posture,
-		"warnings":              warnings,
-		"blocks":                blocks,
-		"mode":                  mode,
-		"installed":             installed,
-		"enabled":               enabled,
-		"startup_scan_required": boolMapField(result, "startup_scan_required"),
-		"startup_scan_stale":    boolMapField(result, "startup_scan_stale"),
+	out := map[string]any{
+		"posture":                posture,
+		"warnings":               warnings,
+		"blocks":                 blocks,
+		"mode":                   mode,
+		"installed":              installed,
+		"enabled":                enabled,
+		"active_client":          stringMapField(result, "active_client"),
+		"workspace":              stringMapField(result, "workspace"),
+		"security_workspace":     stringMapField(result, "security_workspace"),
+		"startup_scan_completed": boolMapField(result, "startup_scan_completed"),
+		"startup_scan_required":  boolMapField(result, "startup_scan_required"),
+		"startup_scan_stale":     boolMapField(result, "startup_scan_stale"),
 	}
+	for _, key := range []string{
+		"startup_scan_completed_at",
+		"last_startup_scan_at",
+		"last_dependency_scan_at",
+	} {
+		if value := stringMapField(result, key); value != "" {
+			out[key] = value
+		}
+	}
+	if enforcement, ok := result["client_enforcement"]; ok {
+		out["client_enforcement"] = enforcement
+	}
+	if scanners, ok := result["scanners"]; ok {
+		out["scanners"] = scanners
+	}
+	return out
 }
 
 func fetchObserveSecurityStatus(c *rpc.Client) map[string]any {
@@ -585,13 +605,14 @@ func runObserve(socket, stateDir string, debounceMs int) {
 		var frame struct {
 			T        string `json:"t"`
 			Snapshot struct {
-				Proto       any     `json:"proto"`
-				ActiveAgent *string `json:"active_agent"`
-				TokensIn    int     `json:"tokens_in"`
-				TokensOut   int     `json:"tokens_out"`
-				CostUSD     float64 `json:"cost_usd"`
-				QuotaPct    float64 `json:"quota_pct"`
-				Errors5m    int     `json:"errors_5m"`
+				Proto             any            `json:"proto"`
+				ActiveAgent       *string        `json:"active_agent"`
+				TokensIn          int            `json:"tokens_in"`
+				TokensOut         int            `json:"tokens_out"`
+				CostUSD           float64        `json:"cost_usd"`
+				QuotaPct          float64        `json:"quota_pct"`
+				Errors5m          int            `json:"errors_5m"`
+				ClientEnforcement map[string]any `json:"client_enforcement"`
 			} `json:"snapshot"`
 		}
 		if err := json.Unmarshal(ev, &frame); err != nil {
@@ -622,7 +643,13 @@ func runObserve(socket, stateDir string, debounceMs int) {
 			lastSecurityPoll = time.Now()
 		}
 		if len(securityStatus) > 0 {
+			if _, ok := securityStatus["client_enforcement"]; !ok && len(frame.Snapshot.ClientEnforcement) > 0 {
+				securityStatus["client_enforcement"] = frame.Snapshot.ClientEnforcement
+			}
 			status["sec"] = securityStatus
+		}
+		if len(frame.Snapshot.ClientEnforcement) > 0 {
+			status["client_enforcement"] = frame.Snapshot.ClientEnforcement
 		}
 		// Include woke_ago (seconds) for 5 minutes after a detected wake.
 		if !wokeAt.IsZero() {

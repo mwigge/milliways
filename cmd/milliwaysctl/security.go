@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -37,6 +38,7 @@ import (
 	"github.com/mwigge/milliways/internal/security/cra/evidence"
 	"github.com/mwigge/milliways/internal/security/outputgate"
 	"github.com/mwigge/milliways/internal/security/sbom"
+	"github.com/mwigge/milliways/internal/security/shims"
 )
 
 // runSecurity dispatches `milliwaysctl security <verb> [args...]`.
@@ -85,12 +87,18 @@ func runSecurity(args []string, stdout, stderr io.Writer, socketOverride ...stri
 		return runSecurityStartupScan(rest, stdout, stderr, sock)
 	case "warnings":
 		return runSecurityWarnings(rest, stdout, stderr, sock)
+	case "audit":
+		return runSecurityAudit(rest, stdout, stderr, sock)
 	case "mode":
 		return runSecurityMode(rest, stdout, stderr, sock)
 	case "client":
 		return runSecurityClient(rest, stdout, stderr, sock)
 	case "command-check":
 		return runSecurityCommandCheck(rest, stdout, stderr, sock)
+	case "shims":
+		return runSecurityShims(rest, stdout, stderr)
+	case "shim-exec":
+		return runSecurityShimExec(rest, stdout, stderr, sock)
 	case "harden":
 		return runSecurityHarden(rest, stdout, stderr)
 	case "quarantine":
@@ -131,12 +139,19 @@ func printSecurityUsage(w io.Writer) {
 	fmt.Fprintln(w, "  startup-scan [--json] [--strict]")
 	fmt.Fprintln(w, "    run startup posture scan when supported by the daemon")
 	fmt.Fprintln(w, "  warnings [--json]      show active security warnings")
+	fmt.Fprintln(w, "  audit [--json] [--workspace <dir>] [--session <id>] [--client <name>] [--decision <allow|warn|block>] [--limit <n>]")
+	fmt.Fprintln(w, "    show recent command policy decisions and audit events")
 	fmt.Fprintln(w, "  mode [off|observe|warn|strict|ci]")
 	fmt.Fprintln(w, "    show or set MilliWays security policy mode")
 	fmt.Fprintln(w, "  client <name> [--json]")
 	fmt.Fprintln(w, "    run a per-client security profile check")
 	fmt.Fprintln(w, "  command-check [--mode <mode>] [--cwd <dir>] [--client <name>] [--json] -- <command...>")
 	fmt.Fprintln(w, "    evaluate a command with the Secure MilliWays firewall")
+	fmt.Fprintln(w, "  shims status [--dir <path>] [--json]")
+	fmt.Fprintln(w, "  shims install [--dir <path>] [--json]")
+	fmt.Fprintln(w, "    install or inspect command shims for first-start and client-switch verification")
+	fmt.Fprintln(w, "  shim-exec -- <resolved-binary> [args...]")
+	fmt.Fprintln(w, "    broker generated command shims through the Secure MilliWays policy API")
 	fmt.Fprintln(w, "  harden npm [--dry-run|--apply] [--path <.npmrc>]")
 	fmt.Fprintln(w, "    preview or write safer npm defaults")
 	fmt.Fprintln(w, "  quarantine [--dry-run|--apply] [--json]")
@@ -422,6 +437,9 @@ func runSecurityStatusCmd(stdout, stderr io.Writer, sock string) int {
 	if scanners := renderSecurityScanners(result["scanners"]); scanners != "" {
 		fmt.Fprintf(stdout, "[security] scanners: %s\n", scanners)
 	}
+	if rulepacks := renderSecurityRulePacks(result["rulepacks"]); rulepacks != "" {
+		fmt.Fprintf(stdout, "[security] rulepacks: %s\n", rulepacks)
+	}
 	if mode != "" {
 		fmt.Fprintf(stdout, "[security] mode: %s\n", mode)
 	}
@@ -697,6 +715,52 @@ func runSecurityWarnings(args []string, stdout, stderr io.Writer, sock string) i
 	return callSecurityRPC("security warnings", "security.warnings", map[string]any{}, *asJSON, stdout, stderr, sock)
 }
 
+func runSecurityAudit(args []string, stdout, stderr io.Writer, sock string) int {
+	fs := flag.NewFlagSet("security audit", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw JSON result")
+	workspace := fs.String("workspace", "", "workspace root")
+	session := fs.String("session", "", "session id")
+	client := fs.String("client", "", "client name")
+	decision := fs.String("decision", "", "filter decision: allow, warn, or block")
+	limit := fs.Int("limit", 20, "maximum events to return")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "security audit: unexpected positional arguments")
+		return 1
+	}
+	params := map[string]any{"limit": *limit}
+	if strings.TrimSpace(*workspace) != "" {
+		params["workspace"] = strings.TrimSpace(*workspace)
+	}
+	if strings.TrimSpace(*session) != "" {
+		params["session_id"] = strings.TrimSpace(*session)
+	}
+	if strings.TrimSpace(*client) != "" {
+		params["client"] = strings.TrimSpace(*client)
+	}
+	if strings.TrimSpace(*decision) != "" {
+		params["decision"] = strings.TrimSpace(*decision)
+	}
+	result, rc := callSecurityRPCResult("security audit", "security.policy_audit", params, stderr, sock)
+	if rc != 0 {
+		return rc
+	}
+	if *asJSON {
+		out, err := json.MarshalIndent(result, "", "  ")
+		if err != nil {
+			fmt.Fprintf(stderr, "milliwaysctl security audit: encode result: %v\n", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, string(out))
+		return 0
+	}
+	renderSecurityAuditResult(stdout, "security audit", result)
+	return 0
+}
+
 func runSecurityMode(args []string, stdout, stderr io.Writer, sock string) int {
 	if len(args) > 1 {
 		fmt.Fprintln(stderr, "security mode: expected zero args or one of off|observe|warn|strict|ci")
@@ -762,6 +826,248 @@ func runSecurityCommandCheck(args []string, stdout, stderr io.Writer, sock strin
 		params["client"] = *client
 	}
 	return callSecurityRPC("security command-check", "security.command_check", params, *asJSON, stdout, stderr, sock)
+}
+
+func runSecurityShims(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "security shims: expected status or install")
+		return 2
+	}
+	switch args[0] {
+	case "status":
+		return runSecurityShimsStatus(args[1:], stdout, stderr)
+	case "install":
+		return runSecurityShimsInstall(args[1:], stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "security shims: unknown subcommand %q\n", args[0])
+		return 2
+	}
+}
+
+func runSecurityShimsStatus(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("security shims status", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	dir := fs.String("dir", defaultSecurityShimDir(), "shim directory")
+	asJSON := fs.Bool("json", false, "print JSON result")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	status, err := shims.StatusDefaultCatalog(*dir)
+	if err != nil {
+		fmt.Fprintf(stderr, "security shims status: %v\n", err)
+		return 1
+	}
+	return renderSecurityShimStatus(stdout, status, *asJSON)
+}
+
+func runSecurityShimsInstall(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("security shims install", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	dir := fs.String("dir", defaultSecurityShimDir(), "shim directory")
+	asJSON := fs.Bool("json", false, "print JSON result")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	install, err := shims.InstallDefaultCatalog(*dir)
+	if err != nil {
+		fmt.Fprintf(stderr, "security shims install: %v\n", err)
+		return 1
+	}
+	status, err := shims.StatusDefaultCatalog(install.Dir)
+	if err != nil {
+		fmt.Fprintf(stderr, "security shims install: status: %v\n", err)
+		return 1
+	}
+	if *asJSON {
+		data, _ := json.MarshalIndent(map[string]any{
+			"dir":       install.Dir,
+			"installed": len(install.Paths),
+			"replaced":  install.Replaced,
+			"status":    status,
+		}, "", "  ")
+		fmt.Fprintln(stdout, string(data))
+		return 0
+	}
+	fmt.Fprintf(stdout, "[security] shims: installed %d/%d (replaced %d)\n", len(install.Paths), status.Expected, install.Replaced)
+	renderSecurityShimStatus(stdout, status, false)
+	return 0
+}
+
+func defaultSecurityShimDir() string {
+	return filepath.Join(filepath.Dir(defaultSocket()), "security-shims")
+}
+
+func renderSecurityShimStatus(stdout io.Writer, status shims.StatusResult, asJSON bool) int {
+	if asJSON {
+		data, _ := json.MarshalIndent(status, "", "  ")
+		fmt.Fprintln(stdout, string(data))
+		return 0
+	}
+	ready := "not ready"
+	if status.Ready {
+		ready = "ready"
+	}
+	fmt.Fprintf(stdout, "[security] shims: %s\n", ready)
+	fmt.Fprintf(stdout, "  dir: %s\n", status.Dir)
+	fmt.Fprintf(stdout, "  installed: %d/%d\n", status.Installed, status.Expected)
+	if status.BrokerInstalled {
+		fmt.Fprintf(stdout, "  broker: %s\n", status.BrokerPath)
+	} else {
+		fmt.Fprintf(stdout, "  missing broker: %s\n", status.BrokerCommand)
+	}
+	if len(status.MissingShims) > 0 {
+		fmt.Fprintf(stdout, "  missing shims: %s\n", strings.Join(status.MissingShims, ", "))
+	}
+	if len(status.MissingRealTools) > 0 {
+		fmt.Fprintf(stdout, "  missing optional real tools: %s\n", strings.Join(status.MissingRealTools, ", "))
+	}
+	return 0
+}
+
+func runSecurityShimExec(args []string, stdout, stderr io.Writer, sock string) int {
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+	}
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "security shim-exec: expected resolved binary after --")
+		return 2
+	}
+	realBinary := args[0]
+	realArgs := args[1:]
+	commandName := strings.TrimSpace(os.Getenv(shims.EnvCommand))
+	if commandName == "" {
+		commandName = filepath.Base(realBinary)
+	}
+	if err := validateShimExecRequest(commandName, realBinary); err != nil {
+		fmt.Fprintf(stderr, "milliways security shim: %v\n", err)
+		return 126
+	}
+	commandText := shellCommandForPolicy(commandName, realArgs)
+	cwd, _ := os.Getwd()
+	workspace := strings.TrimSpace(os.Getenv("MILLIWAYS_WORKSPACE_ROOT"))
+	params := map[string]any{
+		"operation_type":     "command",
+		"command":            commandText,
+		"argv":               append([]string{commandName}, realArgs...),
+		"cwd":                cwd,
+		"client":             strings.TrimSpace(os.Getenv("MILLIWAYS_CLIENT_ID")),
+		"session_id":         strings.TrimSpace(os.Getenv("MILLIWAYS_SESSION_ID")),
+		"workspace":          workspace,
+		"enforcement_level":  "brokered",
+		"broker_interactive": stdinIsTerminal(),
+		"env_summary": map[string]any{
+			"shim_command":       commandName,
+			"shim_category":      strings.TrimSpace(os.Getenv(shims.EnvCategory)),
+			"shim_dir":           strings.TrimSpace(os.Getenv(shims.EnvShimDir)),
+			"shim_resolved_path": realBinary,
+		},
+	}
+	decision, rc := callSecurityRPCResult("security shim-exec", "security.policy_decide", params, stderr, sock)
+	if rc != 0 {
+		if os.Getenv("MILLIWAYS_SHIM_FAIL_OPEN") == "1" {
+			fmt.Fprintln(stderr, "milliways security shim: policy unavailable; continuing because MILLIWAYS_SHIM_FAIL_OPEN=1")
+			return execResolvedCommand(realBinary, realArgs, stdout, stderr)
+		}
+		fmt.Fprintln(stderr, "milliways security shim: policy unavailable; blocked by default")
+		return 126
+	}
+	action := strings.ToLower(firstStringField(decision, "decision", "action"))
+	reason := firstStringField(decision, "reason")
+	switch action {
+	case "allow", "":
+		return execResolvedCommand(realBinary, realArgs, stdout, stderr)
+	case "warn":
+		fmt.Fprintf(stderr, "milliways security warning: %s\n", fallbackSecurityReason(reason))
+		return execResolvedCommand(realBinary, realArgs, stdout, stderr)
+	case "needs-confirmation":
+		if !confirmShimExecution(stderr, commandText, reason) {
+			fmt.Fprintln(stderr, "milliways security shim: command cancelled")
+			return 126
+		}
+		return execResolvedCommand(realBinary, realArgs, stdout, stderr)
+	case "block":
+		fmt.Fprintf(stderr, "milliways security block: %s\n", fallbackSecurityReason(reason))
+		return 126
+	default:
+		fmt.Fprintf(stderr, "milliways security shim: unknown policy decision %q\n", action)
+		return 126
+	}
+}
+
+func validateShimExecRequest(commandName, realBinary string) error {
+	commandName = strings.TrimSpace(commandName)
+	if commandName == "" {
+		return fmt.Errorf("missing shim command metadata")
+	}
+	if filepath.Base(commandName) != commandName {
+		return fmt.Errorf("invalid shim command metadata %q", commandName)
+	}
+	realBinary = strings.TrimSpace(realBinary)
+	if realBinary == "" {
+		return fmt.Errorf("missing resolved binary")
+	}
+	if !filepath.IsAbs(realBinary) {
+		return fmt.Errorf("resolved binary must be absolute: %s", realBinary)
+	}
+	if filepath.Base(realBinary) != commandName {
+		return fmt.Errorf("resolved binary %q does not match shim command %q", realBinary, commandName)
+	}
+	if shimDir := strings.TrimSpace(os.Getenv(shims.EnvShimDir)); shimDir != "" {
+		rel, err := filepath.Rel(filepath.Clean(shimDir), filepath.Clean(realBinary))
+		if err == nil && rel != "." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && rel != ".." {
+			return fmt.Errorf("resolved binary points back into shim directory: %s", realBinary)
+		}
+	}
+	return nil
+}
+
+func shellCommandForPolicy(command string, args []string) string {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, command)
+	parts = append(parts, args...)
+	return strings.Join(parts, " ")
+}
+
+func execResolvedCommand(path string, args []string, stdout, stderr io.Writer) int {
+	cmd := exec.Command(path, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.Env = os.Environ()
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return exitErr.ExitCode()
+		}
+		fmt.Fprintf(stderr, "milliways security shim: exec %s: %v\n", path, err)
+		return 127
+	}
+	return 0
+}
+
+func confirmShimExecution(stderr io.Writer, command, reason string) bool {
+	if !stdinIsTerminal() {
+		fmt.Fprintf(stderr, "milliways security confirmation required: %s\n", fallbackSecurityReason(reason))
+		return false
+	}
+	fmt.Fprintf(stderr, "MilliWays security gate: %s\nCommand: %s\nRun this one command? [y/N] ", fallbackSecurityReason(reason), command)
+	var reply string
+	if _, err := fmt.Fscan(os.Stdin, &reply); err != nil {
+		return false
+	}
+	reply = strings.ToLower(strings.TrimSpace(reply))
+	return reply == "y" || reply == "yes"
+}
+
+func stdinIsTerminal() bool {
+	info, err := os.Stdin.Stat()
+	return err == nil && (info.Mode()&os.ModeCharDevice) != 0
+}
+
+func fallbackSecurityReason(reason string) string {
+	if strings.TrimSpace(reason) == "" {
+		return "policy requires attention"
+	}
+	return reason
 }
 
 func validSecurityMode(mode string) bool {
@@ -1113,6 +1419,48 @@ func renderSecurityGenericResult(stdout io.Writer, label string, result map[stri
 	fmt.Fprintln(stdout, string(out))
 }
 
+func renderSecurityAuditResult(stdout io.Writer, label string, result map[string]any) {
+	events, _ := result["events"].([]any)
+	if len(events) == 0 {
+		fmt.Fprintf(stdout, "[%s] no policy decisions\n", label)
+		return
+	}
+	fmt.Fprintf(stdout, "[%s] %d policy decision(s)\n", label, len(events))
+	for _, raw := range events {
+		event, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		created := firstStringField(event, "created_at")
+		if len(created) > 19 {
+			created = created[:19] + "Z"
+		}
+		decision := firstStringField(event, "decision")
+		mode := firstStringField(event, "mode")
+		client := firstStringField(event, "client")
+		session := firstStringField(event, "session_id")
+		command := truncateStr(firstStringField(event, "command"), 80)
+		if command == "" {
+			command = firstStringField(event, "operation_type")
+		}
+		identity := strings.TrimSpace(strings.Join(nonEmptyStrings(client, session), "/"))
+		if identity == "" {
+			identity = "-"
+		}
+		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\t%s\n", created, decision, mode, identity, command)
+	}
+}
+
+func nonEmptyStrings(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, strings.TrimSpace(value))
+		}
+	}
+	return out
+}
+
 func runSecurityHarden(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "security harden: expected npm")
@@ -1299,6 +1647,40 @@ func renderSecurityScanners(raw any) string {
 		parts = append(parts, "missing "+strings.Join(missing, ", "))
 	}
 	return strings.Join(parts, "; ")
+}
+
+func renderSecurityRulePacks(raw any) string {
+	status, ok := raw.(map[string]any)
+	if !ok || len(status) == 0 {
+		return ""
+	}
+	count := intMapField(status, "count", "packs_count")
+	updateState := firstStringField(status, "update_state", "status")
+	if updateState == "" {
+		updateState = "unknown"
+	}
+	var names []string
+	if packs, ok := status["packs"].([]any); ok {
+		for _, item := range packs {
+			pack, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			name := firstStringField(pack, "name")
+			if name == "" {
+				continue
+			}
+			if version := firstStringField(pack, "version"); version != "" {
+				name += "@" + version
+			}
+			names = append(names, name)
+		}
+	}
+	rendered := fmt.Sprintf("%d loaded (%s)", count, updateState)
+	if len(names) > 0 {
+		rendered += ": " + strings.Join(names, ", ")
+	}
+	return rendered
 }
 
 // runInstallScanner installs osv-scanner via go install.

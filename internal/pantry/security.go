@@ -153,6 +153,26 @@ type SecurityQuarantineAction struct {
 	AppliedAt        time.Time
 }
 
+// SecurityPolicyDecision is one durable Security Control Plane policy/audit event.
+type SecurityPolicyDecision struct {
+	ID               int64
+	CreatedAt        time.Time
+	Workspace        string
+	SessionID        string
+	Client           string
+	CWD              string
+	OperationType    string
+	Command          string
+	ArgvJSON         string
+	EnvSummaryJSON   string
+	Mode             string
+	Decision         string
+	Reason           string
+	Parsed           bool
+	RisksJSON        string
+	EnforcementLevel string
+}
+
 // SecurityStore provides access to durable security posture tables.
 type SecurityStore struct {
 	db *sql.DB
@@ -878,6 +898,79 @@ func (s *SecurityStore) ListQuarantineActions(workspace string) ([]SecurityQuara
 		actions = append(actions, a)
 	}
 	return actions, rows.Err()
+}
+
+// RecordPolicyDecision appends one durable policy/audit decision.
+func (s *SecurityStore) RecordPolicyDecision(d SecurityPolicyDecision) error {
+	if d.CreatedAt.IsZero() {
+		d.CreatedAt = time.Now().UTC()
+	}
+	if strings.TrimSpace(d.ArgvJSON) == "" {
+		d.ArgvJSON = "[]"
+	}
+	if strings.TrimSpace(d.EnvSummaryJSON) == "" {
+		d.EnvSummaryJSON = "{}"
+	}
+	if strings.TrimSpace(d.RisksJSON) == "" {
+		d.RisksJSON = "[]"
+	}
+	parsed := 0
+	if d.Parsed {
+		parsed = 1
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO mw_security_policy_decisions
+			(created_at, workspace, session_id, client, cwd, operation_type, command,
+			 argv_json, env_summary_json, mode, decision, reason, parsed, risks_json, enforcement_level)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		secFormatTime(d.CreatedAt), d.Workspace, d.SessionID, d.Client, d.CWD, d.OperationType, d.Command,
+		d.ArgvJSON, d.EnvSummaryJSON, d.Mode, d.Decision, d.Reason, parsed, d.RisksJSON, d.EnforcementLevel,
+	)
+	if err != nil {
+		return fmt.Errorf("record security policy decision: %w", err)
+	}
+	return nil
+}
+
+// ListPolicyDecisions returns recent policy decisions for audit callers.
+func (s *SecurityStore) ListPolicyDecisions(workspace string, limit int) ([]SecurityPolicyDecision, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	query := `
+		SELECT id, created_at, workspace, session_id, client, cwd, operation_type,
+		       command, argv_json, env_summary_json, mode, decision, reason, parsed,
+		       risks_json, enforcement_level
+		FROM mw_security_policy_decisions`
+	var args []any
+	if strings.TrimSpace(workspace) != "" {
+		query += " WHERE workspace = ?"
+		args = append(args, workspace)
+	}
+	query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list security policy decisions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var decisions []SecurityPolicyDecision
+	for rows.Next() {
+		var d SecurityPolicyDecision
+		var createdAt string
+		var parsed int
+		if err := rows.Scan(&d.ID, &createdAt, &d.Workspace, &d.SessionID, &d.Client, &d.CWD,
+			&d.OperationType, &d.Command, &d.ArgvJSON, &d.EnvSummaryJSON, &d.Mode, &d.Decision,
+			&d.Reason, &parsed, &d.RisksJSON, &d.EnforcementLevel); err != nil {
+			return nil, fmt.Errorf("scan security policy decision: %w", err)
+		}
+		d.CreatedAt = secParseTime(createdAt)
+		d.Parsed = parsed != 0
+		decisions = append(decisions, d)
+	}
+	return decisions, rows.Err()
 }
 
 func (s *SecurityStore) queryFindings(query string, args ...any) ([]SecurityFinding, error) {

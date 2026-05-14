@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/mwigge/milliways/internal/daemon/observability"
+	"github.com/mwigge/milliways/internal/daemon/runners"
 	"github.com/mwigge/milliways/internal/daemon/textproc"
 	"github.com/mwigge/milliways/internal/parallel"
 	"github.com/mwigge/milliways/internal/security"
@@ -427,6 +428,9 @@ func (s *Server) agentList() []AgentInfo {
 	for i := range out {
 		if model := models[out[i].ID]; model != "" {
 			out[i].Model = model
+		}
+		if out[i].Enforcement.Level == "" {
+			out[i].Enforcement = runners.ClientEnforcementMetadata(out[i].ID)
 		}
 	}
 	return out

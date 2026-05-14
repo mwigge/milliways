@@ -38,6 +38,7 @@ import (
 	"github.com/mwigge/milliways/internal/parallel"
 	"github.com/mwigge/milliways/internal/security"
 	"github.com/mwigge/milliways/internal/security/firewall"
+	"github.com/mwigge/milliways/internal/security/shims"
 )
 
 // Protocol version exposed via ping. Bump major when breaking; minor for
@@ -148,6 +149,7 @@ func NewServer(socket string) (*Server, error) {
 	registerCoreMetrics(mstore)
 	mstore.Run()
 	s.metrics = mstore
+	installSecurityShimsForServer(filepath.Dir(socket))
 	// Probe runners once at startup and cache the result. This populates
 	// agent.list's auth_status without per-call subprocess churn.
 	probeCtx, probeCancel := context.WithTimeout(bgCtx, 10*time.Second)
@@ -158,10 +160,11 @@ func NewServer(socket string) (*Server, error) {
 			model, _ = runners.ModelHint(info.ID)
 		}
 		s.agentsCache = append(s.agentsCache, AgentInfo{
-			ID:         info.ID,
-			Available:  info.Available,
-			AuthStatus: info.AuthStatus,
-			Model:      model,
+			ID:          info.ID,
+			Available:   info.Available,
+			AuthStatus:  info.AuthStatus,
+			Model:       model,
+			Enforcement: info.Enforcement,
 		})
 	}
 	slog.Info("runners probed", "n", len(s.agentsCache))
@@ -237,6 +240,25 @@ func NewServer(socket string) (*Server, error) {
 
 	go s.statusBroadcaster()
 	return s, nil
+}
+
+func installSecurityShimsForServer(stateDir string) {
+	shimDir := filepath.Join(stateDir, "security-shims")
+	result, err := shims.InstallDefaultCatalog(shimDir)
+	if err != nil {
+		slog.Warn("security command shims unavailable", "err", err)
+		runners.SetBrokerPathProvider(nil)
+		return
+	}
+	runners.SetBrokerPathProvider(func(agentID string) string {
+		switch agentID {
+		case runners.AgentIDClaude, runners.AgentIDCodex, runners.AgentIDCopilot, runners.AgentIDGemini, runners.AgentIDPool:
+			return result.Dir
+		default:
+			return ""
+		}
+	})
+	slog.Info("security command shims ready", "dir", result.Dir, "n", len(result.Paths), "replaced", result.Replaced)
 }
 
 func (s *Server) trackAgentSecurityWorkspace(agentID, workspace string) {

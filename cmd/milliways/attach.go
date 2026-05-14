@@ -477,6 +477,7 @@ type deckProviderInfo struct {
 	ID           string
 	AuthStatus   string
 	Model        string
+	Enforcement  deckEnforcementInfo
 	Handle       int64
 	Status       string
 	Turns        int
@@ -492,6 +493,22 @@ type deckProviderInfo struct {
 	LastError    string
 	LastThink    string
 	UsedPct      float64 // percentage of daily quota consumed (0-100)
+}
+
+type deckEnforcementInfo struct {
+	Level         string `json:"level"`
+	ControlledEnv bool   `json:"controlled_env,omitempty"`
+	BrokerPath    string `json:"broker_path,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+}
+
+func deckProtectionLabel(p deckProviderInfo) string {
+	switch strings.TrimSpace(p.Enforcement.Level) {
+	case "full", "brokered":
+		return "protected"
+	default:
+		return "unprotected"
+	}
 }
 
 func renderDeckNavigator(w int, providers []deckProviderInfo, selected int, active string, polled bool, quotas map[string]parallel.QuotaSummary) string {
@@ -575,7 +592,8 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 		} else if p.LastThink != "" {
 			meta = "think"
 		}
-		return fmt.Sprintf("%s %s %s %s %s", prefix, p.ID, status, auth, meta)
+		name := fmt.Sprintf("%s (%s)", p.ID, deckProtectionLabel(p))
+		return fmt.Sprintf("%s %s %s %s %s", prefix, name, status, auth, meta)
 	}
 	card := func(selected bool, provider, line string) {
 		edgeColor := dim
@@ -806,7 +824,8 @@ func renderDeckNavigatorPlain(providers []deckProviderInfo, active string, polle
 		if model == "" {
 			model = "-"
 		}
-		fmt.Fprintf(&b, "  %d %s %s %s model %s turns %d\n", i+1, p.ID, status, auth, model, p.Turns)
+		name := fmt.Sprintf("%s (%s)", p.ID, deckProtectionLabel(p))
+		fmt.Fprintf(&b, "  %d %s %s %s model %s turns %d\n", i+1, name, status, auth, model, p.Turns)
 	}
 	fmt.Fprintln(&b, "Controls")
 	fmt.Fprintln(&b, "  up/down move; enter switch; q quit")
@@ -884,9 +903,10 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 	pollProviders := func() {
 		// agent.list returns a flat []AgentInfo array, not {"agents":[...]}.
 		var agents []struct {
-			ID         string `json:"id"`
-			AuthStatus string `json:"auth_status"`
-			Model      string `json:"model"`
+			ID          string              `json:"id"`
+			AuthStatus  string              `json:"auth_status"`
+			Model       string              `json:"model"`
+			Enforcement deckEnforcementInfo `json:"enforcement"`
 		}
 		if err := client.Call("agent.list", nil, &agents); err != nil {
 			return
@@ -918,6 +938,7 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 				ID:           a.ID,
 				AuthStatus:   a.AuthStatus,
 				Model:        model,
+				Enforcement:  a.Enforcement,
 				Handle:       d.Handle,
 				Status:       d.Status,
 				Turns:        d.TurnCount,
@@ -932,7 +953,12 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 				QueueDepth:   d.QueueDepth,
 				LastError:    d.LastError,
 				LastThink:    d.LastThinking,
-				UsedPct:      func() float64 { if q, ok := quotas[a.ID]; ok { return q.UsedPct() }; return 0 }(),
+				UsedPct: func() float64 {
+					if q, ok := quotas[a.ID]; ok {
+						return q.UsedPct()
+					}
+					return 0
+				}(),
 			})
 		}
 		updated = orderDeckProviders(updated)
@@ -1094,9 +1120,10 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 func pollDeckNavigatorSnapshot(ctx context.Context, client *rpc.Client) ([]deckProviderInfo, string, bool, map[string]parallel.QuotaSummary) {
 	_ = ctx
 	var agents []struct {
-		ID         string `json:"id"`
-		AuthStatus string `json:"auth_status"`
-		Model      string `json:"model"`
+		ID          string              `json:"id"`
+		AuthStatus  string              `json:"auth_status"`
+		Model       string              `json:"model"`
+		Enforcement deckEnforcementInfo `json:"enforcement"`
 	}
 	if err := client.Call("agent.list", nil, &agents); err != nil {
 		return nil, "", false, nil
@@ -1130,6 +1157,7 @@ func pollDeckNavigatorSnapshot(ctx context.Context, client *rpc.Client) ([]deckP
 			ID:           a.ID,
 			AuthStatus:   a.AuthStatus,
 			Model:        model,
+			Enforcement:  a.Enforcement,
 			Handle:       d.Handle,
 			Status:       d.Status,
 			Turns:        d.TurnCount,
@@ -1144,7 +1172,12 @@ func pollDeckNavigatorSnapshot(ctx context.Context, client *rpc.Client) ([]deckP
 			QueueDepth:   d.QueueDepth,
 			LastError:    d.LastError,
 			LastThink:    d.LastThinking,
-			UsedPct:      func() float64 { if q, ok := quotas[a.ID]; ok { return q.UsedPct() }; return 0 }(),
+			UsedPct: func() float64 {
+				if q, ok := quotas[a.ID]; ok {
+					return q.UsedPct()
+				}
+				return 0
+			}(),
 		})
 	}
 	return orderDeckProviders(updated), active, true, quotas

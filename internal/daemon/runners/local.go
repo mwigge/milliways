@@ -42,6 +42,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mwigge/milliways/internal/provider"
 	"github.com/mwigge/milliways/internal/tools"
@@ -224,6 +225,11 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		state = &localSessionState{}
 	}
 	if state.pendingApproval != nil {
+		if approvalGateExpired(state.pendingApproval.Request, time.Now()) {
+			state.pendingApproval = nil
+			approvalGateExpiredInput(stream)
+			return
+		}
 		approved, rejected := approvalGateDecision(text)
 		switch {
 		case approved:
@@ -236,10 +242,16 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		default:
 			original := state.pendingApproval.OriginalPrompt
 			text = approvalGatePlanPrompt(original + "\n\nUser feedback:\n" + text)
-			state.pendingApproval = &approvalGatePending{OriginalPrompt: original}
+			state.pendingApproval = &approvalGatePending{
+				OriginalPrompt: original,
+				Request:        approvalGateNewRequest(AgentIDLocal, securityWorkspace, original, time.Now()),
+			}
 		}
 	} else if approvalGateNeedsPlan(text) {
-		state.pendingApproval = &approvalGatePending{OriginalPrompt: text}
+		state.pendingApproval = &approvalGatePending{
+			OriginalPrompt: text,
+			Request:        approvalGateNewRequest(AgentIDLocal, securityWorkspace, text, time.Now()),
+		}
 		text = approvalGatePlanPrompt(text)
 	}
 	timeout := runnerRequestTimeout("MILLIWAYS_LOCAL_TIMEOUT")
@@ -322,7 +334,7 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		if state.pendingApproval != nil {
 			state.pendingApproval.Plan = strings.TrimSpace(result.FinalContent)
 		}
-		approvalGateNeedsInput(stream, push)
+		approvalGateNeedsInput(stream, push, state.pendingApproval.Request)
 		return
 	}
 	stream.Push(push)

@@ -25,6 +25,7 @@ import (
 
 	"github.com/mwigge/milliways/internal/daemon/metrics"
 	"github.com/mwigge/milliways/internal/daemon/observability"
+	"github.com/mwigge/milliways/internal/daemon/runners"
 	"github.com/mwigge/milliways/internal/history"
 )
 
@@ -50,21 +51,23 @@ type ProtoVersion struct {
 }
 
 type Status struct {
-	Proto       ProtoVersion `json:"proto"`
-	ActiveAgent *string      `json:"active_agent"`
-	Turn        int          `json:"turn"`
-	TokensIn    int          `json:"tokens_in"`
-	TokensOut   int          `json:"tokens_out"`
-	CostUSD     float64      `json:"cost_usd"`
-	QuotaPct    float64      `json:"quota_pct"`
-	Errors5m    int          `json:"errors_5m"`
+	Proto             ProtoVersion                           `json:"proto"`
+	ActiveAgent       *string                                `json:"active_agent"`
+	Turn              int                                    `json:"turn"`
+	TokensIn          int                                    `json:"tokens_in"`
+	TokensOut         int                                    `json:"tokens_out"`
+	CostUSD           float64                                `json:"cost_usd"`
+	QuotaPct          float64                                `json:"quota_pct"`
+	Errors5m          int                                    `json:"errors_5m"`
+	ClientEnforcement map[string]runners.EnforcementMetadata `json:"client_enforcement,omitempty"`
 }
 
 type AgentInfo struct {
-	ID         string `json:"id"`
-	Available  bool   `json:"available"`
-	AuthStatus string `json:"auth_status"`
-	Model      string `json:"model,omitempty"`
+	ID          string                      `json:"id"`
+	Available   bool                        `json:"available"`
+	AuthStatus  string                      `json:"auth_status"`
+	Model       string                      `json:"model,omitempty"`
+	Enforcement runners.EnforcementMetadata `json:"enforcement"`
 }
 
 type QuotaSnapshot struct {
@@ -188,15 +191,25 @@ func (s *Server) buildStatus() Status {
 	}
 	r5m := &metrics.Range{From: "-5min"}
 	return Status{
-		Proto:       ProtoVersion{Major: ProtoMajor, Minor: ProtoMinor},
-		ActiveAgent: activeAgent,
-		Turn:        0,
-		TokensIn:    int(s.sumMetric("tokens_in", r5m)),
-		TokensOut:   int(s.sumMetric("tokens_out", r5m)),
-		CostUSD:     s.sumMetric("cost_usd", r5m),
-		QuotaPct:    0.0,
-		Errors5m:    int(s.sumMetric("error_count", r5m)),
+		Proto:             ProtoVersion{Major: ProtoMajor, Minor: ProtoMinor},
+		ActiveAgent:       activeAgent,
+		Turn:              0,
+		TokensIn:          int(s.sumMetric("tokens_in", r5m)),
+		TokensOut:         int(s.sumMetric("tokens_out", r5m)),
+		CostUSD:           s.sumMetric("cost_usd", r5m),
+		QuotaPct:          0.0,
+		Errors5m:          int(s.sumMetric("error_count", r5m)),
+		ClientEnforcement: clientEnforcementSnapshot(),
 	}
+}
+
+func clientEnforcementSnapshot() map[string]runners.EnforcementMetadata {
+	agents := []string{"claude", "codex", "copilot", "gemini", "pool", "minimax", "local"}
+	out := make(map[string]runners.EnforcementMetadata, len(agents))
+	for _, agent := range agents {
+		out[agent] = runners.ClientEnforcementMetadata(agent)
+	}
+	return out
 }
 
 // buildQuotaSnapshots returns per-agent token/cost usage for the last hour.
@@ -397,6 +410,10 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		s.securityClientProfile(enc, req)
 	case "security.command_check":
 		s.securityCommandCheck(enc, req)
+	case "security.policy_decide":
+		s.securityPolicyDecide(enc, req)
+	case "security.policy_audit":
+		s.securityPolicyAudit(enc, req)
 	case "security.quarantine":
 		s.securityQuarantine(enc, req)
 	case "security.rules_list":

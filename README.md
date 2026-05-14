@@ -926,6 +926,8 @@ Secure MilliWays is the release security theme, not a separate binary and not a 
 
 Milliways wraps Claude, Codex, Copilot, Gemini, Pool, MiniMax, and local models behind one terminal surface. That makes the security model explicit: the runner changes, but the workspace, memory, session handoff, observability, and security posture are managed in one place.
 
+The control-plane model is business-casual on purpose: MilliWays does the common safety work once, then shares the signal with every client. Startup scan, client profile checks, command policy, generated-output planning, scanner status, CRA evidence, and policy audit events all report through the daemon. The CLI, terminal slash commands, command shims, and observability badges read that same posture instead of asking each AI client to invent a separate view of risk.
+
 ### Layered architecture
 
 | Layer | Surface | Purpose |
@@ -941,8 +943,11 @@ Milliways wraps Claude, Codex, Copilot, Gemini, Pool, MiniMax, and local models 
 | CRA evidence scaffold | `milliwaysctl security cra-scaffold` | Creates missing CRA evidence placeholders in a workspace: `SECURITY.md`, `SUPPORT.md`, `docs/update-policy.md`, and `docs/cra-technical-file.md`. Use `--dry-run` to preview and `--force` only when replacing existing placeholders is intentional. |
 | CRA readiness | `milliwaysctl security cra`, `/security cra` | Tracks EU Cyber Resilience Act evidence: SBOM presence, vulnerability handling process, secure-by-default posture, scanner coverage, support-period metadata, and reporting readiness. CRA is a policy/evidence layer; OSV, Gitleaks, Semgrep, govulncheck, and optional NVD enrichment feed it. |
 | Status and warnings | `milliwaysctl security status`, `warnings`, `mode` | One posture summary for CLI, terminal cockpit, and future release smoke checks: mode, scanner state, startup scan required/stale state, scanner gaps, last scan times, warnings, blocks, and client profile state. |
+| Policy audit | `milliwaysctl security audit`, `/security audit` | Recent command policy decisions across brokered shims and pre-flight checks, filterable by workspace, session, client, and decision. This is the quick "what did the control plane decide?" view for release checks and incident follow-up. |
 
 The layers are intentionally additive. Startup scan is deterministic and local; external scanners add dependency, secret, and SAST depth when installed; client profiles and command checks reduce the risk of handing unsafe work to external CLIs that execute their own tools.
+
+For CLI clients that can inherit a controlled environment, MilliWays also generates security shims for common shells, package managers, build tools, network tools, VCS, and persistence commands. Those shims broker command decisions through the daemon before the real binary runs, then write policy events that show up in `milliwaysctl security audit`.
 
 ### Enforcement coverage
 
@@ -1004,6 +1009,7 @@ Implementation note: MilliWays currently attaches to the `osv-scanner` CLI for l
 
 ```bash
 milliwaysctl security status
+milliwaysctl security audit --limit 20
 milliwaysctl security cra
 milliwaysctl security cra-scaffold --dry-run
 milliwaysctl security sbom --output dist/milliways.spdx.json
@@ -1022,6 +1028,7 @@ Inside the MilliWays terminal, the same core posture controls are available with
 
 ```text
 /security status
+/security audit --limit 20
 /security cra
 /security cra-scaffold --dry-run
 /security sbom --output dist/milliways.spdx.json

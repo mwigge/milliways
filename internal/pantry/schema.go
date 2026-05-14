@@ -435,3 +435,33 @@ CREATE INDEX IF NOT EXISTS idx_mw_security_findings_category_status
 
 INSERT OR IGNORE INTO mw_schema (version) VALUES (13);
 `
+
+const schemaV14 = `
+CREATE TABLE IF NOT EXISTS mw_security_policy_decisions (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at        TEXT NOT NULL,
+    workspace         TEXT NOT NULL DEFAULT '',
+    session_id        TEXT NOT NULL DEFAULT '',
+    client            TEXT NOT NULL DEFAULT '',
+    cwd               TEXT NOT NULL DEFAULT '',
+    operation_type    TEXT NOT NULL,
+    command           TEXT NOT NULL DEFAULT '',
+    argv_json         TEXT NOT NULL DEFAULT '[]',
+    env_summary_json  TEXT NOT NULL DEFAULT '{}',
+    mode              TEXT NOT NULL,
+    decision          TEXT NOT NULL,
+    reason            TEXT NOT NULL DEFAULT '',
+    parsed            INTEGER NOT NULL DEFAULT 0,
+    risks_json        TEXT NOT NULL DEFAULT '[]',
+    enforcement_level TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_policy_decisions_workspace_created
+    ON mw_security_policy_decisions(workspace, created_at);
+CREATE INDEX IF NOT EXISTS idx_mw_security_policy_decisions_session
+    ON mw_security_policy_decisions(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_mw_security_policy_decisions_decision
+    ON mw_security_policy_decisions(decision, created_at);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (14);
+`

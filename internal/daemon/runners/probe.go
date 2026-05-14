@@ -32,10 +32,11 @@ import (
 // here (not in package daemon) to avoid a circular import; the daemon
 // package converts to its own AgentInfo before serializing.
 type AgentInfo struct {
-	ID         string
-	Available  bool
-	AuthStatus string // "ok" | "missing_credentials" | "expired" | "unknown"
-	Model      string
+	ID          string
+	Available   bool
+	AuthStatus  string // "ok" | "missing_credentials" | "expired" | "unknown"
+	Model       string
+	Enforcement EnforcementMetadata
 }
 
 // Probe walks the seven canonical chat-surface runners and returns one
@@ -53,14 +54,17 @@ func Probe(ctx context.Context) []AgentInfo {
 	}
 	out := make([]AgentInfo, 0, len(probes))
 	for _, p := range probes {
-		out = append(out, p(ctx))
+		info := p(ctx)
+		info.Enforcement = ClientEnforcementMetadata(info.ID)
+		out = append(out, info)
 	}
 	return out
 }
 
 func probeClaude(ctx context.Context) AgentInfo {
 	info := AgentInfo{ID: "claude", AuthStatus: "missing_credentials"}
-	if _, err := exec.LookPath("claude"); err != nil {
+	binary, err := probeRunnerBinary(AgentIDClaude, "claude")
+	if err != nil {
 		return info
 	}
 	info.Available = true
@@ -92,7 +96,7 @@ func probeClaude(ctx context.Context) AgentInfo {
 		info.AuthStatus = "ok"
 		return info
 	}
-	if runOK(ctx, "claude", "--version") {
+	if runOK(ctx, binary, "--version") {
 		info.AuthStatus = "unknown"
 	}
 	return info
@@ -100,7 +104,8 @@ func probeClaude(ctx context.Context) AgentInfo {
 
 func probeCodex(ctx context.Context) AgentInfo {
 	info := AgentInfo{ID: "codex", AuthStatus: "missing_credentials"}
-	if _, err := exec.LookPath("codex"); err != nil {
+	binary, err := probeRunnerBinary(AgentIDCodex, "codex")
+	if err != nil {
 		return info
 	}
 	info.Available = true
@@ -115,7 +120,7 @@ func probeCodex(ctx context.Context) AgentInfo {
 			return info
 		}
 	}
-	if runOK(ctx, "codex", "--version") {
+	if runOK(ctx, binary, "--version") {
 		info.AuthStatus = "unknown"
 	}
 	return info
@@ -138,11 +143,12 @@ func probeCopilot(ctx context.Context) AgentInfo {
 	// Probe the same binary the runner actually invokes — anything else
 	// produces a probe/runtime mismatch where probe says ok and dispatch
 	// fails with "exec: copilot: not found".
-	if _, err := exec.LookPath("copilot"); err != nil {
+	binary, err := probeRunnerBinary(AgentIDCopilot, "copilot")
+	if err != nil {
 		return info
 	}
 	info.Available = true
-	if runOK(ctx, "copilot", "--version") {
+	if runOK(ctx, binary, "--version") {
 		info.AuthStatus = "ok"
 	}
 	return info
@@ -150,14 +156,15 @@ func probeCopilot(ctx context.Context) AgentInfo {
 
 func probeGemini(ctx context.Context) AgentInfo {
 	info := AgentInfo{ID: "gemini", AuthStatus: "missing_credentials"}
-	if _, err := exec.LookPath("gemini"); err != nil {
+	binary, err := probeRunnerBinary(AgentIDGemini, "gemini")
+	if err != nil {
 		return info
 	}
 	info.Available = true
 	// gemini CLI uses gcloud-style auth in $HOME/.config/gcloud or
 	// per-project credentials; presence of the binary + a successful
 	// --version is the strongest non-network signal we can give.
-	if runOK(ctx, "gemini", "--version") {
+	if runOK(ctx, binary, "--version") {
 		info.AuthStatus = "ok"
 	}
 	return info
@@ -175,17 +182,22 @@ func probeLocal(_ context.Context) AgentInfo {
 
 func probePool(ctx context.Context) AgentInfo {
 	info := AgentInfo{ID: "pool", AuthStatus: "missing_credentials"}
-	if _, err := exec.LookPath("pool"); err != nil {
+	binary, err := probeRunnerBinary(AgentIDPool, "pool")
+	if err != nil {
 		return info
 	}
 	info.Available = true
 	// pool --version exits 0 regardless of auth state; treats it as a best-effort
 	// signal that the binary is functional. Real auth is file-based at
 	// ~/.config/poolside/credentials.json and verified at dispatch time.
-	if runOK(ctx, "pool", "--version") {
+	if runOK(ctx, binary, "--version") {
 		info.AuthStatus = "ok"
 	}
 	return info
+}
+
+func probeRunnerBinary(agentID, binary string) (string, error) {
+	return execLookPathInRunnerPathExcluding(binary, brokerShimDirForAgent(agentID))
 }
 
 // runOK runs cmd with a 2-second timeout and returns true iff it exits 0.

@@ -37,6 +37,7 @@ import (
 	"github.com/mwigge/milliways/internal/security/quarantine"
 	"github.com/mwigge/milliways/internal/security/rulepacks"
 	"github.com/mwigge/milliways/internal/security/rules"
+	"github.com/mwigge/milliways/internal/security/shims"
 )
 
 var securityStatusAdapters = func() []adapters.ScannerAdapter {
@@ -597,6 +598,10 @@ func (s *Server) securityStatus(enc *json.Encoder, req *Request) {
 		"startup_scan_completed": false,
 		"startup_scan_stale":     false,
 		"startup_scan_required":  true,
+		"client_enforcement":     clientEnforcementSnapshot(),
+	}
+	if shimStatus, err := shims.StatusDefaultCatalog(filepath.Join(filepath.Dir(s.socket), "security-shims")); err == nil {
+		result["shims"] = shimStatus
 	}
 	if s.pantryDB != nil {
 		workspace := s.securityWorkspaceRoot()
@@ -627,6 +632,8 @@ func (s *Server) securityStatus(enc *json.Encoder, req *Request) {
 			result["cra"] = securityCRAStatus(workspace, status, result["scanners"])
 		}
 	}
+	workspace, _ := result["security_workspace"].(string)
+	result["rulepacks"] = s.securityRulePackStatus(workspace)
 	if _, ok := result["cra"]; !ok {
 		result["cra"] = securityCRAStatus("", pantry.SecurityStatus{}, result["scanners"])
 	}
@@ -669,6 +676,44 @@ func (s *Server) securityCRA(enc *json.Encoder, req *Request) {
 func securityCRAStatus(workspace string, status pantry.SecurityStatus, scannerStatus any) map[string]any {
 	_, summary := evaluateCRAReadiness(workspace, status, scannerStatus)
 	return summary
+}
+
+func (s *Server) securityRulePackStatus(workspace string) map[string]any {
+	result := map[string]any{
+		"offline":      true,
+		"update_state": "offline-current",
+		"count":        0,
+		"packs":        []map[string]any{},
+	}
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return result
+	}
+	packs, err := rulepacks.LoadAll(securityRulePackOptions(workspace))
+	if err != nil {
+		result["update_state"] = "error"
+		result["error"] = err.Error()
+		if s.pantryDB != nil {
+			if persisted, listErr := s.pantryDB.Security().ListRulePacks(workspace); listErr == nil {
+				result["count"] = len(persisted)
+				result["packs"] = securityPersistedRulePacksToWire(persisted)
+			}
+		}
+		return result
+	}
+	if s.pantryDB != nil {
+		if persisted, err := s.persistSecurityRulePacks(workspace, packs); err == nil {
+			result["count"] = len(persisted)
+			result["packs"] = securityPersistedRulePacksToWire(persisted)
+			return result
+		} else {
+			result["update_state"] = "error"
+			result["error"] = err.Error()
+		}
+	}
+	result["count"] = len(packs)
+	result["packs"] = securityRulePacksToWire(packs)
+	return result
 }
 
 func craNextActions(workspace, checkID string, missing []string) []string {
@@ -1207,10 +1252,19 @@ func (s *Server) securityMode(enc *json.Encoder, req *Request) {
 }
 
 type securityCommandCheckParams struct {
-	Command string `json:"command"`
-	CWD     string `json:"cwd,omitempty"`
-	Client  string `json:"client,omitempty"`
-	Mode    string `json:"mode,omitempty"`
+	Command           string         `json:"command"`
+	Argv              []string       `json:"argv,omitempty"`
+	CWD               string         `json:"cwd,omitempty"`
+	Workspace         string         `json:"workspace,omitempty"`
+	Client            string         `json:"client,omitempty"`
+	Session           string         `json:"session,omitempty"`
+	SessionID         string         `json:"session_id,omitempty"`
+	OperationType     string         `json:"operation_type,omitempty"`
+	Env               map[string]any `json:"env,omitempty"`
+	EnvSummary        map[string]any `json:"env_summary,omitempty"`
+	Mode              string         `json:"mode,omitempty"`
+	EnforcementLevel  string         `json:"enforcement_level,omitempty"`
+	BrokerInteractive bool           `json:"broker_interactive,omitempty"`
 }
 
 type securityCommandRiskWire struct {
@@ -1220,16 +1274,18 @@ type securityCommandRiskWire struct {
 }
 
 type securityCommandCheckResult struct {
-	Command        string                    `json:"command"`
-	CWD            string                    `json:"cwd,omitempty"`
-	Client         string                    `json:"client,omitempty"`
-	Mode           string                    `json:"mode"`
-	Posture        string                    `json:"posture,omitempty"`
-	Decision       string                    `json:"decision"`
-	Reason         string                    `json:"reason"`
-	Parsed         bool                      `json:"parsed"`
-	Risks          []securityCommandRiskWire `json:"risks"`
-	RiskCategories []string                  `json:"risk_categories"`
+	Command          string                    `json:"command"`
+	Workspace        string                    `json:"workspace,omitempty"`
+	CWD              string                    `json:"cwd,omitempty"`
+	Client           string                    `json:"client,omitempty"`
+	Mode             string                    `json:"mode"`
+	Posture          string                    `json:"posture,omitempty"`
+	Decision         string                    `json:"decision"`
+	Reason           string                    `json:"reason"`
+	Parsed           bool                      `json:"parsed"`
+	Risks            []securityCommandRiskWire `json:"risks"`
+	RiskCategories   []string                  `json:"risk_categories"`
+	EnforcementLevel string                    `json:"enforcement_level,omitempty"`
 }
 
 // securityCommandCheck handles "security.command_check".
@@ -1249,8 +1305,185 @@ func (s *Server) securityCommandCheck(enc *json.Encoder, req *Request) {
 	writeResult(enc, req.ID, result)
 }
 
+// securityPolicyDecide handles "security.policy_decide".
+func (s *Server) securityPolicyDecide(enc *json.Encoder, req *Request) {
+	var p securityCommandCheckParams
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+	}
+	if strings.TrimSpace(p.OperationType) == "" {
+		p.OperationType = "command"
+	}
+	p.OperationType = strings.ToLower(strings.TrimSpace(p.OperationType))
+	if p.OperationType != "command" {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("unsupported operation_type %q", p.OperationType))
+		return
+	}
+
+	result, err := s.runSecurityCommandCheck(p)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, err.Error())
+		return
+	}
+	if s.pantryDB != nil {
+		if err := s.recordSecurityPolicyDecision(p, result); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, err.Error())
+			return
+		}
+	}
+	writeResult(enc, req.ID, result)
+}
+
+type securityPolicyAuditParams struct {
+	Workspace string `json:"workspace,omitempty"`
+	Session   string `json:"session,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	Client    string `json:"client,omitempty"`
+	Decision  string `json:"decision,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
+}
+
+// securityPolicyAudit handles "security.policy_audit".
+func (s *Server) securityPolicyAudit(enc *json.Encoder, req *Request) {
+	if s.pantryDB == nil {
+		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		return
+	}
+	var p securityPolicyAuditParams
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+	}
+	limit := p.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	workspace := strings.TrimSpace(p.Workspace)
+	if workspace == "" {
+		workspace = s.securityWorkspaceRoot()
+	}
+	if abs, err := filepath.Abs(workspace); err == nil {
+		workspace = abs
+	}
+
+	fetchLimit := limit
+	if strings.TrimSpace(p.Session) != "" || strings.TrimSpace(p.SessionID) != "" || strings.TrimSpace(p.Client) != "" || strings.TrimSpace(p.Decision) != "" {
+		fetchLimit = limit * 10
+		if fetchLimit < 100 {
+			fetchLimit = 100
+		}
+		if fetchLimit > 1000 {
+			fetchLimit = 1000
+		}
+	}
+	decisions, err := s.pantryDB.Security().ListPolicyDecisions(workspace, fetchLimit)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("list policy decisions: %v", err))
+		return
+	}
+
+	session := securityPolicyAuditSessionID(p)
+	client := strings.TrimSpace(p.Client)
+	decisionFilter := strings.ToLower(strings.TrimSpace(p.Decision))
+	events := make([]map[string]any, 0, minInt(limit, len(decisions)))
+	for _, d := range decisions {
+		if session != "" && d.SessionID != session {
+			continue
+		}
+		if client != "" && d.Client != client {
+			continue
+		}
+		if decisionFilter != "" && strings.ToLower(d.Decision) != decisionFilter {
+			continue
+		}
+		events = append(events, securityPolicyDecisionWire(d))
+		if len(events) >= limit {
+			break
+		}
+	}
+	writeResult(enc, req.ID, map[string]any{
+		"workspace": workspace,
+		"limit":     limit,
+		"events":    events,
+	})
+}
+
+func securityPolicyAuditSessionID(p securityPolicyAuditParams) string {
+	if sessionID := strings.TrimSpace(p.SessionID); sessionID != "" {
+		return sessionID
+	}
+	return strings.TrimSpace(p.Session)
+}
+
+func securityPolicyDecisionWire(d pantry.SecurityPolicyDecision) map[string]any {
+	event := map[string]any{
+		"id":                d.ID,
+		"created_at":        d.CreatedAt.UTC().Format(time.RFC3339),
+		"workspace":         d.Workspace,
+		"session_id":        d.SessionID,
+		"client":            d.Client,
+		"cwd":               d.CWD,
+		"operation_type":    d.OperationType,
+		"command":           d.Command,
+		"mode":              d.Mode,
+		"decision":          d.Decision,
+		"reason":            d.Reason,
+		"parsed":            d.Parsed,
+		"enforcement_level": d.EnforcementLevel,
+	}
+	var argv []string
+	if err := json.Unmarshal([]byte(d.ArgvJSON), &argv); err == nil && len(argv) > 0 {
+		event["argv"] = argv
+	}
+	var envSummary map[string]any
+	if err := json.Unmarshal([]byte(d.EnvSummaryJSON), &envSummary); err == nil && len(envSummary) > 0 {
+		event["env_summary"] = envSummary
+	}
+	var risks []securityCommandRiskWire
+	if err := json.Unmarshal([]byte(d.RisksJSON), &risks); err == nil && len(risks) > 0 {
+		event["risks"] = risks
+		event["risk_categories"] = securityPolicyRiskCategories(risks)
+	}
+	return event
+}
+
+func securityPolicyRiskCategories(risks []securityCommandRiskWire) []string {
+	categories := make([]string, 0, len(risks))
+	seen := map[string]struct{}{}
+	for _, risk := range risks {
+		category := strings.TrimSpace(risk.Category)
+		if category == "" {
+			continue
+		}
+		if _, ok := seen[category]; ok {
+			continue
+		}
+		seen[category] = struct{}{}
+		categories = append(categories, category)
+	}
+	return categories
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func (s *Server) runSecurityCommandCheck(p securityCommandCheckParams) (securityCommandCheckResult, error) {
 	command := strings.TrimSpace(p.Command)
+	if command == "" && len(p.Argv) > 0 {
+		command = strings.Join(p.Argv, " ")
+	}
 	if command == "" {
 		return securityCommandCheckResult{}, fmt.Errorf("command is required")
 	}
@@ -1261,6 +1494,13 @@ func (s *Server) runSecurityCommandCheck(p securityCommandCheckParams) (security
 	if abs, err := filepath.Abs(cwd); err == nil {
 		cwd = abs
 	}
+	workspace := strings.TrimSpace(p.Workspace)
+	if workspace == "" {
+		workspace = cwd
+	}
+	if abs, err := filepath.Abs(workspace); err == nil {
+		workspace = abs
+	}
 	client := strings.TrimSpace(p.Client)
 	if client == "" {
 		client = s.activeAgent()
@@ -1268,7 +1508,7 @@ func (s *Server) runSecurityCommandCheck(p securityCommandCheckParams) (security
 
 	mode, posture := security.ModeWarn, security.PostureUnknown
 	if s.pantryDB != nil {
-		status, err := s.pantryDB.Security().SecurityStatus(cwd)
+		status, err := s.pantryDB.Security().SecurityStatus(workspace)
 		if err == nil {
 			mode = security.Mode(status.Mode)
 			posture = security.Posture(status.Posture)
@@ -1308,18 +1548,113 @@ func (s *Server) runSecurityCommandCheck(p securityCommandCheckParams) (security
 			Evidence: risk.Evidence,
 		})
 	}
+	decision := fwResult.Decision
+	reason := fwResult.Reason
+	if decision == firewall.DecisionNeedsConfirmation && strings.EqualFold(strings.TrimSpace(p.EnforcementLevel), "brokered") && !p.BrokerInteractive {
+		decision = firewall.DecisionBlock
+		reason = "confirmation required but broker is non-interactive: " + fallbackPolicyReason(reason)
+	}
+
 	return securityCommandCheckResult{
-		Command:        command,
-		CWD:            cwd,
-		Client:         client,
-		Mode:           string(fwResult.Mode),
-		Posture:        string(posture),
-		Decision:       string(fwResult.Decision),
-		Reason:         fwResult.Reason,
-		Parsed:         fwResult.Parsed,
-		Risks:          risks,
-		RiskCategories: categories,
+		Command:          command,
+		Workspace:        workspace,
+		CWD:              cwd,
+		Client:           client,
+		Mode:             string(fwResult.Mode),
+		Posture:          string(posture),
+		Decision:         string(decision),
+		Reason:           reason,
+		Parsed:           fwResult.Parsed,
+		Risks:            risks,
+		RiskCategories:   categories,
+		EnforcementLevel: strings.TrimSpace(p.EnforcementLevel),
 	}, nil
+}
+
+func (s *Server) recordSecurityPolicyDecision(p securityCommandCheckParams, result securityCommandCheckResult) error {
+	argvJSON, err := json.Marshal(p.Argv)
+	if err != nil {
+		return fmt.Errorf("marshal argv: %w", err)
+	}
+	envSummary := p.EnvSummary
+	if len(envSummary) == 0 && len(p.Env) > 0 {
+		envSummary = p.Env
+	}
+	envJSON, err := json.Marshal(envSummary)
+	if err != nil {
+		return fmt.Errorf("marshal env summary: %w", err)
+	}
+	if string(envJSON) == "null" {
+		envJSON = []byte("{}")
+	}
+	risksJSON, err := json.Marshal(result.Risks)
+	if err != nil {
+		return fmt.Errorf("marshal policy risks: %w", err)
+	}
+	store := s.pantryDB.Security()
+	if err := store.RecordPolicyDecision(pantry.SecurityPolicyDecision{
+		CreatedAt:        time.Now().UTC(),
+		Workspace:        result.Workspace,
+		SessionID:        securityPolicySessionID(p),
+		Client:           result.Client,
+		CWD:              result.CWD,
+		OperationType:    "command",
+		Command:          result.Command,
+		ArgvJSON:         string(argvJSON),
+		EnvSummaryJSON:   string(envJSON),
+		Mode:             result.Mode,
+		Decision:         result.Decision,
+		Reason:           result.Reason,
+		Parsed:           result.Parsed,
+		RisksJSON:        string(risksJSON),
+		EnforcementLevel: strings.TrimSpace(p.EnforcementLevel),
+	}); err != nil {
+		return err
+	}
+	if shouldRecordBrokerBlockWarning(result) {
+		if err := store.UpsertWarning(brokerBlockSecurityWarning(p, result)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func securityPolicySessionID(p securityCommandCheckParams) string {
+	if sessionID := strings.TrimSpace(p.SessionID); sessionID != "" {
+		return sessionID
+	}
+	return strings.TrimSpace(p.Session)
+}
+
+func shouldRecordBrokerBlockWarning(result securityCommandCheckResult) bool {
+	return result.Decision == string(firewall.DecisionBlock) && strings.EqualFold(strings.TrimSpace(result.EnforcementLevel), "brokered")
+}
+
+func brokerBlockSecurityWarning(p securityCommandCheckParams, result securityCommandCheckResult) pantry.SecurityWarning {
+	source := "shim"
+	if command, ok := p.EnvSummary["shim_command"].(string); ok && strings.TrimSpace(command) != "" {
+		source = "shim:" + strings.TrimSpace(command)
+	}
+	sum := sha256.Sum256([]byte(result.Workspace + "\x00" + result.Client + "\x00" + result.Command + "\x00" + result.Reason))
+	return pantry.SecurityWarning{
+		Workspace:    result.Workspace,
+		Category:     "command-policy",
+		Severity:     "BLOCK",
+		Source:       source,
+		Message:      "shim blocked command: " + result.Command,
+		Status:       string(security.FindingActive),
+		FirstSeen:    time.Now().UTC(),
+		LastSeen:     time.Now().UTC(),
+		EvidenceHash: hex.EncodeToString(sum[:]),
+		Remediation:  result.Reason,
+	}
+}
+
+func fallbackPolicyReason(reason string) string {
+	if strings.TrimSpace(reason) == "" {
+		return "policy requires confirmation"
+	}
+	return reason
 }
 
 func (s *Server) recordClientProfileSecurity(ctx context.Context, workspace, client string) error {

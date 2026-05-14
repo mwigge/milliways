@@ -254,6 +254,50 @@ func TestRunCopilot_StreamsStdout(t *testing.T) {
 	}
 }
 
+func TestRunCopilot_ControlledEnvUsesShimPath(t *testing.T) {
+	SetBrokerPathProvider(nil)
+	t.Cleanup(func() { SetBrokerPathProvider(nil) })
+
+	root := t.TempDir()
+	shimDir := filepath.Join(root, "shims")
+	if err := os.MkdirAll(shimDir, 0o755); err != nil {
+		t.Fatalf("mkdir shim dir: %v", err)
+	}
+	SetBrokerPathProvider(func(agentID string) string {
+		if agentID == AgentIDCopilot {
+			return shimDir
+		}
+		return ""
+	})
+
+	envFile := filepath.Join(t.TempDir(), "env.tsv")
+	withCopilotFixture(t,
+		"printf 'ENV\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$MILLIWAYS_CLIENT_ID\" \"$MILLIWAYS_SESSION_ID\" \"$MILLIWAYS_WORKSPACE_ROOT\" \"$MILLIWAYS_SHIM_DIR\" \"$PATH\" >> "+shellQuote(envFile)+"\n"+
+			"printf 'ok'\n",
+		nil,
+	)
+
+	pusher := &fakePusher{}
+	runCopilotInput(t, context.Background(), []byte("hi"), pusher, &mockObserver{})
+
+	fields := readEnvCapture(t, envFile)
+	if fields[1] != AgentIDCopilot {
+		t.Fatalf("MILLIWAYS_CLIENT_ID = %q, want %q", fields[1], AgentIDCopilot)
+	}
+	if !strings.HasPrefix(fields[2], AgentIDCopilot+"-") {
+		t.Fatalf("MILLIWAYS_SESSION_ID = %q, want copilot-prefixed session", fields[2])
+	}
+	if fields[3] == "" {
+		t.Fatalf("MILLIWAYS_WORKSPACE_ROOT missing from controlled env")
+	}
+	if fields[4] != shimDir {
+		t.Fatalf("MILLIWAYS_SHIM_DIR = %q, want %q", fields[4], shimDir)
+	}
+	if firstPath(fields[5]) != shimDir {
+		t.Fatalf("PATH first entry = %q, want shim dir; PATH=%q", firstPath(fields[5]), fields[5])
+	}
+}
+
 func TestRunCopilot_ExitFailureClassified(t *testing.T) {
 	withCopilotFixture(t, "echo 'fatal: nope' >&2\nexit 7\n", nil)
 

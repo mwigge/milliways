@@ -75,6 +75,8 @@ func (l *chatLoop) handleSecurity(rest string) {
 			return
 		}
 		l.callSecurityRPC("security warnings", "security.warnings", map[string]any{}, renderSecurityGeneric)
+	case "audit":
+		l.handleSecurityAudit(args[1:])
 	default:
 		fmt.Fprintf(l.errw, "unknown security command %q\n", verb)
 		printSecurityUsage(l.errw)
@@ -223,6 +225,38 @@ func (l *chatLoop) handleSecurityCommandCheck(args []string) {
 	l.callSecurityRPC("security command-check", "security.command_check", params, renderSecurityGeneric)
 }
 
+func (l *chatLoop) handleSecurityAudit(args []string) {
+	fs := flag.NewFlagSet("security audit", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	workspace := fs.String("workspace", "", "workspace root")
+	session := fs.String("session", "", "session id")
+	client := fs.String("client", "", "client name")
+	decision := fs.String("decision", "", "filter decision")
+	limit := fs.Int("limit", 20, "maximum events to return")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(l.errw, "security audit: %v\n", err)
+		return
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(l.errw, "usage: /security audit [--workspace <dir>] [--session <id>] [--client <name>] [--decision <allow|warn|block>] [--limit <n>]")
+		return
+	}
+	params := map[string]any{"limit": *limit}
+	if strings.TrimSpace(*workspace) != "" {
+		params["workspace"] = strings.TrimSpace(*workspace)
+	}
+	if strings.TrimSpace(*session) != "" {
+		params["session_id"] = strings.TrimSpace(*session)
+	}
+	if strings.TrimSpace(*client) != "" {
+		params["client"] = strings.TrimSpace(*client)
+	}
+	if strings.TrimSpace(*decision) != "" {
+		params["decision"] = strings.TrimSpace(*decision)
+	}
+	l.callSecurityRPC("security audit", "security.policy_audit", params, renderSecurityAudit)
+}
+
 func (l *chatLoop) callSecurityRPC(label, method string, params map[string]any, render func(io.Writer, string, map[string]any)) {
 	var result map[string]any
 	if err := l.client.Call(method, params, &result); err != nil {
@@ -244,6 +278,7 @@ func printSecurityUsage(w io.Writer) {
 	fmt.Fprintln(w, "  /security client <name>")
 	fmt.Fprintln(w, "  /security command-check [--mode <mode>] [--cwd <dir>] [--client <name>] -- <command...>")
 	fmt.Fprintln(w, "  /security warnings")
+	fmt.Fprintln(w, "  /security audit [--workspace <dir>] [--session <id>] [--client <name>] [--decision <allow|warn|block>] [--limit <n>]")
 }
 
 func securityScanParams(staged, secrets, sast bool) map[string]any {
@@ -484,6 +519,56 @@ func renderSecurityGeneric(stdout io.Writer, label string, result map[string]any
 	}
 	out, _ := json.MarshalIndent(result, "", "  ")
 	fmt.Fprintln(stdout, string(out))
+}
+
+func renderSecurityAudit(stdout io.Writer, label string, result map[string]any) {
+	events, _ := result["events"].([]any)
+	if len(events) == 0 {
+		fmt.Fprintf(stdout, "[%s] no policy decisions\n", label)
+		return
+	}
+	fmt.Fprintf(stdout, "[%s] %d policy decision(s)\n", label, len(events))
+	for _, raw := range events {
+		event, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		created := firstStringField(event, "created_at")
+		if len(created) > 19 {
+			created = created[:19] + "Z"
+		}
+		identity := strings.Join(nonEmptySecurityStrings(stringField(event, "client"), stringField(event, "session_id")), "/")
+		if identity == "" {
+			identity = "-"
+		}
+		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\t%s\n",
+			created,
+			stringField(event, "decision"),
+			stringField(event, "mode"),
+			identity,
+			truncateSecurityString(firstStringField(event, "command", "operation_type"), 80),
+		)
+	}
+}
+
+func nonEmptySecurityStrings(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, strings.TrimSpace(value))
+		}
+	}
+	return out
+}
+
+func truncateSecurityString(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n <= 3 {
+		return s[:n]
+	}
+	return s[:n-1] + "…"
 }
 
 func firstStringField(m map[string]any, keys ...string) string {

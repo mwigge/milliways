@@ -64,3 +64,58 @@ func TestCommandFirewallProviderCanBeDisabled(t *testing.T) {
 		t.Fatalf("commandFirewallForAgent after disable = %#v, want nil", fw)
 	}
 }
+
+func TestClientEnforcementMetadata_FirstClassClients(t *testing.T) {
+	SetBrokerPathProvider(nil)
+	t.Cleanup(func() { SetBrokerPathProvider(nil) })
+
+	tests := []struct {
+		agent         string
+		wantLevel     EnforcementLevel
+		wantBrokerEnv bool
+	}{
+		{AgentIDClaude, EnforcementBrokered, true},
+		{AgentIDCodex, EnforcementBrokered, true},
+		{AgentIDCopilot, EnforcementBrokered, true},
+		{AgentIDGemini, EnforcementBrokered, true},
+		{AgentIDPool, EnforcementBrokered, true},
+		{AgentIDMiniMax, EnforcementFull, false},
+		{AgentIDLocal, EnforcementFull, false},
+	}
+
+	for _, tt := range tests {
+		got := ClientEnforcementMetadata(tt.agent)
+		if got.Level != tt.wantLevel {
+			t.Errorf("%s level = %q, want %q", tt.agent, got.Level, tt.wantLevel)
+		}
+		if got.ControlledEnv != tt.wantBrokerEnv {
+			t.Errorf("%s controlled env = %v, want %v", tt.agent, got.ControlledEnv, tt.wantBrokerEnv)
+		}
+	}
+}
+
+func TestClientEnforcementMetadata_ExternalClientsReportBrokerPathWhenAvailable(t *testing.T) {
+	SetBrokerPathProvider(nil)
+	t.Cleanup(func() { SetBrokerPathProvider(nil) })
+
+	for _, agent := range []string{AgentIDCopilot, AgentIDGemini, AgentIDPool} {
+		got := ClientEnforcementMetadata(agent)
+		if got.Level != EnforcementBrokered || !got.ControlledEnv {
+			t.Errorf("%s metadata without broker = %#v, want brokered controlled env", agent, got)
+		}
+	}
+
+	SetBrokerPathProvider(func(agentID string) string {
+		if agentID == AgentIDGemini {
+			return "/opt/milliways/bin/gemini-broker"
+		}
+		return ""
+	})
+
+	if got := ClientEnforcementMetadata(AgentIDGemini); got.Level != EnforcementBrokered || got.BrokerPath == "" {
+		t.Fatalf("gemini with broker = %#v, want brokered metadata with broker path", got)
+	}
+	if got := ClientEnforcementMetadata(AgentIDCopilot); got.Level != EnforcementBrokered || !got.ControlledEnv {
+		t.Fatalf("copilot without broker = %#v, want brokered controlled env", got)
+	}
+}

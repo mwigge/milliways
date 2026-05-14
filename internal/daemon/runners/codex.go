@@ -57,8 +57,9 @@ type codexJSONItem struct {
 var codexBinary = "codex"
 
 type codexSessionState struct {
-	sessionID string
-	model     string
+	sessionID           string
+	model               string
+	controlledSessionID string
 }
 
 // RunCodex is the daemon-side codex session loop. It reads prompts from
@@ -83,7 +84,7 @@ func RunCodex(ctx context.Context, input <-chan []byte, stream Pusher, metrics M
 }
 
 func RunCodexWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
-	state := &codexSessionState{}
+	state := &codexSessionState{controlledSessionID: newControlledRunnerSessionID(AgentIDCodex)}
 	for prompt := range input {
 		if stream == nil {
 			continue
@@ -103,6 +104,9 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	}
 	if state == nil {
 		state = &codexSessionState{}
+	}
+	if state.controlledSessionID == "" {
+		state.controlledSessionID = newControlledRunnerSessionID(AgentIDCodex)
 	}
 
 	spanCtx, span := startDispatchSpan(parent, AgentIDCodex, "")
@@ -128,7 +132,12 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		return
 	}
 	cmd := exec.CommandContext(ctx, resolveRunnerBinary(codexBinary), buildCodexCmdArgsWithSession(text, cwd, codexModelExtraArgs(model), state.sessionID)...)
-	cmd.Env = safeRunnerEnv()
+	cmd.Env = controlledRunnerEnv(controlledRunnerEnvOptions{
+		ClientID:  AgentIDCodex,
+		SessionID: state.controlledSessionID,
+		Workspace: cwd,
+		ShimDir:   brokerShimDirForAgent(AgentIDCodex),
+	})
 	cmd.WaitDelay = 5 * time.Second
 	if cwd != "" {
 		cmd.Dir = cwd

@@ -39,6 +39,14 @@ assert_output_contains() {
   fi
 }
 
+assert_executable() {
+  local path="$1"
+  if [[ ! -x "$path" ]]; then
+    echo "FAIL: expected executable artifact: $path" >&2
+    exit 1
+  fi
+}
+
 echo "[smoke] building milliwaysd and milliwaysctl"
 go build -o "${SMOKE_ROOT}/milliwaysd" "${REPO_ROOT}/cmd/milliwaysd/"
 go build -o "${SMOKE_ROOT}/milliwaysctl" "${REPO_ROOT}/cmd/milliwaysctl/"
@@ -79,11 +87,17 @@ until "${SMOKE_ROOT}/milliwaysctl" ping >"${SMOKE_ROOT}/ping.out" 2>"${SMOKE_ROO
 done
 
 echo "[smoke] exercising real security RPC flows"
+"${SMOKE_ROOT}/milliwaysctl" security help >"${SMOKE_ROOT}/security-help.out"
+assert_output_contains security-help "status"
+assert_output_contains security-help "audit"
+assert_output_contains security-help "shim-exec"
+
 "${SMOKE_ROOT}/milliwaysctl" security startup-scan --json >"${SMOKE_ROOT}/startup.out"
 assert_output_contains startup '"workspace"'
 assert_output_contains startup '"scanned_at"'
 
 "${SMOKE_ROOT}/milliwaysctl" security status >"${SMOKE_ROOT}/status.out"
+assert_output_contains status "osv-scanner"
 assert_output_contains status "last startup scan"
 assert_output_contains status "scanners:"
 
@@ -102,15 +116,40 @@ assert_output_contains layered-scan '"scan"'
 assert_output_contains output-plan "secret: .env.local, cmd/app/main.go"
 assert_output_contains output-plan "sast: cmd/app/main.go"
 
+echo "[smoke] verifying generated security shim artifacts and audit surface"
+SHIM_DIR="${XDG_RUNTIME_DIR}/milliways/security-shims"
+for shim in bash sh npm pnpm yarn bun pip uv poetry go cargo curl wget git systemctl launchctl crontab; do
+  assert_executable "${SHIM_DIR}/${shim}"
+  assert_contains "${SHIM_DIR}/${shim}" "milliwaysctl"
+  assert_contains "${SHIM_DIR}/${shim}" "shim-exec"
+done
+
+MILLIWAYS_WORKSPACE_ROOT="${WORKSPACE}" \
+MILLIWAYS_CLIENT_ID=codex \
+MILLIWAYS_SESSION_ID=release-smoke \
+MILLIWAYS_SECURITY_SHIM_COMMAND=true \
+MILLIWAYS_SECURITY_SHIM_CATEGORY=build-tool \
+MILLIWAYS_SECURITY_SHIM_DIR="${SHIM_DIR}" \
+  "${SMOKE_ROOT}/milliwaysctl" security shim-exec -- /bin/true >"${SMOKE_ROOT}/shim-exec.out"
+
+"${SMOKE_ROOT}/milliwaysctl" security audit --workspace "${WORKSPACE}" --session release-smoke --client codex --limit 5 >"${SMOKE_ROOT}/audit.out"
+assert_output_contains audit "policy decision"
+assert_output_contains audit "codex/release-smoke"
+assert_output_contains audit "true"
+
+echo "[smoke] checking release docs and observability security chrome"
 assert_contains "${REPO_ROOT}/README.md" "Secure MilliWays is the release security theme"
 assert_contains "${REPO_ROOT}/README.md" "all clients in one place, shared memory, shared sessions, one security layer"
+assert_contains "${REPO_ROOT}/README.md" "control-plane model"
 assert_contains "${REPO_ROOT}/README.md" "milliwaysctl security startup-scan"
 assert_contains "${REPO_ROOT}/README.md" "milliwaysctl security cra"
 assert_contains "${REPO_ROOT}/README.md" "milliwaysctl security cra-scaffold"
 assert_contains "${REPO_ROOT}/README.md" "milliwaysctl security sbom"
+assert_contains "${REPO_ROOT}/README.md" "milliwaysctl security audit"
 assert_contains "${REPO_ROOT}/README.md" "/security cra"
 assert_contains "${REPO_ROOT}/README.md" "/security cra-scaffold"
 assert_contains "${REPO_ROOT}/README.md" "/security sbom"
+assert_contains "${REPO_ROOT}/README.md" "/security audit"
 assert_contains "${REPO_ROOT}/README.md" "milliwaysctl security command-check"
 assert_contains "${REPO_ROOT}/README.md" "milliwaysctl security output-plan"
 assert_contains "${REPO_ROOT}/README.md" "Generated dependency files should trigger an SBOM refresh recommendation"
@@ -122,9 +161,16 @@ assert_contains "${REPO_ROOT}/README.md" "osv-scanner"
 assert_contains "${REPO_ROOT}/README.md" "gitleaks"
 assert_contains "${REPO_ROOT}/README.md" "semgrep"
 assert_contains "${REPO_ROOT}/README.md" "govulncheck"
+assert_contains "${REPO_ROOT}/cmd/milliwaysctl/milliways.lua" "local function security_badge(sec)"
+assert_contains "${REPO_ROOT}/cmd/milliwaysctl/milliways.lua" "SEC OK"
+assert_contains "${REPO_ROOT}/cmd/milliwaysctl/milliways.lua" "SEC WARN"
+assert_contains "${REPO_ROOT}/cmd/milliwaysctl/milliways.lua" "SEC BLOCK"
+assert_contains "${REPO_ROOT}/cmd/milliwaysctl/milliways.lua" "startup required"
 
 assert_contains "$FIXTURE" "Secure MilliWays is release positioning"
 assert_contains "$FIXTURE" "security status"
+assert_contains "$FIXTURE" "security audit"
+assert_contains "$FIXTURE" "security shim-exec"
 assert_contains "$FIXTURE" "security cra"
 assert_contains "$FIXTURE" "security cra-scaffold"
 assert_contains "$FIXTURE" "security sbom"
@@ -140,5 +186,8 @@ assert_contains "$FIXTURE" "osv-scanner"
 assert_contains "$FIXTURE" "gitleaks"
 assert_contains "$FIXTURE" "semgrep"
 assert_contains "$FIXTURE" "govulncheck"
+assert_contains "$FIXTURE" "SEC OK"
+assert_contains "$FIXTURE" "SEC WARN"
+assert_contains "$FIXTURE" "SEC BLOCK"
 
 echo "PASS: Secure MilliWays release smoke"

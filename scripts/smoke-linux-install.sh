@@ -131,16 +131,43 @@ run_case() {
       test -f "$PREFIX/share/milliways/wezterm.lua"
       grep -q "set_left_status" "$PREFIX/share/milliways/wezterm.lua"
       grep -q "set_right_status" "$PREFIX/share/milliways/wezterm.lua"
+      grep -q "local function security_badge(sec)" "$PREFIX/share/milliways/wezterm.lua"
+      grep -q "SEC OK" "$PREFIX/share/milliways/wezterm.lua"
+      grep -q "SEC WARN" "$PREFIX/share/milliways/wezterm.lua"
+      grep -q "SEC BLOCK" "$PREFIX/share/milliways/wezterm.lua"
+      "$PREFIX/bin/milliwaysctl" security help >/tmp/security-help.txt
+      grep -q "status" /tmp/security-help.txt
+      grep -q "audit" /tmp/security-help.txt
+      grep -q "shim-exec" /tmp/security-help.txt
       "$PREFIX/bin/milliways" --version
-      "$PREFIX/bin/milliwaysd" -state-dir /tmp/mw-state -log-level error >/tmp/mw-daemon.log 2>&1 &
+      export XDG_RUNTIME_DIR=/tmp/mw-runtime
+      mkdir -p "$XDG_RUNTIME_DIR"
+      "$PREFIX/bin/milliwaysd" -state-dir "$XDG_RUNTIME_DIR/milliways" -log-level error >/tmp/mw-daemon.log 2>&1 &
       pid=$!
       for i in $(seq 1 50); do
-        [ -S /tmp/mw-state/sock ] && break
+        [ -S "$XDG_RUNTIME_DIR/milliways/sock" ] && break
         sleep 0.1
       done
-      test -S /tmp/mw-state/sock
-      "$PREFIX/bin/milliwaysctl" ping --socket /tmp/mw-state/sock >/tmp/ping.json
-      "$PREFIX/bin/milliwaysctl" status --socket /tmp/mw-state/sock >/tmp/status.json
+      test -S "$XDG_RUNTIME_DIR/milliways/sock"
+      "$PREFIX/bin/milliwaysctl" ping >/tmp/ping.json
+      "$PREFIX/bin/milliwaysctl" status >/tmp/status.json
+      "$PREFIX/bin/milliwaysctl" security status >/tmp/security-status.txt
+      grep -q "\[security\]" /tmp/security-status.txt
+      grep -q "scanners:" /tmp/security-status.txt
+      for shim in bash sh npm pnpm yarn bun pip uv poetry go cargo curl wget git systemctl launchctl crontab; do
+        test -x "$XDG_RUNTIME_DIR/milliways/security-shims/$shim"
+        grep -q "shim-exec" "$XDG_RUNTIME_DIR/milliways/security-shims/$shim"
+      done
+      MILLIWAYS_WORKSPACE_ROOT=/tmp \
+      MILLIWAYS_CLIENT_ID=codex \
+      MILLIWAYS_SESSION_ID=install-smoke \
+      MILLIWAYS_SECURITY_SHIM_COMMAND=true \
+      MILLIWAYS_SECURITY_SHIM_CATEGORY=build-tool \
+      MILLIWAYS_SECURITY_SHIM_DIR="$XDG_RUNTIME_DIR/milliways/security-shims" \
+        "$PREFIX/bin/milliwaysctl" security shim-exec -- /bin/true >/tmp/security-shim-exec.txt
+      "$PREFIX/bin/milliwaysctl" security audit --workspace /tmp --session install-smoke --client codex --limit 5 >/tmp/security-audit.txt
+      grep -q "policy decision" /tmp/security-audit.txt
+      grep -q "codex/install-smoke" /tmp/security-audit.txt
       MILLIWAYS_BIN="$PREFIX/bin" MILLIWAYS_STATE_DIR=/tmp/mw-feature-state bash /tmp/smoke-features.sh
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true

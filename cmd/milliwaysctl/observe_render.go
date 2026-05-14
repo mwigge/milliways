@@ -60,11 +60,12 @@ type observeRenderFrame struct {
 }
 
 type observeRenderStatus struct {
-	ActiveAgent *string `json:"active_agent"`
-	TokensIn    int     `json:"tokens_in"`
-	TokensOut   int     `json:"tokens_out"`
-	CostUSD     float64 `json:"cost_usd"`
-	QuotaPct    float64 `json:"quota_pct"`
+	ActiveAgent       *string                             `json:"active_agent"`
+	TokensIn          int                                 `json:"tokens_in"`
+	TokensOut         int                                 `json:"tokens_out"`
+	CostUSD           float64                             `json:"cost_usd"`
+	QuotaPct          float64                             `json:"quota_pct"`
+	ClientEnforcement map[string]observeRenderEnforcement `json:"client_enforcement"`
 }
 
 type observeRenderQuota struct {
@@ -82,25 +83,34 @@ type observeRenderUsage struct {
 }
 
 type observeRenderSecurity struct {
-	Installed            bool                   `json:"installed"`
-	Enabled              bool                   `json:"enabled"`
-	Workspace            string                 `json:"workspace"`
-	SecurityWorkspace    string                 `json:"security_workspace"`
-	Mode                 string                 `json:"mode"`
-	Posture              string                 `json:"posture"`
-	Warnings             int                    `json:"warnings"`
-	Blocks               int                    `json:"blocks"`
-	WarningCount         int                    `json:"warning_count"`
-	BlockCount           int                    `json:"block_count"`
-	StartupScanCompleted bool                   `json:"startup_scan_completed"`
-	StartupScanRequired  bool                   `json:"startup_scan_required"`
-	StartupScanStale     bool                   `json:"startup_scan_stale"`
-	LastStartupScanAt    string                 `json:"last_startup_scan_at"`
-	LastDependencyScanAt string                 `json:"last_dependency_scan_at"`
-	LastStartupScan      string                 `json:"last_startup_scan"`
-	LastDependencyScan   string                 `json:"last_dependency_scan"`
-	Scanners             []observeRenderScanner `json:"scanners"`
-	CRA                  observeRenderCRA       `json:"cra"`
+	Installed            bool                                `json:"installed"`
+	Enabled              bool                                `json:"enabled"`
+	Workspace            string                              `json:"workspace"`
+	SecurityWorkspace    string                              `json:"security_workspace"`
+	Mode                 string                              `json:"mode"`
+	Posture              string                              `json:"posture"`
+	Warnings             int                                 `json:"warnings"`
+	Blocks               int                                 `json:"blocks"`
+	WarningCount         int                                 `json:"warning_count"`
+	BlockCount           int                                 `json:"block_count"`
+	StartupScanCompleted bool                                `json:"startup_scan_completed"`
+	StartupScanRequired  bool                                `json:"startup_scan_required"`
+	StartupScanStale     bool                                `json:"startup_scan_stale"`
+	LastStartupScanAt    string                              `json:"last_startup_scan_at"`
+	LastDependencyScanAt string                              `json:"last_dependency_scan_at"`
+	LastStartupScan      string                              `json:"last_startup_scan"`
+	LastDependencyScan   string                              `json:"last_dependency_scan"`
+	Scanners             []observeRenderScanner              `json:"scanners"`
+	ActiveClient         string                              `json:"active_client"`
+	ClientEnforcement    map[string]observeRenderEnforcement `json:"client_enforcement"`
+	CRA                  observeRenderCRA                    `json:"cra"`
+}
+
+type observeRenderEnforcement struct {
+	Level         string `json:"level"`
+	ControlledEnv bool   `json:"controlled_env,omitempty"`
+	BrokerPath    string `json:"broker_path,omitempty"`
+	Reason        string `json:"reason,omitempty"`
 }
 
 type observeRenderScanner struct {
@@ -342,6 +352,12 @@ func formatObservabilityFrame(now time.Time, spans []observeRenderSpan, usage ob
 	if detail := formatObserveSecurityDetail(usage.Security); detail != "" {
 		fmt.Fprintf(&b, "│   sec detail:    %s\n", detail)
 	}
+	if policy := formatObserveSecurityPolicy(usage.Security); policy != "" {
+		fmt.Fprintf(&b, "│   sec policy:    %s\n", policy)
+	}
+	if enforcement := formatObserveClientEnforcement(usage.Security.ClientEnforcement, usage.Status.ClientEnforcement); enforcement != "" {
+		fmt.Fprintf(&b, "│   sec clients:   %s\n", enforcement)
+	}
 	if workspace := observeSecurityWorkspace(usage.Security); workspace != "" {
 		fmt.Fprintf(&b, "│   sec workspace: %s\n", truncateObserveText(workspace, 84))
 	}
@@ -423,6 +439,69 @@ func formatObserveSecurityDetail(sec observeRenderSecurity) string {
 		parts = append(parts, "missing local scanners "+strings.Join(missing, ", "))
 	}
 	return strings.Join(parts, "; ")
+}
+
+func formatObserveSecurityPolicy(sec observeRenderSecurity) string {
+	var parts []string
+	if sec.ActiveClient != "" {
+		parts = append(parts, "active "+sec.ActiveClient)
+	}
+	if sec.StartupScanCompleted {
+		parts = append(parts, "startup complete")
+	}
+	if sec.LastStartupScanAt != "" {
+		parts = append(parts, "last startup "+shortObserveTimestamp(sec.LastStartupScanAt))
+	} else if sec.LastStartupScan != "" {
+		parts = append(parts, "last startup "+shortObserveTimestamp(sec.LastStartupScan))
+	}
+	if sec.LastDependencyScanAt != "" {
+		parts = append(parts, "last deps "+shortObserveTimestamp(sec.LastDependencyScanAt))
+	} else if sec.LastDependencyScan != "" {
+		parts = append(parts, "last deps "+shortObserveTimestamp(sec.LastDependencyScan))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func formatObserveClientEnforcement(security, status map[string]observeRenderEnforcement) string {
+	if len(security) == 0 {
+		security = status
+	}
+	if len(security) == 0 {
+		return ""
+	}
+	counts := make(map[string]int)
+	for _, enforcement := range security {
+		level := strings.TrimSpace(enforcement.Level)
+		if level == "" {
+			level = "unknown"
+		}
+		counts[level]++
+	}
+	order := []string{"full", "brokered", "preflight-only", "unknown"}
+	var parts []string
+	for _, level := range order {
+		if counts[level] > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", level, counts[level]))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ", ")
+}
+
+func shortObserveTimestamp(ts string) string {
+	ts = strings.TrimSpace(ts)
+	if ts == "" {
+		return ""
+	}
+	if parsed, err := time.Parse(time.RFC3339, ts); err == nil {
+		return parsed.UTC().Format("2006-01-02T15:04Z")
+	}
+	if len(ts) > len("2006-01-02T15:04Z") {
+		return ts[:len("2006-01-02T15:04Z")]
+	}
+	return ts
 }
 
 func missingObserveScanners(scanners []observeRenderScanner) []string {

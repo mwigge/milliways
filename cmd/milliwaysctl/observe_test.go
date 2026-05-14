@@ -47,3 +47,49 @@ func TestNormalizeObserveSecurityStatusInfersBlockPosture(t *testing.T) {
 		t.Fatalf("blocks = %v, want 1", got["blocks"])
 	}
 }
+
+func TestNormalizeObserveSecurityStatusPreservesPolicyShape(t *testing.T) {
+	t.Parallel()
+
+	enforcement := map[string]any{
+		"codex": map[string]any{"level": "brokered", "controlled_env": true},
+		"local": map[string]any{"level": "full"},
+	}
+	scanners := []any{map[string]any{"name": "gitleaks", "installed": false}}
+	got := normalizeObserveSecurityStatus(map[string]any{
+		"mode":                      "strict",
+		"posture":                   "ok",
+		"active_client":             "codex",
+		"workspace":                 "/repo",
+		"security_workspace":        "/repo/service",
+		"startup_scan_completed":    true,
+		"startup_scan_required":     true,
+		"startup_scan_stale":        true,
+		"startup_scan_completed_at": "2026-05-14T10:00:00Z",
+		"last_startup_scan_at":      "2026-05-14T10:00:00Z",
+		"last_dependency_scan_at":   "2026-05-14T10:05:00Z",
+		"client_enforcement":        enforcement,
+		"scanners":                  scanners,
+	})
+
+	for _, key := range []string{
+		"active_client",
+		"workspace",
+		"security_workspace",
+		"startup_scan_completed",
+		"startup_scan_required",
+		"startup_scan_stale",
+		"startup_scan_completed_at",
+		"last_startup_scan_at",
+		"last_dependency_scan_at",
+		"client_enforcement",
+		"scanners",
+	} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("normalized status dropped %q: %#v", key, got)
+		}
+	}
+	if got["posture"] != "warn" {
+		t.Fatalf("posture = %v, want warn when startup scan is stale/required", got["posture"])
+	}
+}
