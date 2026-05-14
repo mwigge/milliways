@@ -95,6 +95,63 @@ func TestSecurityStore_RecordAndListPolicyDecisions(t *testing.T) {
 	}
 }
 
+func TestSecurityStore_QueryPolicyDecisionsFiltersBeforeLimit(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+	base := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+
+	if err := ss.RecordPolicyDecision(SecurityPolicyDecision{
+		CreatedAt:        base,
+		Workspace:        "/work",
+		SessionID:        "session-match",
+		Client:           "codex",
+		CWD:              "/work",
+		OperationType:    "command",
+		Command:          "npm install left-pad",
+		Mode:             "strict",
+		Decision:         "block",
+		Reason:           "package install commands require safe package policy",
+		Parsed:           true,
+		EnforcementLevel: "blocking",
+	}); err != nil {
+		t.Fatalf("RecordPolicyDecision matching: %v", err)
+	}
+	for i := 1; i <= 150; i++ {
+		if err := ss.RecordPolicyDecision(SecurityPolicyDecision{
+			CreatedAt:        base.Add(time.Duration(i) * time.Second),
+			Workspace:        "/work",
+			SessionID:        "session-other",
+			Client:           "codex",
+			CWD:              "/work",
+			OperationType:    "command",
+			Command:          "echo newer",
+			Mode:             "warn",
+			Decision:         "allow",
+			EnforcementLevel: "advisory",
+		}); err != nil {
+			t.Fatalf("RecordPolicyDecision non-matching %d: %v", i, err)
+		}
+	}
+
+	decisions, err := ss.QueryPolicyDecisions(SecurityPolicyDecisionQuery{
+		Workspace: "/work",
+		SessionID: "session-match",
+		Client:    "codex",
+		Decision:  "block",
+		Limit:     1,
+	})
+	if err != nil {
+		t.Fatalf("QueryPolicyDecisions: %v", err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("decisions = %d, want 1", len(decisions))
+	}
+	if got := decisions[0]; got.SessionID != "session-match" || got.Decision != "block" {
+		t.Fatalf("decision = %#v, want older matching block", got)
+	}
+}
+
 func TestSecurityStore_UpsertIdempotent(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)

@@ -47,9 +47,8 @@ type Metadata struct {
 }
 
 const (
-	// EnvActive marks a process that is already running under a generated
-	// MilliWays command shim. Shims bypass the broker when this is set to avoid
-	// recursive interception.
+	// EnvActive marks a milliwaysctl shim-exec invocation launched by a
+	// generated MilliWays command shim.
 	EnvActive = "MILLIWAYS_SECURITY_SHIM_ACTIVE"
 	// EnvCommand is the catalog command name the shim represents.
 	EnvCommand = "MILLIWAYS_SECURITY_SHIM_COMMAND"
@@ -62,7 +61,8 @@ const (
 	// EnvOriginalPath preserves the caller's PATH before the shim removed
 	// itself for lookup and downstream execution.
 	EnvOriginalPath = "MILLIWAYS_SECURITY_SHIM_ORIGINAL_PATH"
-	// EnvBroker overrides the generated script's default broker executable.
+	// EnvBroker is a legacy broker override name. Generated shims intentionally
+	// do not trust this caller-controlled environment variable.
 	EnvBroker = "MILLIWAYS_SECURITY_SHIM_BROKER"
 )
 
@@ -375,10 +375,7 @@ func GenerateScript(meta Metadata, opts GenerateOptions) (string, error) {
 	b.WriteString("\techo \"milliways security shim: real executable not found outside $mw_shim_dir: $mw_shim_command\" >&2\n")
 	b.WriteString("\texit 127\n")
 	b.WriteString("fi\n")
-	fmt.Fprintf(&b, "if [ \"${%s:-}\" = \"1\" ]; then\n", EnvActive)
-	b.WriteString("\tPATH=$mw_path_without_shim exec \"$mw_resolved\" \"$@\"\n")
-	b.WriteString("fi\n")
-	fmt.Fprintf(&b, "mw_broker=${%s:-%s}\n", EnvBroker, shellQuote(brokerCommand))
+	fmt.Fprintf(&b, "mw_broker=%s\n", shellQuote(brokerCommand))
 	b.WriteString("mw_broker_path=\n")
 	b.WriteString("if [ -n \"$mw_broker\" ]; then mw_broker_path=$(PATH=$mw_path_without_shim command -v \"$mw_broker\" 2>/dev/null || true); fi\n")
 	b.WriteString("if [ -n \"$mw_broker_path\" ] && [ -x \"$mw_broker_path\" ]; then\n")
@@ -395,14 +392,13 @@ func GenerateScript(meta Metadata, opts GenerateOptions) (string, error) {
 	}
 	b.WriteString(" -- \"$mw_resolved\" \"$@\"\n")
 	b.WriteString("fi\n")
-	fmt.Fprintf(&b, "%s=1 \\\n", EnvActive)
-	fmt.Fprintf(&b, "%s=\"$mw_shim_command\" \\\n", EnvCommand)
-	fmt.Fprintf(&b, "%s=\"$mw_shim_category\" \\\n", EnvCategory)
-	fmt.Fprintf(&b, "%s=\"$mw_shim_dir\" \\\n", EnvShimDir)
-	fmt.Fprintf(&b, "%s=\"$mw_resolved\" \\\n", EnvResolvedPath)
-	fmt.Fprintf(&b, "%s=\"$mw_original_path\" \\\n", EnvOriginalPath)
-	b.WriteString("PATH=$mw_path_without_shim \\\n")
-	b.WriteString("exec \"$mw_resolved\" \"$@\"\n")
+	b.WriteString("if [ \"${MILLIWAYS_SHIM_FAIL_OPEN:-}\" = \"1\" ]; then\n")
+	b.WriteString("\techo \"milliways security shim: broker unavailable; continuing because MILLIWAYS_SHIM_FAIL_OPEN=1\" >&2\n")
+	fmt.Fprintf(&b, "\tunset %s %s %s %s %s %s %s\n", EnvActive, EnvCommand, EnvCategory, EnvShimDir, EnvResolvedPath, EnvOriginalPath, EnvBroker)
+	b.WriteString("\tPATH=$mw_path_without_shim exec \"$mw_resolved\" \"$@\"\n")
+	b.WriteString("fi\n")
+	b.WriteString("echo \"milliways security shim: broker unavailable; blocked by default\" >&2\n")
+	b.WriteString("exit 126\n")
 	return b.String(), nil
 }
 

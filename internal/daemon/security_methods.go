@@ -633,7 +633,7 @@ func (s *Server) securityStatus(enc *json.Encoder, req *Request) {
 		}
 	}
 	workspace, _ := result["security_workspace"].(string)
-	result["rulepacks"] = s.securityRulePackStatus(workspace)
+	result["rulepacks"] = s.securityRulePackStatus(workspace, false)
 	if _, ok := result["cra"]; !ok {
 		result["cra"] = securityCRAStatus("", pantry.SecurityStatus{}, result["scanners"])
 	}
@@ -678,7 +678,7 @@ func securityCRAStatus(workspace string, status pantry.SecurityStatus, scannerSt
 	return summary
 }
 
-func (s *Server) securityRulePackStatus(workspace string) map[string]any {
+func (s *Server) securityRulePackStatus(workspace string, persist bool) map[string]any {
 	result := map[string]any{
 		"offline":      true,
 		"update_state": "offline-current",
@@ -701,7 +701,7 @@ func (s *Server) securityRulePackStatus(workspace string) map[string]any {
 		}
 		return result
 	}
-	if s.pantryDB != nil {
+	if persist && s.pantryDB != nil {
 		if persisted, err := s.persistSecurityRulePacks(workspace, packs); err == nil {
 			result["count"] = len(persisted)
 			result["packs"] = securityPersistedRulePacksToWire(persisted)
@@ -1302,6 +1302,12 @@ func (s *Server) securityCommandCheck(enc *json.Encoder, req *Request) {
 		writeError(enc, req.ID, ErrInvalidParams, err.Error())
 		return
 	}
+	if s.pantryDB != nil {
+		if err := s.recordSecurityPolicyDecision(p, result); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, err.Error())
+			return
+		}
+	}
 	writeResult(enc, req.ID, result)
 }
 
@@ -1374,40 +1380,24 @@ func (s *Server) securityPolicyAudit(enc *json.Encoder, req *Request) {
 		workspace = abs
 	}
 
-	fetchLimit := limit
-	if strings.TrimSpace(p.Session) != "" || strings.TrimSpace(p.SessionID) != "" || strings.TrimSpace(p.Client) != "" || strings.TrimSpace(p.Decision) != "" {
-		fetchLimit = limit * 10
-		if fetchLimit < 100 {
-			fetchLimit = 100
-		}
-		if fetchLimit > 1000 {
-			fetchLimit = 1000
-		}
-	}
-	decisions, err := s.pantryDB.Security().ListPolicyDecisions(workspace, fetchLimit)
+	session := securityPolicyAuditSessionID(p)
+	client := strings.TrimSpace(p.Client)
+	decisionFilter := strings.TrimSpace(p.Decision)
+	decisions, err := s.pantryDB.Security().QueryPolicyDecisions(pantry.SecurityPolicyDecisionQuery{
+		Workspace: workspace,
+		SessionID: session,
+		Client:    client,
+		Decision:  decisionFilter,
+		Limit:     limit,
+	})
 	if err != nil {
 		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("list policy decisions: %v", err))
 		return
 	}
 
-	session := securityPolicyAuditSessionID(p)
-	client := strings.TrimSpace(p.Client)
-	decisionFilter := strings.ToLower(strings.TrimSpace(p.Decision))
 	events := make([]map[string]any, 0, minInt(limit, len(decisions)))
 	for _, d := range decisions {
-		if session != "" && d.SessionID != session {
-			continue
-		}
-		if client != "" && d.Client != client {
-			continue
-		}
-		if decisionFilter != "" && strings.ToLower(d.Decision) != decisionFilter {
-			continue
-		}
 		events = append(events, securityPolicyDecisionWire(d))
-		if len(events) >= limit {
-			break
-		}
 	}
 	writeResult(enc, req.ID, map[string]any{
 		"workspace": workspace,
@@ -1482,7 +1472,7 @@ func minInt(a, b int) int {
 func (s *Server) runSecurityCommandCheck(p securityCommandCheckParams) (securityCommandCheckResult, error) {
 	command := strings.TrimSpace(p.Command)
 	if command == "" && len(p.Argv) > 0 {
-		command = strings.Join(p.Argv, " ")
+		command = shellCommandForSecurityPolicy(p.Argv[0], p.Argv[1:])
 	}
 	if command == "" {
 		return securityCommandCheckResult{}, fmt.Errorf("command is required")
@@ -1569,6 +1559,30 @@ func (s *Server) runSecurityCommandCheck(p securityCommandCheckParams) (security
 		RiskCategories:   categories,
 		EnforcementLevel: strings.TrimSpace(p.EnforcementLevel),
 	}, nil
+}
+
+func shellCommandForSecurityPolicy(command string, args []string) string {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, shellQuoteForSecurityPolicy(command))
+	for _, arg := range args {
+		parts = append(parts, shellQuoteForSecurityPolicy(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func shellQuoteForSecurityPolicy(value string) string {
+	if value == "" {
+		return "''"
+	}
+	if strings.IndexFunc(value, func(r rune) bool {
+		return !(r >= 'A' && r <= 'Z') &&
+			!(r >= 'a' && r <= 'z') &&
+			!(r >= '0' && r <= '9') &&
+			!strings.ContainsRune("@%_+=:,./-", r)
+	}) == -1 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func (s *Server) recordSecurityPolicyDecision(p securityCommandCheckParams, result securityCommandCheckResult) error {
@@ -1941,6 +1955,7 @@ func securityRulePacksToWire(packs []rulepacks.Pack) []map[string]any {
 			"root":                      p.Root,
 			"manifest_path":             p.ManifestPath,
 			"rules_path":                p.RulesPath,
+			"status":                    "loaded",
 		})
 	}
 	return out

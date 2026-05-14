@@ -204,6 +204,18 @@ func TestHandleSecurityStatusCallsRPC(t *testing.T) {
 			"warnings":             float64(2),
 			"blocks":               float64(1),
 			"last_startup_scan_at": "2026-05-14T10:00:00Z",
+			"shims": map[string]any{
+				"ready":            false,
+				"installed":        float64(1),
+				"expected":         float64(2),
+				"broker_installed": false,
+				"broker_command":   "milliwaysctl",
+				"missing_shims":    []any{"git"},
+			},
+			"client_enforcement": map[string]any{
+				"codex":   map[string]any{"level": "brokered", "controlled_env": true},
+				"minimax": map[string]any{"level": "full"},
+			},
 			"scanners": []any{
 				map[string]any{"name": "osv-scanner", "installed": true, "version": "osv-scanner 2.0.0"},
 				map[string]any{"name": "gitleaks", "installed": false},
@@ -231,7 +243,43 @@ func TestHandleSecurityStatusCallsRPC(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("unexpected stderr: %s", stderr.String())
 	}
-	for _, want := range []string{"mode: warn", "posture: WARN", "warnings: 2", "blocks: 1", "installed osv-scanner", "missing gitleaks", "last startup scan", "cra: 67%"} {
+	for _, want := range []string{"mode: warn", "posture: WARN", "warnings: 2", "blocks: 1", "installed osv-scanner", "missing gitleaks", "shims: not ready 1/2; missing broker milliwaysctl; missing git", "codex unprotected (brokered, shim not ready)", "minimax protected (full)", "last startup scan", "cra: 67%"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("status output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestHandleSecurityStatusShowsProtectedBrokeredClientsWhenShimsReady(t *testing.T) {
+	t.Parallel()
+
+	loop, _, stdout, stderr := newSecurityTestLoop(t, map[string]any{
+		"security.status": map[string]any{
+			"mode":    "warn",
+			"posture": "ok",
+			"shims": map[string]any{
+				"ready":            true,
+				"installed":        float64(2),
+				"expected":         float64(2),
+				"broker_installed": true,
+				"broker_path":      "/run/milliways/security-shims/milliwaysctl",
+			},
+			"client_enforcement": map[string]any{
+				"codex":  map[string]any{"level": "brokered", "controlled_env": true},
+				"custom": map[string]any{"level": "brokered"},
+			},
+		},
+	})
+
+	loop.handleSlash("/security status")
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected stderr: %s", stderr.String())
+	}
+	for _, want := range []string{
+		"shims: ready 2/2; broker /run/milliways/security-shims/milliwaysctl",
+		"codex protected (brokered, shim ready)",
+		"custom unprotected (brokered, shim ready)",
+	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("status output missing %q:\n%s", want, stdout.String())
 		}

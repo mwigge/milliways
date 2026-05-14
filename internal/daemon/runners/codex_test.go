@@ -20,22 +20,31 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
+var codexBinaryTestMu sync.Mutex
+
 func withCodexTestBinary(t *testing.T, script string) string {
 	t.Helper()
+	codexBinaryTestMu.Lock()
 	path := filepath.Join(t.TempDir(), "codex-test")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		codexBinaryTestMu.Unlock()
 		t.Fatalf("write fake codex: %v", err)
 	}
 	if err := os.Chmod(path, 0o755); err != nil {
+		codexBinaryTestMu.Unlock()
 		t.Fatalf("chmod fake codex: %v", err)
 	}
 	prev := codexBinary
 	codexBinary = path
-	t.Cleanup(func() { codexBinary = prev })
+	t.Cleanup(func() {
+		codexBinary = prev
+		codexBinaryTestMu.Unlock()
+	})
 	return path
 }
 

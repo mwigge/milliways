@@ -124,18 +124,44 @@ for shim in bash sh npm pnpm yarn bun pip uv poetry go cargo curl wget git syste
   assert_contains "${SHIM_DIR}/${shim}" "shim-exec"
 done
 
-MILLIWAYS_WORKSPACE_ROOT="${WORKSPACE}" \
-MILLIWAYS_CLIENT_ID=codex \
-MILLIWAYS_SESSION_ID=release-smoke \
-MILLIWAYS_SECURITY_SHIM_COMMAND=true \
-MILLIWAYS_SECURITY_SHIM_CATEGORY=build-tool \
-MILLIWAYS_SECURITY_SHIM_DIR="${SHIM_DIR}" \
-  "${SMOKE_ROOT}/milliwaysctl" security shim-exec -- /bin/true >"${SMOKE_ROOT}/shim-exec.out"
+REAL_BIN="${SMOKE_ROOT}/real-bin"
+mkdir -p "${REAL_BIN}"
+cat >"${REAL_BIN}/git" <<'EOF'
+#!/bin/sh
+printf 'generated-shim-git:%s\n' "$*"
+EOF
+chmod +x "${REAL_BIN}/git"
+
+(
+  cd "${WORKSPACE}"
+  PATH="${SHIM_DIR}:${SMOKE_ROOT}:${REAL_BIN}:${PATH}" \
+  MILLIWAYS_WORKSPACE_ROOT="${WORKSPACE}" \
+  MILLIWAYS_CLIENT_ID=codex \
+  MILLIWAYS_SESSION_ID=release-smoke-generated-shim \
+    "${SHIM_DIR}/git" status --short >"${SMOKE_ROOT}/generated-shim.out"
+)
+assert_output_contains generated-shim "generated-shim-git:status --short"
+
+(
+  cd "${WORKSPACE}"
+  MILLIWAYS_WORKSPACE_ROOT="${WORKSPACE}" \
+  MILLIWAYS_CLIENT_ID=codex \
+  MILLIWAYS_SESSION_ID=release-smoke \
+  MILLIWAYS_SECURITY_SHIM_COMMAND=true \
+  MILLIWAYS_SECURITY_SHIM_CATEGORY=build-tool \
+  MILLIWAYS_SECURITY_SHIM_DIR="${SHIM_DIR}" \
+    "${SMOKE_ROOT}/milliwaysctl" security shim-exec -- /bin/true >"${SMOKE_ROOT}/shim-exec.out"
+)
 
 "${SMOKE_ROOT}/milliwaysctl" security audit --workspace "${WORKSPACE}" --session release-smoke --client codex --limit 5 >"${SMOKE_ROOT}/audit.out"
 assert_output_contains audit "policy decision"
 assert_output_contains audit "codex/release-smoke"
 assert_output_contains audit "true"
+
+"${SMOKE_ROOT}/milliwaysctl" security audit --workspace "${WORKSPACE}" --session release-smoke-generated-shim --client codex --limit 5 >"${SMOKE_ROOT}/generated-shim-audit.out"
+assert_output_contains generated-shim-audit "policy decision"
+assert_output_contains generated-shim-audit "codex/release-smoke-generated-shim"
+assert_output_contains generated-shim-audit "git status --short"
 
 echo "[smoke] checking release docs and observability security chrome"
 assert_contains "${REPO_ROOT}/README.md" "Secure MilliWays is the release security theme"

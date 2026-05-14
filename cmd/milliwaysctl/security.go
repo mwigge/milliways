@@ -31,6 +31,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -440,6 +441,13 @@ func runSecurityStatusCmd(stdout, stderr io.Writer, sock string) int {
 	if rulepacks := renderSecurityRulePacks(result["rulepacks"]); rulepacks != "" {
 		fmt.Fprintf(stdout, "[security] rulepacks: %s\n", rulepacks)
 	}
+	if shims := renderSecurityStatusShims(result["shims"]); shims != "" {
+		fmt.Fprintf(stdout, "[security] shims: %s\n", shims)
+	}
+	shimsReady, hasShims := securityShimsReady(result["shims"])
+	if clients := renderSecurityClientEnforcement(result["client_enforcement"], shimsReady, hasShims); clients != "" {
+		fmt.Fprintf(stdout, "[security] clients: %s\n", clients)
+	}
 	if mode != "" {
 		fmt.Fprintf(stdout, "[security] mode: %s\n", mode)
 	}
@@ -813,8 +821,10 @@ func runSecurityCommandCheck(args []string, stdout, stderr io.Writer, sock strin
 		fmt.Fprintln(stderr, "security command-check: expected command after --")
 		return 1
 	}
+	argv := fs.Args()
 	params := map[string]any{
-		"command": strings.Join(fs.Args(), " "),
+		"command": shellCommandForPolicy(argv[0], argv[1:]),
+		"argv":    append([]string(nil), argv...),
 	}
 	if *mode != "" {
 		params["mode"] = *mode
@@ -944,7 +954,7 @@ func runSecurityShimExec(args []string, stdout, stderr io.Writer, sock string) i
 	}
 	commandText := shellCommandForPolicy(commandName, realArgs)
 	cwd, _ := os.Getwd()
-	workspace := strings.TrimSpace(os.Getenv("MILLIWAYS_WORKSPACE_ROOT"))
+	workspace := deriveShimWorkspace(cwd, os.Getenv("MILLIWAYS_WORKSPACE_ROOT"))
 	params := map[string]any{
 		"operation_type":     "command",
 		"command":            commandText,
@@ -1023,9 +1033,26 @@ func validateShimExecRequest(commandName, realBinary string) error {
 
 func shellCommandForPolicy(command string, args []string) string {
 	parts := make([]string, 0, len(args)+1)
-	parts = append(parts, command)
-	parts = append(parts, args...)
+	parts = append(parts, shellQuoteForPolicy(command))
+	for _, arg := range args {
+		parts = append(parts, shellQuoteForPolicy(arg))
+	}
 	return strings.Join(parts, " ")
+}
+
+func shellQuoteForPolicy(value string) string {
+	if value == "" {
+		return "''"
+	}
+	if strings.IndexFunc(value, func(r rune) bool {
+		return !(r >= 'A' && r <= 'Z') &&
+			!(r >= 'a' && r <= 'z') &&
+			!(r >= '0' && r <= '9') &&
+			!strings.ContainsRune("@%_+=:,./-", r)
+	}) == -1 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func execResolvedCommand(path string, args []string, stdout, stderr io.Writer) int {
@@ -1033,7 +1060,7 @@ func execResolvedCommand(path string, args []string, stdout, stderr io.Writer) i
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	cmd.Env = os.Environ()
+	cmd.Env = sanitizedShimExecEnv(os.Environ())
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return exitErr.ExitCode()
@@ -1042,6 +1069,63 @@ func execResolvedCommand(path string, args []string, stdout, stderr io.Writer) i
 		return 127
 	}
 	return 0
+}
+
+func deriveShimWorkspace(cwd, envWorkspace string) string {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return ""
+	}
+	absCWD, err := filepath.Abs(cwd)
+	if err != nil {
+		absCWD = cwd
+	}
+	absCWD = filepath.Clean(absCWD)
+	envWorkspace = strings.TrimSpace(envWorkspace)
+	if envWorkspace == "" {
+		return absCWD
+	}
+	absWorkspace, err := filepath.Abs(envWorkspace)
+	if err != nil {
+		return absCWD
+	}
+	absWorkspace = filepath.Clean(absWorkspace)
+	if pathWithin(absCWD, absWorkspace) {
+		return absWorkspace
+	}
+	return absCWD
+}
+
+func pathWithin(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)))
+}
+
+func sanitizedShimExecEnv(env []string) []string {
+	blocked := map[string]struct{}{
+		shims.EnvActive:       {},
+		shims.EnvCommand:      {},
+		shims.EnvCategory:     {},
+		shims.EnvShimDir:      {},
+		shims.EnvResolvedPath: {},
+		shims.EnvOriginalPath: {},
+		shims.EnvBroker:       {},
+	}
+	out := env[:0]
+	for _, entry := range env {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if _, drop := blocked[name]; drop {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func confirmShimExecution(stderr io.Writer, command, reason string) bool {
@@ -1608,6 +1692,109 @@ func stringSliceMapField(m map[string]any, key string) []string {
 		return out
 	default:
 		return nil
+	}
+}
+
+func renderSecurityStatusShims(raw any) string {
+	shims, ok := raw.(map[string]any)
+	if !ok || len(shims) == 0 {
+		return ""
+	}
+	ready := "not ready"
+	if boolMapField(shims, "ready", "Ready") {
+		ready = "ready"
+	}
+	installed := intMapField(shims, "installed", "Installed")
+	expected := intMapField(shims, "expected", "Expected")
+	var parts []string
+	if expected > 0 {
+		parts = append(parts, fmt.Sprintf("%s %d/%d", ready, installed, expected))
+	} else {
+		parts = append(parts, ready)
+	}
+	if boolMapField(shims, "broker_installed", "BrokerInstalled") {
+		if path := firstStringField(shims, "broker_path", "BrokerPath"); path != "" {
+			parts = append(parts, "broker "+path)
+		} else {
+			parts = append(parts, "broker installed")
+		}
+	} else if command := firstStringField(shims, "broker_command", "BrokerCommand"); command != "" {
+		parts = append(parts, "missing broker "+command)
+	}
+	if missing := stringSliceMapField(shims, "missing_shims"); len(missing) > 0 {
+		parts = append(parts, "missing "+strings.Join(missing, ", "))
+	}
+	if missing := stringSliceMapField(shims, "MissingShims"); len(missing) > 0 {
+		parts = append(parts, "missing "+strings.Join(missing, ", "))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func securityShimsReady(raw any) (bool, bool) {
+	shims, ok := raw.(map[string]any)
+	if !ok || len(shims) == 0 {
+		return false, false
+	}
+	return boolMapField(shims, "ready", "Ready"), true
+}
+
+func renderSecurityClientEnforcement(raw any, shimsReady bool, hasShims bool) string {
+	clients, ok := raw.(map[string]any)
+	if !ok || len(clients) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(clients))
+	for name := range clients {
+		if strings.TrimSpace(name) != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		meta, ok := clients[name].(map[string]any)
+		if !ok {
+			continue
+		}
+		level := firstStringField(meta, "level", "Level")
+		if level == "" {
+			level = "unknown"
+		}
+		state := securityClientProtectionState(level, boolMapField(meta, "controlled_env", "ControlledEnv"), firstStringField(meta, "broker_path", "BrokerPath"), shimsReady, hasShims)
+		detail := level
+		if strings.TrimSpace(detail) == "" {
+			detail = "unknown"
+		}
+		if level == "brokered" {
+			if hasShims {
+				if shimsReady {
+					detail += ", shim ready"
+				} else {
+					detail += ", shim not ready"
+				}
+			} else {
+				detail += ", shim unknown"
+			}
+		}
+		parts = append(parts, fmt.Sprintf("%s %s (%s)", name, state, detail))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func securityClientProtectionState(level string, controlled bool, brokerPath string, shimsReady bool, hasShims bool) string {
+	switch strings.TrimSpace(level) {
+	case "full":
+		return "protected"
+	case "brokered":
+		if controlled && hasShims && shimsReady {
+			return "protected"
+		}
+		if controlled && !hasShims && strings.TrimSpace(brokerPath) != "" {
+			return "protected"
+		}
+		return "unprotected"
+	default:
+		return "unprotected"
 	}
 }
 

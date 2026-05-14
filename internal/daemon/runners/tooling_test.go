@@ -206,6 +206,56 @@ func TestRunAgenticLoop_CommandFirewallStrictBlocksBashExecution(t *testing.T) {
 	}
 }
 
+func TestRunAgenticLoop_CommandFirewallPersistsBashDecisionAudit(t *testing.T) {
+	workspace := t.TempDir()
+	db, err := pantry.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := db.Security()
+
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "Bash", Args: `{"command":"npm install left-pad"}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	registry.Register("Bash", func(context.Context, map[string]any) (string, error) {
+		return "should not run", nil
+	}, provider.ToolDef{Name: "Bash"})
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	_, err = RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		SessionID: "session-1",
+		CommandFirewall: StaticCommandFirewall{
+			Policy:   firewall.Policy{Mode: security.ModeStrict},
+			RunnerID: AgentIDLocal,
+			CWD:      workspace,
+			Store:    store,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	decisions, err := store.ListPolicyDecisions(workspace, 10)
+	if err != nil {
+		t.Fatalf("ListPolicyDecisions: %v", err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("policy decisions = %d, want 1", len(decisions))
+	}
+	decision := decisions[0]
+	if decision.Command != "npm install left-pad" || decision.Decision != "block" || decision.SessionID != "session-1" || decision.Client != AgentIDLocal {
+		t.Fatalf("policy decision = %#v", decision)
+	}
+	if !strings.Contains(decision.RisksJSON, "package-install") {
+		t.Fatalf("risks_json = %q, want package-install", decision.RisksJSON)
+	}
+}
+
 func TestRunAgenticLoop_CommandFirewallIgnoresNonBashTools(t *testing.T) {
 	t.Parallel()
 

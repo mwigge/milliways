@@ -74,11 +74,11 @@ func TestClientEnforcementMetadata_FirstClassClients(t *testing.T) {
 		wantLevel     EnforcementLevel
 		wantBrokerEnv bool
 	}{
-		{AgentIDClaude, EnforcementBrokered, true},
-		{AgentIDCodex, EnforcementBrokered, true},
-		{AgentIDCopilot, EnforcementBrokered, true},
-		{AgentIDGemini, EnforcementBrokered, true},
-		{AgentIDPool, EnforcementBrokered, true},
+		{AgentIDClaude, EnforcementPreflightOnly, true},
+		{AgentIDCodex, EnforcementPreflightOnly, true},
+		{AgentIDCopilot, EnforcementPreflightOnly, true},
+		{AgentIDGemini, EnforcementPreflightOnly, true},
+		{AgentIDPool, EnforcementPreflightOnly, true},
 		{AgentIDMiniMax, EnforcementFull, false},
 		{AgentIDLocal, EnforcementFull, false},
 	}
@@ -100,8 +100,8 @@ func TestClientEnforcementMetadata_ExternalClientsReportBrokerPathWhenAvailable(
 
 	for _, agent := range []string{AgentIDCopilot, AgentIDGemini, AgentIDPool} {
 		got := ClientEnforcementMetadata(agent)
-		if got.Level != EnforcementBrokered || !got.ControlledEnv {
-			t.Errorf("%s metadata without broker = %#v, want brokered controlled env", agent, got)
+		if got.Level != EnforcementPreflightOnly || !got.ControlledEnv {
+			t.Errorf("%s metadata without broker = %#v, want preflight-only controlled env", agent, got)
 		}
 	}
 
@@ -115,7 +115,7 @@ func TestClientEnforcementMetadata_ExternalClientsReportBrokerPathWhenAvailable(
 	if got := ClientEnforcementMetadata(AgentIDGemini); got.Level != EnforcementBrokered || got.BrokerPath == "" {
 		t.Fatalf("gemini with broker = %#v, want brokered metadata with broker path", got)
 	}
-	if got := ClientEnforcementMetadata(AgentIDCopilot); got.Level != EnforcementBrokered || !got.ControlledEnv {
-		t.Fatalf("copilot without broker = %#v, want brokered controlled env", got)
+	if got := ClientEnforcementMetadata(AgentIDCopilot); got.Level != EnforcementPreflightOnly || !got.ControlledEnv {
+		t.Fatalf("copilot without broker = %#v, want preflight-only controlled env", got)
 	}
 }

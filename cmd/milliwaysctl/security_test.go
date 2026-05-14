@@ -246,6 +246,10 @@ func TestRunSecurityCommandCheckCallsRPC(t *testing.T) {
 	if command, _ := call.Params["command"].(string); command != "npm install left-pad" {
 		t.Fatalf("expected joined command params, got %#v", call.Params)
 	}
+	argv, _ := call.Params["argv"].([]any)
+	if got := joinSecurityTestStrings(argv); got != "npm,install,left-pad" {
+		t.Fatalf("argv = %#v, want npm,install,left-pad", call.Params["argv"])
+	}
 	if mode, _ := call.Params["mode"].(string); mode != "strict" {
 		t.Fatalf("expected mode=strict params, got %#v", call.Params)
 	}
@@ -254,6 +258,26 @@ func TestRunSecurityCommandCheckCallsRPC(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "decision: block") || !strings.Contains(stdout.String(), "package-install") {
 		t.Errorf("command-check output should summarize decision and risks; got:\n%s", stdout.String())
+	}
+}
+
+func TestRunSecurityCommandCheckQuotesCommandTextAndPreservesArgv(t *testing.T) {
+	sock, calls := startSecurityRPCTestServer(t, map[string]any{
+		"security.command_check": map[string]any{"decision": "allow", "reason": "ok"},
+	})
+
+	var stdout bytes.Buffer
+	rc := runSecurity([]string{"command-check", "--", "bash", "-lc", "printf '%s\n' \"$HOME\""}, &stdout, &bytes.Buffer{}, sock)
+	if rc != 0 {
+		t.Fatalf("expected rc=0, got %d; stdout:\n%s", rc, stdout.String())
+	}
+	call := <-calls
+	if command, _ := call.Params["command"].(string); command != "bash -lc 'printf '\\''%s\n'\\'' \"$HOME\"'" {
+		t.Fatalf("command = %q; params=%#v", command, call.Params)
+	}
+	argv, _ := call.Params["argv"].([]any)
+	if got := joinSecurityTestStrings(argv); got != "bash,-lc,printf '%s\n' \"$HOME\"" {
+		t.Fatalf("argv = %#v", call.Params["argv"])
 	}
 }
 
@@ -407,6 +431,121 @@ func TestRunSecurityShimExecBlocksUnavailablePolicyByDefault(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "policy unavailable; blocked by default") {
 		t.Fatalf("stderr missing fail-closed reason: %s", stderr.String())
+	}
+}
+
+func TestRunSecurityShimExecFailsOpenWhenExplicit(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "git")
+	if err := os.WriteFile(real, []byte("#!/bin/sh\necho real:$1\n"), 0o755); err != nil {
+		t.Fatalf("write real binary: %v", err)
+	}
+	t.Setenv("MILLIWAYS_SECURITY_SHIM_COMMAND", "git")
+	t.Setenv("MILLIWAYS_SHIM_FAIL_OPEN", "1")
+
+	var stdout, stderr bytes.Buffer
+	rc := runSecurity([]string{"shim-exec", "--", real, "status"}, &stdout, &stderr, filepath.Join(dir, "missing.sock"))
+	if rc != 0 {
+		t.Fatalf("rc = %d, want 0; stderr=%s", rc, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "real:status" {
+		t.Fatalf("stdout = %q, want real:status", got)
+	}
+	if !strings.Contains(stderr.String(), "MILLIWAYS_SHIM_FAIL_OPEN=1") {
+		t.Fatalf("stderr missing fail-open reason: %s", stderr.String())
+	}
+}
+
+func TestRunSecurityShimExecDoesNotPreserveShimEnvToRealProcess(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "env.out")
+	real := filepath.Join(dir, "git")
+	if err := os.WriteFile(real, []byte(`#!/bin/sh
+{
+	printf 'active=%s\n' "$MILLIWAYS_SECURITY_SHIM_ACTIVE"
+	printf 'command=%s\n' "$MILLIWAYS_SECURITY_SHIM_COMMAND"
+	printf 'category=%s\n' "$MILLIWAYS_SECURITY_SHIM_CATEGORY"
+	printf 'shimdir=%s\n' "$MILLIWAYS_SECURITY_SHIM_DIR"
+	printf 'resolved=%s\n' "$MILLIWAYS_SECURITY_SHIM_RESOLVED"
+	printf 'original=%s\n' "$MILLIWAYS_SECURITY_SHIM_ORIGINAL_PATH"
+	printf 'broker=%s\n' "$MILLIWAYS_SECURITY_SHIM_BROKER"
+} > "$MW_TEST_OUT"
+`), 0o755); err != nil {
+		t.Fatalf("write real binary: %v", err)
+	}
+	sock, _ := startSecurityRPCTestServer(t, map[string]any{
+		"security.policy_decide": map[string]any{"decision": "allow", "reason": "ok"},
+	})
+	t.Setenv("MW_TEST_OUT", out)
+	t.Setenv("MILLIWAYS_SECURITY_SHIM_ACTIVE", "1")
+	t.Setenv("MILLIWAYS_SECURITY_SHIM_COMMAND", "git")
+	t.Setenv("MILLIWAYS_SECURITY_SHIM_CATEGORY", "vcs")
+	t.Setenv("MILLIWAYS_SECURITY_SHIM_DIR", filepath.Join(dir, "shims"))
+	t.Setenv("MILLIWAYS_SECURITY_SHIM_RESOLVED", real)
+	t.Setenv("MILLIWAYS_SECURITY_SHIM_ORIGINAL_PATH", os.Getenv("PATH"))
+	t.Setenv("MILLIWAYS_SECURITY_SHIM_BROKER", "evilctl")
+
+	var stdout, stderr bytes.Buffer
+	rc := runSecurity([]string{"shim-exec", "--", real, "status"}, &stdout, &stderr, sock)
+	if rc != 0 {
+		t.Fatalf("rc = %d, stderr=%s", rc, stderr.String())
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read real env output: %v", err)
+	}
+	for _, want := range []string{
+		"active=\n",
+		"command=\n",
+		"category=\n",
+		"shimdir=\n",
+		"resolved=\n",
+		"original=\n",
+		"broker=\n",
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Fatalf("real env output missing %q:\n%s", want, string(got))
+		}
+	}
+}
+
+func TestRunSecurityShimExecDerivesWorkspaceFromCWDWhenEnvSpoofed(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	spoofed := filepath.Join(root, "spoofed")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	if err := os.MkdirAll(spoofed, 0o755); err != nil {
+		t.Fatalf("mkdir spoofed: %v", err)
+	}
+	real := filepath.Join(root, "git")
+	if err := os.WriteFile(real, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write real binary: %v", err)
+	}
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(workspace); err != nil {
+		t.Fatalf("chdir workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+
+	sock, calls := startSecurityRPCTestServer(t, map[string]any{
+		"security.policy_decide": map[string]any{"decision": "allow", "reason": "ok"},
+	})
+	t.Setenv("MILLIWAYS_SECURITY_SHIM_COMMAND", "git")
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", spoofed)
+
+	var stdout, stderr bytes.Buffer
+	rc := runSecurity([]string{"shim-exec", "--", real, "status"}, &stdout, &stderr, sock)
+	if rc != 0 {
+		t.Fatalf("rc = %d, stderr=%s", rc, stderr.String())
+	}
+	call := <-calls
+	if got, _ := call.Params["workspace"].(string); got != workspace {
+		t.Fatalf("workspace = %q, want cwd-derived %q; params=%#v", got, workspace, call.Params)
 	}
 }
 
@@ -772,6 +911,20 @@ func TestRunSecurityStatusRendersExtendedFields(t *testing.T) {
 			"block_count":             1,
 			"last_startup_scan_at":    "2026-05-14T10:00:00Z",
 			"last_dependency_scan_at": "2026-05-14T10:02:00Z",
+			"shims": map[string]any{
+				"ready":            false,
+				"installed":        2,
+				"expected":         3,
+				"broker_installed": false,
+				"broker_command":   "milliwaysctl",
+				"missing_shims":    []any{"npm"},
+			},
+			"client_enforcement": map[string]any{
+				"codex":   map[string]any{"level": "brokered", "controlled_env": true, "broker_path": "/tmp/security-shims"},
+				"claude":  map[string]any{"level": "brokered", "controlled_env": true},
+				"minimax": map[string]any{"level": "full"},
+				"custom":  map[string]any{"level": "unknown"},
+			},
 			"rulepacks": map[string]any{
 				"count":        1,
 				"update_state": "offline-current",
@@ -793,9 +946,58 @@ func TestRunSecurityStatusRendersExtendedFields(t *testing.T) {
 	if rc := runSecurity([]string{"status"}, &stdout, &bytes.Buffer{}, sock); rc != 0 {
 		t.Fatalf("expected rc=0, got %d", rc)
 	}
-	for _, want := range []string{"mode: warn", "workspace: /repo/service", "posture: WARN", "warnings: 2  blocks: 1", "last startup scan", "last dependency scan", "rulepacks: 1 loaded (offline-current)", "workspace-ioc@1.2.3", "scanners: installed osv-scanner (osv-scanner 2.0.0), semgrep; missing gitleaks, govulncheck"} {
+	for _, want := range []string{
+		"mode: warn",
+		"workspace: /repo/service",
+		"posture: WARN",
+		"warnings: 2  blocks: 1",
+		"last startup scan",
+		"last dependency scan",
+		"rulepacks: 1 loaded (offline-current)",
+		"workspace-ioc@1.2.3",
+		"scanners: installed osv-scanner (osv-scanner 2.0.0), semgrep; missing gitleaks, govulncheck",
+		"shims: not ready 2/3; missing broker milliwaysctl; missing npm",
+		"claude unprotected (brokered, shim not ready)",
+		"codex unprotected (brokered, shim not ready)",
+		"custom unprotected (unknown)",
+		"minimax protected (full)",
+	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("status missing %q; got:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestRunSecurityStatusRendersProtectedBrokeredClientsWhenShimsReady(t *testing.T) {
+	sock, _ := startSecurityRPCTestServer(t, map[string]any{
+		"security.status": map[string]any{
+			"installed": true,
+			"enabled":   true,
+			"shims": map[string]any{
+				"ready":            true,
+				"installed":        3,
+				"expected":         3,
+				"broker_installed": true,
+				"broker_path":      "/run/milliways/security-shims/milliwaysctl",
+			},
+			"client_enforcement": map[string]any{
+				"codex":  map[string]any{"level": "brokered", "controlled_env": true},
+				"custom": map[string]any{"level": "brokered"},
+			},
+		},
+	})
+
+	var stdout bytes.Buffer
+	if rc := runSecurity([]string{"status"}, &stdout, &bytes.Buffer{}, sock); rc != 0 {
+		t.Fatalf("expected rc=0, got %d", rc)
+	}
+	for _, want := range []string{
+		"shims: ready 3/3; broker /run/milliways/security-shims/milliwaysctl",
+		"codex protected (brokered, shim ready)",
+		"custom unprotected (brokered, shim ready)",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("status missing %q; got:\n%s", want, stdout.String())
 		}
 	}
 }

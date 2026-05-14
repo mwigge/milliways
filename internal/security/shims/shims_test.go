@@ -255,20 +255,14 @@ exit 23
 	}
 }
 
-func TestGeneratedShimFallsBackToRealBinaryWithoutBroker(t *testing.T) {
+func TestGeneratedShimFailsClosedWithoutBroker(t *testing.T) {
 	root := t.TempDir()
 	shimDir := filepath.Join(root, "shims")
 	realDir := filepath.Join(root, "real")
 	mkdirAll(t, shimDir, realDir)
 	out := filepath.Join(root, "real.out")
 
-	writeScript(t, filepath.Join(realDir, "git"), `#!/bin/sh
-printf 'active=%s\n' "$MILLIWAYS_SECURITY_SHIM_ACTIVE" > "$MW_TEST_OUT"
-printf 'command=%s\n' "$MILLIWAYS_SECURITY_SHIM_COMMAND" >> "$MW_TEST_OUT"
-printf 'resolved=%s\n' "$MILLIWAYS_SECURITY_SHIM_RESOLVED" >> "$MW_TEST_OUT"
-printf 'args=%s\n' "$*" >> "$MW_TEST_OUT"
-exit 17
-`)
+	writeScript(t, filepath.Join(realDir, "git"), "#!/bin/sh\nprintf 'real\\n' > \"$MW_TEST_OUT\"\nexit 17\n")
 	_, err := InstallCatalog(InstallOptions{
 		Dir:     shimDir,
 		Catalog: []Metadata{{Name: "git", Category: CategoryVCS, Description: "Git"}},
@@ -284,14 +278,56 @@ exit 17
 		EnvBroker+"=missing-milliways-broker",
 	)
 	err = cmd.Run()
+	if exitCode(err) != 126 {
+		t.Fatalf("shim exit = %v, want exit code 126", err)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatalf("real command output exists; broker-missing shim should fail closed")
+	}
+}
+
+func TestGeneratedShimFailsOpenWithoutBrokerOnlyWhenExplicit(t *testing.T) {
+	root := t.TempDir()
+	shimDir := filepath.Join(root, "shims")
+	realDir := filepath.Join(root, "real")
+	mkdirAll(t, shimDir, realDir)
+	out := filepath.Join(root, "real.out")
+
+	writeScript(t, filepath.Join(realDir, "git"), `#!/bin/sh
+{
+	printf 'active=%s\n' "$MILLIWAYS_SECURITY_SHIM_ACTIVE"
+	printf 'command=%s\n' "$MILLIWAYS_SECURITY_SHIM_COMMAND"
+	printf 'resolved=%s\n' "$MILLIWAYS_SECURITY_SHIM_RESOLVED"
+	printf 'broker=%s\n' "$MILLIWAYS_SECURITY_SHIM_BROKER"
+	printf 'args=%s\n' "$*"
+} > "$MW_TEST_OUT"
+exit 17
+`)
+	_, err := InstallCatalog(InstallOptions{
+		Dir:     shimDir,
+		Catalog: []Metadata{{Name: "git", Category: CategoryVCS, Description: "Git"}},
+	})
+	if err != nil {
+		t.Fatalf("InstallCatalog() error = %v", err)
+	}
+
+	cmd := exec.Command(filepath.Join(shimDir, "git"), "status")
+	cmd.Env = append(os.Environ(),
+		"MW_TEST_OUT="+out,
+		"PATH="+joinPath(shimDir, realDir),
+		EnvBroker+"=missing-milliways-broker",
+		"MILLIWAYS_SHIM_FAIL_OPEN=1",
+	)
+	err = cmd.Run()
 	if exitCode(err) != 17 {
 		t.Fatalf("shim exit = %v, want exit code 17", err)
 	}
 	got := readFile(t, out)
 	for _, want := range []string{
-		"active=1\n",
-		"command=git\n",
-		"resolved=" + filepath.Join(realDir, "git") + "\n",
+		"active=\n",
+		"command=\n",
+		"resolved=\n",
+		"broker=\n",
 		"args=status\n",
 	} {
 		if !strings.Contains(got, want) {
@@ -300,7 +336,7 @@ exit 17
 	}
 }
 
-func TestGeneratedShimAvoidsRecursionWhenActive(t *testing.T) {
+func TestGeneratedShimDoesNotTrustCallerActiveBypass(t *testing.T) {
 	root := t.TempDir()
 	shimDir := filepath.Join(root, "shims")
 	realDir := filepath.Join(root, "real")
@@ -325,11 +361,46 @@ func TestGeneratedShimAvoidsRecursionWhenActive(t *testing.T) {
 		EnvActive+"=1",
 	)
 	err = cmd.Run()
-	if exitCode(err) != 19 {
-		t.Fatalf("shim exit = %v, want exit code 19", err)
+	if exitCode(err) != 23 {
+		t.Fatalf("shim exit = %v, want exit code 23", err)
 	}
-	if got := strings.TrimSpace(readFile(t, out)); got != "real" {
-		t.Fatalf("executed %q, want real", got)
+	if got := strings.TrimSpace(readFile(t, out)); got != "broker" {
+		t.Fatalf("executed %q, want broker", got)
+	}
+}
+
+func TestGeneratedShimIgnoresCallerBrokerOverride(t *testing.T) {
+	root := t.TempDir()
+	shimDir := filepath.Join(root, "shims")
+	realDir := filepath.Join(root, "real")
+	brokerDir := filepath.Join(root, "broker")
+	maliciousDir := filepath.Join(root, "malicious")
+	mkdirAll(t, shimDir, realDir, brokerDir, maliciousDir)
+	out := filepath.Join(root, "out")
+
+	writeScript(t, filepath.Join(realDir, "git"), "#!/bin/sh\nexit 19\n")
+	writeScript(t, filepath.Join(brokerDir, "milliwaysctl"), "#!/bin/sh\nprintf 'broker\\n' > \"$MW_TEST_OUT\"\nexit 23\n")
+	writeScript(t, filepath.Join(maliciousDir, "evilctl"), "#!/bin/sh\nprintf 'evil\\n' > \"$MW_TEST_OUT\"\nexit 24\n")
+	_, err := InstallCatalog(InstallOptions{
+		Dir:     shimDir,
+		Catalog: []Metadata{{Name: "git", Category: CategoryVCS, Description: "Git"}},
+	})
+	if err != nil {
+		t.Fatalf("InstallCatalog() error = %v", err)
+	}
+
+	cmd := exec.Command(filepath.Join(shimDir, "git"))
+	cmd.Env = append(os.Environ(),
+		"MW_TEST_OUT="+out,
+		"PATH="+joinPath(shimDir, maliciousDir, brokerDir, realDir),
+		EnvBroker+"=evilctl",
+	)
+	err = cmd.Run()
+	if exitCode(err) != 23 {
+		t.Fatalf("shim exit = %v, want exit code 23", err)
+	}
+	if got := strings.TrimSpace(readFile(t, out)); got != "broker" {
+		t.Fatalf("executed %q, want broker", got)
 	}
 }
 

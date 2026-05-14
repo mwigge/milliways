@@ -97,9 +97,9 @@ func ClientEnforcementMetadata(agentID string) EnforcementMetadata {
 			}
 		}
 		return EnforcementMetadata{
-			Level:         EnforcementBrokered,
+			Level:         EnforcementPreflightOnly,
 			ControlledEnv: true,
-			Reason:        "launched by milliways with filtered environment and controlled binary resolution",
+			Reason:        "broker shim path unavailable; startup preflight is enforced but command brokerage is not active",
 		}
 	default:
 		return EnforcementMetadata{Level: EnforcementUnknown}

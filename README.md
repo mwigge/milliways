@@ -1,27 +1,39 @@
 # Milliways
 
-> Secure MilliWays: all clients in one place, shared memory, shared sessions, one security layer.
+> Secure MilliWays: all clients in one place, shared memory, shared sessions, one security control plane.
 
 Milliways is an AI terminal for macOS and Linux. Claude, Codex, Pool, Gemini, Copilot, MiniMax, and local models all run from the same workspace, with the same observable control plane around them.
 
 Open a tab and you're talking to a runner. Switch runners mid-session with a structured briefing from the active turn log. Hit a quota limit and milliways rotates to the next one automatically. Daemon event history, metrics, project memory, and security posture are persisted and surfaced while you work; the live REPL turn log stays in memory until it is compacted, handed off, or written through the daemon.
 
-The security focus is simple: AI clients should not each invent their own workstation safety story in isolation. Milliways adds a terminal-owned layer for startup scans, client profile checks, command risk classification, output scanning, quarantine planning, SBOM evidence, and CRA readiness. It is not a magic shield, but it gives you one place to see and manage risk before, during, and after agent work.
+The security focus is simple: AI clients should not each invent their own workstation safety story in isolation. Milliways adds a terminal-owned control plane for startup scans, client profile checks, command risk classification, command shims, output scanning, quarantine planning, SBOM evidence, and CRA readiness. It is not a magic shield, but it gives you one place to see and manage risk before, during, and after agent work.
 
 It wraps the CLIs and APIs you already have set up. It does not run hosted models or manage cloud credentials. Bring your own towel.
 
-Architecture updates: [memory, persistence, and observability](docs/milliways-blog-3.md) · [Secure MilliWays](docs/milliways-blog-4.md).
+Architecture updates: [memory, persistence, and observability](docs/milliways-blog-3.md) · [Secure MilliWays](docs/milliways-blog-4.md) · [the security control plane](docs/milliways-blog-5.md).
 
-### Security at a glance
+### Security control plane at a glance
 
 | Layer | What Milliways adds |
 |---|---|
 | Startup | First-workspace posture scan for package hooks, client config, task runners, IOC files/domains, user services, and macOS LaunchAgents. |
 | Client switch | Per-client checks for Claude, Codex, Copilot, Gemini, Pool, MiniMax, and local endpoints before handoff. |
-| Command path | Deterministic command firewall for package installs, persistence, secret reads, exfiltration patterns, network download, shell eval, IOC hits, and complex unparsed commands. |
+| Protection state | Navigation and status surfaces show `protected` only when Milliways has real control-plane coverage for that client; otherwise they show `unprotected` or `preflight-only`. |
+| Command path | Deterministic firewall and broker shims for package installs, persistence, secret reads, exfiltration patterns, network download, shell eval, IOC hits, and complex commands. |
 | Output path | Generated/staged file planning for secrets, SAST, dependency changes, SBOM refresh, and strict/CI blocking. |
-| Operations | Security mode, warnings, quarantine, rule updates, status, scanner detection, and observability cockpit badges. |
-| Evidence | SPDX SBOM generation and EU Cyber Resilience Act readiness tracking without pretending NVD is the compliance model. |
+| Operations | Security mode, warnings, quarantine, rule updates, scanner detection, and observability cockpit badges. |
+| Evidence | Durable policy audit, generated-shim audit events, SPDX SBOM generation, and EU Cyber Resilience Act readiness tracking without pretending NVD is the compliance model. |
+
+Useful commands:
+
+```bash
+milliwaysctl security status        # mode, scanners, shims, clients, warnings, blocks
+milliwaysctl security audit         # policy decisions by workspace/client/session
+milliwaysctl security shims status  # command broker readiness
+milliwaysctl security sbom          # SPDX SBOM for the current workspace
+```
+
+Inside the terminal, `/security status` shows the same posture summary without leaving the active client session.
 
 ---
 
@@ -922,7 +934,7 @@ Switch at runtime with `/local-temp 0.7` or `/local-temp default` (lets the serv
 
 ## Secure MilliWays
 
-Secure MilliWays is the release security theme, not a separate binary and not a repository rename: all clients in one place, shared memory, shared sessions, one security layer.
+Secure MilliWays is the release security theme, not a separate binary and not a repository rename: all clients in one place, shared memory, shared sessions, one security control plane.
 
 Milliways wraps Claude, Codex, Copilot, Gemini, Pool, MiniMax, and local models behind one terminal surface. That makes the security model explicit: the runner changes, but the workspace, memory, session handoff, observability, and security posture are managed in one place.
 
@@ -942,19 +954,21 @@ The control-plane model is business-casual on purpose: MilliWays does the common
 | SBOM generation | `milliwaysctl security sbom --output dist/milliways.spdx.json` | Offline SPDX JSON generation from local Go, Cargo, npm, pnpm, yarn, Bun, and Python manifests so CRA evidence can be produced without an external compliance service. |
 | CRA evidence scaffold | `milliwaysctl security cra-scaffold` | Creates missing CRA evidence placeholders in a workspace: `SECURITY.md`, `SUPPORT.md`, `docs/update-policy.md`, and `docs/cra-technical-file.md`. Use `--dry-run` to preview and `--force` only when replacing existing placeholders is intentional. |
 | CRA readiness | `milliwaysctl security cra`, `/security cra` | Tracks EU Cyber Resilience Act evidence: SBOM presence, vulnerability handling process, secure-by-default posture, scanner coverage, support-period metadata, and reporting readiness. CRA is a policy/evidence layer; OSV, Gitleaks, Semgrep, govulncheck, and optional NVD enrichment feed it. |
-| Status and warnings | `milliwaysctl security status`, `warnings`, `mode` | One posture summary for CLI, terminal cockpit, and future release smoke checks: mode, scanner state, startup scan required/stale state, scanner gaps, last scan times, warnings, blocks, and client profile state. |
-| Policy audit | `milliwaysctl security audit`, `/security audit` | Recent command policy decisions across brokered shims and pre-flight checks, filterable by workspace, session, client, and decision. This is the quick "what did the control plane decide?" view for release checks and incident follow-up. |
+| Status and warnings | `milliwaysctl security status`, `warnings`, `mode` | One posture summary for CLI, terminal cockpit, and release smoke checks: mode, scanner state, shim readiness, client protected/unprotected state, startup scan required/stale state, scanner gaps, last scan times, warnings, and blocks. |
+| Command shims | `milliwaysctl security shims status` | Broker readiness for common shells, package managers, build tools, network tools, VCS, and persistence commands. Missing broker or shim state is visible instead of silently presented as protected. |
+| Policy audit | `milliwaysctl security audit`, `/security audit` | Recent command policy decisions across brokered shims, command checks, and internal Bash firewall decisions, filterable by workspace, session, client, and decision. This is the quick "what did the control plane decide?" view for release checks and incident follow-up. |
 
 The layers are intentionally additive. Startup scan is deterministic and local; external scanners add dependency, secret, and SAST depth when installed; client profiles and command checks reduce the risk of handing unsafe work to external CLIs that execute their own tools.
 
-For CLI clients that can inherit a controlled environment, MilliWays also generates security shims for common shells, package managers, build tools, network tools, VCS, and persistence commands. Those shims broker command decisions through the daemon before the real binary runs, then write policy events that show up in `milliwaysctl security audit`.
+For CLI clients that can inherit a controlled environment, MilliWays also generates security shims for common shells, package managers, build tools, network tools, VCS, and persistence commands. Those shims broker command decisions through the daemon before the real binary runs, then write policy events that show up in `milliwaysctl security audit`. They fail closed by default if the broker is unavailable; explicit fail-open is opt-in for troubleshooting.
 
 ### Enforcement coverage
 
 | Surface | MilliWays can block directly | MilliWays currently warns/reports |
 |---|---|---|
 | HTTP/local tool-loop runners | Command firewall, workspace jail, credential denylist, SSRF guard, output gate recommendations. | Optional external scanner gaps and accepted-risk context. |
-| CLI runners such as Claude, Codex, Gemini, Copilot, Pool | Daemon-side client profile checks, command pre-flight when commands pass through MilliWays, startup scan status, output/security commands. | Tool execution performed inside the external CLI itself unless that CLI exposes a controllable sandbox path. |
+| Brokered CLI runners such as Claude, Codex, Gemini, Copilot, Pool | Daemon-side client profile checks, command shims when launched through the controlled environment, command pre-flight, startup scan status, and output/security commands. | Tool execution performed inside the external CLI itself unless the command path is brokered or the CLI exposes a controllable sandbox path. |
+| Preflight-only CLI runners | Startup scan, client profile checks, scanner status, output/security commands, and visible `preflight-only` or `unprotected` labels. | Command execution is not called protected until the broker path is active. |
 | Terminal/app startup | First-workspace startup scan is recorded automatically and status shows required/stale until current. | Agent opens wait for a current startup scan; `strict`/`ci` block real client handoff when BLOCK findings remain. |
 
 CRA readiness is treated as more important than NVD enrichment. NVD can improve CVE metadata, but the EU Cyber Resilience Act defines process obligations and evidence a product team must be able to show: cybersecurity risk assessment, secure defaults, vulnerability handling, machine-readable SBOM, support/update posture, and incident reporting readiness. MilliWays should therefore use NVD as one optional input, not as the compliance model.
@@ -1016,6 +1030,7 @@ milliwaysctl security sbom --output dist/milliways.spdx.json
 milliwaysctl security startup-scan --strict
 milliwaysctl security scan
 milliwaysctl security warnings
+milliwaysctl security shims status
 milliwaysctl security client codex
 milliwaysctl security command-check --mode strict -- npm install left-pad
 milliwaysctl security output-plan --generated cmd/app/main.go --staged .env.local

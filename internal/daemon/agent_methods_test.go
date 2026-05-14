@@ -488,6 +488,9 @@ func TestRecordingPusherRecordsModelInDeckSnapshot(t *testing.T) {
 }
 
 func TestAgentListOverlaysObservedSessionModel(t *testing.T) {
+	runners.SetBrokerPathProvider(nil)
+	t.Cleanup(func() { runners.SetBrokerPathProvider(nil) })
+
 	reg := NewAgentRegistry(nil)
 	sess := &AgentSession{
 		AgentID: "codex",
@@ -515,8 +518,8 @@ func TestAgentListOverlaysObservedSessionModel(t *testing.T) {
 	if agents[0].Model != "gpt-5.5" {
 		t.Fatalf("agent model = %q, want observed model", agents[0].Model)
 	}
-	if agents[0].Enforcement.Level != runners.EnforcementBrokered {
-		t.Fatalf("agent enforcement = %q, want %q", agents[0].Enforcement.Level, runners.EnforcementBrokered)
+	if agents[0].Enforcement.Level != runners.EnforcementPreflightOnly {
+		t.Fatalf("agent enforcement = %q, want %q", agents[0].Enforcement.Level, runners.EnforcementPreflightOnly)
 	}
 }
 

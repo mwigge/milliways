@@ -51,14 +51,17 @@ func TestPingReportsBuildVersion(t *testing.T) {
 }
 
 func TestBuildStatusIncludesClientEnforcement(t *testing.T) {
+	runners.SetBrokerPathProvider(nil)
+	t.Cleanup(func() { runners.SetBrokerPathProvider(nil) })
+
 	srv := &Server{spans: observability.NewRing(10)}
 	status := srv.buildStatus()
 
-	if got := status.ClientEnforcement["claude"].Level; got != runners.EnforcementBrokered {
-		t.Fatalf("claude enforcement = %q, want %q", got, runners.EnforcementBrokered)
+	if got := status.ClientEnforcement["claude"].Level; got != runners.EnforcementPreflightOnly {
+		t.Fatalf("claude enforcement = %q, want %q", got, runners.EnforcementPreflightOnly)
 	}
-	if got := status.ClientEnforcement["codex"].Level; got != runners.EnforcementBrokered {
-		t.Fatalf("codex enforcement = %q, want %q", got, runners.EnforcementBrokered)
+	if got := status.ClientEnforcement["codex"].Level; got != runners.EnforcementPreflightOnly {
+		t.Fatalf("codex enforcement = %q, want %q", got, runners.EnforcementPreflightOnly)
 	}
 	if got := status.ClientEnforcement["minimax"].Level; got != runners.EnforcementFull {
 		t.Fatalf("minimax enforcement = %q, want %q", got, runners.EnforcementFull)

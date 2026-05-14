@@ -396,8 +396,8 @@ func TestRenderDeckNavigatorShowsRequestedPanels(t *testing.T) {
 	t.Parallel()
 
 	got := stripANSI(renderDeckNavigator(34, []deckProviderInfo{
-		{ID: "claude", AuthStatus: "ok", Model: "sonnet", Enforcement: deckEnforcementInfo{Level: "brokered"}},
-		{ID: "codex", AuthStatus: "ok", Model: "gpt-5.5", Enforcement: deckEnforcementInfo{Level: "brokered"}},
+		{ID: "claude", AuthStatus: "ok", Model: "sonnet", Enforcement: deckEnforcementInfo{Level: "brokered", ControlledEnv: true}},
+		{ID: "codex", AuthStatus: "ok", Model: "gpt-5.5", Enforcement: deckEnforcementInfo{Level: "brokered", ControlledEnv: true}},
 	}, 1, "codex", true, map[string]parallel.QuotaSummary{
 		"codex": {UsedToday: 25, LimitDay: 100},
 	}))
@@ -418,9 +418,10 @@ func TestRenderDeckNavigatorShowsClientProtectionState(t *testing.T) {
 	t.Parallel()
 
 	got := stripANSI(renderDeckNavigatorSized(54, 30, []deckProviderInfo{
-		{ID: "claude", AuthStatus: "ok", Status: "idle", Enforcement: deckEnforcementInfo{Level: "brokered"}},
+		{ID: "claude", AuthStatus: "ok", Status: "idle", Enforcement: deckEnforcementInfo{Level: "brokered", ControlledEnv: true}},
 		{ID: "minimax", AuthStatus: "ok", Status: "idle", Enforcement: deckEnforcementInfo{Level: "full"}},
 		{ID: "custom", AuthStatus: "ok", Status: "idle", Enforcement: deckEnforcementInfo{Level: "preflight-only"}},
+		{ID: "raw", AuthStatus: "ok", Status: "idle", Enforcement: deckEnforcementInfo{Level: "brokered"}},
 		{ID: "unknown", AuthStatus: "ok", Status: "idle"},
 	}, 0, "claude", true, nil))
 
@@ -428,6 +429,7 @@ func TestRenderDeckNavigatorShowsClientProtectionState(t *testing.T) {
 		"claude (protected)",
 		"minimax (protected)",
 		"custom (unprotected)",
+		"raw (unprotected)",
 		"unknown (unprotected)",
 	} {
 		if !strings.Contains(got, want) {

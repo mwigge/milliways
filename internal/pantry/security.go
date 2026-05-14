@@ -173,6 +173,16 @@ type SecurityPolicyDecision struct {
 	EnforcementLevel string
 }
 
+// SecurityPolicyDecisionQuery filters durable policy/audit events before the
+// result cap is applied.
+type SecurityPolicyDecisionQuery struct {
+	Workspace string
+	SessionID string
+	Client    string
+	Decision  string
+	Limit     int
+}
+
 // SecurityStore provides access to durable security posture tables.
 type SecurityStore struct {
 	db *sql.DB
@@ -934,6 +944,14 @@ func (s *SecurityStore) RecordPolicyDecision(d SecurityPolicyDecision) error {
 
 // ListPolicyDecisions returns recent policy decisions for audit callers.
 func (s *SecurityStore) ListPolicyDecisions(workspace string, limit int) ([]SecurityPolicyDecision, error) {
+	return s.QueryPolicyDecisions(SecurityPolicyDecisionQuery{Workspace: workspace, Limit: limit})
+}
+
+// QueryPolicyDecisions returns recent policy decisions matching the supplied
+// filters. Filters are pushed into SQL so older matching audit events are not
+// hidden by newer unrelated events.
+func (s *SecurityStore) QueryPolicyDecisions(filter SecurityPolicyDecisionQuery) ([]SecurityPolicyDecision, error) {
+	limit := filter.Limit
 	if limit <= 0 {
 		limit = 100
 	}
@@ -943,9 +961,25 @@ func (s *SecurityStore) ListPolicyDecisions(workspace string, limit int) ([]Secu
 		       risks_json, enforcement_level
 		FROM mw_security_policy_decisions`
 	var args []any
-	if strings.TrimSpace(workspace) != "" {
-		query += " WHERE workspace = ?"
+	var where []string
+	if workspace := strings.TrimSpace(filter.Workspace); workspace != "" {
+		where = append(where, "workspace = ?")
 		args = append(args, workspace)
+	}
+	if sessionID := strings.TrimSpace(filter.SessionID); sessionID != "" {
+		where = append(where, "session_id = ?")
+		args = append(args, sessionID)
+	}
+	if client := strings.TrimSpace(filter.Client); client != "" {
+		where = append(where, "client = ?")
+		args = append(args, client)
+	}
+	if decision := strings.ToLower(strings.TrimSpace(filter.Decision)); decision != "" {
+		where = append(where, "lower(decision) = ?")
+		args = append(args, decision)
+	}
+	if len(where) > 0 {
+		query += " WHERE " + strings.Join(where, " AND ")
 	}
 	query += " ORDER BY created_at DESC, id DESC LIMIT ?"
 	args = append(args, limit)

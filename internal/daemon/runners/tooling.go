@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/provider"
@@ -182,13 +183,54 @@ type StaticCommandFirewall struct {
 
 // EvaluateCommand implements CommandFirewall.
 func (f StaticCommandFirewall) EvaluateCommand(_ context.Context, req CommandFirewallRequest) (firewall.Result, error) {
-	return firewall.Evaluate(firewall.Request{
+	result := firewall.Evaluate(firewall.Request{
 		Command:  req.Command,
 		RunnerID: f.RunnerID,
 		CWD:      f.CWD,
 		Policy:   f.Policy,
 		Posture:  f.Posture,
-	}), nil
+	})
+	if f.Store != nil && strings.EqualFold(req.ToolName, "Bash") {
+		if err := f.recordPolicyDecision(req, result); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
+}
+
+func (f StaticCommandFirewall) recordPolicyDecision(req CommandFirewallRequest, result firewall.Result) error {
+	risks := make([]map[string]string, 0, len(result.Risks))
+	for _, risk := range result.Risks {
+		entry := map[string]string{
+			"category": string(risk.Category),
+			"reason":   risk.Reason,
+		}
+		if risk.Evidence != "" {
+			entry["evidence"] = risk.Evidence
+		}
+		risks = append(risks, entry)
+	}
+	risksJSON, err := json.Marshal(risks)
+	if err != nil {
+		return fmt.Errorf("marshal command firewall risks: %w", err)
+	}
+	return f.Store.RecordPolicyDecision(pantry.SecurityPolicyDecision{
+		CreatedAt:        time.Now().UTC(),
+		Workspace:        f.CWD,
+		SessionID:        req.SessionID,
+		Client:           f.RunnerID,
+		CWD:              f.CWD,
+		OperationType:    "command",
+		Command:          req.Command,
+		ArgvJSON:         "[]",
+		EnvSummaryJSON:   "{}",
+		Mode:             string(result.Mode),
+		Decision:         string(result.Decision),
+		Reason:           result.Reason,
+		Parsed:           result.Parsed,
+		RisksJSON:        string(risksJSON),
+		EnforcementLevel: string(EnforcementFull),
+	})
 }
 
 // LoopResult summarises one RunAgenticLoop invocation.

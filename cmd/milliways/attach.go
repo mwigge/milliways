@@ -503,9 +503,15 @@ type deckEnforcementInfo struct {
 }
 
 func deckProtectionLabel(p deckProviderInfo) string {
-	switch strings.TrimSpace(p.Enforcement.Level) {
-	case "full", "brokered":
+	level := strings.TrimSpace(p.Enforcement.Level)
+	switch level {
+	case "full":
 		return "protected"
+	case "brokered":
+		if p.Enforcement.ControlledEnv || strings.TrimSpace(p.Enforcement.BrokerPath) != "" {
+			return "protected"
+		}
+		return "unprotected"
 	default:
 		return "unprotected"
 	}

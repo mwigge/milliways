@@ -65,6 +65,81 @@ func TestOpen_Idempotent(t *testing.T) {
 	_ = db2.Close()
 }
 
+func TestMigrateV14PreservesSecurityDataAndCreatesPolicyDecisions(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "test.db")
+	conn, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	for version, schema := range []string{
+		schemaV1, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7,
+		schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13,
+	} {
+		if _, err := conn.Exec(schema); err != nil {
+			t.Fatalf("apply schema v%d: %v", version+1, err)
+		}
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO mw_security_findings
+			(workspace, category, cve_id, package_name, installed_version, fixed_in_version,
+			 severity, ecosystem, summary, scan_source, status, first_seen, last_seen)
+		VALUES
+			('/work', 'dependency', 'CVE-2026-0001', 'pkg', '1.0.0', '1.0.1',
+			 'HIGH', 'Go', 'old finding', 'go.sum', 'active',
+			 '2026-05-14T10:00:00Z', '2026-05-14T10:00:00Z')`); err != nil {
+		t.Fatalf("insert v13 finding: %v", err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO mw_security_workspace_status
+			(workspace, mode, active_client, updated_at, startup_scan_completed_at, startup_scan_config_hash)
+		VALUES
+			('/work', 'strict', 'codex', '2026-05-14T10:00:00Z',
+			 '2026-05-14T10:00:00Z', 'config-hash')`); err != nil {
+		t.Fatalf("insert v13 status: %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open migrated v13 db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	var version int
+	if err := db.conn.QueryRow("SELECT COALESCE(MAX(version), 0) FROM mw_schema").Scan(&version); err != nil {
+		t.Fatalf("query schema version: %v", err)
+	}
+	if version != 14 {
+		t.Fatalf("schema version = %d, want 14", version)
+	}
+	var tableCount int
+	if err := db.conn.QueryRow(`
+		SELECT count(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'mw_security_policy_decisions'`).Scan(&tableCount); err != nil {
+		t.Fatalf("query policy decisions table: %v", err)
+	}
+	if tableCount != 1 {
+		t.Fatalf("policy decisions table count = %d, want 1", tableCount)
+	}
+	findings, err := db.Security().ListActiveForWorkspace("/work", nil)
+	if err != nil {
+		t.Fatalf("ListActiveForWorkspace: %v", err)
+	}
+	if len(findings) != 1 || findings[0].CVEID != "CVE-2026-0001" {
+		t.Fatalf("findings after v14 migration = %#v, want preserved CVE-2026-0001", findings)
+	}
+	status, err := db.Security().SecurityStatus("/work")
+	if err != nil {
+		t.Fatalf("SecurityStatus: %v", err)
+	}
+	if status.Mode != "strict" || status.ActiveClient != "codex" || status.StartupScanConfigHash != "config-hash" {
+		t.Fatalf("security status after v14 migration = %#v", status)
+	}
+}
+
 func TestLedger_InsertAndStats(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)

@@ -19,6 +19,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/mwigge/milliways/internal/security/cra/evidence"
@@ -372,6 +373,13 @@ func renderSecurityStatus(stdout io.Writer, label string, result map[string]any)
 	if scanners := renderSecurityScanners(result["scanners"]); scanners != "" {
 		fmt.Fprintf(stdout, "scanners: %s\n", scanners)
 	}
+	if shims := renderSecurityStatusShims(result["shims"]); shims != "" {
+		fmt.Fprintf(stdout, "shims: %s\n", shims)
+	}
+	shimsReady, hasShims := securityShimsReady(result["shims"])
+	if clients := renderSecurityClientEnforcement(result["client_enforcement"], shimsReady, hasShims); clients != "" {
+		fmt.Fprintf(stdout, "clients: %s\n", clients)
+	}
 	if lastStartup := firstStringField(result, "last_startup_scan", "last_startup_scan_at"); lastStartup != "" {
 		fmt.Fprintf(stdout, "last startup scan: %s\n", lastStartup)
 	}
@@ -608,6 +616,115 @@ func stringListField(m map[string]any, key string) []string {
 		}
 	}
 	return out
+}
+
+func renderSecurityStatusShims(raw any) string {
+	shims, ok := raw.(map[string]any)
+	if !ok || len(shims) == 0 {
+		return ""
+	}
+	ready := "not ready"
+	if boolSecurityField(shims, "ready", "Ready") {
+		ready = "ready"
+	}
+	installed := intSecurityField(shims, "installed", "Installed")
+	expected := intSecurityField(shims, "expected", "Expected")
+	var parts []string
+	if expected > 0 {
+		parts = append(parts, fmt.Sprintf("%s %d/%d", ready, installed, expected))
+	} else {
+		parts = append(parts, ready)
+	}
+	if boolSecurityField(shims, "broker_installed", "BrokerInstalled") {
+		if path := firstStringField(shims, "broker_path", "BrokerPath"); path != "" {
+			parts = append(parts, "broker "+path)
+		} else {
+			parts = append(parts, "broker installed")
+		}
+	} else if command := firstStringField(shims, "broker_command", "BrokerCommand"); command != "" {
+		parts = append(parts, "missing broker "+command)
+	}
+	if missing := stringListField(shims, "missing_shims"); len(missing) > 0 {
+		parts = append(parts, "missing "+strings.Join(missing, ", "))
+	}
+	if missing := stringListField(shims, "MissingShims"); len(missing) > 0 {
+		parts = append(parts, "missing "+strings.Join(missing, ", "))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func securityShimsReady(raw any) (bool, bool) {
+	shims, ok := raw.(map[string]any)
+	if !ok || len(shims) == 0 {
+		return false, false
+	}
+	return boolSecurityField(shims, "ready", "Ready"), true
+}
+
+func boolSecurityField(m map[string]any, keys ...string) bool {
+	for _, key := range keys {
+		if v, ok := m[key].(bool); ok && v {
+			return true
+		}
+	}
+	return false
+}
+
+func renderSecurityClientEnforcement(raw any, shimsReady bool, hasShims bool) string {
+	clients, ok := raw.(map[string]any)
+	if !ok || len(clients) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(clients))
+	for name := range clients {
+		if strings.TrimSpace(name) != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		meta, ok := clients[name].(map[string]any)
+		if !ok {
+			continue
+		}
+		level := firstStringField(meta, "level", "Level")
+		if level == "" {
+			level = "unknown"
+		}
+		state := securityClientProtectionState(level, boolSecurityField(meta, "controlled_env", "ControlledEnv"), firstStringField(meta, "broker_path", "BrokerPath"), shimsReady, hasShims)
+		detail := level
+		if level == "brokered" {
+			if hasShims {
+				if shimsReady {
+					detail += ", shim ready"
+				} else {
+					detail += ", shim not ready"
+				}
+			} else {
+				detail += ", shim unknown"
+			}
+		}
+		parts = append(parts, fmt.Sprintf("%s %s (%s)", name, state, detail))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func securityClientProtectionState(level string, controlled bool, brokerPath string, shimsReady bool, hasShims bool) string {
+	switch strings.TrimSpace(level) {
+	case "full":
+		return "protected"
+	case "brokered":
+		if controlled && hasShims && shimsReady {
+			return "protected"
+		}
+		if controlled && !hasShims && strings.TrimSpace(brokerPath) != "" {
+			return "protected"
+		}
+		return "unprotected"
+	default:
+		return "unprotected"
+	}
 }
 
 func renderSecurityScanners(raw any) string {
