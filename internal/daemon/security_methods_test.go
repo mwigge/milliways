@@ -182,7 +182,7 @@ func TestSecurityStatusIncludesCRAReadinessKPIs(t *testing.T) {
 	db := openSecurityMethodTestDB(t)
 	workspace := t.TempDir()
 	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
-	writeSecurityMethodFile(t, filepath.Join(workspace, "SECURITY.md"), "Report vulnerabilities to security@example.test.\n")
+	writeSecurityMethodFile(t, filepath.Join(workspace, "SECURITY.md"), "Report vulnerabilities to security@example.test. We respond within 7 days and coordinate disclosure.\n")
 	writeSecurityMethodFile(t, filepath.Join(workspace, "sbom.spdx.json"), "{}\n")
 	if err := db.Security().MarkStartupScanCompleted(workspace, startupScanConfigHash(workspace)); err != nil {
 		t.Fatalf("MarkStartupScanCompleted: %v", err)
@@ -268,6 +268,30 @@ func TestSecurityCRARPCReturnsSummaryAndChecks(t *testing.T) {
 		return
 	}
 	t.Fatalf("cra-sbom check missing: %v", checks)
+}
+
+func TestSecurityCRADoesNotTreatThinSecurityPolicyAsFullReportingEvidence(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	writeSecurityMethodFile(t, filepath.Join(workspace, "SECURITY.md"), "Security policy placeholder.\n")
+
+	s := &Server{pantryDB: db, spans: observability.NewRing(10)}
+	enc, buf := newCapturingEncoder()
+	s.dispatch(enc, &Request{Method: "security.cra", ID: mustSecurityMethodParams(t, 1)})
+
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	if _, ok := resp["error"]; ok {
+		t.Fatalf("security.cra returned error: %v", resp)
+	}
+	result := resp["result"].(map[string]any)
+	summary := result["summary"].(map[string]any)
+	if present, _ := summary["reporting_present"].(float64); present != 1 {
+		t.Fatalf("reporting_present = %v, want policy-only evidence; summary=%v", summary["reporting_present"], summary)
+	}
+	if ready, _ := summary["reporting_ready"].(bool); ready {
+		t.Fatalf("reporting_ready = true for placeholder policy; summary=%v", summary)
+	}
 }
 
 func TestSecurityCRAUsesSupportUntilEvidence(t *testing.T) {

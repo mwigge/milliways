@@ -460,8 +460,8 @@ func evaluateCRAReadiness(workspace string, status pantry.SecurityStatus, scanne
 		AsOf:                            time.Now().UTC(),
 		SBOMPaths:                       findCRAEvidenceFiles(workspace, "sbom"),
 		VulnerabilityHandlingPolicy:     firstCRAEvidenceFile(workspace, "security-policy"),
-		VulnerabilityReportingContact:   firstCRAEvidenceFile(workspace, "security-contact"),
-		VulnerabilityReportingProcess:   firstCRAEvidenceFile(workspace, "security-process"),
+		VulnerabilityReportingContact:   firstCRAEvidenceFileMatching(workspace, "security-contact", craSecurityContactEvidence),
+		VulnerabilityReportingProcess:   firstCRAEvidenceFileMatching(workspace, "security-process", craSecurityProcessEvidence),
 		SecureByDefaultEvidence:         secureByDefaultCRAEvidence(status),
 		ScannerCoverage:                 scannerCoverageCRAEvidence(scannerStatus),
 		SupportPeriod:                   supportPeriod,
@@ -569,6 +569,37 @@ func firstCRAEvidenceFile(workspace, kind string) string {
 		return ""
 	}
 	return files[0]
+}
+
+func firstCRAEvidenceFileMatching(workspace, kind string, match func(string) bool) string {
+	for _, rel := range findCRAEvidenceFiles(workspace, kind) {
+		data, err := os.ReadFile(filepath.Join(workspace, rel))
+		if err != nil {
+			continue
+		}
+		if match(string(data)) {
+			return rel
+		}
+	}
+	return ""
+}
+
+func craSecurityContactEvidence(content string) bool {
+	content = strings.ToLower(content)
+	return strings.Contains(content, "@") ||
+		strings.Contains(content, "security.txt") ||
+		strings.Contains(content, "github.com/") ||
+		strings.Contains(content, "contact")
+}
+
+func craSecurityProcessEvidence(content string) bool {
+	content = strings.ToLower(content)
+	for _, needle := range []string{"triage", "response", "respond", "disclosure", "sla", "within", "process"} {
+		if strings.Contains(content, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func craSupportUntil(workspace, rel string) *time.Time {
