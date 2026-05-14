@@ -12,7 +12,7 @@ Secure MilliWays is the answer I want in the terminal itself: all clients in one
 
 Not a separate product. Not a claim that agentic coding is risk-free. A practical control plane that makes risk visible and gives the developer places to warn, block, scan, and recover.
 
-![Secure MilliWays layered security](images/secure-milliways-layered-security.svg)
+![Secure MilliWays layered security](images/secure-milliways-layered-security.png)
 
 ---
 
@@ -56,7 +56,7 @@ If security state is hidden in a command you have to remember to run, most peopl
 
 That is why security status is wired into the same observability story as tokens, cost, spans, latency, and runner errors.
 
-![Security KPIs in observability](images/secure-milliways-observability-kpis.svg)
+![Security KPIs in observability](images/secure-milliways-observability-kpis.png)
 
 The status bar and cockpit now have room for the practical signals:
 
@@ -79,7 +79,7 @@ One design rule matters a lot: the command firewall does not ask the model wheth
 
 It parses and classifies. Then policy mode decides what happens.
 
-![Command and output gates](images/secure-milliways-command-gate.svg)
+![Command and output gates](images/secure-milliways-command-gate.png)
 
 In `warn` mode, a risky action can be recorded and surfaced while work continues. That is the right default for developer laptops and noisy repos.
 
