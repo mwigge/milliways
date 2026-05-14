@@ -365,7 +365,7 @@ func (s *startupScanner) scanPackagePolicy(packageJSON string) {
 			Evidence:    "no package lockfile found",
 		})
 	}
-	if values["minimum-release-age"] == "" && values["minimumReleaseAge"] == "" && values["min-release-age"] == "" {
+	if values["minimum-release-age"] == "" && values["minimumreleaseage"] == "" && values["min-release-age"] == "" {
 		s.addFinding(StartupFinding{
 			ID:          "policy.package.release-age",
 			RuleID:      "policy.package.release-age",
@@ -377,6 +377,48 @@ func (s *startupScanner) scanPackagePolicy(packageJSON string) {
 			Path:        npmrc,
 			RelPath:     ".npmrc",
 			Evidence:    "minimum-release-age missing",
+		})
+	}
+	if registry := values["registry"]; strings.HasPrefix(strings.ToLower(registry), "http://") {
+		s.addFinding(StartupFinding{
+			ID:          "policy.npm.insecure-registry",
+			RuleID:      "policy.npm.insecure-registry",
+			Category:    rules.CategoryPolicy,
+			Severity:    rules.SeverityWarn,
+			Title:       "npm registry uses plaintext HTTP",
+			Description: "Plaintext registries allow package metadata and tarball responses to be intercepted or modified.",
+			Remediation: "Use an HTTPS registry URL or a trusted internal mirror with transport security.",
+			Path:        npmrc,
+			RelPath:     ".npmrc",
+			Evidence:    "registry=" + truncateEvidence(registry),
+		})
+	}
+	if strings.ToLower(values["always-auth"]) == "true" {
+		s.addFinding(StartupFinding{
+			ID:          "policy.npm.always-auth",
+			RuleID:      "policy.npm.always-auth",
+			Category:    rules.CategoryPolicy,
+			Severity:    rules.SeverityWarn,
+			Title:       "npm always-auth is enabled",
+			Description: "always-auth sends registry credentials more broadly and increases token exposure from compromised package tooling.",
+			Remediation: "Disable always-auth unless a trusted private registry explicitly requires it.",
+			Path:        npmrc,
+			RelPath:     ".npmrc",
+			Evidence:    "always-auth=true",
+		})
+	}
+	if shell := strings.TrimSpace(values["script-shell"]); shell != "" {
+		s.addFinding(StartupFinding{
+			ID:          "policy.npm.script-shell",
+			RuleID:      "policy.npm.script-shell",
+			Category:    rules.CategoryPolicy,
+			Severity:    rules.SeverityWarn,
+			Title:       "npm script-shell is overridden",
+			Description: "script-shell changes the interpreter used by lifecycle scripts and can hide unexpected agent or package execution.",
+			Remediation: "Remove script-shell unless it is required and reviewed for this workspace.",
+			Path:        npmrc,
+			RelPath:     ".npmrc",
+			Evidence:    "script-shell=" + truncateEvidence(shell),
 		})
 	}
 }
@@ -487,7 +529,7 @@ func readNPMRC(path string) map[string]string {
 		if !ok {
 			continue
 		}
-		values[strings.TrimSpace(key)] = strings.TrimSpace(val)
+		values[strings.ToLower(strings.TrimSpace(key))] = strings.TrimSpace(val)
 	}
 	return values
 }

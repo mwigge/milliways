@@ -16,6 +16,7 @@ package security_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -89,6 +90,43 @@ func TestRunStartupScanWarnAndBlockFixture(t *testing.T) {
 	}
 }
 
+func TestRunStartupScanFlagsRiskyNPMRCPolicy(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	mustWriteStartupTestFile(t, filepath.Join(root, "package.json"), `{"dependencies":{"left-pad":"1.3.0"}}`)
+	mustWriteStartupTestFile(t, filepath.Join(root, "package-lock.json"), `{"lockfileVersion":3,"packages":{}}`)
+	mustWriteStartupTestFile(t, filepath.Join(root, ".npmrc"), `ignore-scripts=true
+minimumReleaseAge=7d
+registry=http://registry.example.test/
+always-auth=true
+script-shell=/bin/bash
+`)
+
+	result, err := security.RunStartupScan(context.Background(), security.StartupScanOptions{
+		WorkspaceRoot: root,
+		Now:           fixedStartupScanTime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings := findingsByID(result.Findings)
+	for _, id := range []string{
+		"policy.npm.insecure-registry",
+		"policy.npm.always-auth",
+		"policy.npm.script-shell",
+	} {
+		if _, ok := findings[id]; !ok {
+			t.Fatalf("missing finding %q in %#v", id, result.Findings)
+		}
+	}
+	for _, absent := range []string{"policy.npm.ignore-scripts", "policy.package.lockfile", "policy.package.release-age"} {
+		if _, ok := findings[absent]; ok {
+			t.Fatalf("unexpected finding %q in %#v", absent, result.Findings)
+		}
+	}
+}
+
 func TestRunStartupScanRequiresWorkspaceRoot(t *testing.T) {
 	t.Parallel()
 
@@ -108,4 +146,14 @@ func findingsByID(findings []security.StartupFinding) map[string]security.Startu
 
 func fixedStartupScanTime() time.Time {
 	return time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+}
+
+func mustWriteStartupTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 }
