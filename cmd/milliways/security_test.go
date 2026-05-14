@@ -35,7 +35,7 @@ type chatSecurityRPCCall struct {
 
 func startChatSecurityRPCTestServer(t *testing.T, results map[string]any) (string, <-chan chatSecurityRPCCall) {
 	t.Helper()
-	sock := filepath.Join(t.TempDir(), "mw.sock")
+	sock := shortChatSecurityTestSocket(t)
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -53,6 +53,16 @@ func startChatSecurityRPCTestServer(t *testing.T, results map[string]any) (strin
 		}
 	}()
 	return sock, calls
+}
+
+func shortChatSecurityTestSocket(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "mw-chat-sec-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "s.sock")
 }
 
 func handleChatSecurityRPCTestConn(conn net.Conn, results map[string]any, calls chan<- chatSecurityRPCCall) {

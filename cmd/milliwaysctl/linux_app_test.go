@@ -18,9 +18,22 @@ func TestLinuxDeckLayoutInvariants(t *testing.T) {
 		"args = { mw_bin, 'attach', '--deck', '--right-pane', main_pane_id }",
 		"direction = 'Bottom'",
 		"args = { mwctl_bin, 'observe-render' }",
+		"apply_startup_window_state(window)",
+		":maximize()",
+		"user-var-changed",
+		"milliways_exit",
+		"CloseCurrentTab { confirm = false }",
 	} {
 		if !strings.Contains(lua, want) {
 			t.Fatalf("milliways.lua missing invariant %q", want)
+		}
+	}
+	for _, blocked := range []string{
+		"toggle_fullscreen",
+		"MILLIWAYS_NO_FULLSCREEN",
+	} {
+		if strings.Contains(lua, blocked) {
+			t.Fatalf("milliways.lua uses blocking fullscreen invariant %q", blocked)
 		}
 	}
 	if strings.Contains(lua, "MILLIWAYS_WEZTERM_CLI") {

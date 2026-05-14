@@ -140,16 +140,28 @@ type observeRenderCRA struct {
 // observeRender opens an observability.subscribe stream and writes a
 // rendered frame immediately, then refreshes it once per second. Quiet
 // daemons may not emit spans for a while; the cockpit still needs to be
-// visible as soon as the pane is created.
+// visible as soon as the pane is created. The Linux desktop app starts
+// milliwaysd and this pane in the same gui-startup hook, so startup races
+// must render a waiting frame and retry instead of exiting and making the
+// cockpit disappear.
 func observeRender(socket string) {
+	for {
+		if observeRenderOnce(socket) {
+			return
+		}
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func observeRenderOnce(socket string) bool {
 	c, err := rpc.Dial(socket)
 	if err != nil {
-		die("dial %s: %v", socket, err)
+		return renderObserveWaiting(socket, err)
 	}
 	defer c.Close()
 	events, cancel, err := c.Subscribe("observability.subscribe", nil)
 	if err != nil {
-		die("observability.subscribe: %v", err)
+		return renderObserveWaiting(socket, fmt.Errorf("observability.subscribe: %w", err))
 	}
 	defer cancel()
 
@@ -166,7 +178,7 @@ func observeRender(socket string) {
 		return true
 	}
 	if !render() {
-		return
+		return true
 	}
 
 	ticker := time.NewTicker(1 * time.Second)
@@ -175,7 +187,7 @@ func observeRender(socket string) {
 		select {
 		case ev, ok := <-events:
 			if !ok {
-				return
+				return false
 			}
 			var frame observeRenderFrame
 			if err := json.Unmarshal(ev, &frame); err != nil || frame.T != "data" {
@@ -184,10 +196,27 @@ func observeRender(socket string) {
 			spans = frame.Spans
 		case <-ticker.C:
 			if !render() {
-				return
+				return true
 			}
 		}
 	}
+}
+
+func renderObserveWaiting(socket string, err error) bool {
+	now := time.Now().UTC()
+	out := strings.Join([]string{
+		"milliways observability",
+		"waiting for daemon",
+		"",
+		"socket: " + socket,
+		"status: " + err.Error(),
+		"",
+		now.Format(time.RFC3339),
+	}, "\n")
+	if _, writeErr := fmt.Fprint(os.Stdout, "\x1b[?25l\x1b[3J\x1b[2J\x1b[H"+out); writeErr != nil {
+		return true
+	}
+	return false
 }
 
 func fetchObserveRenderUsage(c *rpc.Client) observeRenderUsage {

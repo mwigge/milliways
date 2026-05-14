@@ -187,15 +187,15 @@ func generatedPathChange(absRoot, raw string) (string, ChangeStatus, error) {
 	if err != nil {
 		return "", "", fmt.Errorf("resolve generated file %q: %w", raw, err)
 	}
-	rel, err := filepath.Rel(absRoot, absPath)
-	if err != nil {
-		return "", "", fmt.Errorf("relativize generated file %q: %w", raw, err)
-	}
-	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", "", fmt.Errorf("generated file %q escapes workspace root", raw)
-	}
 	if _, err := os.Stat(absPath); err != nil {
 		if os.IsNotExist(err) {
+			rel, err := filepath.Rel(absRoot, absPath)
+			if err != nil {
+				return "", "", fmt.Errorf("relativize generated file %q: %w", raw, err)
+			}
+			if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return "", "", fmt.Errorf("generated file %q escapes workspace root", raw)
+			}
 			return filepath.ToSlash(filepath.Clean(rel)), StatusDeleted, nil
 		}
 		return "", "", fmt.Errorf("stat generated file %q: %w", raw, err)
@@ -211,7 +211,7 @@ func generatedPathChange(absRoot, raw string) (string, ChangeStatus, error) {
 	if resolvedRel == "." || resolvedRel == ".." || strings.HasPrefix(resolvedRel, ".."+string(filepath.Separator)) {
 		return "", "", fmt.Errorf("generated file %q resolves outside workspace root", raw)
 	}
-	return filepath.ToSlash(filepath.Clean(rel)), StatusModified, nil
+	return filepath.ToSlash(filepath.Clean(resolvedRel)), StatusModified, nil
 }
 
 func shouldSkipSnapshotDir(name string) bool {

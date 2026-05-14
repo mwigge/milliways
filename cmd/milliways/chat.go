@@ -44,6 +44,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -1536,6 +1537,7 @@ func (l *chatLoop) cancelActiveSession() bool {
 }
 
 func (l *chatLoop) exitNow() {
+	l.requestDeckAppExit()
 	fmt.Fprintln(l.out, "bye")
 	for _, sess := range l.sessions {
 		_ = sess.close()
@@ -1544,6 +1546,33 @@ func (l *chatLoop) exitNow() {
 		_ = l.rl.Close()
 	}
 	os.Exit(0)
+}
+
+const (
+	milliwaysExitUserVar      = "milliways_exit"
+	milliwaysExitUserVarValue = "app"
+)
+
+func (l *chatLoop) requestDeckAppExit() {
+	if !runningInsideMilliwaysDeck() {
+		return
+	}
+	writeMilliwaysExitUserVar(l.out)
+}
+
+func runningInsideMilliwaysDeck() bool {
+	if os.Getenv("MILLIWAYS_NO_DECK") != "1" {
+		return false
+	}
+	return os.Getenv("WEZTERM_EXECUTABLE") != "" || os.Getenv("TERM_PROGRAM") == "WezTerm"
+}
+
+func writeMilliwaysExitUserVar(w io.Writer) {
+	if w == nil {
+		return
+	}
+	value := base64.StdEncoding.EncodeToString([]byte(milliwaysExitUserVarValue))
+	fmt.Fprintf(w, "\x1b]1337;SetUserVar=%s=%s\x07", milliwaysExitUserVar, value)
 }
 
 func (l *chatLoop) anyBusy() bool {
@@ -1664,6 +1693,13 @@ func (l *chatLoop) ensureAgentSession(agentID string) (*chatSession, error) {
 		return nil, fmt.Errorf("daemon not connected — start milliwaysd first")
 	}
 	sess, err := opener(l.client, agentID)
+	if err != nil && l.openAgent == nil && isTransientRPCConnectionError(err) {
+		if reconnectErr := l.reconnectDaemonClient(); reconnectErr == nil {
+			sess, err = opener(l.client, agentID)
+		} else {
+			err = fmt.Errorf("%w; reconnect failed: %v", err, reconnectErr)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1681,6 +1717,41 @@ func (l *chatLoop) ensureAgentSession(agentID string) (*chatSession, error) {
 		go l.drainStream(sess)
 	}
 	return sess, nil
+}
+
+func (l *chatLoop) reconnectDaemonClient() error {
+	next, err := rpc.Dial(daemonSocket())
+	if err != nil {
+		return err
+	}
+	if l.client != nil {
+		_ = l.client.Close()
+	}
+	l.client = next
+	l.handoffWriter = &rpcHandoffWriter{client: next}
+	return nil
+}
+
+func isTransientRPCConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"broken pipe",
+		"connection closed",
+		"connection reset by peer",
+		"use of closed network connection",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func (l *chatLoop) activateSession(sess *chatSession) {

@@ -689,7 +689,18 @@ end)
 
 -- ── Auto-start milliwaysd when wezterm opens ─────────────────────────────────
 -- Spawns the daemon once; subsequent windows reuse the existing socket.
--- Also maximizes the initial window so milliways fills the screen on launch.
+-- Also maximizes the initial window so milliways fills the screen on launch
+-- while keeping normal window manager controls available.
+
+local function apply_startup_window_state(window)
+  window:gui_window():maximize()
+end
+
+wezterm.on('user-var-changed', function(window, pane, name, value)
+  if name == 'milliways_exit' and value == 'app' then
+    window:perform_action(act.CloseCurrentTab { confirm = false }, pane)
+  end
+end)
 
 wezterm.on('gui-startup', function(cmd)
   local pane_env = {
@@ -715,7 +726,7 @@ wezterm.on('gui-startup', function(cmd)
     return
   end
 
-  window:gui_window():maximize()
+  apply_startup_window_state(window)
 
   local daemon_sock = state_dir .. '/sock'
   local f = io.open(daemon_sock, 'r')

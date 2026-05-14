@@ -34,7 +34,7 @@ type securityRPCCall struct {
 
 func startSecurityRPCTestServer(t *testing.T, results map[string]any) (string, <-chan securityRPCCall) {
 	t.Helper()
-	sock := filepath.Join(t.TempDir(), "mw.sock")
+	sock := shortSecurityTestSocket(t)
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -52,6 +52,16 @@ func startSecurityRPCTestServer(t *testing.T, results map[string]any) (string, <
 		}
 	}()
 	return sock, calls
+}
+
+func shortSecurityTestSocket(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "mwctl-sec-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "s.sock")
 }
 
 func handleSecurityRPCTestConn(conn net.Conn, results map[string]any, calls chan<- securityRPCCall) {

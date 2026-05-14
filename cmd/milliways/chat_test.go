@@ -921,6 +921,29 @@ func TestConfirmExitRequestedAllowsIdle(t *testing.T) {
 	}
 }
 
+func TestWriteMilliwaysExitUserVar(t *testing.T) {
+	var out bytes.Buffer
+	writeMilliwaysExitUserVar(&out)
+
+	want := "\x1b]1337;SetUserVar=milliways_exit=YXBw\x07"
+	if got := out.String(); got != want {
+		t.Fatalf("exit user var = %q, want %q", got, want)
+	}
+}
+
+func TestRunningInsideMilliwaysDeck(t *testing.T) {
+	t.Setenv("MILLIWAYS_NO_DECK", "1")
+	t.Setenv("TERM_PROGRAM", "WezTerm")
+	if !runningInsideMilliwaysDeck() {
+		t.Fatal("runningInsideMilliwaysDeck() = false, want true")
+	}
+
+	t.Setenv("MILLIWAYS_NO_DECK", "")
+	if runningInsideMilliwaysDeck() {
+		t.Fatal("runningInsideMilliwaysDeck() = true outside deck")
+	}
+}
+
 func TestEffectiveLoginPathAddsSystemFallbacks(t *testing.T) {
 	t.Setenv("PATH", "/tmp/custom-bin")
 	t.Setenv("MILLIWAYS_PATH", "")
