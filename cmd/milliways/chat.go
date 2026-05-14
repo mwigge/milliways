@@ -177,23 +177,24 @@ var chatCtlAliases = map[string][]string{
 	// Upgrade milliways itself
 	"upgrade": {"upgrade"},
 	// Local-model bootstrap
-	"install-local-server":  {"local", "install-server"},
-	"install-local-swap":    {"local", "install-swap"},
-	"list-local-models":     {"local", "list-models"},
-	"switch-local-server":   {"local", "switch-server"},
-	"download-local-model":  {"local", "download-model"},
-	"download-model":        {"local", "download-model"},
-	"setup-local-model":     {"local", "setup-model"},
-	"setup-model":           {"local", "setup-model"},
-	"list-models-catalog":   {"local", "setup-model", "list"},
-	"refresh-model-catalog": {"local", "setup-model", "refresh"},
-	"swap":                  {"local", "swap-mode"}, // /swap hot | /swap cold
-	"server-start":          {"local", "server-start"},
-	"server-stop":           {"local", "server-stop"},
-	"server-status":         {"local", "server-status"},
-	"server-port":           {"local", "server-port"},
-	"server-uninstall":      {"local", "server-uninstall"},
-	"default-model":         {"local", "default-model"},
+	"install-local-server":     {"local", "install-server"},
+	"install-local-gpu-server": {"local", "install-gpu-server"},
+	"install-local-swap":       {"local", "install-swap"},
+	"list-local-models":        {"local", "list-models"},
+	"switch-local-server":      {"local", "switch-server"},
+	"download-local-model":     {"local", "download-model"},
+	"download-model":           {"local", "download-model"},
+	"setup-local-model":        {"local", "setup-model"},
+	"setup-model":              {"local", "setup-model"},
+	"list-models-catalog":      {"local", "setup-model", "list"},
+	"refresh-model-catalog":    {"local", "setup-model", "refresh"},
+	"swap":                     {"local", "swap-mode"}, // /swap hot | /swap cold
+	"server-start":             {"local", "server-start"},
+	"server-stop":              {"local", "server-stop"},
+	"server-status":            {"local", "server-status"},
+	"server-port":              {"local", "server-port"},
+	"server-uninstall":         {"local", "server-uninstall"},
+	"default-model":            {"local", "default-model"},
 	// Metrics dashboard
 	"metrics": {"metrics"},
 	// OpenSpec wrappers
@@ -327,7 +328,8 @@ func buildCompleter(agentID string) []string {
 		"/security cra-scaffold", "/security client", "/security command-check --", "/security warnings", "/help", "/exit",
 		// Install / Upgrade
 		"/install", "/install claude", "/install codex", "/install copilot", "/install gemini", "/install local",
-		"/install-local-server", "/install-local-swap",
+		"/install-local-server", "/install-local-gpu-server", "/install-local-gpu-server --dry-run",
+		"/install-local-gpu-server --accel vulkan", "/install-local-gpu-server --accel hip", "/install-local-gpu-server --accel cuda", "/install-local-swap",
 		"/upgrade", "/upgrade --check", "/upgrade --yes", "/upgrade --version",
 		"/list-local-models", "/switch-local-server", "/switch-local-server llama-server",
 		"/switch-local-server llama-swap", "/switch-local-server ollama", "/switch-local-server vllm",
@@ -3372,6 +3374,10 @@ func (l *chatLoop) printHelp() {
 
 	fmt.Fprintln(l.out, "Local-model bootstrap:")
 	fmt.Fprintln(l.out, "  /install-local-server         install llama.cpp + default coder model")
+	fmt.Fprintln(l.out, "  /install-local-gpu-server     detect NVIDIA/AMD GPU + install largest fitting model")
+	fmt.Fprintln(l.out, "    --accel vulkan              force Vulkan GPU backend")
+	fmt.Fprintln(l.out, "    --accel hip                 force AMD ROCm/HIP backend")
+	fmt.Fprintln(l.out, "    --accel cuda                force NVIDIA CUDA backend")
 	fmt.Fprintln(l.out, "  /install-local-swap           install llama-swap (hot model swap)")
 	fmt.Fprintln(l.out, "  /list-local-models            show models the active backend serves")
 	fmt.Fprintln(l.out, "  /switch-local-server <kind>   llama-server | llama-swap | ollama | vllm | lmstudio")

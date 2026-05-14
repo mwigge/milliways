@@ -306,6 +306,84 @@ func TestRunLocal_HelpExitsZero(t *testing.T) {
 	}
 }
 
+func TestSelectGPUCatalogModelChoosesLargestSafeFit(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	got, err := selectGPUCatalogModel(16)
+	if err != nil {
+		t.Fatalf("selectGPUCatalogModel: %v", err)
+	}
+	if got.Name != "Qwen3-8B" {
+		t.Fatalf("model = %s, want Qwen3-8B", got.Name)
+	}
+}
+
+func TestFirstMemoryGB(t *testing.T) {
+	cases := map[string]float64{
+		"Total VRAM: 16384 MB":      16,
+		"VRAM Total Memory: 8 GiB":  8,
+		"Memory: 17179869184 bytes": 16,
+	}
+	for input, want := range cases {
+		if got := firstMemoryGB(input); got != want {
+			t.Fatalf("firstMemoryGB(%q) = %v, want %v", input, got, want)
+		}
+	}
+}
+
+func TestParseROCMSMIOutput(t *testing.T) {
+	gpu, ok := parseROCMSMIOutput(`GPU[0]          : Card series: Radeon RX 7900 XTX
+GPU[0]          : VRAM Total Memory (B): 25757220864`)
+	if !ok {
+		t.Fatal("parseROCMSMIOutput returned false")
+	}
+	if gpu.Vendor != "amd" || gpu.Name != "Radeon RX 7900 XTX" {
+		t.Fatalf("gpu = %#v", gpu)
+	}
+	if gpu.VRAMGB < 23.9 || gpu.VRAMGB > 24.1 {
+		t.Fatalf("VRAMGB = %v, want about 24", gpu.VRAMGB)
+	}
+}
+
+func TestLocalGPUInfoLlamaAccelDefaultsAMDtoVulkanWithoutHIP(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("ROCM_PATH", t.TempDir())
+
+	got, err := (localGPUInfo{Vendor: "amd"}).LlamaAccel("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "vulkan" {
+		t.Fatalf("accel = %q, want vulkan", got)
+	}
+}
+
+func TestLocalGPUInfoLlamaAccelOverride(t *testing.T) {
+	got, err := (localGPUInfo{Vendor: "amd"}).LlamaAccel("hip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "hip" {
+		t.Fatalf("accel = %q, want hip", got)
+	}
+}
+
+func TestWithEnvOverrides(t *testing.T) {
+	got := withEnvOverrides([]string{"PATH=/bin", "MODEL_REPO=old"}, map[string]string{
+		"MODEL_REPO":      "new",
+		"LLAMA_CPP_ACCEL": "hip",
+	})
+	joined := strings.Join(got, "\n")
+	for _, want := range []string{"PATH=/bin", "MODEL_REPO=new", "LLAMA_CPP_ACCEL=hip"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("env missing %q: %#v", want, got)
+		}
+	}
+	if strings.Contains(joined, "MODEL_REPO=old") {
+		t.Fatalf("env kept old override: %#v", got)
+	}
+}
+
 // ── setup-model tests ─────────────────────────────────────────────────────────
 
 func TestRunLocal_SetupModelMissingRepo(t *testing.T) {
@@ -356,8 +434,12 @@ func TestRunLocal_SetupModelDownloadAndRegister(t *testing.T) {
 	// llama-swap.yaml should exist somewhere under cfgDir.
 	var yamlBytes []byte
 	_ = filepath.WalkDir(cfgDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() { return err }
-		if strings.HasSuffix(path, "llama-swap.yaml") { yamlBytes, _ = os.ReadFile(path) }
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if strings.HasSuffix(path, "llama-swap.yaml") {
+			yamlBytes, _ = os.ReadFile(path)
+		}
 		return nil
 	})
 	if len(yamlBytes) == 0 {

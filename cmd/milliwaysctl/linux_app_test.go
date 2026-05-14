@@ -23,6 +23,7 @@ func TestLinuxDeckLayoutInvariants(t *testing.T) {
 		"user-var-changed",
 		"milliways_exit",
 		"CloseCurrentTab { confirm = false }",
+		"uri = tostring(uri)",
 	} {
 		if !strings.Contains(lua, want) {
 			t.Fatalf("milliways.lua missing invariant %q", want)

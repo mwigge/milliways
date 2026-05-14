@@ -268,6 +268,7 @@ Tab completion is available for all commands. Type `/` and press Tab to see the 
 | Command | Description |
 |---------|-------------|
 | `/install-local-server` | Install llama.cpp + default coder model |
+| `/install-local-gpu-server` | Detect NVIDIA/AMD GPU VRAM and install the largest fitting curated model |
 | `/install-local-swap` | Install llama-swap (hot model switching) |
 | `/list-local-models` | Show models the backend serves |
 | `/switch-local-server <kind>` | Switch backend: `llama-server` \| `llama-swap` \| `ollama` \| `vllm` \| `lmstudio` |
@@ -821,6 +822,8 @@ There are two deployment shapes, picked by which installer you ran:
 
 ### Pick the right model for your machine
 
+For Linux GPU machines, use `/install-local-gpu-server --dry-run` first. MilliWays reads NVIDIA via `nvidia-smi`, AMD via Linux DRM sysfs/`rocm-smi`, keeps safety headroom for KV cache, Vulkan buffers, and the desktop, then installs the largest curated GGUF inside a conservative budget. Acceleration defaults to CUDA when a CUDA toolchain is present, HIP when ROCm/HIP is present, otherwise Vulkan. You can force it with `--accel vulkan|cuda|hip`. On this dev box, for example, the detector sees a 16GB AMD Radeon and selects `Qwen3-8B` Q4_K_M with Vulkan acceleration and an 8K context.
+
 | RAM | Recommended `MODEL_REPO` | Loaded size (Q4_K_M) |
 |----|---|---|
 | 8 GB | `unsloth/Qwen2.5-Coder-0.5B-Instruct-GGUF` | ~400 MB |
@@ -871,6 +874,7 @@ These dispatch to `milliwaysctl local <verb>` via the milliways-term `Leader + /
 | Command | Underlying ctl | Action |
 |---|---|---|
 | `/install-local-server` | `milliwaysctl local install-server` | install llama.cpp + the default coder model (qwen2.5-coder-1.5b) |
+| `/install-local-gpu-server` | `milliwaysctl local install-gpu-server` | detect NVIDIA/AMD GPU VRAM, pick the largest fitting curated model, and install with GPU offload; add `--accel hip` or `--accel cuda` to force a vendor toolkit |
 | `/install-local-swap` | `milliwaysctl local install-swap` | install llama-swap (memory-safe, unloads on TTL); add `--hot` to warm every model at startup |
 | `/list-local-models` | `milliwaysctl local list-models` | list models the active backend serves (hits `/v1/models`) |
 | `/switch-local-server <kind>` | `milliwaysctl local switch-server <kind>` | rebind milliways to `llama-server` / `llama-swap` / `ollama` / `vllm` / `lmstudio` |

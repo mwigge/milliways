@@ -22,6 +22,7 @@ package main
 //
 // Verbs:
 //   install-server         install llama.cpp via scripts/install_local.sh
+//   install-gpu-server     install llama.cpp + largest model that fits local GPU
 //   install-swap           install llama-swap via scripts/install_local_swap.sh
 //   list-models            GET $MILLIWAYS_LOCAL_ENDPOINT/models
 //   switch-server <kind>   write ~/.config/milliways/local.env for the kind
@@ -29,16 +30,17 @@ package main
 //   setup-model    <repo>  download + register in llama-swap.yaml + verify
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"bytes"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +56,7 @@ var userHomeDirFn = os.UserHomeDir
 // by the wezterm slash dispatcher (which can read it via help output).
 var localVerbs = []string{
 	"install-server",
+	"install-gpu-server",
 	"install-swap",
 	"list-models",
 	"switch-server",
@@ -81,6 +84,8 @@ func runLocal(args []string, stdout, stderr io.Writer) int {
 	switch verb {
 	case "install-server":
 		return runLocalInstallServer(rest, stdout, stderr)
+	case "install-gpu-server":
+		return runLocalInstallGPUServer(rest, stdout, stderr)
 	case "install-swap":
 		return runLocalInstallSwap(rest, stdout, stderr)
 	case "list-models":
@@ -121,6 +126,8 @@ func printLocalUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: milliwaysctl local <verb> [args...]")
 	fmt.Fprintln(w, "verbs:")
 	fmt.Fprintln(w, "  install-server                     install llama.cpp + default model")
+	fmt.Fprintln(w, "  install-gpu-server [--dry-run] [--accel auto|vulkan|cuda|hip]")
+	fmt.Fprintln(w, "                                      detect NVIDIA/AMD GPU and install the largest fitting model")
 	fmt.Fprintln(w, "  install-swap [--hot]               install llama-swap (hot-swap setup)")
 	fmt.Fprintln(w, "  list-models                        list models exposed by the configured backend")
 	fmt.Fprintln(w, "  switch-server <kind>               kind = llama-server | llama-swap | ollama | vllm | lmstudio")
@@ -152,6 +159,67 @@ func runLocalInstallServer(_ []string, stdout, stderr io.Writer) int {
 	return runInstallScript("scripts/install_local.sh", stdout, stderr)
 }
 
+func runLocalInstallGPUServer(args []string, stdout, stderr io.Writer) int {
+	dryRun := false
+	accelOverride := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--dry-run":
+			dryRun = true
+		case "--accel":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "local install-gpu-server: --accel requires auto|vulkan|cuda|hip")
+				return 2
+			}
+			accelOverride = strings.ToLower(args[i+1])
+			i++
+		default:
+			fmt.Fprintf(stderr, "local install-gpu-server: unknown flag %q\n", args[i])
+			return 2
+		}
+	}
+
+	gpu, err := detectBestLocalGPU()
+	if err != nil {
+		fmt.Fprintf(stderr, "local install-gpu-server: %v\n", err)
+		return 1
+	}
+	model, err := selectGPUCatalogModel(gpu.VRAMGB)
+	if err != nil {
+		fmt.Fprintf(stderr, "local install-gpu-server: %v\n", err)
+		return 1
+	}
+	accel, err := gpu.LlamaAccel(accelOverride)
+	if err != nil {
+		fmt.Fprintf(stderr, "local install-gpu-server: %v\n", err)
+		return 2
+	}
+	fmt.Fprintf(stdout, "GPU: %s (%s, %.1fGB VRAM)\n", gpu.Name, gpu.Vendor, gpu.VRAMGB)
+	fmt.Fprintf(stdout, "Model: %s (%s %s, %.1fGB)\n", model.Name, model.Repo, model.Quant, model.sizeGB())
+	fmt.Fprintf(stdout, "Accel: %s\n", accel)
+	if os.Getenv("CTX_SIZE") == "" {
+		fmt.Fprintln(stdout, "Context: 8192 tokens")
+	}
+	if dryRun {
+		return 0
+	}
+
+	env := map[string]string{
+		"MILLIWAYS_LOCAL_GPU":   "1",
+		"LLAMA_CPP_ACCEL":       accel,
+		"MODEL_REPO":            model.Repo,
+		"MODEL_QUANT":           model.Quant,
+		"MODEL_ALIAS":           strings.ToLower(model.Name),
+		"MILLIWAYS_GPU_VENDOR":  gpu.Vendor,
+		"MILLIWAYS_GPU_NAME":    gpu.Name,
+		"MILLIWAYS_GPU_VRAM_GB": fmt.Sprintf("%.1f", gpu.VRAMGB),
+	}
+	if os.Getenv("CTX_SIZE") == "" {
+		env["CTX_SIZE"] = "8192"
+	}
+	return runInstallScriptWithEnv("scripts/install_local.sh", env, stdout, stderr)
+}
+
 func runLocalInstallSwap(args []string, stdout, stderr io.Writer) int {
 	if hasFlag(args, "--hot") {
 		_ = os.Setenv("HOT_MODE", "1")
@@ -160,6 +228,10 @@ func runLocalInstallSwap(args []string, stdout, stderr io.Writer) int {
 }
 
 func runInstallScript(relPath string, stdout, stderr io.Writer) int {
+	return runInstallScriptWithEnv(relPath, nil, stdout, stderr)
+}
+
+func runInstallScriptWithEnv(relPath string, envOverride map[string]string, stdout, stderr io.Writer) int {
 	wd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(stderr, "local: cannot determine working dir: %v\n", err)
@@ -181,11 +253,11 @@ func runInstallScript(relPath string, stdout, stderr io.Writer) int {
 	}
 
 	candidates := []string{
-		filepath.Join(wd, relPath),                                           // checkout: ./scripts/install_local.sh
-		filepath.Join(exeShare, relPath),                                     // pkg new: /usr/share/milliways/scripts/install_local.sh
-		filepath.Join(exeShare, scriptName),                                  // pkg old: /usr/share/milliways/install_local.sh
+		filepath.Join(wd, relPath),                                                 // checkout: ./scripts/install_local.sh
+		filepath.Join(exeShare, relPath),                                           // pkg new: /usr/share/milliways/scripts/install_local.sh
+		filepath.Join(exeShare, scriptName),                                        // pkg old: /usr/share/milliways/install_local.sh
 		filepath.Join(home, ".local", "share", "milliways", "scripts", scriptName), // binary install
-		filepath.Join(home, ".local", "share", "milliways", scriptName),      // legacy
+		filepath.Join(home, ".local", "share", "milliways", scriptName),            // legacy
 	}
 
 	candidate := ""
@@ -213,7 +285,7 @@ func runInstallScript(relPath string, stdout, stderr io.Writer) int {
 	cmd.Stdin = os.Stdin
 	// Augment PATH so install scripts find tools installed by Homebrew, MacPorts,
 	// nvm, and ~/.local/bin even when launched from a GUI app without a full shell.
-	cmd.Env = enrichedEnvForScripts()
+	cmd.Env = withEnvOverrides(enrichedEnvForScripts(), envOverride)
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
@@ -223,6 +295,31 @@ func runInstallScript(relPath string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func withEnvOverrides(env []string, overrides map[string]string) []string {
+	if len(overrides) == 0 {
+		return env
+	}
+	out := make([]string, 0, len(env)+len(overrides))
+	seen := make(map[string]bool, len(overrides))
+	for _, item := range env {
+		key, _, ok := strings.Cut(item, "=")
+		if ok {
+			if value, exists := overrides[key]; exists {
+				out = append(out, key+"="+value)
+				seen[key] = true
+				continue
+			}
+		}
+		out = append(out, item)
+	}
+	for key, value := range overrides {
+		if !seen[key] {
+			out = append(out, key+"="+value)
+		}
+	}
+	return out
 }
 
 func hasFlag(args []string, flag string) bool {
@@ -724,11 +821,11 @@ exec %q \
 func enrichedEnvForScripts() []string {
 	home, _ := userHomeDirFn()
 	extra := []string{
-		"/opt/homebrew/bin",         // Apple Silicon Homebrew
-		"/usr/local/bin",            // Intel Homebrew + manual installs
-		"/opt/pkg/bin",              // MacPorts
-		home + "/.local/bin",        // user installs (milliways itself)
-		home + "/.cargo/bin",        // Rust toolchain
+		"/opt/homebrew/bin",  // Apple Silicon Homebrew
+		"/usr/local/bin",     // Intel Homebrew + manual installs
+		"/opt/pkg/bin",       // MacPorts
+		home + "/.local/bin", // user installs (milliways itself)
+		home + "/.cargo/bin", // Rust toolchain
 		"/usr/bin", "/bin", "/usr/sbin", "/sbin",
 	}
 	// Prepend extras to current PATH, deduplicating.
@@ -865,14 +962,305 @@ func expandCatalogEntry(e catalogEntry, extra []string) []string {
 // ── Model catalog ─────────────────────────────────────────────────────────────
 
 type catalogEntry struct {
-	Name    string `json:"name"`
-	Repo    string `json:"repo"`
-	Quant   string `json:"quant"`
-	SizeGB  string `json:"size_gb"`
-	MinRAM  string `json:"min_ram_gb"`
-	Tools   bool   `json:"tool_use"`
-	Think   bool   `json:"reasoning"`
-	Note    string `json:"note"`
+	Name   string `json:"name"`
+	Repo   string `json:"repo"`
+	Quant  string `json:"quant"`
+	SizeGB string `json:"size_gb"`
+	MinRAM string `json:"min_ram_gb"`
+	Tools  bool   `json:"tool_use"`
+	Think  bool   `json:"reasoning"`
+	Note   string `json:"note"`
+}
+
+func (e catalogEntry) sizeGB() float64 {
+	size, _ := strconv.ParseFloat(strings.TrimSpace(e.SizeGB), 64)
+	return size
+}
+
+type localGPUInfo struct {
+	Vendor string
+	Name   string
+	VRAMGB float64
+}
+
+func (g localGPUInfo) LlamaAccel(override string) (string, error) {
+	if override != "" && override != "auto" {
+		switch override {
+		case "vulkan", "cuda", "hip", "rocm":
+			if override == "rocm" {
+				return "hip", nil
+			}
+			return override, nil
+		default:
+			return "", fmt.Errorf("unsupported --accel %q (supported: auto, vulkan, cuda, hip)", override)
+		}
+	}
+	switch strings.ToLower(g.Vendor) {
+	case "nvidia":
+		if hasCUDAToolchain() {
+			return "cuda", nil
+		}
+		return "vulkan", nil
+	case "amd":
+		if hasHIPToolchain() {
+			return "hip", nil
+		}
+		return "vulkan", nil
+	default:
+		return "vulkan", nil
+	}
+}
+
+func hasCUDAToolchain() bool {
+	if _, err := exec.LookPath("nvcc"); err == nil {
+		return true
+	}
+	for _, root := range []string{os.Getenv("CUDA_PATH"), "/opt/cuda", "/usr/local/cuda"} {
+		if root == "" {
+			continue
+		}
+		if info, err := os.Stat(filepath.Join(root, "bin", "nvcc")); err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+func hasHIPToolchain() bool {
+	if _, err := exec.LookPath("hipcc"); err == nil {
+		return true
+	}
+	if _, err := exec.LookPath("amdclang++"); err == nil {
+		return true
+	}
+	for _, root := range []string{os.Getenv("ROCM_PATH"), "/opt/rocm"} {
+		if root == "" {
+			continue
+		}
+		if info, err := os.Stat(filepath.Join(root, "bin", "hipcc")); err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+func selectGPUCatalogModel(vramGB float64) (catalogEntry, error) {
+	if vramGB <= 0 {
+		return catalogEntry{}, fmt.Errorf("GPU VRAM is unknown; install rocm-smi or nvidia-smi, or use /setup-model manually")
+	}
+	// Leave room for KV cache, driver allocations, desktop compositor, and
+	// llama.cpp graph buffers. GGUF file size is not a full residency estimate,
+	// especially with Vulkan and large contexts, so keep the automatic pick
+	// conservative. Users can still install a bigger model explicitly with
+	// /setup-model when they know their box can hold it.
+	budget := vramGB * 0.45
+	var best catalogEntry
+	for _, entry := range builtinCatalog {
+		size := entry.sizeGB()
+		if size <= 0 || size > budget {
+			continue
+		}
+		if best.Name == "" || size > best.sizeGB() {
+			best = entry
+		}
+	}
+	if best.Name == "" {
+		return catalogEntry{}, fmt.Errorf("no curated GGUF model fits %.1fGB VRAM with safety headroom; try /setup-model Phi-3.5-mini", vramGB)
+	}
+	return best, nil
+}
+
+func detectBestLocalGPU() (localGPUInfo, error) {
+	var candidates []localGPUInfo
+	if gpu, ok := detectNVIDIAGPU(); ok {
+		candidates = append(candidates, gpu)
+	}
+	if gpu, ok := detectAMDGPU(); ok {
+		candidates = append(candidates, gpu)
+	}
+	if gpu, ok := detectDarwinGPU(); ok {
+		candidates = append(candidates, gpu)
+	}
+	if len(candidates) == 0 {
+		return localGPUInfo{}, fmt.Errorf("no NVIDIA or AMD GPU with VRAM detected")
+	}
+	best := candidates[0]
+	for _, gpu := range candidates[1:] {
+		if gpu.VRAMGB > best.VRAMGB {
+			best = gpu
+		}
+	}
+	return best, nil
+}
+
+func detectNVIDIAGPU() (localGPUInfo, bool) {
+	out, err := execCommand("nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits").Output()
+	if err != nil {
+		return localGPUInfo{}, false
+	}
+	var best localGPUInfo
+	for _, line := range strings.Split(string(out), "\n") {
+		name, mem, ok := strings.Cut(strings.TrimSpace(line), ",")
+		if !ok {
+			continue
+		}
+		mb, err := strconv.ParseFloat(strings.TrimSpace(mem), 64)
+		if err != nil || mb <= 0 {
+			continue
+		}
+		gpu := localGPUInfo{Vendor: "nvidia", Name: strings.TrimSpace(name), VRAMGB: mb / 1024}
+		if best.Name == "" || gpu.VRAMGB > best.VRAMGB {
+			best = gpu
+		}
+	}
+	return best, best.Name != ""
+}
+
+func detectAMDGPU() (localGPUInfo, bool) {
+	if gpu, ok := detectAMDGPUFromSysfs(); ok {
+		return gpu, true
+	}
+	out, err := execCommand("rocm-smi", "--showproductname", "--showmeminfo", "vram").CombinedOutput()
+	if err != nil {
+		return localGPUInfo{}, false
+	}
+	return parseROCMSMIOutput(string(out))
+}
+
+func detectAMDGPUFromSysfs() (localGPUInfo, bool) {
+	entries, err := os.ReadDir("/sys/class/drm")
+	if err != nil {
+		return localGPUInfo{}, false
+	}
+	var best localGPUInfo
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), "card") || strings.Contains(entry.Name(), "-") {
+			continue
+		}
+		deviceDir := filepath.Join("/sys/class/drm", entry.Name(), "device")
+		vendorBytes, err := os.ReadFile(filepath.Join(deviceDir, "vendor"))
+		if err != nil || strings.TrimSpace(string(vendorBytes)) != "0x1002" {
+			continue
+		}
+		vramBytes, err := os.ReadFile(filepath.Join(deviceDir, "mem_info_vram_total"))
+		if err != nil {
+			continue
+		}
+		vram, err := strconv.ParseFloat(strings.TrimSpace(string(vramBytes)), 64)
+		if err != nil || vram <= 0 {
+			continue
+		}
+		name := amdGPUNameFromLSPCI()
+		if name == "" {
+			name = entry.Name()
+		}
+		gpu := localGPUInfo{Vendor: "amd", Name: name, VRAMGB: vram / (1024 * 1024 * 1024)}
+		if best.Name == "" || gpu.VRAMGB > best.VRAMGB {
+			best = gpu
+		}
+	}
+	return best, best.Name != ""
+}
+
+func amdGPUNameFromLSPCI() string {
+	out, err := execCommand("lspci").Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		lower := strings.ToLower(line)
+		if (strings.Contains(lower, "vga") || strings.Contains(lower, "display") || strings.Contains(lower, "3d")) &&
+			(strings.Contains(lower, "amd/ati") || strings.Contains(lower, "radeon")) {
+			if idx := strings.Index(line, ": "); idx >= 0 {
+				return strings.TrimSpace(line[idx+2:])
+			}
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
+}
+
+func parseROCMSMIOutput(out string) (localGPUInfo, bool) {
+	var name string
+	var best float64
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if strings.Contains(lower, "card series") || strings.Contains(lower, "product name") {
+			if _, value, ok := strings.Cut(trimmed, ":"); ok {
+				name = strings.TrimSpace(value)
+				if _, value, ok := strings.Cut(name, ":"); ok {
+					name = strings.TrimSpace(value)
+				}
+			}
+		}
+		if strings.Contains(lower, "vram") && (strings.Contains(lower, "total") || strings.Contains(lower, "memory")) {
+			if gb := firstMemoryGB(trimmed); gb > best {
+				best = gb
+			}
+		}
+	}
+	if name == "" {
+		name = "AMD GPU"
+	}
+	if best <= 0 {
+		return localGPUInfo{}, false
+	}
+	return localGPUInfo{Vendor: "amd", Name: name, VRAMGB: best}, true
+}
+
+func detectDarwinGPU() (localGPUInfo, bool) {
+	if runtime.GOOS != "darwin" {
+		return localGPUInfo{}, false
+	}
+	out, err := execCommand("system_profiler", "SPDisplaysDataType").Output()
+	if err != nil {
+		return localGPUInfo{}, false
+	}
+	text := string(out)
+	lower := strings.ToLower(text)
+	if !strings.Contains(lower, "amd") && !strings.Contains(lower, "radeon") {
+		return localGPUInfo{}, false
+	}
+	vram := firstMemoryGB(text)
+	if vram <= 0 {
+		return localGPUInfo{}, false
+	}
+	name := "AMD GPU"
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(strings.ToLower(line), "chipset model:") {
+			_, value, _ := strings.Cut(line, ":")
+			name = strings.TrimSpace(value)
+			break
+		}
+	}
+	return localGPUInfo{Vendor: "amd", Name: name, VRAMGB: vram}, true
+}
+
+func firstMemoryGB(s string) float64 {
+	fields := strings.Fields(strings.NewReplacer(":", " ", ",", " ", "(", " ", ")", " ").Replace(s))
+	for i, field := range fields {
+		value, err := strconv.ParseFloat(field, 64)
+		if err != nil {
+			continue
+		}
+		if value > 1024*1024*1024 {
+			return value / (1024 * 1024 * 1024)
+		}
+		if i+1 >= len(fields) {
+			continue
+		}
+		unit := strings.ToLower(fields[i+1])
+		switch {
+		case strings.HasPrefix(unit, "gib"), strings.HasPrefix(unit, "gb"):
+			return value
+		case strings.HasPrefix(unit, "mib"), strings.HasPrefix(unit, "mb"):
+			return value / 1024
+		case strings.HasPrefix(unit, "bytes"):
+			return value / (1024 * 1024 * 1024)
+		}
+	}
+	return 0
 }
 
 // builtinCatalog is the hardcoded curated list of top developer-laptop models.

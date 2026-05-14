@@ -302,6 +302,9 @@ end
 local function pane_path(pane)
   local uri = pane and pane.current_working_dir
   if uri and uri ~= '' then
+    if type(uri) ~= 'string' then
+      uri = tostring(uri)
+    end
     local path = uri:gsub('^file://', '')
     path = path:gsub('%%20', ' ')
     return abbrev_path(path)
@@ -583,6 +586,7 @@ local ctl_choices = {
   -- Local-model bootstrap (slash-command alias on the left, ctl invocation on the right)
   { label = '/list-local-models        show models served by the active backend',  id = 'local list-models' },
   { label = '/install-local-server     install llama.cpp + default coder model',   id = 'local install-server' },
+  { label = '/install-local-gpu-server detect GPU + install largest fitting model', id = 'local install-gpu-server ' },
   { label = '/install-local-swap       install llama-swap (hot model swap)',       id = 'local install-swap' },
   { label = '/switch-local-server …    pick backend (llama-server | ollama | …)',  id = 'local switch-server ' },
   { label = '/download-local-model …   fetch a GGUF from HuggingFace',             id = 'local download-model ' },
