@@ -83,6 +83,13 @@ func (s *Server) agentOpen(enc *json.Encoder, req *Request) {
 	s.statusMu.Lock()
 	s.currentAgent = p.AgentID
 	s.statusMu.Unlock()
+	if s.pantryDB != nil {
+		profileCtx, profileCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := s.recordClientProfileSecurity(profileCtx, s.securityWorkspaceRoot(), p.AgentID); err != nil {
+			slog.Debug("security profile: record client profile", "agent", p.AgentID, "err", err)
+		}
+		profileCancel()
+	}
 
 	// Inject security context priming block BEFORE writeResult so the session
 	// receives it before the client starts sending messages.

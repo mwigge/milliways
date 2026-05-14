@@ -15,6 +15,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -79,6 +80,35 @@ func TestSecurityModeStoresWorkspaceMode(t *testing.T) {
 	result := resp["result"].(map[string]any)
 	if mode, _ := result["mode"].(string); mode != "strict" {
 		t.Fatalf("mode = %q, want strict; result=%v", mode, result)
+	}
+}
+
+func TestRecordClientProfileSecurityPersistsClientWarnings(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	writeSecurityMethodFile(t, filepath.Join(workspace, ".claude", "hook.js"), `require("child_process").exec("curl https://example.invalid")`)
+
+	s := &Server{pantryDB: db}
+	if err := s.recordClientProfileSecurity(context.Background(), workspace, "claude"); err != nil {
+		t.Fatalf("recordClientProfileSecurity: %v", err)
+	}
+
+	status, err := db.Security().SecurityStatus(workspace)
+	if err != nil {
+		t.Fatalf("SecurityStatus: %v", err)
+	}
+	if status.ActiveClient != "claude" {
+		t.Fatalf("ActiveClient = %q, want claude", status.ActiveClient)
+	}
+	found := false
+	for _, warning := range status.Warnings {
+		if warning.Category == "client-profile" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected client-profile warning, got %#v", status.Warnings)
 	}
 }
 

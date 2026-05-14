@@ -25,6 +25,7 @@ import (
 
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/security"
+	"github.com/mwigge/milliways/internal/security/clientprofiles"
 )
 
 // securityFindingWire is the JSON wire type for a security finding.
@@ -359,6 +360,23 @@ func (s *Server) securityStartupScan(enc *json.Encoder, req *Request) {
 	if workspace == "" {
 		workspace = s.securityWorkspaceRoot()
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := s.runStartupSecurityScan(ctx, workspace, p.Strict)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("startup scan: %v", err))
+		return
+	}
+	writeResult(enc, req.ID, result)
+}
+
+func (s *Server) runStartupSecurityScan(ctx context.Context, workspace string, strict bool) (map[string]any, error) {
+	if s.pantryDB == nil {
+		return nil, fmt.Errorf("pantry not available")
+	}
+	if abs, err := filepath.Abs(workspace); err == nil {
+		workspace = abs
+	}
 	store := s.pantryDB.Security()
 	runID, _ := store.InsertScanRun(pantry.SecurityScanRun{
 		Kind:      string(security.ScanStartup),
@@ -366,8 +384,6 @@ func (s *Server) securityStartupScan(enc *json.Encoder, req *Request) {
 		Status:    "running",
 		ToolName:  "milliways-startup-scan",
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	result, err := security.RunStartupScan(ctx, security.StartupScanOptions{
 		WorkspaceRoot:        workspace,
 		UserPersistenceRoots: startupPersistenceRoots(),
@@ -376,8 +392,7 @@ func (s *Server) securityStartupScan(enc *json.Encoder, req *Request) {
 		if runID > 0 {
 			_ = store.CompleteScanRun(runID, "error", 0, 0, 0, err.Error())
 		}
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("startup scan: %v", err))
-		return
+		return nil, err
 	}
 	warnCount, blockCount := 0, 0
 	warnings := make([]map[string]any, 0, len(result.Findings))
@@ -398,8 +413,7 @@ func (s *Server) securityStartupScan(enc *json.Encoder, req *Request) {
 			ScanRunID:   runID,
 			Remediation: f.Remediation,
 		}); err != nil {
-			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("persist warning: %v", err))
-			return
+			return nil, fmt.Errorf("persist warning: %w", err)
 		}
 		warnings = append(warnings, map[string]any{
 			"rule_id":     f.RuleID,
@@ -415,13 +429,13 @@ func (s *Server) securityStartupScan(enc *json.Encoder, req *Request) {
 		_ = store.CompleteScanRun(runID, "completed", len(result.Findings), warnCount, blockCount, "")
 	}
 	posture := string(security.PostureOK)
-	if blockCount > 0 || (p.Strict && warnCount > 0) {
+	if blockCount > 0 || (strict && warnCount > 0) {
 		posture = string(security.PostureBlock)
 	} else if warnCount > 0 {
 		posture = string(security.PostureWarn)
 	}
 	_ = store.SetWorkspaceStatus(result.WorkspaceRoot, string(security.ModeWarn), s.currentAgent)
-	writeResult(enc, req.ID, map[string]any{
+	return map[string]any{
 		"workspace":     result.WorkspaceRoot,
 		"scanned_at":    result.CompletedAt.UTC().Format(time.RFC3339),
 		"files":         result.FilesScanned,
@@ -431,7 +445,7 @@ func (s *Server) securityStartupScan(enc *json.Encoder, req *Request) {
 		"warning_count": warnCount,
 		"block_count":   blockCount,
 		"posture":       posture,
-	})
+	}, nil
 }
 
 // securityWarnings handles "security.warnings".
@@ -500,6 +514,58 @@ func (s *Server) securityMode(enc *json.Encoder, req *Request) {
 	})
 }
 
+func (s *Server) recordClientProfileSecurity(ctx context.Context, workspace, client string) error {
+	if s.pantryDB == nil || strings.TrimSpace(client) == "" {
+		return nil
+	}
+	check := clientprofiles.New(client, clientprofiles.DefaultOptions())
+	result := check.Check(ctx, workspace)
+	store := s.pantryDB.Security()
+	runID, _ := store.InsertScanRun(pantry.SecurityScanRun{
+		Kind:      string(security.ScanClientProfile),
+		Workspace: workspace,
+		Status:    "running",
+		ToolName:  "milliways-client-profile",
+	})
+	warnCount, blockCount := 0, 0
+	for _, warning := range result.Warnings {
+		sev := profileSeverityToStored(warning.Severity)
+		if sev == "BLOCK" {
+			blockCount++
+		} else {
+			warnCount++
+		}
+		source := warning.Path
+		if source == "" {
+			source = warning.Key
+		}
+		if source == "" {
+			source = warning.ID
+		}
+		if err := store.UpsertWarning(pantry.SecurityWarning{
+			Workspace:   workspace,
+			Category:    string(security.FindingClient),
+			Severity:    sev,
+			Source:      client + ":" + source,
+			Message:     warning.Summary,
+			Status:      string(security.FindingActive),
+			ScanRunID:   runID,
+			Remediation: "Review the client configuration before using this client in the workspace.",
+		}); err != nil {
+			return err
+		}
+	}
+	status := "completed"
+	scanErr := result.Error
+	if scanErr != "" {
+		status = "error"
+	}
+	if runID > 0 {
+		_ = store.CompleteScanRun(runID, status, len(result.Warnings), warnCount, blockCount, scanErr)
+	}
+	return store.SetWorkspaceStatus(workspace, string(security.ModeWarn), client)
+}
+
 func (s *Server) securityWorkspaceRoot() string {
 	if root := strings.TrimSpace(os.Getenv("MILLIWAYS_WORKSPACE_ROOT")); root != "" {
 		if abs, err := filepath.Abs(root); err == nil {
@@ -527,6 +593,15 @@ func startupPersistenceRoots() []security.StartupScanRoot {
 func startupSeverityToStored(sev any) string {
 	switch strings.ToLower(fmt.Sprint(sev)) {
 	case "block":
+		return "BLOCK"
+	default:
+		return "WARN"
+	}
+}
+
+func profileSeverityToStored(sev clientprofiles.Severity) string {
+	switch sev {
+	case clientprofiles.SeverityCritical:
 		return "BLOCK"
 	default:
 		return "WARN"
