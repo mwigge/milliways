@@ -78,6 +78,8 @@ func runSecurity(args []string, stdout, stderr io.Writer, socketOverride ...stri
 		return runSecurityWarnings(rest, stdout, stderr, sock)
 	case "mode":
 		return runSecurityMode(rest, stdout, stderr, sock)
+	case "client":
+		return runSecurityClient(rest, stdout, stderr, sock)
 	case "harden":
 		return runSecurityHarden(rest, stdout, stderr)
 	case "quarantine":
@@ -110,6 +112,8 @@ func printSecurityUsage(w io.Writer) {
 	fmt.Fprintln(w, "  warnings [--json]      show active security warnings")
 	fmt.Fprintln(w, "  mode [off|observe|warn|strict|ci]")
 	fmt.Fprintln(w, "    show or set MilliWays security policy mode")
+	fmt.Fprintln(w, "  client <name> [--json]")
+	fmt.Fprintln(w, "    run a per-client security profile check")
 	fmt.Fprintln(w, "  harden npm [--dry-run|--apply] [--path <.npmrc>]")
 	fmt.Fprintln(w, "    preview or write safer npm defaults")
 	fmt.Fprintln(w, "  quarantine [--dry-run|--apply] [--json]")
@@ -453,6 +457,23 @@ func runSecurityMode(args []string, stdout, stderr io.Writer, sock string) int {
 		params["mode"] = mode
 	}
 	return callSecurityRPC("security mode", "security.mode", params, false, stdout, stderr, sock)
+}
+
+func runSecurityClient(args []string, stdout, stderr io.Writer, sock string) int {
+	fs := flag.NewFlagSet("security client", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw JSON result")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "security client: expected client name")
+		return 1
+	}
+	client := fs.Arg(0)
+	return callSecurityRPC("security client", "security.client_profile", map[string]any{
+		"client": client,
+	}, *asJSON, stdout, stderr, sock)
 }
 
 func validSecurityMode(mode string) bool {

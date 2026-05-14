@@ -112,6 +112,35 @@ func TestRecordClientProfileSecurityPersistsClientWarnings(t *testing.T) {
 	}
 }
 
+func TestSecurityClientProfileRPC(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	writeSecurityMethodFile(t, filepath.Join(workspace, ".claude", "hook.js"), `require("child_process").exec("curl https://example.invalid")`)
+
+	s := &Server{pantryDB: db}
+	enc, buf := newCapturingEncoder()
+	s.securityClientProfile(enc, &Request{
+		ID: mustSecurityMethodParams(t, 1),
+		Params: mustSecurityMethodParams(t, map[string]any{
+			"client":    "claude",
+			"workspace": workspace,
+		}),
+	})
+
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	if _, ok := resp["error"]; ok {
+		t.Fatalf("security.client_profile returned error: %v", resp)
+	}
+	result := resp["result"].(map[string]any)
+	if client, _ := result["client"].(string); client != "claude" {
+		t.Fatalf("client = %q, want claude; result=%v", client, result)
+	}
+	warnings, _ := result["warnings"].([]any)
+	if len(warnings) == 0 {
+		t.Fatalf("expected client warnings, result=%v", result)
+	}
+}
+
 func openSecurityMethodTestDB(t *testing.T) *pantry.DB {
 	t.Helper()
 	db, err := pantry.Open(filepath.Join(t.TempDir(), "milliways.db"))

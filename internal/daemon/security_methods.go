@@ -515,8 +515,46 @@ func (s *Server) securityMode(enc *json.Encoder, req *Request) {
 }
 
 func (s *Server) recordClientProfileSecurity(ctx context.Context, workspace, client string) error {
+	_, err := s.runClientProfileSecurity(ctx, workspace, client)
+	return err
+}
+
+func (s *Server) securityClientProfile(enc *json.Encoder, req *Request) {
+	if s.pantryDB == nil {
+		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		return
+	}
+	var p struct {
+		Client    string `json:"client"`
+		Workspace string `json:"workspace,omitempty"`
+	}
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+	}
+	if strings.TrimSpace(p.Client) == "" {
+		writeError(enc, req.ID, ErrInvalidParams, "client is required")
+		return
+	}
+	workspace := strings.TrimSpace(p.Workspace)
+	if workspace == "" {
+		workspace = s.securityWorkspaceRoot()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	result, err := s.runClientProfileSecurity(ctx, workspace, p.Client)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("client profile: %v", err))
+		return
+	}
+	writeResult(enc, req.ID, result)
+}
+
+func (s *Server) runClientProfileSecurity(ctx context.Context, workspace, client string) (map[string]any, error) {
 	if s.pantryDB == nil || strings.TrimSpace(client) == "" {
-		return nil
+		return nil, fmt.Errorf("pantry not available or client empty")
 	}
 	check := clientprofiles.New(client, clientprofiles.DefaultOptions())
 	result := check.Check(ctx, workspace)
@@ -552,7 +590,7 @@ func (s *Server) recordClientProfileSecurity(ctx context.Context, workspace, cli
 			ScanRunID:   runID,
 			Remediation: "Review the client configuration before using this client in the workspace.",
 		}); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	status := "completed"
@@ -563,7 +601,30 @@ func (s *Server) recordClientProfileSecurity(ctx context.Context, workspace, cli
 	if runID > 0 {
 		_ = store.CompleteScanRun(runID, status, len(result.Warnings), warnCount, blockCount, scanErr)
 	}
-	return store.SetWorkspaceStatus(workspace, string(security.ModeWarn), client)
+	if err := store.SetWorkspaceStatus(workspace, string(security.ModeWarn), client); err != nil {
+		return nil, err
+	}
+	warnings := make([]map[string]any, 0, len(result.Warnings))
+	for _, w := range result.Warnings {
+		warnings = append(warnings, map[string]any{
+			"client":   w.Client,
+			"id":       w.ID,
+			"severity": string(w.Severity),
+			"summary":  w.Summary,
+			"detail":   w.Detail,
+			"path":     w.Path,
+			"key":      w.Key,
+		})
+	}
+	return map[string]any{
+		"client":        result.Client,
+		"workspace":     result.Workspace,
+		"checked_at":    result.CheckedAt.UTC().Format(time.RFC3339),
+		"warnings":      warnings,
+		"warning_count": warnCount,
+		"block_count":   blockCount,
+		"error":         result.Error,
+	}, nil
 }
 
 func (s *Server) securityWorkspaceRoot() string {

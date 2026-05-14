@@ -96,10 +96,31 @@ func TestRunSecurityHelpIncludesSecureSurface(t *testing.T) {
 	if rc := runSecurity([]string{"help"}, &stdout, &bytes.Buffer{}); rc != 0 {
 		t.Fatalf("expected rc=0, got %d", rc)
 	}
-	for _, want := range []string{"startup-scan", "warnings", "mode", "harden npm", "quarantine", "rules list|update"} {
+	for _, want := range []string{"startup-scan", "warnings", "mode", "client <name>", "harden npm", "quarantine", "rules list|update"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("help missing %q; got:\n%s", want, stdout.String())
 		}
+	}
+}
+
+func TestRunSecurityClientCallsRPC(t *testing.T) {
+	sock, calls := startSecurityRPCTestServer(t, map[string]any{
+		"security.client_profile": map[string]any{"client": "claude", "warnings": []any{"x", "y"}},
+	})
+
+	var stdout bytes.Buffer
+	if rc := runSecurity([]string{"client", "claude"}, &stdout, &bytes.Buffer{}, sock); rc != 0 {
+		t.Fatalf("expected rc=0, got %d; stdout:\n%s", rc, stdout.String())
+	}
+	call := <-calls
+	if call.Method != "security.client_profile" {
+		t.Fatalf("expected security.client_profile, got %q", call.Method)
+	}
+	if client, _ := call.Params["client"].(string); client != "claude" {
+		t.Fatalf("expected client=claude params, got %#v", call.Params)
+	}
+	if !strings.Contains(stdout.String(), "2 warning(s)") {
+		t.Errorf("client output should summarize warnings; got:\n%s", stdout.String())
 	}
 }
 

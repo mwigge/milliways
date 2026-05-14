@@ -391,6 +391,8 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		s.securityWarnings(enc, req)
 	case "security.mode":
 		s.securityMode(enc, req)
+	case "security.client_profile":
+		s.securityClientProfile(enc, req)
 	case "config.setenv":
 		// Injects a single env var into the daemon process so runners that
 		// read it on each request (e.g. MINIMAX_API_KEY) pick it up without

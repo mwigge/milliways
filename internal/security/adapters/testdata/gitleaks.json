@@ -1,0 +1,10 @@
+[
+  {
+    "RuleID": "generic-api-key",
+    "Description": "Generic API Key",
+    "File": "/work/app/config.env",
+    "StartLine": 12,
+    "StartColumn": 5,
+    "Fingerprint": "config.env:generic-api-key:12"
+  }
+]
