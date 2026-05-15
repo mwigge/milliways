@@ -102,10 +102,16 @@ install_linux_build_deps() {
           if command -v pacman >/dev/null 2>&1; then
             sudo pacman -Sy --noconfirm base-devel cmake git curl rocm-hip-sdk
           elif command -v apt-get >/dev/null 2>&1; then
+            if ! apt-cache show rocm-hip-sdk &>/dev/null; then
+              fail "AMD ROCm repo not configured. Add it first: https://rocm.docs.amd.com/projects/install-on-linux/en/latest/tutorial/quick-start.html"
+            fi
             sudo apt-get update -qq
             sudo apt-get install -yqq build-essential cmake git curl ca-certificates rocm-hip-sdk || \
               fail "ROCm/HIP packages are not available from enabled apt repos. Install AMD ROCm, then re-run."
           elif command -v dnf >/dev/null 2>&1; then
+            if ! dnf repolist 2>/dev/null | grep -qi rocm; then
+              fail "AMD ROCm repo not configured. Add it first: https://rocm.docs.amd.com/projects/install-on-linux/en/latest/tutorial/quick-start.html"
+            fi
             sudo dnf install -y gcc-c++ cmake git curl ca-certificates rocm-hip-devel || \
               fail "ROCm/HIP packages are not available from enabled dnf repos. Install AMD ROCm, then re-run."
           else
@@ -121,9 +127,9 @@ install_linux_build_deps() {
             sudo pacman -Sy --noconfirm base-devel cmake git curl shaderc spirv-headers vulkan-headers vulkan-icd-loader
           elif command -v apt-get >/dev/null 2>&1; then
             sudo apt-get update -qq
-            sudo apt-get install -yqq build-essential cmake git curl ca-certificates glslang-tools libvulkan-dev
+            sudo apt-get install -yqq build-essential cmake git curl ca-certificates glslc spirv-headers libvulkan-dev
           elif command -v dnf >/dev/null 2>&1; then
-            sudo dnf install -y gcc-c++ cmake git curl ca-certificates glslc vulkan-headers vulkan-loader-devel
+            sudo dnf install -y gcc-c++ cmake git curl ca-certificates shaderc-tools spirv-headers vulkan-headers vulkan-loader-devel
           else
             fail "no supported package manager. Install Vulkan SDK/build deps manually, then re-run."
           fi
@@ -193,7 +199,7 @@ install_llamacpp() {
           local asset_url="https://github.com/mwigge/milliways/releases/download/${milliways_ver}/llama-server_linux_amd64"
           info "Downloading bundled llama-server from milliways release ${milliways_ver}…"
           if curl -sSfL "$asset_url" -o /tmp/llama-server-dl 2>/dev/null; then
-            run_privileged install -m 0755 /tmp/llama-server-dl /usr/local/bin/llama-server
+            sudo install -m755 /tmp/llama-server-dl /usr/local/bin/llama-server
             rm -f /tmp/llama-server-dl
             ok "llama-server installed from milliways release"
             return
@@ -214,7 +220,7 @@ install_llamacpp() {
             local entry
             entry="$(tar -tzf "/tmp/${tar_name}" | grep '/llama-server$' | head -1)"
             tar -xzf "/tmp/${tar_name}" -C /tmp "$entry"
-            run_privileged install -m 0755 "/tmp/${entry}" /usr/local/bin/llama-server
+            sudo install -m755 "/tmp/${entry}" /usr/local/bin/llama-server
             rm -rf "/tmp/${tar_name}" "/tmp/$(echo "$entry" | cut -d/ -f1)"
             ok "llama-server installed from llama.cpp ${llama_tag}"
             return
@@ -227,7 +233,8 @@ install_llamacpp() {
       info "Building llama.cpp from source (1–3 minutes)…"
       local tmp
       tmp="$(mktemp -d)"
-      git clone --depth 1 https://github.com/ggml-org/llama.cpp "$tmp/llama.cpp"
+      trap 'rm -rf "$tmp"' EXIT
+      git clone --depth 1 --branch b5576 https://github.com/ggml-org/llama.cpp "$tmp/llama.cpp"
       local cmake_args=(-DLLAMA_CURL=OFF)
       case "$LLAMA_CPP_ACCEL" in
         cuda)
@@ -277,7 +284,7 @@ fetch_model() {
   fi
 
   info "Downloading $MODEL_REPO ($MODEL_QUANT) → $dest"
-  info "This is a one-time download (~1.1GB for the 1.5B model)."
+  info "This is a one-time model download. Size depends on the selected model."
 
   # -L follow redirects (HF → cas-bridge.xethub.hf.co → S3)
   # -f fail on HTTP error (so we don't write a 404 page as a fake .gguf)
@@ -311,7 +318,7 @@ exec "$llama_bin" \\
   --n-gpu-layers "$N_GPU_LAYERS" \\
   --temp "$MODEL_TEMP" \\
   --jinja \\
-  -fa on
+  -fa
 EOF
   chmod +x "$HOME/.local/bin/milliways-local-server"
   ok "wrote $HOME/.local/bin/milliways-local-server"

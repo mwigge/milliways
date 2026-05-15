@@ -154,6 +154,12 @@ func (r *chatLineReader) Readline() (string, error) {
 				r.active = false
 				r.promptHidden = false
 				r.clearPromptLocked()
+				if r.inBracketedPaste {
+					r.inBracketedPaste = false
+					if len(r.buf) > 0 {
+						line = string(r.buf) + "\n" + line
+					}
+				}
 				r.mu.Unlock()
 				return line, nil
 			}
@@ -203,17 +209,24 @@ func (r *chatLineReader) Readline() (string, error) {
 			return "", errLineInterrupt
 		case 4:
 			r.mu.Lock()
+			inPaste := r.inBracketedPaste
 			empty := len(r.buf) == 0
-			if empty && r.eofPrompt != "" {
-				fmt.Fprint(r.out, "\r\n"+r.eofPrompt+"\r\n")
-			}
 			r.mu.Unlock()
-			if empty {
-				r.mu.Lock()
-				r.active = false
-				r.promptHidden = false
-				r.mu.Unlock()
-				return "", io.EOF
+			if inPaste {
+				r.deleteAtCursor()
+			} else {
+				if empty && r.eofPrompt != "" {
+					r.mu.Lock()
+					fmt.Fprint(r.out, "\r\n"+r.eofPrompt+"\r\n")
+					r.mu.Unlock()
+				}
+				if empty {
+					r.mu.Lock()
+					r.active = false
+					r.promptHidden = false
+					r.mu.Unlock()
+					return "", io.EOF
+				}
 			}
 		case 9:
 			r.applyCompletion()
@@ -254,6 +267,9 @@ func (r *chatLineReader) writeSubmittedLineLocked(line string) {
 }
 
 func (r *chatLineReader) handleEscape(br *bufio.Reader) {
+	if br.Buffered() == 0 {
+		return
+	}
 	next, _, err := br.ReadRune()
 	if err != nil || next != '[' {
 		return
@@ -629,6 +645,8 @@ func (r *chatLineReader) loadHistory() {
 	sc.Buffer(make([]byte, 1<<20), 1<<20)
 	for sc.Scan() {
 		if line := strings.TrimSpace(sc.Text()); line != "" {
+			line = strings.ReplaceAll(line, `\n`, "\n")
+			line = strings.ReplaceAll(line, `\\`, `\`)
 			r.history = append(r.history, line)
 		}
 	}
@@ -651,7 +669,9 @@ func (r *chatLineReader) saveHistory() error {
 		start = len(r.history) - 1000
 	}
 	for _, line := range r.history[start:] {
-		if _, err := fmt.Fprintln(f, line); err != nil {
+		escaped := strings.ReplaceAll(line, `\`, `\\`)
+		escaped = strings.ReplaceAll(escaped, "\n", `\n`)
+		if _, err := fmt.Fprintln(f, escaped); err != nil {
 			return err
 		}
 	}

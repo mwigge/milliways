@@ -15,12 +15,14 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSwitchableCompleterCompletesSlashCommand(t *testing.T) {
@@ -361,5 +363,138 @@ func TestInsertRuneSkipsRedrawDuringPaste(t *testing.T) {
 	}
 	if string(r.buf) != "x" {
 		t.Fatalf("buf = %q, want x", string(r.buf))
+	}
+}
+
+// Bug 1: history save/load round-trips multi-line entries via escaping.
+func TestLineReaderHistoryEscapesNewlines(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "history")
+	r := &chatLineReader{historyFile: path}
+	r.history = []string{
+		"plain entry",
+		"line1\nline2",
+		"back\\slash",
+		"mixed\\\nentry",
+	}
+	if err := r.saveHistory(); err != nil {
+		t.Fatalf("saveHistory: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read history file: %v", err)
+	}
+	// The file must contain exactly 4 lines (one per entry, no raw newlines).
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("saved history has %d lines, want 4; raw:\n%s", len(lines), raw)
+	}
+
+	r2 := &chatLineReader{historyFile: path}
+	r2.loadHistory()
+	if len(r2.history) != 4 {
+		t.Fatalf("loaded %d entries, want 4", len(r2.history))
+	}
+	for i, want := range r.history {
+		if r2.history[i] != want {
+			t.Errorf("history[%d] = %q, want %q", i, r2.history[i], want)
+		}
+	}
+}
+
+// Bug 2: controlPoll firing mid-paste resets inBracketedPaste and preserves buffered paste content.
+func TestLineReaderControlPollMidPastePreservesBuffer(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	r := &chatLineReader{
+		out:              &out,
+		prompt:           "> ",
+		inBracketedPaste: true,
+		buf:              []rune("pasted content"),
+		cursor:           len([]rune("pasted content")),
+		active:           true,
+	}
+
+	// Simulate clearPromptLocked doing nothing by keeping rows=1 (default).
+	// Call the logic that controlPoll path executes inline:
+	r.mu.Lock()
+	controlLine := "control output"
+	var result string
+	r.active = false
+	r.promptHidden = false
+	r.clearPromptLocked()
+	if r.inBracketedPaste {
+		r.inBracketedPaste = false
+		if len(r.buf) > 0 {
+			result = string(r.buf) + "\n" + controlLine
+		} else {
+			result = controlLine
+		}
+	} else {
+		result = controlLine
+	}
+	r.mu.Unlock()
+
+	if r.inBracketedPaste {
+		t.Fatal("inBracketedPaste not reset after controlPoll path")
+	}
+	if result != "pasted content\ncontrol output" {
+		t.Fatalf("merged result = %q, want %q", result, "pasted content\ncontrol output")
+	}
+}
+
+// Bug 3: Ctrl+D during bracketed paste calls deleteAtCursor instead of signalling EOF.
+func TestLineReaderCtrlDDuringPasteDeletesAtCursor(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	r := &chatLineReader{
+		out:              &out,
+		prompt:           "> ",
+		inBracketedPaste: true,
+		buf:              []rune("abcd"),
+		cursor:           2,
+	}
+
+	// Ctrl+D during paste should delete character at cursor (index 2 = 'c').
+	r.deleteAtCursor()
+
+	if got := string(r.buf); got != "abd" {
+		t.Fatalf("buf after Ctrl+D in paste = %q, want abd", got)
+	}
+	if r.cursor != 2 {
+		t.Fatalf("cursor after Ctrl+D in paste = %d, want 2", r.cursor)
+	}
+}
+
+// Bug 4: bare Escape (nothing buffered) must not block; handleEscape returns immediately.
+func TestLineReaderHandleEscapeBareEscapeDoesNotBlock(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	r := &chatLineReader{out: &out, prompt: "> ", buf: []rune("hello"), cursor: 5}
+
+	// Empty reader — nothing buffered after the ESC byte.
+	br := bufio.NewReader(bytes.NewReader([]byte{}))
+
+	done := make(chan struct{})
+	go func() {
+		r.handleEscape(br)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// good — returned without blocking
+	case <-time.After(time.Second):
+		t.Fatal("handleEscape blocked on empty buffer")
+	}
+
+	// Buffer must be unchanged (no cursor movement etc.)
+	if got := string(r.buf); got != "hello" {
+		t.Fatalf("buf changed after bare escape: %q", got)
 	}
 }

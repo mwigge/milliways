@@ -787,7 +787,7 @@ exec %q \
   --n-gpu-layers %d \
   --temp %.2f \
   --jinja \
-  -fa on
+  -fa
 `, llamaBin, modelPath, alias, host, port, ctx, md.GPULayers, md.Temp)
 
 	if err := os.WriteFile(launcher, []byte(newLauncher), 0o755); err != nil {
@@ -869,12 +869,19 @@ func runLocalSwapMode(args []string, stdout, stderr io.Writer) int {
 	if mode == "hot" {
 		ttl = 0
 	}
-	for i := 1; i < len(args)-1; i++ {
+	for i := 1; i < len(args); i++ {
 		if args[i] == "--ttl" {
-			if n, err := strconv.Atoi(args[i+1]); err == nil {
-				ttl = n
-				i++
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "swap-mode: --ttl requires a numeric value")
+				return 2
 			}
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil {
+				fmt.Fprintf(stderr, "swap-mode: --ttl value %q is not a number\n", args[i+1])
+				return 2
+			}
+			ttl = n
+			i++
 		}
 	}
 
@@ -1006,6 +1013,8 @@ func (g localGPUInfo) LlamaAccel(override string) (string, error) {
 			return "hip", nil
 		}
 		return "vulkan", nil
+	case "apple":
+		return "metal", nil
 	default:
 		return "vulkan", nil
 	}
@@ -1150,7 +1159,11 @@ func detectAMDGPUFromSysfs() (localGPUInfo, bool) {
 		if err != nil || vram <= 0 {
 			continue
 		}
-		name := amdGPUNameFromLSPCI()
+		// Read the device ID from sysfs so we can look up this specific card,
+		// rather than always returning the first AMD entry from lspci.
+		deviceIDBytes, _ := os.ReadFile(filepath.Join(deviceDir, "device"))
+		deviceID := strings.TrimSpace(string(deviceIDBytes))
+		name := amdGPUNameFromLSPCI(strings.TrimSpace(string(vendorBytes)), deviceID)
 		if name == "" {
 			name = entry.Name()
 		}
@@ -1162,7 +1175,32 @@ func detectAMDGPUFromSysfs() (localGPUInfo, bool) {
 	return best, best.Name != ""
 }
 
-func amdGPUNameFromLSPCI() string {
+// amdGPUNameFromLSPCI looks up the device name for a specific PCI vendor:device
+// ID pair using `lspci -d vendor:device -mm`. When vendorID or deviceID is
+// empty it falls back to returning the first AMD/Radeon display entry, which
+// is wrong on multi-GPU systems but better than nothing.
+func amdGPUNameFromLSPCI(vendorID, deviceID string) string {
+	if vendorID != "" && deviceID != "" {
+		// Normalise: sysfs gives "0x1002" / "0x687f" — lspci -d wants "1002:687f".
+		v := strings.TrimPrefix(vendorID, "0x")
+		d := strings.TrimPrefix(deviceID, "0x")
+		out, err := execCommand("lspci", "-d", v+":"+d, "-mm").Output()
+		if err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				// lspci -mm output: slot "class" "vendor" "device" ...
+				// Split on quoted fields to get the device name (4th field).
+				parts := splitLSPCIMMLine(line)
+				if len(parts) >= 4 {
+					return parts[3]
+				}
+			}
+		}
+	}
+	// Fallback: scan lspci for any AMD/Radeon display entry.
 	out, err := execCommand("lspci").Output()
 	if err != nil {
 		return ""
@@ -1178,6 +1216,26 @@ func amdGPUNameFromLSPCI() string {
 		}
 	}
 	return ""
+}
+
+// splitLSPCIMMLine splits a lspci -mm output line into its quoted fields.
+func splitLSPCIMMLine(line string) []string {
+	var parts []string
+	inQuote := false
+	var cur strings.Builder
+	for _, c := range line {
+		switch {
+		case c == '"':
+			if inQuote {
+				parts = append(parts, cur.String())
+				cur.Reset()
+			}
+			inQuote = !inQuote
+		case inQuote:
+			cur.WriteRune(c)
+		}
+	}
+	return parts
 }
 
 func parseROCMSMIOutput(out string) (localGPUInfo, bool) {
@@ -1213,20 +1271,57 @@ func detectDarwinGPU() (localGPUInfo, bool) {
 	if runtime.GOOS != "darwin" {
 		return localGPUInfo{}, false
 	}
+
+	// Apple Silicon (M1/M2/M3/M4): unified memory shared with CPU.
+	// Detect by architecture first — arm64 on darwin is always Apple Silicon.
+	if runtime.GOARCH == "arm64" {
+		name := "Apple Silicon GPU"
+		// Read the chipset model name from system_profiler if available.
+		if spOut, err := execCommand("system_profiler", "SPDisplaysDataType").Output(); err == nil {
+			for _, line := range strings.Split(string(spOut), "\n") {
+				if strings.Contains(strings.ToLower(line), "chipset model:") {
+					_, value, _ := strings.Cut(line, ":")
+					name = strings.TrimSpace(value)
+					break
+				}
+			}
+		}
+		// VRAM = unified memory minus a 4 GB OS reserve.
+		vram := float64(0)
+		if memOut, err := execCommand("sysctl", "-n", "hw.memsize").Output(); err == nil {
+			if bytes, err2 := strconv.ParseFloat(strings.TrimSpace(string(memOut)), 64); err2 == nil {
+				vram = bytes/(1024*1024*1024) - 4.0
+				if vram < 1 {
+					vram = 1
+				}
+			}
+		}
+		if vram <= 0 {
+			return localGPUInfo{}, false
+		}
+		return localGPUInfo{Vendor: "apple", Name: name, VRAMGB: vram}, true
+	}
+
+	// Intel Mac with discrete AMD/NVIDIA GPU.
 	out, err := execCommand("system_profiler", "SPDisplaysDataType").Output()
 	if err != nil {
 		return localGPUInfo{}, false
 	}
 	text := string(out)
 	lower := strings.ToLower(text)
-	if !strings.Contains(lower, "amd") && !strings.Contains(lower, "radeon") {
+	if !strings.Contains(lower, "amd") && !strings.Contains(lower, "radeon") &&
+		!strings.Contains(lower, "nvidia") {
 		return localGPUInfo{}, false
 	}
 	vram := firstMemoryGB(text)
 	if vram <= 0 {
 		return localGPUInfo{}, false
 	}
-	name := "AMD GPU"
+	vendor := "amd"
+	if strings.Contains(lower, "nvidia") && !strings.Contains(lower, "amd") && !strings.Contains(lower, "radeon") {
+		vendor = "nvidia"
+	}
+	name := strings.ToUpper(vendor) + " GPU"
 	for _, line := range strings.Split(text, "\n") {
 		if strings.Contains(strings.ToLower(line), "chipset model:") {
 			_, value, _ := strings.Cut(line, ":")
@@ -1234,7 +1329,7 @@ func detectDarwinGPU() (localGPUInfo, bool) {
 			break
 		}
 	}
-	return localGPUInfo{Vendor: "amd", Name: name, VRAMGB: vram}, true
+	return localGPUInfo{Vendor: vendor, Name: name, VRAMGB: vram}, true
 }
 
 func firstMemoryGB(s string) float64 {
@@ -1306,11 +1401,6 @@ var builtinCatalog = []catalogEntry{
 		Name: "DeepSeek-Coder-V2-Lite", Repo: "unsloth/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
 		Quant: "Q4_K_M", SizeGB: "9.0", MinRAM: "12",
 		Tools: true, Note: "Excellent for complex code refactors. MoE architecture.",
-	},
-	{
-		Name: "Llama-3.1-8B", Repo: "unsloth/Meta-Llama-3.1-8B-Instruct-GGUF",
-		Quant: "Q4_K_M", SizeGB: "4.9", MinRAM: "8",
-		Tools: true, Note: "Good general-purpose. Solid tool use. Well-tested.",
 	},
 	{
 		Name: "Mistral-7B-v0.3", Repo: "unsloth/mistral-7b-instruct-v0.3-GGUF",
@@ -1514,7 +1604,7 @@ func linuxServicePath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("home dir: %w", err)
 	}
-	return filepath.Join(home, ".config", "systemd", "user", "dev.milliways.local.service"), nil
+	return filepath.Join(home, ".config", "systemd", "user", "milliways-local.service"), nil
 }
 
 // parsePortFromEndpoint extracts the port number from a URL like
@@ -1560,7 +1650,7 @@ func runLocalServerStart(_ []string, stdout, stderr io.Writer) int {
 	// Linux: systemctl --user start
 	if svc, err := linuxServicePath(); err == nil {
 		if _, err2 := os.Stat(svc); err2 == nil {
-			cmd := execCommand("systemctl", "--user", "start", "dev.milliways.local")
+			cmd := execCommand("systemctl", "--user", "start", "milliways-local")
 			cmd.Stdout = stdout
 			cmd.Stderr = stderr
 			if err3 := cmd.Run(); err3 == nil {
@@ -1613,7 +1703,7 @@ func runLocalServerStop(_ []string, stdout, stderr io.Writer) int {
 	if !stopped {
 		if svc, err := linuxServicePath(); err == nil {
 			if _, err2 := os.Stat(svc); err2 == nil {
-				cmd := execCommand("systemctl", "--user", "stop", "dev.milliways.local")
+				cmd := execCommand("systemctl", "--user", "stop", "milliways-local")
 				cmd.Stdout = stdout
 				cmd.Stderr = stderr
 				if err3 := cmd.Run(); err3 == nil {
