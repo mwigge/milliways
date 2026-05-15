@@ -1519,6 +1519,99 @@ func TestHandleSlashRunnerPromptActivatesWhenNoClientIsActive(t *testing.T) {
 	}
 }
 
+func TestEnsureAgentSessionReconnectsAfterBrokenPipe(t *testing.T) {
+	t.Parallel()
+
+	var opens int
+	var reconnects int
+	loop := &chatLoop{
+		sessions:             make(map[string]*chatSession),
+		reconnectOnOpenError: true,
+		reconnectDaemon: func() error {
+			reconnects++
+			return nil
+		},
+		openAgent: func(_ *rpc.Client, agentID string) (*chatSession, error) {
+			opens++
+			if opens == 1 {
+				return nil, fmt.Errorf("agent.open %s: encode: write unix @->/run/user/1000/milliways/sock: write: broken pipe", agentID)
+			}
+			return &chatSession{
+				agentID:      agentID,
+				done:         make(chan struct{}),
+				streamCancel: func() {},
+			}, nil
+		},
+	}
+
+	sess, err := loop.ensureAgentSession("local")
+	if err != nil {
+		t.Fatalf("ensureAgentSession: %v", err)
+	}
+	if sess == nil || sess.agentID != "local" {
+		t.Fatalf("session = %#v, want local session", sess)
+	}
+	if opens != 2 {
+		t.Fatalf("opens = %d, want 2", opens)
+	}
+	if reconnects != 1 {
+		t.Fatalf("reconnects = %d, want 1", reconnects)
+	}
+}
+
+func TestSendWithReconnectReopensSessionAfterBrokenPipe(t *testing.T) {
+	t.Parallel()
+
+	var reconnects int
+	var opened int
+	var sent []string
+	oldSess := &chatSession{
+		agentID: "pool",
+		done:    make(chan struct{}),
+		sendFn: func(string) error {
+			return fmt.Errorf("agent.send pool: encode: write unix @->/run/user/1000/milliways/sock: write: broken pipe")
+		},
+		streamCancel: func() {},
+	}
+	loop := &chatLoop{
+		sess:                 oldSess,
+		sessions:             map[string]*chatSession{"pool": oldSess},
+		reconnectOnOpenError: true,
+		reconnectDaemon: func() error {
+			reconnects++
+			return nil
+		},
+		openAgent: func(_ *rpc.Client, agentID string) (*chatSession, error) {
+			opened++
+			return &chatSession{
+				agentID:      agentID,
+				done:         make(chan struct{}),
+				streamCancel: func() {},
+				sendFn: func(prompt string) error {
+					sent = append(sent, prompt)
+					return nil
+				},
+			}, nil
+		},
+	}
+
+	if err := loop.sendWithReconnect(oldSess, "hello"); err != nil {
+		t.Fatalf("sendWithReconnect: %v", err)
+	}
+	if reconnects != 1 {
+		t.Fatalf("reconnects = %d, want 1", reconnects)
+	}
+	if opened != 1 {
+		t.Fatalf("opened = %d, want 1", opened)
+	}
+	if len(sent) != 1 || sent[0] != "hello" {
+		t.Fatalf("sent = %#v, want hello once", sent)
+	}
+	if loop.sess == oldSess || loop.sess == nil || loop.sess.agentID != "pool" {
+		t.Fatalf("active session = %#v, want reopened pool session", loop.sess)
+	}
+}
+
 func TestSwitchDoesNotSendTakeoverBriefing(t *testing.T) {
 	t.Parallel()
 

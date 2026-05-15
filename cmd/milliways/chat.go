@@ -401,18 +401,19 @@ func runChat(ctx context.Context) error {
 	rl.out = stdout
 
 	loop := &chatLoop{
-		client:        client,
-		handoffWriter: &rpcHandoffWriter{client: client},
-		sess:          nil, // landing zone — no active agent until /<runner> picks one
-		sessions:      make(map[string]*chatSession),
-		openAgent:     openAgentForChat,
-		rl:            rl,
-		completer:     sc,
-		out:           newCodeHighlighter(stdout),
-		errw:          stderr,
-		ring:          append([]string(nil), chatSwitchableAgents...), // default ring
-		rotateCh:      make(chan string, 1),
-		hintCh:        make(chan hintPayload, 4),
+		client:               client,
+		handoffWriter:        &rpcHandoffWriter{client: client},
+		sess:                 nil, // landing zone — no active agent until /<runner> picks one
+		sessions:             make(map[string]*chatSession),
+		openAgent:            openAgentForChat,
+		reconnectOnOpenError: true,
+		rl:                   rl,
+		completer:            sc,
+		out:                  newCodeHighlighter(stdout),
+		errw:                 stderr,
+		ring:                 append([]string(nil), chatSwitchableAgents...), // default ring
+		rotateCh:             make(chan string, 1),
+		hintCh:               make(chan hintPayload, 4),
 	}
 
 	// Wire palace recall for daemon runner sessions. Resolve the project from
@@ -792,10 +793,15 @@ type chatLoop struct {
 	sess      *chatSession
 	sessions  map[string]*chatSession
 	openAgent func(*rpc.Client, string) (*chatSession, error)
-	rl        *chatLineReader
-	completer *switchableCompleter
-	out       io.Writer
-	errw      io.Writer
+	// reconnectOnOpenError is enabled in the real chat loop. Tests that
+	// provide stub openAgent functions keep the default false unless they are
+	// explicitly exercising daemon reconnect behavior.
+	reconnectOnOpenError bool
+	reconnectDaemon      func() error
+	rl                   *chatLineReader
+	completer            *switchableCompleter
+	out                  io.Writer
+	errw                 io.Writer
 	// palace, when non-nil, is queried on each user prompt to inject
 	// relevant project memory as a context prefix before the runner sees it.
 	palace *mempalace.Client
@@ -1454,7 +1460,7 @@ func (l *chatLoop) handleSlash(line string) {
 		for _, cmd := range clientSlashCommands[l.sess.agentID] {
 			if strings.TrimPrefix(cmd, "/") == verb {
 				l.appendTurn(chatTurn{Role: "user", Text: line})
-				if err := l.sess.send(line); err != nil {
+				if err := l.sendWithReconnect(l.sess, line); err != nil {
 					fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 				}
 				return
@@ -1465,6 +1471,9 @@ func (l *chatLoop) handleSlash(line string) {
 	// Curated ctl alias: /<alias> → milliwaysctl <args...> [rest...]
 	if args, ok := chatCtlAliases[verb]; ok {
 		if l.runCtl(append(append([]string{}, args...), splitFields(rest)...)) && isLocalInstallAlias(verb) {
+			if err := l.reconnectAfterLocalInstall(); err != nil {
+				fmt.Fprintln(l.errw, friendlyError("warn: reconnect milliwaysd: ", "", err))
+			}
 			l.switchAgent("local")
 		}
 		return
@@ -1579,7 +1588,7 @@ func (l *chatLoop) handleSlash(line string) {
 		// Fall back to milliwaysctl only when in the landing zone.
 		if l.sess != nil {
 			l.appendTurn(chatTurn{Role: "user", Text: line})
-			if err := l.sess.send(line); err != nil {
+			if err := l.sendWithReconnect(l.sess, line); err != nil {
 				fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 			}
 			return
@@ -1817,8 +1826,8 @@ func (l *chatLoop) ensureAgentSession(agentID string) (*chatSession, error) {
 		return nil, fmt.Errorf("daemon not connected — start milliwaysd first")
 	}
 	sess, err := opener(l.client, agentID)
-	if err != nil && l.openAgent == nil && isTransientRPCConnectionError(err) {
-		if reconnectErr := l.reconnectDaemonClient(); reconnectErr == nil {
+	if err != nil && l.reconnectOnOpenError && isTransientRPCConnectionError(err) {
+		if reconnectErr := l.reconnectDaemonConnection(); reconnectErr == nil {
 			sess, err = opener(l.client, agentID)
 		} else {
 			err = fmt.Errorf("%w; reconnect failed: %v", err, reconnectErr)
@@ -1841,6 +1850,23 @@ func (l *chatLoop) ensureAgentSession(agentID string) (*chatSession, error) {
 		go l.drainStream(sess)
 	}
 	return sess, nil
+}
+
+func (l *chatLoop) reconnectAfterLocalInstall() error {
+	if l == nil || !l.reconnectOnOpenError {
+		return nil
+	}
+	return l.reconnectDaemonConnection()
+}
+
+func (l *chatLoop) reconnectDaemonConnection() error {
+	if l == nil {
+		return fmt.Errorf("chat loop is nil")
+	}
+	if l.reconnectDaemon != nil {
+		return l.reconnectDaemon()
+	}
+	return l.reconnectDaemonClient()
 }
 
 func (l *chatLoop) reconnectDaemonClient() error {
@@ -1871,6 +1897,38 @@ func (l *chatLoop) reconnectDaemonClient() error {
 		}
 	}
 	return nil
+}
+
+func (l *chatLoop) sendWithReconnect(sess *chatSession, prompt string) error {
+	if sess == nil {
+		return fmt.Errorf("no active agent session")
+	}
+	err := sess.send(prompt)
+	if err == nil || !l.reconnectOnOpenError || !isTransientRPCConnectionError(err) {
+		return err
+	}
+	agentID := sess.agentID
+	wasActive := l.sess == sess || (l.sess != nil && l.sess.agentID == agentID)
+	if sess.streamCancel != nil {
+		sess.streamCancel()
+	}
+	if l.sessions != nil {
+		delete(l.sessions, agentID)
+	}
+	if l.sess == sess {
+		l.sess = nil
+	}
+	if reconnectErr := l.reconnectDaemonConnection(); reconnectErr != nil {
+		return fmt.Errorf("%w; reconnect failed: %v", err, reconnectErr)
+	}
+	next, openErr := l.ensureAgentSession(agentID)
+	if openErr != nil {
+		return fmt.Errorf("%w; reopen failed: %v", err, openErr)
+	}
+	if wasActive {
+		l.activateSession(next)
+	}
+	return next.send(prompt)
 }
 
 func isTransientRPCConnectionError(err error) bool {
@@ -1982,7 +2040,7 @@ func (l *chatLoop) sendAgentPrompt(agentID, prompt string) {
 	if l.deck != nil {
 		l.deck.MarkPrompt(agentID, prompt)
 	}
-	if err := sess.send(prompt); err != nil {
+	if err := l.sendWithReconnect(sess, prompt); err != nil {
 		fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 		return
 	}
@@ -2013,7 +2071,7 @@ func (l *chatLoop) handleTakeover(newID string) {
 		l.lastBriefingFrom = fromID
 		l.lastBriefing = briefing
 		l.writeHandoffBriefing(newID, fromID, briefing)
-		if err := sess.send(briefing); err != nil {
+		if err := l.sendWithReconnect(sess, briefing); err != nil {
 			fmt.Fprintln(l.errw, friendlyError("warn: send briefing: ", "", err))
 		}
 		return
@@ -2895,7 +2953,7 @@ func (l *chatLoop) handleRetry() {
 	}
 	fmt.Fprintf(l.out, "  retrying: %s\n\n", truncate(lastUser, 80))
 	enriched := l.enrichWithPalace(context.Background(), lastUser)
-	if err := l.sess.send(enriched); err != nil {
+	if err := l.sendWithReconnect(l.sess, enriched); err != nil {
 		fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 	}
 }
@@ -3192,7 +3250,7 @@ func (l *chatLoop) handlePrompt(prompt string) {
 	// refreshPromptHint will replace it with real stats on chunk_end.
 	l.updateActiveTitle("thinking…")
 	l.setPromptState("thinking")
-	if err := l.sess.send(enriched); err != nil {
+	if err := l.sendWithReconnect(l.sess, enriched); err != nil {
 		l.setPromptState("")
 		fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 		return

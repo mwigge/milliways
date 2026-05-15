@@ -125,7 +125,7 @@ install_native_pkg() {
       tmp="$(mktemp -d)"
       info "Downloading $pkg..."
       if curl -sSfL "$url" -o "$tmp/$pkg"; then
-        if rpm -i "$tmp/$pkg" 2>/dev/null || sudo rpm -i "$tmp/$pkg"; then
+        if rpm -U --replacepkgs "$tmp/$pkg" 2>/dev/null || sudo rpm -U --replacepkgs "$tmp/$pkg"; then
           ok "Installed via rpm — binaries at /usr/bin"
           INSTALLED_NATIVE=1
           repair_shadowing_user_bins
@@ -467,12 +467,33 @@ EOF
     command -v milliwaysctl >/dev/null 2>&1 && milliwaysctl daemon stop >/dev/null 2>&1 || true
   fi
 
-  if systemctl --user enable --now milliwaysd >/dev/null 2>&1; then
-    ok "Enabled and started milliwaysd.service"
+  systemctl --user reset-failed milliwaysd >/dev/null 2>&1 || true
+  if systemctl --user enable --now milliwaysd >/dev/null 2>&1 \
+     && systemctl --user restart milliwaysd >/dev/null 2>&1; then
+    ok "Enabled and restarted milliwaysd.service"
   else
     warn "Installed milliwaysd.service, but could not start it automatically"
     warn "  Try: systemctl --user enable --now milliwaysd"
   fi
+}
+
+restart_existing_local_services() {
+  [ "$PLATFORM" = "linux" ] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
+  for svc in milliways-local milliways-local-swap; do
+    if systemctl --user list-unit-files "${svc}.service" 2>/dev/null | grep -q "^${svc}.service"; then
+      systemctl --user reset-failed "$svc" >/dev/null 2>&1 || true
+      if systemctl --user is-enabled --quiet "$svc" >/dev/null 2>&1 \
+         || systemctl --user is-active --quiet "$svc" >/dev/null 2>&1; then
+        if systemctl --user restart "$svc" >/dev/null 2>&1; then
+          ok "Restarted ${svc}.service"
+        else
+          warn "Could not restart ${svc}.service — run: systemctl --user restart ${svc}"
+        fi
+      fi
+    fi
+  done
 }
 
 # ── PATH setup ────────────────────────────────────────────────────────────────
@@ -523,6 +544,7 @@ install_support_scripts
 install_feature_dependencies
 
 install_milliwaysd_service
+restart_existing_local_services
 
 if [ "${SKIP_TERM:-0}" != "1" ]; then
   setup_wezterm_config

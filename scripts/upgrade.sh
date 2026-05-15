@@ -147,7 +147,7 @@ upgrade_native_pkg() {
       tmp="$(mktemp -d)"
       info "Downloading ${pkg}..."
       if curl -sSfL "$url" -o "$tmp/$pkg"; then
-        if rpm -U "$tmp/$pkg" 2>/dev/null || sudo rpm -U "$tmp/$pkg"; then
+        if rpm -U --replacepkgs "$tmp/$pkg" 2>/dev/null || sudo rpm -U --replacepkgs "$tmp/$pkg"; then
           ok "Upgraded via rpm — binaries at /usr/bin"
           NATIVE_UPGRADED=1
           repair_shadowing_user_bins
@@ -370,6 +370,25 @@ EOF
   fi
 }
 
+restart_existing_local_services() {
+  [ "$PLATFORM" = "linux" ] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
+  for svc in milliways-local milliways-local-swap; do
+    if systemctl --user list-unit-files "${svc}.service" 2>/dev/null | grep -q "^${svc}.service"; then
+      systemctl --user reset-failed "$svc" >/dev/null 2>&1 || true
+      if systemctl --user is-enabled --quiet "$svc" >/dev/null 2>&1 \
+         || systemctl --user is-active --quiet "$svc" >/dev/null 2>&1; then
+        if systemctl --user restart "$svc" >/dev/null 2>&1; then
+          ok "Restarted ${svc}.service"
+        else
+          warn "Could not restart ${svc}.service — run: systemctl --user restart ${svc}"
+        fi
+      fi
+    fi
+  done
+}
+
 # ── Confirmation prompt ───────────────────────────────────────────────────────
 confirm() {
   [ "$YES" = "1" ] && return 0
@@ -410,9 +429,7 @@ if [ "$CHECK_ONLY" = "1" ]; then
 fi
 
 if [ "$cur_norm" = "$tgt_norm" ] && [ "$cur_norm" != "unknown" ]; then
-  ok "Already at latest (${TARGET_VERSION}) — nothing to do"
-  printf '\n'
-  exit 0
+  ok "Already at latest (${TARGET_VERSION}) — refreshing install"
 fi
 
 confirm "$CURRENT" "$TARGET_VERSION"
@@ -437,6 +454,7 @@ fi
 upgrade_macos_app "$TARGET_VERSION"
 upgrade_linux_desktop_app "$TARGET_VERSION"
 ensure_milliwaysd_service
+restart_existing_local_services
 
 printf '\n'
 mw_bin="$(command -v milliways 2>/dev/null || echo "$BIN_DIR/milliways")"

@@ -187,6 +187,7 @@ UNIT
     install -Dm755 scripts/install_local.sh         "$pkg_root/usr/share/milliways/scripts/install_local.sh"
     install -Dm755 scripts/install_local_swap.sh    "$pkg_root/usr/share/milliways/scripts/install_local_swap.sh"
     install -Dm755 scripts/install_feature_deps.sh  "$pkg_root/usr/share/milliways/scripts/install_feature_deps.sh"
+    install -Dm755 scripts/upgrade.sh               "$pkg_root/usr/share/milliways/scripts/upgrade.sh"
     install -Dm644 cmd/milliwaysctl/milliways.lua   "$pkg_root/usr/share/milliways/wezterm.lua"
 
     # Agent toolkit bundle (if the sibling directory was mounted by the caller)
