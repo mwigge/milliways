@@ -1464,7 +1464,9 @@ func (l *chatLoop) handleSlash(line string) {
 
 	// Curated ctl alias: /<alias> → milliwaysctl <args...> [rest...]
 	if args, ok := chatCtlAliases[verb]; ok {
-		l.runCtl(append(append([]string{}, args...), splitFields(rest)...))
+		if l.runCtl(append(append([]string{}, args...), splitFields(rest)...)) && isLocalInstallAlias(verb) {
+			l.switchAgent("local")
+		}
 		return
 	}
 
@@ -1746,14 +1748,14 @@ type chatTraceSpan struct {
 // stdout/stderr inline. milliwaysctl is internal plumbing — users see
 // /<alias> not the underlying ctl call. Reuses the user's PATH lookup
 // so MILLIWAYSCTL_BIN env-var override works.
-func (l *chatLoop) runCtl(args []string) {
+func (l *chatLoop) runCtl(args []string) bool {
 	if len(args) == 0 {
-		return
+		return false
 	}
 	bin := lookupCtlBinary()
 	if bin == "" {
 		fmt.Fprintln(l.errw, "✗ milliwaysctl not on PATH; install with `make install` or set MILLIWAYSCTL_BIN")
-		return
+		return false
 	}
 	fmt.Fprintf(l.out, "• Ran `%s %s`\n", filepath.Base(bin), strings.Join(args, " "))
 	c := exec.Command(bin, args...)
@@ -1762,6 +1764,17 @@ func (l *chatLoop) runCtl(args []string) {
 	c.Stderr = l.errw
 	if err := c.Run(); err != nil {
 		fmt.Fprintln(l.errw, friendlyError("✗ ctl: ", "", err))
+		return false
+	}
+	return true
+}
+
+func isLocalInstallAlias(verb string) bool {
+	switch verb {
+	case "install-local-server", "install-local-gpu-server", "install-local-swap":
+		return true
+	default:
+		return false
 	}
 }
 

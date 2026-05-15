@@ -151,7 +151,7 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 	// local: shim to local install-server (single source of truth).
 	if spec.client == "local" {
 		fmt.Fprintln(stdout, "→ delegating to `milliwaysctl local install-server`")
-		return runInstallScript("scripts/install_local.sh", stdout, stderr)
+		return runLocalInstallServer(nil, stdout, stderr)
 	}
 
 	// Prereq check.

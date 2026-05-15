@@ -156,7 +156,10 @@ func printLocalUsage(w io.Writer) {
 var execCommand = exec.Command
 
 func runLocalInstallServer(_ []string, stdout, stderr io.Writer) int {
-	return runInstallScript("scripts/install_local.sh", stdout, stderr)
+	if code := runInstallScript("scripts/install_local.sh", stdout, stderr); code != 0 {
+		return code
+	}
+	return activateLocalInstall(stdout, stderr)
 }
 
 func runLocalInstallGPUServer(args []string, stdout, stderr io.Writer) int {
@@ -217,14 +220,20 @@ func runLocalInstallGPUServer(args []string, stdout, stderr io.Writer) int {
 	if os.Getenv("CTX_SIZE") == "" {
 		env["CTX_SIZE"] = "8192"
 	}
-	return runInstallScriptWithEnv("scripts/install_local.sh", env, stdout, stderr)
+	if code := runInstallScriptWithEnv("scripts/install_local.sh", env, stdout, stderr); code != 0 {
+		return code
+	}
+	return activateLocalInstall(stdout, stderr)
 }
 
 func runLocalInstallSwap(args []string, stdout, stderr io.Writer) int {
 	if hasFlag(args, "--hot") {
 		_ = os.Setenv("HOT_MODE", "1")
 	}
-	return runInstallScript("scripts/install_local_swap.sh", stdout, stderr)
+	if code := runInstallScript("scripts/install_local_swap.sh", stdout, stderr); code != 0 {
+		return code
+	}
+	return activateLocalInstall(stdout, stderr)
 }
 
 func runInstallScript(relPath string, stdout, stderr io.Writer) int {
@@ -778,6 +787,11 @@ func updateLocalServerLauncher(modelPath, alias string, stderr io.Writer) error 
 
 	md := modelServerDefaults(alias)
 	newLauncher := fmt.Sprintf(`#!/usr/bin/env bash
+export LD_LIBRARY_PATH="$HOME/.local/lib/milliways:/usr/local/lib/milliways:/usr/lib/milliways:${LD_LIBRARY_PATH:-}"
+export DYLD_LIBRARY_PATH="$HOME/.local/lib/milliways:/opt/homebrew/lib:/usr/local/lib:${DYLD_LIBRARY_PATH:-}"
+for dir in "$HOME/.local/lib/milliways" /usr/local/lib/milliways /usr/lib/milliways; do
+  [ -d "$dir" ] && cd "$dir" && break
+done
 exec %q \
   -m %q \
   --alias %q \
@@ -787,7 +801,7 @@ exec %q \
   --n-gpu-layers %d \
   --temp %.2f \
   --jinja \
-  -fa
+  --flash-attn auto
 `, llamaBin, modelPath, alias, host, port, ctx, md.GPULayers, md.Temp)
 
 	if err := os.WriteFile(launcher, []byte(newLauncher), 0o755); err != nil {
@@ -1607,6 +1621,14 @@ func linuxServicePath() (string, error) {
 	return filepath.Join(home, ".config", "systemd", "user", "milliways-local.service"), nil
 }
 
+func linuxDaemonServicePath() (string, error) {
+	home, err := userHomeDirFn()
+	if err != nil {
+		return "", fmt.Errorf("home dir: %w", err)
+	}
+	return filepath.Join(home, ".config", "systemd", "user", "milliwaysd.service"), nil
+}
+
 // parsePortFromEndpoint extracts the port number from a URL like
 // http://127.0.0.1:8765/v1. Returns "" when the port cannot be found.
 func parsePortFromEndpoint(endpoint string) string {
@@ -1627,6 +1649,103 @@ func parsePortFromEndpoint(endpoint string) string {
 		}
 	}
 	return ""
+}
+
+func activateLocalInstall(stdout, stderr io.Writer) int {
+	fmt.Fprintln(stdout, "==> Activating local services...")
+	if code := runLocalServerRestart(stdout, stderr); code != 0 {
+		return code
+	}
+	if err := waitLocalServerReady(90 * time.Second); err != nil {
+		fmt.Fprintf(stderr, "local install: server did not become ready: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "[ok] local server ready at %s\n", localEndpoint())
+	restartMilliwaysDaemon(stdout, stderr)
+	fmt.Fprintln(stdout, "[ok] /local is ready")
+	return 0
+}
+
+func runLocalServerRestart(stdout, stderr io.Writer) int {
+	endpoint := localEndpoint()
+
+	if plist, err := macosPlistPath(); err == nil {
+		if _, err2 := os.Stat(plist); err2 == nil {
+			_ = runCtlCommand(stdout, stderr, "launchctl", "unload", plist)
+			if err3 := runCtlCommand(stdout, stderr, "launchctl", "load", "-w", plist); err3 == nil {
+				fmt.Fprintf(stdout, "[ok] local server restarted on %s\n", endpoint)
+				return 0
+			}
+		}
+	}
+
+	if svc, err := linuxServicePath(); err == nil {
+		if _, err2 := os.Stat(svc); err2 == nil {
+			_ = runCtlCommand(stdout, stderr, "systemctl", "--user", "daemon-reload")
+			_ = runCtlCommand(stdout, stderr, "systemctl", "--user", "enable", "--now", "milliways-local")
+			if err3 := runCtlCommand(stdout, stderr, "systemctl", "--user", "restart", "milliways-local"); err3 == nil {
+				fmt.Fprintf(stdout, "[ok] local server restarted on %s\n", endpoint)
+				return 0
+			}
+		}
+	}
+
+	_ = runLocalServerStop(nil, stdout, stderr)
+	return runLocalServerStart(nil, stdout, stderr)
+}
+
+func runCtlCommand(stdout, stderr io.Writer, name string, args ...string) error {
+	cmd := execCommand(name, args...)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
+}
+
+func waitLocalServerReady(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	endpoint := strings.TrimRight(localEndpoint(), "/")
+	url := endpoint + "/models"
+	var lastErr error
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err == nil {
+			resp, err := http.DefaultClient.Do(req)
+			if err == nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					cancel()
+					return nil
+				}
+				lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			} else {
+				lastErr = err
+			}
+		} else {
+			lastErr = err
+		}
+		cancel()
+		time.Sleep(1 * time.Second)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("timed out")
+	}
+	return lastErr
+}
+
+func restartMilliwaysDaemon(stdout, stderr io.Writer) {
+	if runtime.GOOS == "linux" {
+		if _, err := exec.LookPath("systemctl"); err == nil {
+			_ = runCtlCommand(stdout, stderr, "systemctl", "--user", "reset-failed", "milliwaysd")
+			if err2 := runCtlCommand(stdout, stderr, "systemctl", "--user", "restart", "milliwaysd"); err2 == nil {
+				fmt.Fprintln(stdout, "[ok] milliwaysd restarted")
+				return
+			}
+		}
+	}
+	// If the daemon is not service-managed, it will reload local.env itself.
+	fmt.Fprintln(stdout, "[ok] milliwaysd will pick up local.env automatically")
 }
 
 // runLocalServerStart starts the local inference server via launchctl (macOS),

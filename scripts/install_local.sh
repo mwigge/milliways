@@ -20,6 +20,8 @@ N_GPU_LAYERS="${N_GPU_LAYERS:-99}"
 MODEL_TEMP="${MODEL_TEMP:-0.15}"
 LOG_DIR="${LOG_DIR:-$HOME/.local/share/milliways/local}"
 MODEL_DIR="${MODEL_DIR:-$HOME/.local/share/milliways/models}"
+LLAMA_BIN_DIR="${LLAMA_BIN_DIR:-$HOME/.local/bin}"
+LLAMA_LIB_DIR="${LLAMA_LIB_DIR:-$HOME/.local/lib/milliways}"
 
 color() { printf '\033[1;%sm%s\033[0m\n' "$1" "$2"; }
 info()  { color 36 "==> $*"; }
@@ -50,8 +52,44 @@ pick_free_port() {
   fail "could not find a free port near $1 — set PORT=NNNN and re-run"
 }
 
+install_llama_shared_libs() {
+  local src_dir="$1"
+  local dest_dir="${2:-$LLAMA_LIB_DIR}"
+  if ! compgen -G "$src_dir/*.so*" >/dev/null && ! compgen -G "$src_dir/*.dylib" >/dev/null; then
+    return 0
+  fi
+  mkdir -p "$dest_dir"
+  local dylib
+  cp -a "$src_dir"/*.so* "$dest_dir"/ 2>/dev/null || true
+  cp -a "$src_dir"/*.dylib "$dest_dir"/ 2>/dev/null || true
+  if command -v readelf >/dev/null 2>&1; then
+    local lib soname base
+    for lib in "$dest_dir"/lib*.so.*.*; do
+      [ -e "$lib" ] || continue
+      soname="$(readelf -d "$lib" 2>/dev/null | sed -n 's/.*Library soname: \[\([^]]*\)\].*/\1/p' | head -1)"
+      [ -n "$soname" ] || continue
+      base="${soname%%.so*}.so"
+      ln -sfn "$(basename "$lib")" "$dest_dir/$soname"
+      ln -sfn "$soname" "$dest_dir/$base"
+    done
+  fi
+  mkdir -p "$LLAMA_BIN_DIR"
+  local backend
+  for backend in "$dest_dir"/libggml-cuda.so "$dest_dir"/libggml-hip.so "$dest_dir"/libggml-vulkan.so "$dest_dir"/libggml-kompute.so "$dest_dir"/libggml-metal.dylib "$dest_dir"/libggml-cpu-*.so "$dest_dir"/libggml-rpc.so; do
+    [ -e "$backend" ] || continue
+    ln -sfn "$backend" "$LLAMA_BIN_DIR/$(basename "$backend")"
+  done
+  ok "llama.cpp shared libraries installed: $dest_dir"
+}
+
+llama_binary_has_missing_libs() {
+  local bin="$1"
+  command -v ldd >/dev/null 2>&1 || return 1
+  LD_LIBRARY_PATH="$LLAMA_LIB_DIR:/usr/lib/milliways:${LD_LIBRARY_PATH:-}" ldd "$bin" 2>/dev/null | grep -q "not found"
+}
+
 # Ensure Homebrew and ~/.local/bin are on PATH when launched from a GUI app.
-export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$PATH"
+export PATH="/opt/homebrew/bin:$HOME/.local/bin:/usr/local/bin:$PATH"
 
 # If a milliways llama-server is already running and reachable, reuse its port
 # rather than starting a new instance. This handles the case where the user
@@ -156,6 +194,7 @@ install_linux_build_deps() {
 }
 
 install_llamacpp() {
+  local existing_missing_libs=0
   if command -v llama-server >/dev/null 2>&1; then
     local found
     found="$(command -v llama-server)"
@@ -164,6 +203,9 @@ install_llamacpp() {
     if head -1 "$found" 2>/dev/null | grep -q "bash" && grep -q "python3" "$found" 2>/dev/null; then
       warn "Found stub llama-server at $found — replacing with real binary"
       rm -f "$found"
+    elif llama_binary_has_missing_libs "$found"; then
+      existing_missing_libs=1
+      warn "llama-server at $found has missing shared libraries — reinstalling"
     elif [ "${MILLIWAYS_LOCAL_GPU:-0}" = "1" ]; then
       warn "llama-server already installed at $found — building a GPU-enabled launcher binary for ${LLAMA_CPP_ACCEL}"
     else
@@ -187,19 +229,24 @@ install_llamacpp() {
       # Strategy 1: already bundled in the milliways package at /usr/bin/llama-server
       # (set by build-linux-amd64.sh) — nothing to do.
       if [ "${MILLIWAYS_LOCAL_GPU:-0}" != "1" ] && [ -x /usr/bin/llama-server ]; then
-        ok "llama-server bundled in package: /usr/bin/llama-server"
-        return
+        if llama_binary_has_missing_libs /usr/bin/llama-server; then
+          warn "bundled /usr/bin/llama-server has missing shared libraries — reinstalling"
+        else
+          ok "llama-server bundled in package: /usr/bin/llama-server"
+          return
+        fi
       fi
 
       # Strategy 2: download pre-built binary from the milliways release (same tag).
-      if [ "${MILLIWAYS_LOCAL_GPU:-0}" != "1" ]; then
+      if [ "${MILLIWAYS_LOCAL_GPU:-0}" != "1" ] && [ "$existing_missing_libs" != "1" ]; then
         local milliways_ver
         milliways_ver="$(milliways --version 2>/dev/null | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
         if [ -n "$milliways_ver" ]; then
           local asset_url="https://github.com/mwigge/milliways/releases/download/${milliways_ver}/llama-server_linux_amd64"
           info "Downloading bundled llama-server from milliways release ${milliways_ver}…"
           if curl -sSfL "$asset_url" -o /tmp/llama-server-dl 2>/dev/null; then
-            sudo install -m755 /tmp/llama-server-dl /usr/local/bin/llama-server
+            mkdir -p "$LLAMA_BIN_DIR"
+            install -m755 /tmp/llama-server-dl "$LLAMA_BIN_DIR/llama-server"
             rm -f /tmp/llama-server-dl
             ok "llama-server installed from milliways release"
             return
@@ -219,8 +266,10 @@ install_llamacpp() {
           if curl -sSfL "$tar_url" -o "/tmp/${tar_name}" 2>/dev/null; then
             local entry
             entry="$(tar -tzf "/tmp/${tar_name}" | grep '/llama-server$' | head -1)"
-            tar -xzf "/tmp/${tar_name}" -C /tmp "$entry"
-            sudo install -m755 "/tmp/${entry}" /usr/local/bin/llama-server
+            tar -xzf "/tmp/${tar_name}" -C /tmp
+            mkdir -p "$LLAMA_BIN_DIR"
+            install -m755 "/tmp/${entry}" "$LLAMA_BIN_DIR/llama-server"
+            install_llama_shared_libs "/tmp/$(dirname "$entry")"
             rm -rf "/tmp/${tar_name}" "/tmp/$(echo "$entry" | cut -d/ -f1)"
             ok "llama-server installed from llama.cpp ${llama_tag}"
             return
@@ -252,8 +301,10 @@ install_llamacpp() {
       esac
       cmake -S "$tmp/llama.cpp" -B "$tmp/llama.cpp/build" "${cmake_args[@]}"
       cmake --build "$tmp/llama.cpp/build" --config Release -j
-      sudo install -m 0755 "$tmp/llama.cpp/build/bin/llama-server" /usr/local/bin/llama-server
-      sudo install -m 0755 "$tmp/llama.cpp/build/bin/llama-cli"    /usr/local/bin/llama-cli
+      mkdir -p "$LLAMA_BIN_DIR"
+      install -m 0755 "$tmp/llama.cpp/build/bin/llama-server" "$LLAMA_BIN_DIR/llama-server"
+      install -m 0755 "$tmp/llama.cpp/build/bin/llama-cli"    "$LLAMA_BIN_DIR/llama-cli"
+      install_llama_shared_libs "$tmp/llama.cpp/build/bin"
       rm -rf "$tmp"
       ;;
     *)
@@ -309,6 +360,11 @@ write_launcher() {
   llama_bin="$(command -v llama-server 2>/dev/null)" || llama_bin="llama-server"
   cat > "$HOME/.local/bin/milliways-local-server" <<EOF
 #!/usr/bin/env bash
+export LD_LIBRARY_PATH="$LLAMA_LIB_DIR:/usr/lib/milliways:\${LD_LIBRARY_PATH:-}"
+export DYLD_LIBRARY_PATH="$LLAMA_LIB_DIR:/opt/homebrew/lib:/usr/local/lib:\${DYLD_LIBRARY_PATH:-}"
+for dir in "$LLAMA_LIB_DIR" /usr/lib/milliways; do
+  [ -d "\$dir" ] && cd "\$dir" && break
+done
 exec "$llama_bin" \\
   -m "$MODEL_PATH" \\
   --alias "$MODEL_ALIAS" \\
@@ -318,7 +374,7 @@ exec "$llama_bin" \\
   --n-gpu-layers "$N_GPU_LAYERS" \\
   --temp "$MODEL_TEMP" \\
   --jinja \\
-  -fa
+  --flash-attn auto
 EOF
   chmod +x "$HOME/.local/bin/milliways-local-server"
   ok "wrote $HOME/.local/bin/milliways-local-server"

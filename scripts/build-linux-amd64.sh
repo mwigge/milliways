@@ -78,13 +78,21 @@ docker run --rm \
       llama_url="https://github.com/ggml-org/llama.cpp/releases/download/${llama_tag}/${llama_tar}"
       echo "fetching llama-server ${llama_tag} from ${llama_url}"
       if curl -sSfL "${llama_url}" -o "/tmp/${llama_tar}"; then
-        # List the tarball first, find the llama-server entry, then extract it.
+        # List the tarball first, find the llama-server entry, then extract it
+        # with its sibling shared libraries. Recent llama.cpp release binaries
+        # are dynamically linked and will not start if only llama-server is
+        # packaged.
         llama_entry="$(tar -tzf "/tmp/${llama_tar}" | grep "/llama-server$" | head -1 || true)"
         if [ -n "$llama_entry" ]; then
-          tar -xzf "/tmp/${llama_tar}" -C /tmp "$llama_entry"
+          tar -xzf "/tmp/${llama_tar}" -C /tmp
+          llama_dir="/tmp/${llama_entry%/*}"
           cp "/tmp/${llama_entry}" dist/llama-server_linux_amd64
           chmod +x dist/llama-server_linux_amd64
-          rm -f "/tmp/${llama_tar}" "/tmp/${llama_entry%/*}" 2>/dev/null || true
+          mkdir -p dist/llama-libs_linux_amd64
+          if compgen -G "${llama_dir}/*.so*" >/dev/null; then
+            cp -a "${llama_dir}"/*.so* dist/llama-libs_linux_amd64/
+          fi
+          rm -rf "/tmp/${llama_tar}" "$llama_dir" 2>/dev/null || true
           echo "llama-server bundled: $(file dist/llama-server_linux_amd64)"
         else
           echo "WARNING: llama-server not found in ${llama_tar} — skipping bundle"
@@ -119,6 +127,17 @@ UNIT
     # Bundle llama-server when available — removes the need for brew/cmake on first use.
     [ -f dist/llama-server_linux_amd64 ] && \
       install -Dm755 dist/llama-server_linux_amd64 "$pkg_root/usr/bin/llama-server"
+    if [ -d dist/llama-libs_linux_amd64 ]; then
+      while IFS= read -r lib; do
+        install -Dm755 "$lib" "$pkg_root/usr/lib/milliways/$(basename "$lib")"
+        soname="$(readelf -d "$lib" 2>/dev/null | sed -n 's/.*Library soname: \[\([^]]*\)\].*/\1/p' | head -1 || true)"
+        if [ -n "$soname" ]; then
+          base="${soname%%.so*}.so"
+          ln -sfn "$(basename "$lib")" "$pkg_root/usr/lib/milliways/$soname"
+          ln -sfn "$soname" "$pkg_root/usr/lib/milliways/$base"
+        fi
+      done < <(find dist/llama-libs_linux_amd64 -maxdepth 1 -type f -name '*.so*' | sort)
+    fi
 
     # Linux desktop app: include patched terminal GUI when the release/build
     # environment provides it. The package remains CLI-capable if absent.
