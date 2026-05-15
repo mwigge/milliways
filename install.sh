@@ -203,6 +203,25 @@ install_remote() {
   done
 
   if [ -n "$missing" ]; then
+    # Before giving up on the release, check whether the GitHub release actually
+    # has any assets at all.  If it has zero assets the workflow is probably
+    # still running — tell the user to wait rather than attempting a source build
+    # that is very likely to fail for the same reason (no source assets either).
+    local asset_count=0
+    if command -v python3 >/dev/null 2>&1; then
+      asset_count="$(curl -sSf \
+        "https://api.github.com/repos/${REPO}/releases/tags/${VERSION}" \
+        2>/dev/null \
+        | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('assets',[])))" \
+        2>/dev/null || echo 0)"
+    fi
+    if [ "${asset_count:-0}" -eq 0 ]; then
+      warn "Release ${VERSION} has no assets yet — the build pipeline is probably still running."
+      warn "Please wait a few minutes and re-run the installer:"
+      warn "  curl -sSf https://raw.githubusercontent.com/${REPO}/master/install.sh | bash"
+      exit 1
+    fi
+
     # Tier 3: build from source — last resort, requires git + go + gcc.
     warn "Some binaries missing from release; falling back to source build for:$missing"
     install_from_source "$missing"
@@ -261,6 +280,12 @@ install_from_source() {
     pkg="cmd/${bin}"
     [ -d "${root}/${pkg}" ] || { warn "  $pkg not found, skipping"; continue; }
     info "  building $bin"
+    # A previous package-manager install may have left a symlink at $BIN_DIR/$bin
+    # pointing at /usr/bin/$bin (created by repair_shadowing_user_bins).  go build
+    # follows the symlink and tries to overwrite the root-owned target, which fails
+    # with "permission denied".  Remove the symlink first so go build writes a
+    # fresh file into $BIN_DIR directly.
+    [ -L "$BIN_DIR/$bin" ] && rm -f "$BIN_DIR/$bin"
     go build -C "$root" -ldflags "$ldflags" -o "$BIN_DIR/$bin" "./$pkg"
     ok "  installed $BIN_DIR/$bin"
   done
