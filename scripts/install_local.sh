@@ -118,7 +118,7 @@ install_linux_build_deps() {
       case "$OS" in
         Linux)
           if command -v pacman >/dev/null 2>&1; then
-            sudo pacman -Sy --noconfirm base-devel cmake git curl shaderc vulkan-headers vulkan-icd-loader
+            sudo pacman -Sy --noconfirm base-devel cmake git curl shaderc spirv-headers vulkan-headers vulkan-icd-loader
           elif command -v apt-get >/dev/null 2>&1; then
             sudo apt-get update -qq
             sudo apt-get install -yqq build-essential cmake git curl ca-certificates glslang-tools libvulkan-dev

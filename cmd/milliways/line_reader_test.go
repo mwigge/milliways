@@ -261,3 +261,105 @@ func TestLineReaderSubmittedLineReturnsToColumnZero(t *testing.T) {
 		t.Fatalf("submitted line = %q, want %q", got, want)
 	}
 }
+
+func TestWriteSubmittedLineHandlesEmbeddedNewlines(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	r := &chatLineReader{out: &out, prompt: "▶ "}
+	r.writeSubmittedLineLocked("line1\nline2\nline3")
+
+	got := out.String()
+	if !strings.Contains(got, "line1\r\nline2\r\nline3") {
+		t.Fatalf("embedded newlines not converted to CRLF: %q", got)
+	}
+}
+
+func TestBracketedPasteInsertsNewlineWithoutSubmitting(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	r := &chatLineReader{out: &out, prompt: "> "}
+	r.inBracketedPaste = true
+
+	r.mu.Lock()
+	r.insertRunesLocked([]rune("hello\nworld"))
+	r.mu.Unlock()
+
+	if got := string(r.buf); got != "hello\nworld" {
+		t.Fatalf("buf = %q, want %q", got, "hello\nworld")
+	}
+}
+
+func TestHandleCSISetsAndClearsBracketedPaste(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	r := &chatLineReader{out: &out, prompt: "> "}
+
+	r.handleCSI("200", '~')
+	r.mu.Lock()
+	inPaste := r.inBracketedPaste
+	r.mu.Unlock()
+	if !inPaste {
+		t.Fatal("handleCSI(200,~) did not set inBracketedPaste")
+	}
+
+	r.handleCSI("201", '~')
+	r.mu.Lock()
+	inPaste = r.inBracketedPaste
+	r.mu.Unlock()
+	if inPaste {
+		t.Fatal("handleCSI(201,~) did not clear inBracketedPaste")
+	}
+}
+
+func TestBufTotalRows(t *testing.T) {
+	t.Parallel()
+
+	width := 20
+	// Single line: same as visualRows(prompt+content, width)
+	if got := bufTotalRows("> ", []rune("hello"), width); got != 1 {
+		t.Fatalf("single line rows = %d, want 1", got)
+	}
+	// Two logical lines: prompt+"first" on row 1, "second" on row 2
+	if got := bufTotalRows("> ", []rune("first\nsecond"), width); got != 2 {
+		t.Fatalf("two-line rows = %d, want 2", got)
+	}
+}
+
+func TestBufCursorPos(t *testing.T) {
+	t.Parallel()
+
+	width := 80
+	buf := []rune("hello\nworld")
+	// Cursor at end of "hello" (position 5) → first logical line
+	row, col := bufCursorPos("> ", buf, 5, width)
+	if row != 0 {
+		t.Fatalf("cursor row = %d, want 0", row)
+	}
+	// Cursor at start of "world" (position 6, after \n) → second logical line, col 1
+	row, col = bufCursorPos("> ", buf, 6, width)
+	if row != 1 {
+		t.Fatalf("cursor row after newline = %d, want 1", row)
+	}
+	_ = col
+}
+
+func TestInsertRuneSkipsRedrawDuringPaste(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	r := &chatLineReader{out: &out, prompt: "> "}
+	r.inBracketedPaste = true
+
+	r.insertRune('x')
+
+	// No escape sequences should have been written (no redraw).
+	if strings.Contains(out.String(), "\033[") {
+		t.Fatalf("redraw occurred during bracketed paste: %q", out.String())
+	}
+	if string(r.buf) != "x" {
+		t.Fatalf("buf = %q, want x", string(r.buf))
+	}
+}
