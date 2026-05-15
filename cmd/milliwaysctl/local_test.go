@@ -719,6 +719,17 @@ func TestBuiltinCatalogIntegrity(t *testing.T) {
 	}
 }
 
+func TestBuiltinCatalogNamesAreUnique(t *testing.T) {
+	t.Parallel()
+	seen := make(map[string]int, len(builtinCatalog))
+	for i, e := range builtinCatalog {
+		if prev, exists := seen[e.Name]; exists {
+			t.Errorf("duplicate catalog name %q: entries %d and %d", e.Name, prev, i)
+		}
+		seen[e.Name] = i
+	}
+}
+
 // ── server maintenance tests ──────────────────────────────────────────────────
 
 func TestRunLocal_ServerStatus_NotRunning(t *testing.T) {

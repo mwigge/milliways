@@ -23,25 +23,40 @@ import (
 )
 
 // handleScan implements the /scan slash command.
-// It calls the daemon's security.scan RPC (30s timeout), then renders output.
-// The timeout is enforced via a context; the underlying RPC client does not
-// accept a context directly but the call will be cancelled when the deadline
-// fires on future refactors that add context propagation.
+// It calls the daemon's security.scan RPC with a 30-second timeout enforced
+// via a context + goroutine, since the underlying RPC client does not accept a
+// context directly. If the timeout fires first, an error is written to the
+// user and the background goroutine is abandoned.
 func (l *chatLoop) handleScan(_ string) {
-	_, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
 	if l.client == nil {
 		fmt.Fprintln(l.errw, "[scan] not connected to daemon")
 		return
 	}
 
-	var result map[string]any
-	if err := l.client.Call("security.scan", map[string]any{}, &result); err != nil {
-		fmt.Fprintln(l.errw, friendlyError("[scan] scan: ", "", err))
-		return
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	type scanResult struct {
+		result map[string]any
+		err    error
 	}
-	fmt.Fprintln(l.out, renderScanResult(result))
+	ch := make(chan scanResult, 1)
+	go func() {
+		var result map[string]any
+		err := l.client.Call("security.scan", map[string]any{}, &result)
+		ch <- scanResult{result: result, err: err}
+	}()
+
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			fmt.Fprintln(l.errw, friendlyError("[scan] scan: ", "", res.err))
+			return
+		}
+		fmt.Fprintln(l.out, renderScanResult(res.result))
+	case <-ctx.Done():
+		fmt.Fprintln(l.errw, "[scan] timed out after 30s — daemon did not respond")
+	}
 }
 
 // severityOrder maps severity names to sort priority (lower = higher priority).

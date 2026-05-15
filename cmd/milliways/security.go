@@ -242,6 +242,12 @@ func (l *chatLoop) handleSecurityAudit(args []string) {
 		fmt.Fprintln(l.errw, "usage: /security audit [--workspace <dir>] [--session <id>] [--client <name>] [--decision <allow|warn|block>] [--limit <n>]")
 		return
 	}
+	if *limit < 1 {
+		*limit = 1
+	}
+	if *limit > 1000 {
+		*limit = 1000
+	}
 	params := map[string]any{"limit": *limit}
 	if strings.TrimSpace(*workspace) != "" {
 		params["workspace"] = strings.TrimSpace(*workspace)

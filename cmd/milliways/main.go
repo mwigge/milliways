@@ -1148,11 +1148,16 @@ func printJSON(v any, asJSON bool) error {
 	return nil
 }
 
+const contextSizeLimit = 100 * 1024 * 1024 // 100 MB
+
 func loadDispatchContextBundle(stdin io.Reader, contextStdin bool, contextJSON, contextFile string) (*editorcontext.Bundle, error) {
 	if contextStdin {
-		data, err := io.ReadAll(stdin)
+		data, err := io.ReadAll(io.LimitReader(stdin, contextSizeLimit+1))
 		if err != nil {
 			return nil, fmt.Errorf("reading --context-stdin: %w", err)
+		}
+		if len(data) > contextSizeLimit {
+			return nil, fmt.Errorf("--context-stdin exceeds 100 MB limit")
 		}
 		bundle, err := editorcontext.ParseBundle(data)
 		if err != nil {
@@ -1170,6 +1175,13 @@ func loadDispatchContextBundle(stdin io.Reader, contextStdin bool, contextJSON, 
 	}
 
 	if strings.TrimSpace(contextFile) != "" {
+		info, err := os.Stat(contextFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading --context-file: %w", err)
+		}
+		if info.Size() > contextSizeLimit {
+			return nil, fmt.Errorf("--context-file %q exceeds 100 MB limit", contextFile)
+		}
 		data, err := os.ReadFile(contextFile)
 		if err != nil {
 			return nil, fmt.Errorf("reading --context-file: %w", err)
