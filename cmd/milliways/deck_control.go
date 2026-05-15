@@ -46,7 +46,12 @@ func newDeckSwitchControlPoller() func() (string, bool) {
 		if err != nil {
 			return "", false
 		}
-		if !st.ModTime().After(lastMod) && !lastMod.IsZero() {
+		// Bug 9: on filesystems with 1-second mtime resolution two writes in the
+		// same second are indistinguishable by mtime alone. Only skip the file
+		// read when BOTH mtime AND the last-seen seq are unchanged.
+		mtimeSame := !st.ModTime().After(lastMod) && !lastMod.IsZero()
+		if mtimeSame && lastSeq != "" {
+			// mtime unchanged and we already have a seq — nothing new.
 			return "", false
 		}
 		raw, err := os.ReadFile(path)

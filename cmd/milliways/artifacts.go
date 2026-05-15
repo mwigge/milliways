@@ -48,6 +48,20 @@ func (s *artifactChState) take() chan string {
 	return ch
 }
 
+// discard closes and discards a stored channel (if any) so goroutines
+// blocked on <-ch are unblocked immediately. Safe to call multiple times.
+// Used by activateSession to clean up in-flight artifact goroutines when
+// the user switches sessions mid-artifact.
+func (s *artifactChState) discard() {
+	s.mu.Lock()
+	ch := s.ch
+	s.ch = nil
+	s.mu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
+}
+
 // handleCompact summarises the current turn log by asking the active runner,
 // then replaces the log with the summary. No-ops on runners that have their own
 // native /compact (those are passed through by handleSlash).
@@ -75,7 +89,14 @@ func (l *chatLoop) handleCompact() {
 		return
 	}
 	go func() {
-		summary, ok := <-ch
+		var summary string
+		var ok bool
+		select {
+		case summary, ok = <-ch:
+		case <-time.After(10 * time.Minute):
+			fmt.Fprintln(l.errw, "✗ compact: artifact timed out waiting for stream completion")
+			return
+		}
 		if !ok || summary == "" {
 			return
 		}
@@ -164,7 +185,16 @@ func (l *chatLoop) handlePptx(topic string) {
 	}()
 
 	go func() {
-		raw, ok := <-ch
+		var raw string
+		var ok bool
+		select {
+		case raw, ok = <-ch:
+		case <-time.After(10 * time.Minute):
+			close(tickDone)
+			fmt.Fprintln(l.errw, "✗ pptx: artifact timed out waiting for stream completion")
+			l.rl.Refresh()
+			return
+		}
 		close(tickDone)
 		if !ok || raw == "" {
 			return
@@ -247,7 +277,14 @@ func (l *chatLoop) handleDrawio(topic string) {
 		return
 	}
 	go func() {
-		raw, ok := <-ch
+		var raw string
+		var ok bool
+		select {
+		case raw, ok = <-ch:
+		case <-time.After(10 * time.Minute):
+			fmt.Fprintln(l.errw, "✗ drawio: artifact timed out waiting for stream completion")
+			return
+		}
 		if !ok || raw == "" {
 			return
 		}
@@ -258,6 +295,10 @@ func (l *chatLoop) handleDrawio(topic string) {
 		}
 		if !strings.Contains(xml, "<?xml") {
 			xml = `<?xml version="1.0" encoding="UTF-8"?>` + "\n" + xml
+		}
+		if len(xml) > 10*1024*1024 {
+			fmt.Fprintln(l.errw, "✗ drawio: generated diagram is too large (>10 MB)")
+			return
 		}
 		if err := os.WriteFile(outPath, []byte(xml), 0o644); err != nil {
 			fmt.Fprintf(l.errw, "✗ drawio: write file: %v\n", err)
@@ -408,10 +449,13 @@ import ast, sys
 tree = ast.parse(sys.stdin.read())
 allowed_imports = {
     'pptx','collections','copy','datetime','decimal','fractions',
-    'functools','io','itertools','math','numbers','os.path','pathlib',
+    'functools','itertools','math','numbers','os.path',
     'random','statistics','string','struct','typing','codecs','enum',
 }
 blocked_builtins = {'eval','exec','compile','__import__','getattr','setattr','delattr','open','breakpoint'}
+blocked_attrs = {
+    'write_text','write_bytes','open','FileIO','BufferedWriter','BufferedRandom',
+}
 errors = []
 for node in ast.walk(tree):
     if isinstance(node, ast.Import):
@@ -428,6 +472,8 @@ for node in ast.walk(tree):
         name = func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else '')
         if name in blocked_builtins:
             errors.append(f'disallowed builtin call: {name}()')
+        if name in blocked_attrs:
+            errors.append(f'disallowed file I/O call: {name}()')
 if errors:
     for e in errors:
         print(f'BLOCKED: {e}', file=sys.stderr)

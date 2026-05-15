@@ -15,6 +15,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -207,6 +208,11 @@ func (l *chatLoop) handleParallelView(rest string) {
 		return
 	}
 
+	// Bug 7: use the loop context so Ctrl+C / session cancel exits immediately.
+	ctx := l.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	deadline := time.After(2 * time.Minute)
@@ -216,6 +222,8 @@ func (l *chatLoop) handleParallelView(rest string) {
 			return
 		}
 		select {
+		case <-ctx.Done():
+			return
 		case <-deadline:
 			fmt.Fprintln(l.errw, "[parallel] watch timed out; run /parallel-view --watch "+groupID+" to continue")
 			return

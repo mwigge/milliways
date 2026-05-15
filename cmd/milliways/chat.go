@@ -412,6 +412,7 @@ func runChat(ctx context.Context) error {
 		errw:          stderr,
 		ring:          append([]string(nil), chatSwitchableAgents...), // default ring
 		rotateCh:      make(chan string, 1),
+		hintCh:        make(chan hintPayload, 4),
 	}
 
 	// Wire palace recall for daemon runner sessions. Resolve the project from
@@ -817,6 +818,10 @@ type chatLoop struct {
 	// rotateCh carries auto-rotation requests from drainStream to the main
 	// input goroutine so switchAgent is always called from one goroutine.
 	rotateCh chan string
+	// hintCh carries chunk_end metadata from drainStream to the main
+	// goroutine so refreshPromptHint is always called from one goroutine,
+	// keeping RPC calls (max_turns_hit summary send) single-threaded.
+	hintCh chan hintPayload
 
 	// turnLog is the rolling exchange across whichever runners the user
 	// has talked to in this chat session. Capped at chatTurnLogCap most-
@@ -830,6 +835,9 @@ type chatLoop struct {
 	lastBriefing     string
 	// pendingAssistant accumulates streamed deltas for the in-flight
 	// assistant response. Drained into turnLog on chunk_end.
+	// pendingMu protects pendingAssistant which is written by the drainStream
+	// goroutine and reset by activateSession on the main goroutine.
+	pendingMu        sync.Mutex
 	pendingAssistant strings.Builder
 
 	// sessionCost accumulates cost_usd across all chunk_end events for the
@@ -840,6 +848,18 @@ type chatLoop struct {
 
 	// deck tracks the multi-client session state for the parallel panel.
 	deck *sessionDeck
+
+	// ctx is the context passed to run(); stored so slash-command handlers
+	// (handleParallelView) can honour cancellation without needing ctx
+	// threaded through every call chain.
+	ctx context.Context
+}
+
+// hintPayload carries chunk_end metadata from drainStream to the main
+// goroutine for post-stream processing (token stats, max_turns_hit, etc.).
+type hintPayload struct {
+	ev        map[string]any
+	turnSaved bool
 }
 
 // chatTurn is one exchange entry across runners. Role is "user" or
@@ -873,6 +893,9 @@ const chatBriefingMaxBytes = 4096
 const chatInterruptPrompt = "Interrupted. Use /cancel to stop an active stream, or /exit to quit."
 
 func (l *chatLoop) run(ctx context.Context) error {
+	// Store ctx so slash-command handlers (handleParallelView) can honour
+	// cancellation without ctx being threaded through every call chain.
+	l.ctx = ctx
 	// drainStream is started per-session inside switchAgent; do NOT start
 	// it here because l.sess is nil in the landing zone.
 	setTermTitle("milliways", "milliways")
@@ -890,6 +913,11 @@ func (l *chatLoop) run(ctx context.Context) error {
 		case next := <-l.rotateCh:
 			// Auto-rotation request from drainStream — handle on main goroutine.
 			l.switchAgent(next)
+			continue
+		case hint := <-l.hintCh:
+			// chunk_end hint delivered by drainStream — process on main goroutine
+			// so any RPC calls (max_turns_hit summary send) stay single-threaded.
+			l.refreshPromptHint(hint.ev, hint.turnSaved)
 			continue
 		default:
 		}
@@ -993,6 +1021,10 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 						if shouldFlushThinkingFragment(thinkingBuffer.String()) {
 							flushThinking()
 						}
+						// Bug 5: update deck thinking state.
+						if l.deck != nil {
+							l.deck.MarkThinking(sess.agentID, msg)
+						}
 					}
 				}
 			}
@@ -1021,7 +1053,15 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 					}
 					// Accumulate for the in-flight assistant turn so /switch
 					// can carry the response forward as part of the briefing.
+					// Bug 1: lock pendingAssistant — written here (drainStream goroutine),
+					// reset in activateSession (main goroutine).
+					l.pendingMu.Lock()
 					l.pendingAssistant.Write(raw)
+					l.pendingMu.Unlock()
+					// Bug 5: update deck streaming state.
+					if l.deck != nil {
+						l.deck.AppendData(sess.agentID, string(raw), l.sess == sess)
+					}
 				}
 			}
 		case "chunk_end":
@@ -1035,11 +1075,14 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 				fmt.Fprintln(l.out)
 			}
 			// Snapshot + reset the streamed response into a turn entry.
+			// Bug 1: lock pendingAssistant around read + reset.
+			l.pendingMu.Lock()
 			assistantText := strings.TrimRight(l.pendingAssistant.String(), "\n")
+			l.pendingAssistant.Reset()
+			l.pendingMu.Unlock()
 			if assistantText != "" {
 				l.appendTurn(chatTurn{Role: "assistant", AgentID: sess.agentID, Text: assistantText})
 			}
-			l.pendingAssistant.Reset()
 			// Deliver response text to any waiting artifact handler.
 			if ch := l.artifact.take(); ch != nil {
 				if assistantText != "" {
@@ -1050,7 +1093,23 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			sess.busyMu.Lock()
 			sess.busy = false
 			sess.busyMu.Unlock()
-			l.refreshPromptHint(ev, assistantText != "")
+			// Bug 2: do NOT call refreshPromptHint from drainStream goroutine —
+			// it may call sess.send (RPC) which is not goroutine-safe. Signal the
+			// main goroutine via hintCh instead.
+			inTok, _ := ev["input_tokens"].(float64)
+			outTok, _ := ev["output_tokens"].(float64)
+			if l.hintCh != nil {
+				select {
+				case l.hintCh <- hintPayload{ev: ev, turnSaved: assistantText != ""}:
+				default:
+				}
+			}
+			// Bug 5: update deck on chunk_end.
+			if l.deck != nil {
+				cost, _ := ev["cost_usd"].(float64)
+				saved, _ := ev["saved"].(bool)
+				l.deck.MarkChunkEnd(sess.agentID, int(inTok), int(outTok), cost, saved)
+			}
 			if l.sess == sess {
 				l.setPromptState("")
 			}
@@ -1076,6 +1135,10 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 				l.setPromptState("")
 				l.updateActiveTitle("")
 			}
+			// Bug 5: update deck on error.
+			if l.deck != nil {
+				l.deck.MarkError(sess.agentID, msg)
+			}
 			// Auto-rotate on session limit if a ring is configured.
 			if agent != "" && isSessionLimitMsg(msg) {
 				l.endStreamOutput(sess)
@@ -1084,10 +1147,23 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			}
 			l.endStreamOutput(sess)
 		case "rate_limit":
+			// Bug 3: rate_limit must clear busy and restore the prompt so the
+			// user is not locked out forever when no chunk_end follows.
 			flushThinking()
 			status, _ := ev["status"].(string)
 			l.beginStreamOutput(sess)
 			fmt.Fprintln(l.errw, "⚠ rate limit: "+status)
+			sess.busyMu.Lock()
+			sess.busy = false
+			sess.busyMu.Unlock()
+			if l.sess == sess {
+				l.setPromptState("")
+			}
+			// Bug 5: update deck on rate_limit (treat as error state).
+			if l.deck != nil {
+				l.deck.MarkError(sess.agentID, "rate limit: "+status)
+			}
+			l.endStreamOutput(sess)
 		case "end":
 			flushThinking()
 			l.endStreamOutput(sess)
@@ -1517,8 +1593,41 @@ func (l *chatLoop) confirmExitRequested(source string) bool {
 	if source == "" {
 		source = "exit"
 	}
-	fmt.Fprintf(l.errw, "response still in progress — %s ignored; use /cancel to stop it or /exit! to quit anyway\n", source)
+	// Bug 6: name the blocking session so the user knows which one to address.
+	blocking := l.busySessionName()
+	if blocking != "" {
+		fmt.Fprintf(l.errw, "%s: response still in progress — switch to it and wait, or press Ctrl+C to cancel (%s ignored); use /cancel to stop it or /exit! to quit anyway\n", blocking, source)
+	} else {
+		fmt.Fprintf(l.errw, "response still in progress — %s ignored; use /cancel to stop it or /exit! to quit anyway\n", source)
+	}
 	return false
+}
+
+// busySessionName returns the agentID of the first busy session, or "".
+func (l *chatLoop) busySessionName() string {
+	if l == nil {
+		return ""
+	}
+	for _, sess := range l.sessions {
+		if sess == nil {
+			continue
+		}
+		sess.busyMu.Lock()
+		busy := sess.busy
+		sess.busyMu.Unlock()
+		if busy {
+			return sess.agentID
+		}
+	}
+	if l.sess != nil {
+		l.sess.busyMu.Lock()
+		busy := l.sess.busy
+		l.sess.busyMu.Unlock()
+		if busy {
+			return l.sess.agentID
+		}
+	}
+	return ""
 }
 
 func (l *chatLoop) cancelActiveSession() bool {
@@ -1726,11 +1835,28 @@ func (l *chatLoop) reconnectDaemonClient() error {
 	if err != nil {
 		return err
 	}
-	if l.client != nil {
-		_ = l.client.Close()
+	// Bug 8: before replacing the client, remember the old one so we can
+	// identify sessions that hold a reference to it and remove them — their
+	// subsequent send() calls would silently fail on the dead connection.
+	old := l.client
+	if old != nil {
+		_ = old.Close()
 	}
 	l.client = next
 	l.handoffWriter = &rpcHandoffWriter{client: next}
+	// Remove any session that was opened on the now-dead client. They will
+	// be re-opened lazily on next use via ensureAgentSession.
+	for agentID, sess := range l.sessions {
+		if sess != nil && sess.client == old {
+			if sess.streamCancel != nil {
+				sess.streamCancel()
+			}
+			delete(l.sessions, agentID)
+			if l.sess != nil && l.sess.agentID == agentID {
+				l.sess = nil
+			}
+		}
+	}
 	return nil
 }
 
@@ -1764,7 +1890,14 @@ func (l *chatLoop) activateSession(sess *chatSession) {
 	if l.deck != nil {
 		l.deck.SetActive(sess.agentID)
 	}
+	// Bug 1: lock pendingAssistant — drainStream goroutine may be writing
+	// concurrently when the user switches sessions.
+	l.pendingMu.Lock()
 	l.pendingAssistant.Reset()
+	l.pendingMu.Unlock()
+	// Bug 4: discard any in-flight artifact channel for the old session so
+	// goroutines waiting on <-ch are unblocked immediately.
+	l.artifact.discard()
 	if l.rl != nil {
 		l.setPromptState("")
 	}
@@ -2111,11 +2244,22 @@ func (l *chatLoop) printBriefingBlock(turns []chatTurn, fromID string) {
 		if t.Role == "assistant" {
 			role = t.AgentID
 		}
+		label := roleLabel(role)
 		line := strings.ReplaceAll(strings.TrimSpace(t.Text), "\n", " ")
-		if len(line) > 90 {
-			line = line[:87] + "…"
+		// Truncate so that the entire sidebar line (label + space + text) fits
+		// within 100 raw bytes, accounting for ANSI escape codes in the label.
+		maxLine := 100 - len(label) - 1 // 1 for the space separator
+		if maxLine < 10 {
+			maxLine = 10
 		}
-		fmt.Fprintf(l.out, "  │ %s %s\n", roleLabel(role), line)
+		if len(line) > maxLine {
+			cut := maxLine - 3 // reserve 3 bytes for "…"
+			if cut < 0 {
+				cut = 0
+			}
+			line = line[:cut] + "…"
+		}
+		fmt.Fprintf(l.out, "  │ %s %s\n", label, line)
 	}
 	fmt.Fprintf(l.out, "  ╵ /briefing to re-read full context\n")
 }
