@@ -130,10 +130,11 @@ UNIT
     if [ -d dist/llama-libs_linux_amd64 ]; then
       while IFS= read -r lib; do
         install -Dm755 "$lib" "$pkg_root/usr/lib/milliways/$(basename "$lib")"
-        soname="$(readelf -d "$lib" 2>/dev/null | sed -n 's/.*Library soname: \[\([^]]*\)\].*/\1/p' | head -1 || true)"
-        if [ -n "$soname" ]; then
-          base="${soname%%.so*}.so"
-          ln -sfn "$(basename "$lib")" "$pkg_root/usr/lib/milliways/$soname"
+        lib_name="$(basename "$lib")"
+        if [[ "$lib_name" =~ ^(.*\.so)\.([0-9]+)\..* ]]; then
+          base="${BASH_REMATCH[1]}"
+          soname="${base}.${BASH_REMATCH[2]}"
+          ln -sfn "$lib_name" "$pkg_root/usr/lib/milliways/$soname"
           ln -sfn "$soname" "$pkg_root/usr/lib/milliways/$base"
         fi
       done < <(find dist/llama-libs_linux_amd64 -maxdepth 1 -type f -name '*.so*' | sort)
