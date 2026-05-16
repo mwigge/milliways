@@ -1,8 +1,16 @@
 FROM ubuntu:22.04
 
+ARG GO_VERSION=1.26.2
+
 RUN apt-get update \
-    && apt-get install -y golang-go git ca-certificates \
+    && apt-get install -y git ca-certificates curl tar \
+    && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz \
+    && rm -rf /usr/local/go \
+    && tar -C /usr/local -xzf /tmp/go.tgz \
+    && rm -f /tmp/go.tgz \
     && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 WORKDIR /app
 COPY . .

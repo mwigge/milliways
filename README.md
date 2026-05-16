@@ -10,7 +10,7 @@ The security focus is simple: AI clients should not each invent their own workst
 
 It wraps the CLIs and APIs you already have set up. It does not run hosted models or manage cloud credentials. Bring your own towel.
 
-Architecture updates: [memory, persistence, and observability](docs/milliways-blog-3.md) · [Secure MilliWays](docs/milliways-blog-4.md) · [the security control plane](docs/milliways-blog-5.md).
+Architecture updates: [memory, persistence, and observability](docs/milliways-blog-3.md) · [Secure MilliWays](docs/milliways-blog-4.md) · [the security control plane](docs/milliways-blog-5.md) · [local GPU model installs](docs/milliways-blog-6.md).
 
 ### Security control plane at a glance
 
@@ -115,6 +115,7 @@ Or use the slash command inside the REPL:
   install_local.sh        # local model server installer
   install_local_swap.sh   # llama-swap installer (hot swap)
   install_feature_deps.sh # MemPalace, CodeGraph, python-pptx installer
+  upgrade.sh              # package/binary refresh helper used by milliwaysctl upgrade
 
 /usr/share/milliways/python/
   bin/python              # app-managed Python venv for MemPalace + /pptx
@@ -135,6 +136,7 @@ Or use the slash command inside the REPL:
   install_local.sh
   install_local_swap.sh
   install_feature_deps.sh
+  upgrade.sh
 
 ~/.local/share/milliways/python/
   bin/python
@@ -267,8 +269,8 @@ Tab completion is available for all commands. Type `/` and press Tab to see the 
 
 | Command | Description |
 |---------|-------------|
-| `/install-local-server` | Install llama.cpp + default coder model |
-| `/install-local-gpu-server` | Detect NVIDIA/AMD GPU VRAM and install the largest fitting curated model |
+| `/install-local-server` | Install or refresh llama.cpp + the default local model, restart services, and switch to `/local` |
+| `/install-local-gpu-server` | Detect NVIDIA/AMD/macOS GPU memory, install the largest fitting curated model, restart services, and switch to `/local` |
 | `/install-local-swap` | Install llama-swap (hot model switching) |
 | `/list-local-models` | Show models the backend serves |
 | `/switch-local-server <kind>` | Switch backend: `llama-server` \| `llama-swap` \| `ollama` \| `vllm` \| `lmstudio` |
@@ -510,7 +512,7 @@ The `local` runner is for when the wifi is down, the bill is up, or you just wan
 ```bash
 ▶ /local
 ▶ /list-local-models                         # list models the backend serves
-▶ /model qwen2.5-coder-1.5b                  # switch model live
+▶ /model qwen3-8b                            # switch model live
 ```
 
 There's a full chapter further down — see **[Local models](#local-models)** for architecture, hot-swap setup, memory budgeting, and troubleshooting.
@@ -822,17 +824,30 @@ There are two deployment shapes, picked by which installer you ran:
 
 ### Pick the right model for your machine
 
-For Linux GPU machines, use `/install-local-gpu-server --dry-run` first. MilliWays reads NVIDIA via `nvidia-smi`, AMD via Linux DRM sysfs/`rocm-smi`, keeps safety headroom for KV cache, Vulkan buffers, and the desktop, then installs the largest curated GGUF inside a conservative budget. Acceleration defaults to CUDA when a CUDA toolchain is present, HIP when ROCm/HIP is present, otherwise Vulkan. You can force it with `--accel vulkan|cuda|hip`. On this dev box, for example, the detector sees a 16GB AMD Radeon and selects `Qwen3-8B` Q4_K_M with Vulkan acceleration and an 8K context.
+For GPU machines, use `/install-local-gpu-server --dry-run` first. MilliWays reads NVIDIA via `nvidia-smi`, AMD via Linux DRM sysfs/`rocm-smi`, and macOS via `system_profiler` plus unified-memory sizing. It keeps safety headroom for the GGUF, KV cache, graph buffers, desktop apps, and OS memory, then installs the largest curated GGUF inside a conservative budget. Acceleration defaults to CUDA when a CUDA toolchain is present, HIP when ROCm/HIP is present, Vulkan as the Linux fallback, and Metal on macOS. You can force Linux acceleration with `--accel vulkan|cuda|hip`.
 
-| RAM | Recommended `MODEL_REPO` | Loaded size (Q4_K_M) |
-|----|---|---|
-| 8 GB | `unsloth/Qwen2.5-Coder-0.5B-Instruct-GGUF` | ~400 MB |
-| 16 GB | `unsloth/Qwen2.5-Coder-1.5B-Instruct-GGUF` (default) | ~1.0 GB |
-| 24 GB | `unsloth/Qwen2.5-Coder-7B-Instruct-GGUF` | ~4.7 GB |
-| 24 GB+ | `unsloth/DeepSeek-Coder-V2-Lite-Instruct-GGUF` | ~10 GB |
-| 32 GB+ | `unsloth/Qwen2.5-Coder-14B-Instruct-GGUF` | ~9 GB |
+![Local model install flow](docs/images/local-model-install-flow.png)
 
-In hot mode you need RAM for the **sum** of every model you want resident, plus ~4 GB for the OS and your other tabs. So 24 GB will comfortably keep the 1.5B + 7B both warm; trying to add v2-lite on top will start to swap.
+| Hardware | Automatic path | Likely fit | Notes |
+|---|---|---|---|
+| 8 GB system or unified memory | `/install-local-server` or `/setup-model unsloth/Phi-3.5-mini-instruct-GGUF` | Phi-3.5-mini / Mistral-7B | Keep context modest and avoid hot-loading several models. |
+| 16 GB NVIDIA/AMD GPU | `/install-local-gpu-server` | Qwen3-8B Q4_K_M | CUDA/HIP when available, otherwise Vulkan. This is the common balanced local default. |
+| 24 GB+ NVIDIA/AMD GPU | `/install-local-gpu-server` | Qwen3-14B or DeepSeek-Coder-V2-Lite when the budget fits | Larger models improve planning and review, but cold starts and VRAM pressure increase. |
+| Apple Silicon 16 GB+ | `/install-local-gpu-server` | Qwen3-8B or Qwen3-14B depending unified memory | Metal acceleration, with unified-memory headroom kept for macOS and apps. |
+
+![Curated local model selection](docs/images/local-model-selection.png)
+
+| Model | Size (Q4_K_M) | Best use | Tradeoff |
+|---|---:|---|---|
+| Phi-3.5-mini | 2.2 GB | Small machines and quick offline prompts | Lowest memory use, weaker reasoning. |
+| Mistral-7B-v0.3 | 4.1 GB | Fast edits and light chat | Good latency, less specialized for code. |
+| Qwen2.5-Coder-7B | 4.7 GB | Code edits on modest GPUs | Strong coder, XML tools are translated by MilliWays. |
+| Hermes-3 / Llama-3.1 8B | 4.9 GB | Agentic/tool use | Native OpenAI tool calls, less code-specialized than coder models. |
+| Qwen3-8B | 5.2 GB | Balanced local coding and reasoning | Great 16 GB GPU fit, slower than smaller 7B-class models. |
+| Qwen3-14B | 9.3 GB | Stronger planning and review | Needs more memory and a longer cold load. |
+| DeepSeek-Coder-V2-Lite | 9.0 GB | Complex code refactors | MoE quality, but heavier operationally. |
+
+In hot mode you need RAM for the **sum** of every model you want resident, plus OS and desktop headroom. A 24 GB machine can usually keep one 7B-class coder warm; adding a 14B or MoE model on top should be treated as a deliberate memory tradeoff.
 
 ### Setup
 
@@ -841,11 +856,16 @@ The fastest path uses `milliwaysctl local` from any milliways-term tab — no le
 **Single model (simplest):**
 
 ```bash
-milliwaysctl local install-server          # llama.cpp + qwen2.5-coder-1.5b (default)
+milliwaysctl local install-gpu-server --dry-run
+milliwaysctl local install-gpu-server      # GPU-aware model pick, service restart, /local activation
+# Or on CPU-only / very small machines:
+milliwaysctl local install-server
 milliways                                  # /local is now ready to use
 ```
 
-In milliways-term, the same flow is available via the `Leader + /` palette: press `Ctrl+Space` then `/`, pick `local install-server`, hit Enter. A new tab spawns the install with output streaming inline.
+In milliways-term, the same flow is available via the `Leader + /` palette: press `Ctrl+Space` then `/`, pick `local install-gpu-server` or `local install-server`, hit Enter. A new tab spawns the install with output streaming inline.
+
+The ready path is intentionally strict. The installer downloads or reuses the model cache, refreshes the launcher and service files, restarts the local backend, restarts `milliwaysd`, prints `Waiting for services to finish installation`, and only prints `/local is ready` after both the OpenAI-compatible model endpoint and the daemon socket accept connections.
 
 **Hot-swap between several models:**
 
@@ -873,8 +893,8 @@ These dispatch to `milliwaysctl local <verb>` via the milliways-term `Leader + /
 
 | Command | Underlying ctl | Action |
 |---|---|---|
-| `/install-local-server` | `milliwaysctl local install-server` | install llama.cpp + the default coder model (qwen2.5-coder-1.5b) |
-| `/install-local-gpu-server` | `milliwaysctl local install-gpu-server` | detect NVIDIA/AMD GPU VRAM, pick the largest fitting curated model, and install with GPU offload; add `--accel hip` or `--accel cuda` to force a vendor toolkit |
+| `/install-local-server` | `milliwaysctl local install-server` | install or refresh llama.cpp + the default local model, restart local services, wait for readiness, and switch to `/local` |
+| `/install-local-gpu-server` | `milliwaysctl local install-gpu-server` | detect NVIDIA/AMD/macOS GPU memory, pick the largest fitting curated model, install with GPU offload, restart services, wait for readiness, and switch to `/local`; add `--accel vulkan|cuda|hip` on Linux to force a path |
 | `/install-local-swap` | `milliwaysctl local install-swap` | install llama-swap (memory-safe, unloads on TTL); add `--hot` to warm every model at startup |
 | `/list-local-models` | `milliwaysctl local list-models` | list models the active backend serves (hits `/v1/models`) |
 | `/switch-local-server <kind>` | `milliwaysctl local switch-server <kind>` | rebind milliways to `llama-server` / `llama-swap` / `ollama` / `vllm` / `lmstudio` |
@@ -901,7 +921,7 @@ All standard milliways commands work with `local`. The runner-prefixed forms are
 | Variable | Default | Purpose |
 |---|---|---|
 | `MILLIWAYS_LOCAL_ENDPOINT` | `http://localhost:8765/v1` | Where the OpenAI-compatible API lives |
-| `MILLIWAYS_LOCAL_MODEL` | `qwen2.5-coder-1.5b` | Initial model id sent in every request |
+| `MILLIWAYS_LOCAL_MODEL` | installer-selected, often `qwen3-8b` on 16 GB GPUs | Initial model id sent in every request |
 | `MILLIWAYS_LOCAL_API_KEY` | — | Sent as `Authorization: Bearer …` (for llama-server `--api-key`, vLLM strict mode) |
 | `MILLIWAYS_LOCAL_TEMP` | `default` (server picks) | Sampling temperature — set via `/local-temp`; `default` omits the field |
 | `MILLIWAYS_LOCAL_MAX_TOKENS` | `off` (unlimited) | Cap reply length — set via `/local-max-tokens`; `off` omits the field |
@@ -930,7 +950,7 @@ Switch at runtime with `/local-temp 0.7` or `/local-temp default` (lets the serv
 
 **`/model X` says "X not in backend models"** — with single-server (`install_local.sh`), the model field in the API request is ignored — only the `-m` GGUF actually loaded is served. Restart the server with a different `-m`, or run `install_local_swap.sh` to get real per-request model routing.
 
-**Memory pressure / OOM** — drop to a smaller model (`MODEL_REPO=unsloth/Qwen2.5-Coder-0.5B-Instruct-GGUF`), or stay in standby mode (default for swap). `top` / `Activity Monitor` will show you which `llama-server` child is the heavyweight.
+**Memory pressure / OOM** — drop to a smaller model (`MODEL_REPO=unsloth/Phi-3.5-mini-instruct-GGUF`), lower `CTX_SIZE`, or stay in standby mode (default for swap). `top` / `Activity Monitor` will show you which `llama-server` child is the heavyweight.
 
 **llama-server died at startup** — `tail ~/.local/share/milliways/local/server.err`. Most common cause: a GGUF that didn't download fully (verify size matches what HuggingFace shows) or a context size larger than the model supports (set `CTX_SIZE=4096` and re-run the installer).
 

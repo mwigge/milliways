@@ -554,8 +554,12 @@ func TestRunSecurityShimExecDerivesWorkspaceFromCWDWhenEnvSpoofed(t *testing.T) 
 		t.Fatalf("rc = %d, stderr=%s", rc, stderr.String())
 	}
 	call := <-calls
-	if got, _ := call.Params["workspace"].(string); got != workspace {
-		t.Fatalf("workspace = %q, want cwd-derived %q; params=%#v", got, workspace, call.Params)
+	wantWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		wantWorkspace = workspace
+	}
+	if got, _ := call.Params["workspace"].(string); got != wantWorkspace {
+		t.Fatalf("workspace = %q, want cwd-derived %q; params=%#v", got, wantWorkspace, call.Params)
 	}
 }
 

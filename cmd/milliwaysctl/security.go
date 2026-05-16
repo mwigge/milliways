@@ -1081,6 +1081,9 @@ func deriveShimWorkspace(cwd, envWorkspace string) string {
 		absCWD = cwd
 	}
 	absCWD = filepath.Clean(absCWD)
+	if realCWD, err := filepath.EvalSymlinks(absCWD); err == nil {
+		absCWD = filepath.Clean(realCWD)
+	}
 	envWorkspace = strings.TrimSpace(envWorkspace)
 	if envWorkspace == "" {
 		return absCWD
@@ -1090,6 +1093,9 @@ func deriveShimWorkspace(cwd, envWorkspace string) string {
 		return absCWD
 	}
 	absWorkspace = filepath.Clean(absWorkspace)
+	if realWorkspace, err := filepath.EvalSymlinks(absWorkspace); err == nil {
+		absWorkspace = filepath.Clean(realWorkspace)
+	}
 	if pathWithin(absCWD, absWorkspace) {
 		return absWorkspace
 	}

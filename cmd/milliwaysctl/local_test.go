@@ -781,7 +781,11 @@ func TestRunLocal_ServerPort_DefaultPort(t *testing.T) {
 }
 
 func TestWaitDaemonSocketReadyWaitsForSocket(t *testing.T) {
-	dir := t.TempDir()
+	dir, err := os.MkdirTemp(os.TempDir(), "mw-sock-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 	socketPath := filepath.Join(dir, "milliways", "sock")
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
