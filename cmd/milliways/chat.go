@@ -1870,9 +1870,18 @@ func (l *chatLoop) reconnectDaemonConnection() error {
 }
 
 func (l *chatLoop) reconnectDaemonClient() error {
-	next, err := rpc.Dial(daemonSocket())
-	if err != nil {
-		return err
+	var next *rpc.Client
+	var err error
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		next, err = rpc.Dial(daemonSocket())
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	// Bug 8: before replacing the client, remember the old one so we can
 	// identify sessions that hold a reference to it and remove them — their

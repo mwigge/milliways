@@ -36,6 +36,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -1661,7 +1662,10 @@ func activateLocalInstall(stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stdout, "[ok] local server ready at %s\n", localEndpoint())
-	restartMilliwaysDaemon(stdout, stderr)
+	if err := restartMilliwaysDaemon(stdout, stderr); err != nil {
+		fmt.Fprintf(stderr, "local install: milliwaysd did not become ready: %v\n", err)
+		return 1
+	}
 	fmt.Fprintln(stdout, "[ok] /local is ready")
 	return 0
 }
@@ -1734,18 +1738,42 @@ func waitLocalServerReady(timeout time.Duration) error {
 	return lastErr
 }
 
-func restartMilliwaysDaemon(stdout, stderr io.Writer) {
+func restartMilliwaysDaemon(stdout, stderr io.Writer) error {
 	if runtime.GOOS == "linux" {
 		if _, err := exec.LookPath("systemctl"); err == nil {
 			_ = runCtlCommand(stdout, stderr, "systemctl", "--user", "reset-failed", "milliwaysd")
 			if err2 := runCtlCommand(stdout, stderr, "systemctl", "--user", "restart", "milliwaysd"); err2 == nil {
+				fmt.Fprintln(stdout, "==> Waiting for services to finish installation...")
+				if err := waitDaemonSocketReady(15 * time.Second); err != nil {
+					return err
+				}
 				fmt.Fprintln(stdout, "[ok] milliwaysd restarted")
-				return
+				return nil
 			}
 		}
 	}
 	// If the daemon is not service-managed, it will reload local.env itself.
 	fmt.Fprintln(stdout, "[ok] milliwaysd will pick up local.env automatically")
+	return nil
+}
+
+func waitDaemonSocketReady(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	socketPath := defaultSocket()
+	var lastErr error
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("unix", socketPath, 250*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		lastErr = err
+		time.Sleep(100 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("timed out")
+	}
+	return fmt.Errorf("%s not reachable after %s: %w", socketPath, timeout, lastErr)
 }
 
 // runLocalServerStart starts the local inference server via launchctl (macOS),

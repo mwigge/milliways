@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mwigge/milliways/internal/runner/review"
 )
@@ -776,6 +778,37 @@ func TestRunLocal_ServerPort_DefaultPort(t *testing.T) {
 	if got != "8765" {
 		t.Errorf("server-port (default) = %q, want %q", got, "8765")
 	}
+}
+
+func TestWaitDaemonSocketReadyWaitsForSocket(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	socketPath := filepath.Join(dir, "milliways", "sock")
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ready := make(chan struct{})
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		ln, err := net.Listen("unix", socketPath)
+		if err != nil {
+			t.Errorf("listen unix: %v", err)
+			close(ready)
+			return
+		}
+		defer ln.Close()
+		close(ready)
+		conn, err := ln.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}()
+
+	if err := waitDaemonSocketReady(3 * time.Second); err != nil {
+		t.Fatalf("waitDaemonSocketReady: %v", err)
+	}
+	<-ready
 }
 
 func TestRunLocal_DefaultModel_UpdatesLauncher(t *testing.T) {
