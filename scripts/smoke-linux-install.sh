@@ -158,14 +158,15 @@ run_case() {
         test -x "$XDG_RUNTIME_DIR/milliways/security-shims/$shim"
         grep -q "shim-exec" "$XDG_RUNTIME_DIR/milliways/security-shims/$shim"
       done
-      MILLIWAYS_WORKSPACE_ROOT=/tmp \
+      smoke_workspace="$(pwd)"
+      MILLIWAYS_WORKSPACE_ROOT="$smoke_workspace" \
       MILLIWAYS_CLIENT_ID=codex \
       MILLIWAYS_SESSION_ID=install-smoke \
       MILLIWAYS_SECURITY_SHIM_COMMAND=true \
       MILLIWAYS_SECURITY_SHIM_CATEGORY=build-tool \
       MILLIWAYS_SECURITY_SHIM_DIR="$XDG_RUNTIME_DIR/milliways/security-shims" \
         "$PREFIX/bin/milliwaysctl" security shim-exec -- /bin/true >/tmp/security-shim-exec.txt
-      "$PREFIX/bin/milliwaysctl" security audit --workspace /tmp --session install-smoke --client codex --limit 5 >/tmp/security-audit.txt
+      "$PREFIX/bin/milliwaysctl" security audit --workspace "$smoke_workspace" --session install-smoke --client codex --limit 5 >/tmp/security-audit.txt
       grep -q "policy decision" /tmp/security-audit.txt
       grep -q "codex/install-smoke" /tmp/security-audit.txt
       MILLIWAYS_BIN="$PREFIX/bin" MILLIWAYS_STATE_DIR=/tmp/mw-feature-state bash /tmp/smoke-features.sh
