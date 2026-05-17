@@ -459,6 +459,10 @@ func runSecurityStatusCmd(stdout, stderr io.Writer, sock string) int {
 	}
 	if warnCount > 0 || blockCount > 0 {
 		fmt.Fprintf(stdout, "[security] warnings: %d  blocks: %d\n", warnCount, blockCount)
+		fmt.Fprintf(stdout, "[security] meaning: %s\n", securityStatusMeaning(mode, warnCount, blockCount))
+	}
+	if blocks := renderSecurityTopBlocks(result["top_active_blocks"]); blocks != "" {
+		fmt.Fprintf(stdout, "[security] top blocks: %s\n", blocks)
 	}
 	if lastStartup != "" {
 		fmt.Fprintf(stdout, "[security] last startup scan: %s\n", lastStartup)
@@ -467,6 +471,51 @@ func runSecurityStatusCmd(stdout, stderr io.Writer, sock string) int {
 		fmt.Fprintf(stdout, "[security] last dependency scan: %s\n", lastDependency)
 	}
 	return 0
+}
+
+func securityStatusMeaning(mode string, warnings, blocks int) string {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		mode = "warn"
+	}
+	switch {
+	case blocks > 0 && (mode == "warn" || mode == "observe"):
+		return fmt.Sprintf("%d active block-severity finding(s), but mode %s records and continues for normal interactive use", blocks, mode)
+	case blocks > 0:
+		return fmt.Sprintf("%d active block-severity finding(s) can gate startup/client use in mode %s", blocks, mode)
+	case warnings > 0:
+		return fmt.Sprintf("%d active warning(s) are surfaced and audited in mode %s", warnings, mode)
+	default:
+		return fmt.Sprintf("no active warnings or blocks; mode %s controls future command decisions", mode)
+	}
+}
+
+func renderSecurityTopBlocks(raw any) string {
+	items, ok := raw.([]any)
+	if !ok || len(items) == 0 {
+		return ""
+	}
+	var parts []string
+	for i, rawItem := range items {
+		if i >= 3 {
+			break
+		}
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		category := stringMapField(item, "category")
+		if category == "" {
+			category = "block"
+		}
+		message := firstStringField(item, "message", "remediation")
+		if message == "" {
+			parts = append(parts, category)
+		} else {
+			parts = append(parts, category+": "+truncateStr(message, 96))
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 func runSecurityCRA(args []string, stdout, stderr io.Writer, sock string) int {
@@ -1795,8 +1844,8 @@ func securityClientProtectionState(level string, controlled bool, brokerPath str
 		if controlled && hasShims && shimsReady {
 			return "protected"
 		}
-		if controlled && !hasShims && strings.TrimSpace(brokerPath) != "" {
-			return "protected"
+		if controlled || strings.TrimSpace(brokerPath) != "" {
+			return "preflight-only"
 		}
 		return "unprotected"
 	default:

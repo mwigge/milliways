@@ -443,8 +443,8 @@ func TestDeckSnapshotReportsSessionStateAndBuffer(t *testing.T) {
 	if sess.Handle != h.handle {
 		t.Fatalf("handle = %d, want %d", sess.Handle, h.handle)
 	}
-	if sess.Status != "streaming" {
-		t.Fatalf("status = %q, want streaming", sess.Status)
+	if sess.Status != "idle" {
+		t.Fatalf("status = %q, want idle after echo chunk_end", sess.Status)
 	}
 	if sess.PromptCount != 1 {
 		t.Fatalf("prompt count = %d, want 1", sess.PromptCount)
@@ -690,11 +690,24 @@ func TestAgentOpen_InvalidatesInjectedHandoff(t *testing.T) {
 	h := newAgentMethodsHarness(t, mp)
 	h.openEcho()
 
+	h.send("agent.send", map[string]any{"handle": h.handle, "bytes": "continue the work"}, 3)
+	_ = h.readResp()
 	combined := h.readStreamText(400 * time.Millisecond)
 	if !strings.Contains(combined, "take over with this briefing") {
 		t.Fatalf("expected handoff briefing in stream; got %q", combined)
 	}
-	invalidated := mp.invalidatedCopy()
+	if !strings.Contains(combined, "continue the work") {
+		t.Fatalf("expected handoff to be merged with user prompt; got %q", combined)
+	}
+	var invalidated []string
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		invalidated = mp.invalidatedCopy()
+		if len(invalidated) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if len(invalidated) == 0 {
 		t.Fatal("expected delivered handoff to be invalidated")
 	}

@@ -145,7 +145,7 @@ func TestFormatObservabilityFrame_ShowsUsageAndTimeToLimit(t *testing.T) {
 		"tokens:        in 1.2k / out 800 / total 2.0k",
 		"cost:          $0.01",
 		"time to limit: claude 1.0h",
-		"security:      SEC WARN",
+		"security:      SEC WARN (mode warn: warn/audit",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("frame missing %q:\n%s", want, got)
@@ -170,7 +170,7 @@ func TestFormatObservabilityFrame_ShowsSecurityPosture(t *testing.T) {
 
 	got := formatObservabilityFrame(fixedNow, nil, usage)
 	for _, want := range []string{
-		"security:      SEC BLOCK 1 (mode strict)",
+		"security:      SEC BLOCK 1 (mode strict: block gates)",
 		"sec workspace: /repo/service",
 		"milliways observability",
 	} {
@@ -235,7 +235,7 @@ func TestFormatObservabilityFrame_ShowsSecurityPolicyAndClientEnforcement(t *tes
 	got := formatObservabilityFrame(fixedNow, nil, usage)
 	for _, want := range []string{
 		"sec policy:    active codex; startup complete; last startup 2026-05-14T10:00Z; last deps 2026-05-14T10:05Z",
-		"sec clients:   full 2, brokered 1, preflight-only 1",
+		"sec clients:   full 2, preflight-only 2",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("frame missing %q:\n%s", want, got)
@@ -257,7 +257,7 @@ func TestFormatObservabilityFrame_UsesStatusClientEnforcementFallback(t *testing
 	}
 
 	got := formatObservabilityFrame(fixedNow, nil, usage)
-	if !strings.Contains(got, "sec clients:   full 1, brokered 1") {
+	if !strings.Contains(got, "sec clients:   full 1, preflight-only 1") {
 		t.Fatalf("frame missing status enforcement fallback:\n%s", got)
 	}
 }

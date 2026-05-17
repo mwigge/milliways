@@ -611,10 +611,13 @@ func (s *Server) securityStatus(enc *json.Encoder, req *Request) {
 			result["security_workspace"] = status.Workspace
 			result["mode"] = status.Mode
 			result["posture"] = status.Posture
-			result["warnings"] = status.CountsBySeverity["WARN"] + status.CountsBySeverity["HIGH"] + status.CountsBySeverity["CRITICAL"]
+			result["counts_by_category"] = status.CountsByCategory
+			result["counts_by_severity"] = status.CountsBySeverity
+			result["warnings"] = securityStatusWarningCount(status.CountsBySeverity)
 			result["blocks"] = status.CountsBySeverity["BLOCK"]
 			result["warning_count"] = result["warnings"]
 			result["block_count"] = result["blocks"]
+			result["top_active_blocks"] = securityStatusTopActiveBlocks(status.Warnings, 3)
 			result["active_client"] = status.ActiveClient
 			completed, stale, required := startupScanState(status, startupScanConfigHash(workspace))
 			result["startup_scan_completed"] = completed
@@ -638,6 +641,43 @@ func (s *Server) securityStatus(enc *json.Encoder, req *Request) {
 		result["cra"] = securityCRAStatus("", pantry.SecurityStatus{}, result["scanners"])
 	}
 	writeResult(enc, req.ID, result)
+}
+
+func securityStatusWarningCount(counts map[string]int) int {
+	var total int
+	for severity, count := range counts {
+		if strings.EqualFold(severity, "BLOCK") {
+			continue
+		}
+		total += count
+	}
+	return total
+}
+
+func securityStatusTopActiveBlocks(warnings []pantry.SecurityWarning, limit int) []map[string]any {
+	if limit <= 0 {
+		limit = 3
+	}
+	out := make([]map[string]any, 0, limit)
+	for _, warning := range warnings {
+		if !strings.EqualFold(warning.Severity, "BLOCK") {
+			continue
+		}
+		item := map[string]any{
+			"category":    warning.Category,
+			"source":      warning.Source,
+			"message":     warning.Message,
+			"remediation": warning.Remediation,
+		}
+		if !warning.LastSeen.IsZero() {
+			item["last_seen"] = warning.LastSeen.UTC().Format(time.RFC3339)
+		}
+		out = append(out, item)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
 }
 
 func (s *Server) securityCRA(enc *json.Encoder, req *Request) {
@@ -869,10 +909,21 @@ func findCRAEvidenceFiles(workspace, kind string) []string {
 	for _, rel := range candidates[kind] {
 		path := filepath.Join(workspace, rel)
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			if craEvidenceFileIsPlaceholder(path) {
+				continue
+			}
 			found = append(found, rel)
 		}
 	}
 	return found
+}
+
+func craEvidenceFileIsPlaceholder(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), "MILLIWAYS_CRA_PLACEHOLDER")
 }
 
 func firstCRAEvidenceFile(workspace, kind string) string {
@@ -922,6 +973,9 @@ func craSupportUntil(workspace, rel string) *time.Time {
 	if err != nil {
 		return nil
 	}
+	if strings.Contains(string(data), "MILLIWAYS_CRA_PLACEHOLDER") {
+		return nil
+	}
 	fields := strings.FieldsFunc(string(data), func(r rune) bool {
 		return r < '0' || r > '9'
 	})
@@ -942,7 +996,8 @@ func secureByDefaultCRAEvidence(status pantry.SecurityStatus) []string {
 	if strings.TrimSpace(status.Workspace) == "" {
 		return evidence
 	}
-	if security.NormalizeMode(security.Mode(status.Mode)) != security.ModeOff {
+	switch security.NormalizeMode(security.Mode(status.Mode)) {
+	case security.ModeWarn, security.ModeStrict, security.ModeCI:
 		evidence = append(evidence, "security mode "+status.Mode)
 	}
 	if !status.StartupScanCompletedAt.IsZero() {
@@ -1535,7 +1590,7 @@ func (s *Server) runSecurityCommandCheck(p securityCommandCheckParams) (security
 		risks = append(risks, securityCommandRiskWire{
 			Category: category,
 			Reason:   risk.Reason,
-			Evidence: risk.Evidence,
+			Evidence: redactSecurityAuditString(risk.Evidence),
 		})
 	}
 	decision := fwResult.Decision
@@ -1586,7 +1641,9 @@ func shellQuoteForSecurityPolicy(value string) string {
 }
 
 func (s *Server) recordSecurityPolicyDecision(p securityCommandCheckParams, result securityCommandCheckResult) error {
-	argvJSON, err := json.Marshal(p.Argv)
+	redactedCommand := redactSecurityAuditString(result.Command)
+	redactedArgv := redactSecurityAuditArgv(p.Argv)
+	argvJSON, err := json.Marshal(redactedArgv)
 	if err != nil {
 		return fmt.Errorf("marshal argv: %w", err)
 	}
@@ -1594,6 +1651,11 @@ func (s *Server) recordSecurityPolicyDecision(p securityCommandCheckParams, resu
 	if len(envSummary) == 0 && len(p.Env) > 0 {
 		envSummary = p.Env
 	}
+	envSummary = redactSecurityAuditMap(envSummary)
+	if len(envSummary) == 0 {
+		envSummary = map[string]any{}
+	}
+	envSummary["command_sha256"] = securityAuditCommandHash(result.Command)
 	envJSON, err := json.Marshal(envSummary)
 	if err != nil {
 		return fmt.Errorf("marshal env summary: %w", err)
@@ -1601,7 +1663,7 @@ func (s *Server) recordSecurityPolicyDecision(p securityCommandCheckParams, resu
 	if string(envJSON) == "null" {
 		envJSON = []byte("{}")
 	}
-	risksJSON, err := json.Marshal(result.Risks)
+	risksJSON, err := json.Marshal(redactSecurityCommandRisks(result.Risks))
 	if err != nil {
 		return fmt.Errorf("marshal policy risks: %w", err)
 	}
@@ -1613,7 +1675,7 @@ func (s *Server) recordSecurityPolicyDecision(p securityCommandCheckParams, resu
 		Client:           result.Client,
 		CWD:              result.CWD,
 		OperationType:    "command",
-		Command:          result.Command,
+		Command:          redactedCommand,
 		ArgvJSON:         string(argvJSON),
 		EnvSummaryJSON:   string(envJSON),
 		Mode:             result.Mode,
@@ -1626,11 +1688,119 @@ func (s *Server) recordSecurityPolicyDecision(p securityCommandCheckParams, resu
 		return err
 	}
 	if shouldRecordBrokerBlockWarning(result) {
-		if err := store.UpsertWarning(brokerBlockSecurityWarning(p, result)); err != nil {
+		warningResult := result
+		warningResult.Command = redactedCommand
+		if err := store.UpsertWarning(brokerBlockSecurityWarning(p, warningResult)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func redactSecurityCommandRisks(risks []securityCommandRiskWire) []securityCommandRiskWire {
+	if len(risks) == 0 {
+		return nil
+	}
+	out := make([]securityCommandRiskWire, 0, len(risks))
+	for _, risk := range risks {
+		risk.Evidence = redactSecurityAuditString(risk.Evidence)
+		out = append(out, risk)
+	}
+	return out
+}
+
+func securityAuditCommandHash(command string) string {
+	sum := sha256.Sum256([]byte(command))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func redactSecurityAuditArgv(argv []string) []string {
+	if len(argv) == 0 {
+		return nil
+	}
+	out := make([]string, len(argv))
+	for i, arg := range argv {
+		out[i] = redactSecurityAuditString(arg)
+		if i > 0 && isSensitiveSecurityAuditKey(argv[i-1]) {
+			out[i] = "[REDACTED]"
+		}
+	}
+	return out
+}
+
+func redactSecurityAuditMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		if isSensitiveSecurityAuditKey(key) {
+			out[key] = "[REDACTED]"
+			continue
+		}
+		if s, ok := value.(string); ok {
+			out[key] = redactSecurityAuditString(s)
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+func redactSecurityAuditString(value string) string {
+	if securityAuditStringLooksSensitive(value) {
+		fields := strings.Fields(value)
+		original := append([]string(nil), fields...)
+		for i := range fields {
+			field := fields[i]
+			if eq := strings.Index(field, "="); eq > 0 && isSensitiveSecurityAuditKey(field[:eq]) {
+				fields[i] = field[:eq+1] + "[REDACTED]"
+				continue
+			}
+			if i > 0 && (isSensitiveSecurityAuditKey(original[i-1]) || strings.EqualFold(strings.Trim(original[i-1], ":'\""), "bearer")) {
+				fields[i] = "[REDACTED]"
+			}
+		}
+		value = strings.Join(fields, " ")
+	}
+	for _, marker := range []string{"Bearer ", "bearer ", "token=", "api_key=", "apikey=", "password=", "secret="} {
+		for {
+			idx := strings.Index(value, marker)
+			if idx < 0 {
+				break
+			}
+			start := idx + len(marker)
+			end := start
+			for end < len(value) && !strings.ContainsRune(" \t\r\n'\"", rune(value[end])) {
+				end++
+			}
+			if end == start {
+				break
+			}
+			value = value[:start] + "[REDACTED]" + value[end:]
+		}
+	}
+	return value
+}
+
+func securityAuditStringLooksSensitive(value string) bool {
+	lower := strings.ToLower(value)
+	for _, marker := range []string{"token", "secret", "password", "passwd", "apikey", "api-key", "api_key", "authorization", "bearer ", "credential", "private-key", "private_key"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSensitiveSecurityAuditKey(key string) bool {
+	key = strings.ToLower(strings.TrimLeft(strings.TrimSpace(key), "-"))
+	for _, marker := range []string{"token", "secret", "password", "passwd", "apikey", "api-key", "api_key", "authorization", "auth", "credential", "private-key", "private_key"} {
+		if strings.Contains(key, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func securityPolicySessionID(p securityCommandCheckParams) string {
@@ -2216,6 +2386,26 @@ func clientProfileConfigPaths(workspace, home, configDir, client string) []strin
 		addWorkspace(".minimax/settings.json")
 		addConfig(filepath.Join("minimax", "config.json"))
 		addConfig(filepath.Join("milliways", "local.env"))
+	case clientprofiles.ClientKimi:
+		if home != "" {
+			add(filepath.Join(home, ".kimi", "config.json"))
+			add(filepath.Join(home, ".kimi", "settings.json"))
+		}
+		addWorkspace(".kimi/config.json")
+		addWorkspace(".kimi/settings.json")
+		addConfig(filepath.Join("kimi", "config.json"))
+		addConfig(filepath.Join("kimi", "settings.json"))
+		addConfig(filepath.Join("milliways", "local.env"))
+	case clientprofiles.ClientDeepSeek:
+		if home != "" {
+			add(filepath.Join(home, ".deepseek", "config.json"))
+			add(filepath.Join(home, ".deepseek", "settings.json"))
+		}
+		addWorkspace(".deepseek/config.json")
+		addWorkspace(".deepseek/settings.json")
+		addConfig(filepath.Join("deepseek", "config.json"))
+		addConfig(filepath.Join("deepseek", "settings.json"))
+		addConfig(filepath.Join("milliways", "local.env"))
 	case clientprofiles.ClientLocal:
 		addWorkspace(filepath.Join(".milliways", "local.env"))
 		addConfig(filepath.Join("milliways", "local.env"))
@@ -2247,8 +2437,12 @@ func clientProfileEnvKeys(client string) []string {
 		return []string{"POOL_FLAGS", "POOL_ARGS"}
 	case clientprofiles.ClientMiniMax:
 		return []string{"MINIMAX_FLAGS", "MINIMAX_ARGS"}
+	case clientprofiles.ClientKimi:
+		return []string{"KIMI_FLAGS", "KIMI_ARGS"}
+	case clientprofiles.ClientDeepSeek:
+		return []string{"DEEPSEEK_FLAGS", "DEEPSEEK_ARGS"}
 	case clientprofiles.ClientLocal:
-		return []string{"MILLIWAYS_LOCAL_ENDPOINT", "MILLIWAYS_LOCAL_BIND", "MILLIWAYS_LOCAL_AUTH_TOKEN"}
+		return []string{"MILLIWAYS_LOCAL_ENDPOINT", "MILLIWAYS_LOCAL_BIND", "MILLIWAYS_LOCAL_API_KEY", "MILLIWAYS_LOCAL_AUTH_TOKEN"}
 	default:
 		return nil
 	}

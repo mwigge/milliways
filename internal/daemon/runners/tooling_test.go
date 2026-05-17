@@ -163,6 +163,9 @@ func TestRunAgenticLoop_CommandFirewallWarnAllowsBashExecution(t *testing.T) {
 	if len(messages) < 3 || !strings.Contains(messages[2].Content, "installed") {
 		t.Fatalf("tool result missing executed output; messages = %+v", messages)
 	}
+	if !strings.Contains(messages[2].Content, "[security warning] command allowed in warn mode") {
+		t.Fatalf("warn-mode security decision not surfaced in tool result; messages = %+v", messages)
+	}
 }
 
 func TestRunAgenticLoop_CommandFirewallStrictBlocksBashExecution(t *testing.T) {

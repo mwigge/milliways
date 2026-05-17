@@ -18,8 +18,8 @@ package runners
 // $MILLIWAYS_LOCAL_ENDPOINT (default http://localhost:8765/v1). The
 // default endpoint matches what scripts/install_local.sh configures and
 // what `milliwaysctl local install-server` provisions. Compatible
-// backends include llama.cpp's `llama-server`, `llama-swap`, vLLM,
-// LMStudio, and Ollama via its OpenAI-compatible `/v1` shim.
+// backends include rs-llmctl, llama-swap, vLLM, LMStudio, and Ollama via
+// its OpenAI-compatible `/v1` shim.
 //
 // Tool execution is on by default. Local model runners drive the same
 // agentic tool loop (`RunAgenticLoop` + `tools.NewBuiltInRegistry()`) as
@@ -50,7 +50,7 @@ import (
 
 const (
 	localDefaultEndpoint = "http://localhost:8765/v1"
-	localDefaultModel    = "devstral-small"
+	localDefaultModel    = "qwen2.5-7b"
 )
 
 // localSystemPrompt mirrors minimaxSystemPrompt — same guidance, different
@@ -113,11 +113,13 @@ const localXMLSystemPromptBase = "You are a senior software engineer and code re
 	"Read files, run commands, make changes. " +
 	"Work on the task until it is done or you explicitly need input from the user."
 
-// isXMLToolModel returns true for models that use XML tool calling
-// (Devstral / Mistral-family) instead of OpenAI tool_calls JSON.
+// isXMLToolModel returns true for models that use XML tool calling instead of
+// OpenAI tool_calls JSON.
 func isXMLToolModel(model string) bool {
 	lower := strings.ToLower(model)
-	return strings.Contains(lower, "devstral") || strings.Contains(lower, "mistral")
+	return strings.Contains(lower, "devstral") ||
+		strings.Contains(lower, "mistral") ||
+		strings.Contains(lower, "qwen")
 }
 
 // buildLocalXMLSystemPrompt builds the system prompt for XML tool models,
@@ -148,7 +150,7 @@ type localSessionState struct {
 }
 
 func localRegistry() *tools.Registry {
-	if strings.EqualFold(os.Getenv("MILLIWAYS_LOCAL_TOOLS"), "off") {
+	if toolsDisabledByEnv(os.Getenv("MILLIWAYS_LOCAL_TOOLS")) {
 		return nil
 	}
 	localToolRegistryMu.RLock()
@@ -158,6 +160,15 @@ func localRegistry() *tools.Registry {
 		return r
 	}
 	return tools.NewBuiltInRegistry()
+}
+
+func toolsDisabledByEnv(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "0", "off", "false":
+		return true
+	default:
+		return false
+	}
 }
 
 // localHTTPClient is the per-runner HTTP client. Per-runner (not
@@ -261,15 +272,16 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	defer cancel()
 
 	planningOnly := state.pendingApproval != nil && state.pendingApproval.Plan == ""
-	registry := localRegistry()
+	promptRegistry := localRegistry()
+	executionRegistry := promptRegistry
 	if planningOnly {
-		registry = nil
+		executionRegistry = nil
 	}
 	xmlMode := isXMLToolModel(model)
 	if len(state.messages) == 0 {
 		var sysPrompt string
-		if xmlMode && registry != nil {
-			sysPrompt = buildLocalXMLSystemPrompt(registry.List())
+		if xmlMode && promptRegistry != nil {
+			sysPrompt = buildLocalXMLSystemPrompt(promptRegistry.List())
 		} else {
 			sysPrompt = localSystemPrompt
 		}
@@ -294,7 +306,7 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		}
 	}
 
-	result, err := RunAgenticLoop(ctx, client, registry, &messages, LoopOptions{
+	result, err := RunAgenticLoop(ctx, client, executionRegistry, &messages, LoopOptions{
 		SessionID:              AgentIDLocal,
 		Logger:                 slog.Default(),
 		XMLToolMode:            xmlMode,
@@ -394,13 +406,13 @@ func (c *localClient) Send(ctx context.Context, messages []Message, toolDefs []p
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return TurnResult{}, fmt.Errorf("connect %s: %w (is the backend running? `milliwaysctl local install-server` to bootstrap)", url, err)
+		return TurnResult{}, fmt.Errorf("connect %s: %s (is the backend running? `milliwaysctl local install-server` to bootstrap)", sanitizeProviderURL(url), scrubProviderSecrets(err.Error()))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		msg := scrubBearer(strings.TrimSpace(string(errBody)))
+		msg := sanitizeProviderErrorBody(errBody)
 		if resp.StatusCode == http.StatusTooManyRequests || localBodyLooksQuota(msg) {
 			return TurnResult{}, fmt.Errorf("%w: API %d: %s", ErrLocalQuota, resp.StatusCode, msg)
 		}

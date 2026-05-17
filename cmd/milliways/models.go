@@ -71,6 +71,20 @@ var knownModels = map[string][]string{
 		"claude-opus-4-5",
 		"gemini-2.0-flash",
 	},
+	"kimi": {
+		"kimi-k2.6",
+		"kimi-k2.5",
+		"kimi-k2-thinking",
+		"moonshot-v1-128k",
+		"moonshot-v1-32k",
+		"moonshot-v1-8k",
+	},
+	"deepseek": {
+		"deepseek-v4-flash",
+		"deepseek-v4-pro",
+		"deepseek-chat",
+		"deepseek-reasoner",
+	},
 }
 
 // modelCache caches the result of a provider model-list fetch so /model
@@ -135,7 +149,7 @@ func (c *modelCache) Models(agentID string) []string {
 // RefreshAsync starts a background goroutine to refresh the model cache for
 // all runners at startup so /model shows live data without blocking.
 func (c *modelCache) RefreshAsync() {
-	for _, agentID := range []string{"claude", "codex", "copilot", "gemini", "minimax"} {
+	for _, agentID := range []string{"claude", "codex", "copilot", "gemini", "minimax", "kimi", "deepseek"} {
 		go func(id string) { c.Models(id) }(agentID)
 	}
 }
@@ -146,17 +160,29 @@ func (c *modelCache) RefreshAsync() {
 //
 // Auth strategy per runner:
 //   - minimax:  MINIMAX_API_KEY env var → live API call
+//   - kimi:     KIMI_API_KEY or MOONSHOT_API_KEY env var → live API call
+//   - deepseek: DEEPSEEK_API_KEY env var → live API call
 //   - copilot:  OAuth token from ~/.copilot/ or ~/.config/github-copilot/ → live API call
 //   - gemini:   GEMINI_API_KEY / GOOGLE_API_KEY env var → live API call
-//               (~/.gemini/oauth_creds.json token returns 403 — wrong OAuth scope)
+//     (~/.gemini/oauth_creds.json token returns 403 — wrong OAuth scope)
 //   - codex:    OPENAI_API_KEY env var → live API call
-//               (ChatGPT OAuth token is scoped for chatgpt.com, not api.openai.com)
+//     (ChatGPT OAuth token is scoped for chatgpt.com, not api.openai.com)
 //   - claude:   ANTHROPIC_API_KEY env var → live API call
-//               (Claude Code OAuth is scoped for Claude Code, not api.anthropic.com)
+//     (Claude Code OAuth is scoped for Claude Code, not api.anthropic.com)
 func (c *modelCache) fetch(agentID string) []string {
 	switch agentID {
 	case "minimax":
 		return c.fetchMiniMax(os.Getenv("MINIMAX_API_KEY"))
+
+	case "kimi":
+		key := os.Getenv("KIMI_API_KEY")
+		if key == "" {
+			key = os.Getenv("MOONSHOT_API_KEY")
+		}
+		return c.fetchOpenAIAt("https://api.moonshot.ai/v1/models", key)
+
+	case "deepseek":
+		return c.fetchOpenAIAt("https://api.deepseek.com/models", os.Getenv("DEEPSEEK_API_KEY"))
 
 	case "copilot":
 		return c.fetchCopilot()
@@ -183,7 +209,28 @@ func (c *modelCache) fetchOpenAI(apiKey string, prefixes ...string) []string {
 	if apiKey == "" {
 		return nil
 	}
-	req, err := http.NewRequest(http.MethodGet, "https://api.openai.com/v1/models", nil)
+	models := c.fetchOpenAIAt("https://api.openai.com/v1/models", apiKey)
+	if len(prefixes) == 0 {
+		return models
+	}
+	var out []string
+	for _, id := range models {
+		for _, p := range prefixes {
+			if strings.HasPrefix(id, p) {
+				out = append(out, id)
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (c *modelCache) fetchOpenAIAt(url, apiKey string) []string {
+	if apiKey == "" {
+		return nil
+	}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil
 	}
@@ -206,13 +253,10 @@ func (c *modelCache) fetchOpenAI(apiKey string, prefixes ...string) []string {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil
 	}
-	var out []string
+	out := make([]string, 0, len(payload.Data))
 	for _, m := range payload.Data {
-		for _, p := range prefixes {
-			if strings.HasPrefix(m.ID, p) {
-				out = append(out, m.ID)
-				break
-			}
+		if m.ID != "" {
+			out = append(out, m.ID)
 		}
 	}
 	sort.Strings(out)

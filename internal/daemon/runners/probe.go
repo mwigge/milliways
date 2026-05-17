@@ -39,7 +39,7 @@ type AgentInfo struct {
 	Enforcement EnforcementMetadata
 }
 
-// Probe walks the seven canonical chat-surface runners and returns one
+// Probe walks the canonical chat-surface runners and returns one
 // AgentInfo each. Each probe has a 2-second budget; missing binaries
 // return immediately.
 func Probe(ctx context.Context) []AgentInfo {
@@ -47,9 +47,11 @@ func Probe(ctx context.Context) []AgentInfo {
 		probeClaude,
 		probeCodex,
 		probeCopilot,
+		probeMinimax,
+		probeKimi,
+		probeDeepSeek,
 		probeGemini,
 		probeLocal,
-		probeMinimax,
 		probePool,
 	}
 	out := make([]AgentInfo, 0, len(probes))
@@ -131,6 +133,24 @@ func probeMinimax(ctx context.Context) AgentInfo {
 	// is set, regardless of whether any 'minimax' binary exists on PATH.
 	info := AgentInfo{ID: "minimax", AuthStatus: "missing_credentials"}
 	if k := os.Getenv("MINIMAX_API_KEY"); k != "" {
+		info.Available = true
+		info.AuthStatus = "ok"
+	}
+	return info
+}
+
+func probeKimi(context.Context) AgentInfo {
+	info := AgentInfo{ID: AgentIDKimi, AuthStatus: "missing_credentials"}
+	if os.Getenv("KIMI_API_KEY") != "" || os.Getenv("MOONSHOT_API_KEY") != "" {
+		info.Available = true
+		info.AuthStatus = "ok"
+	}
+	return info
+}
+
+func probeDeepSeek(context.Context) AgentInfo {
+	info := AgentInfo{ID: AgentIDDeepSeek, AuthStatus: "missing_credentials"}
+	if os.Getenv("DEEPSEEK_API_KEY") != "" {
 		info.Available = true
 		info.AuthStatus = "ok"
 	}

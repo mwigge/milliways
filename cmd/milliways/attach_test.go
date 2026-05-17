@@ -404,7 +404,7 @@ func TestRenderDeckNavigatorShowsRequestedPanels(t *testing.T) {
 
 	wantFragments := []string{
 		"Clients",
-		"codex (protected) active",
+		"codex (preflight-only) act",
 		"↑↓ move",
 	}
 	for _, want := range wantFragments {
@@ -426,7 +426,7 @@ func TestRenderDeckNavigatorShowsClientProtectionState(t *testing.T) {
 	}, 0, "claude", true, nil))
 
 	for _, want := range []string{
-		"claude (protected)",
+		"claude (preflight-only)",
 		"minimax (protected)",
 		"custom (unprotected)",
 		"raw (unprotected)",
@@ -489,7 +489,7 @@ func TestRenderDeckNavigatorSizedShowsSevenWhenThereIsRoom(t *testing.T) {
 	}
 	for _, want := range []string{"claude", "codex", "copilot", "gemini", "minimax", "local", "pool"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("expected all seven clients, missing %q:\n%s", want, got)
+			t.Fatalf("expected all clients, missing %q:\n%s", want, got)
 		}
 	}
 	// Quick Menu was removed — verify it is absent.

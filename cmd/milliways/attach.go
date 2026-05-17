@@ -509,7 +509,7 @@ func deckProtectionLabel(p deckProviderInfo) string {
 		return "protected"
 	case "brokered":
 		if p.Enforcement.ControlledEnv || strings.TrimSpace(p.Enforcement.BrokerPath) != "" {
-			return "protected"
+			return "preflight-only"
 		}
 		return "unprotected"
 	default:
@@ -722,6 +722,10 @@ func obsProviderShort(id string) string {
 		return "gemi"
 	case "minimax":
 		return "mnmx"
+	case "kimi":
+		return "kimi"
+	case "deepseek":
+		return "dpsk"
 	case "local":
 		return "lcal"
 	case "pool":

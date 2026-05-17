@@ -916,13 +916,16 @@ func TestRunSecurityOutputPlanRendersSBOMRefreshRecommendation(t *testing.T) {
 func TestRunSecurityStatusRendersExtendedFields(t *testing.T) {
 	sock, _ := startSecurityRPCTestServer(t, map[string]any{
 		"security.status": map[string]any{
-			"installed":               false,
-			"enabled":                 true,
-			"mode":                    "warn",
-			"security_workspace":      "/repo/service",
-			"posture":                 "warn",
-			"warning_count":           2,
-			"block_count":             1,
+			"installed":          false,
+			"enabled":            true,
+			"mode":               "warn",
+			"security_workspace": "/repo/service",
+			"posture":            "warn",
+			"warning_count":      2,
+			"block_count":        1,
+			"top_active_blocks": []any{
+				map[string]any{"category": "command-policy", "message": "shim blocked npm install"},
+			},
 			"last_startup_scan_at":    "2026-05-14T10:00:00Z",
 			"last_dependency_scan_at": "2026-05-14T10:02:00Z",
 			"shims": map[string]any{
@@ -965,14 +968,16 @@ func TestRunSecurityStatusRendersExtendedFields(t *testing.T) {
 		"workspace: /repo/service",
 		"posture: WARN",
 		"warnings: 2  blocks: 1",
+		"meaning: 1 active block-severity finding(s), but mode warn records and continues",
+		"top blocks: command-policy: shim blocked npm install",
 		"last startup scan",
 		"last dependency scan",
 		"rulepacks: 1 loaded (offline-current)",
 		"workspace-ioc@1.2.3",
 		"scanners: installed osv-scanner (osv-scanner 2.0.0), semgrep; missing gitleaks, govulncheck",
 		"shims: not ready 2/3; missing broker milliwaysctl; missing npm",
-		"claude unprotected (brokered, shim not ready)",
-		"codex unprotected (brokered, shim not ready)",
+		"claude preflight-only (brokered, shim not ready)",
+		"codex preflight-only (brokered, shim not ready)",
 		"custom unprotected (unknown)",
 		"minimax protected (full)",
 	} {

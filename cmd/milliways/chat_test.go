@@ -148,7 +148,7 @@ func TestDrainStreamWritesThinkingToOutputStream(t *testing.T) {
 	if got := errw.String(); got != "" {
 		t.Fatalf("thinking feedback must not write to errw; got %q", got)
 	}
-	if pending := loop.pendingAssistant.String(); pending != "" {
+	if pending := sess.pendingAssistant.String(); pending != "" {
 		t.Fatalf("thinking feedback should not be stored as assistant response; got %q", pending)
 	}
 }
@@ -473,8 +473,8 @@ func TestChatHelpEnumeratesKnownCommands(t *testing.T) {
 
 	for _, want := range []string{
 		// Client picker
-		"/1", "/2", "/3", "/4", "/5", "/6", "/7",
-		"claude", "codex", "copilot", "gemini", "local", "minimax", "pool",
+		"/1", "/2", "/3", "/4", "/5", "/6", "/7", "/8", "/9",
+		"claude", "codex", "copilot", "deepseek", "gemini", "kimi", "local", "minimax", "pool",
 		// Full help section
 		"/switch", "/agents", "/quota", "/help", "/exit", "!<cmd>",
 		"/install", "/install-local-server", "/list-local-models", "/setup-local-model",
@@ -520,7 +520,7 @@ func TestPrintLandingIsConciseStartupSurface(t *testing.T) {
 			t.Fatalf("landing should be concise; found %q in:\n%s", absent, got)
 		}
 	}
-	for _, want := range []string{"milliways ", "daemon", "clients", "/1 claude", "/7 pool", "/help all commands", "/agents auth status"} {
+	for _, want := range []string{"milliways ", "daemon", "clients", "/1 claude", "/9 pool", "/help all commands", "/agents auth status"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("landing missing %q; got:\n%s", want, got)
 		}
@@ -545,7 +545,7 @@ func TestPrintHelpDoesNotRepeatStartupBanner(t *testing.T) {
 			t.Fatalf("help should not repeat startup banner; found %q in:\n%s", absent, got)
 		}
 	}
-	for _, want := range []string{"milliways chat commands", "Clients:", "/1 claude", "/7 pool", "Client install / upgrade:", "/install-local-server", "Terminal setup:", "cockpit-hint.txt"} {
+	for _, want := range []string{"milliways chat commands", "Clients:", "/1 claude", "/9 pool", "Client install / upgrade:", "/install-local-server", "Terminal setup:", "cockpit-hint.txt"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("help missing %q; got:\n%s", want, got)
 		}
@@ -850,6 +850,15 @@ func TestInterruptPromptIsPlainLanguage(t *testing.T) {
 	}
 }
 
+func TestBuildCompleterIncludesCurrentShortcutsAndInstallTargets(t *testing.T) {
+	items := buildCompleter("minimax")
+	for _, want := range []string{"/8", "/9", "/install minimax", "/install kimi", "/install deepseek"} {
+		if !slices.Contains(items, want) {
+			t.Fatalf("buildCompleter() missing %q in %#v", want, items)
+		}
+	}
+}
+
 func TestCancelActiveSessionClosesAndResetsPrompt(t *testing.T) {
 	closed := false
 	sess := &chatSession{
@@ -987,7 +996,7 @@ func pathListContains(path, want string) bool {
 	return false
 }
 
-// TestParseDigitInRange covers the /1../7 numeric shortcut parser.
+// TestParseDigitInRange covers the numeric shortcut parser.
 func TestParseDigitInRange(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -996,14 +1005,14 @@ func TestParseDigitInRange(t *testing.T) {
 		wantN  int
 		wantOK bool
 	}{
-		{"1", 1, 7, 1, true},
-		{"7", 1, 7, 7, true},
-		{"4", 1, 7, 4, true},
-		{"0", 1, 7, 0, false},  // below range
-		{"8", 1, 7, 0, false},  // above range
-		{"", 1, 7, 0, false},   // empty
-		{"a", 1, 7, 0, false},  // non-digit
-		{"42", 1, 7, 0, false}, // multi-digit unsupported
+		{"1", 1, 9, 1, true},
+		{"9", 1, 9, 9, true},
+		{"4", 1, 9, 4, true},
+		{"0", 1, 9, 0, false},  // below range
+		{"10", 1, 9, 0, false}, // above range and multi-digit
+		{"", 1, 9, 0, false},   // empty
+		{"a", 1, 9, 0, false},  // non-digit
+		{"42", 1, 9, 0, false}, // multi-digit unsupported
 	}
 	for _, c := range cases {
 		got, ok := parseDigitInRange(c.s, c.lo, c.hi)
@@ -1204,6 +1213,7 @@ func TestChatSwitchableAgentsCoversDaemonRegistry(t *testing.T) {
 	expected := map[string]bool{
 		"claude": true, "codex": true, "copilot": true,
 		"gemini": true, "local": true, "minimax": true, "pool": true,
+		"kimi": true, "deepseek": true,
 	}
 	if got := len(chatSwitchableAgents); got != len(expected) {
 		t.Errorf("chatSwitchableAgents len = %d, want %d", got, len(expected))
@@ -1216,6 +1226,114 @@ func TestChatSwitchableAgentsCoversDaemonRegistry(t *testing.T) {
 	}
 	for missing := range expected {
 		t.Errorf("chatSwitchableAgents missing %q", missing)
+	}
+}
+
+func TestSendWithReconnectPrimesFreshSessionWithSharedMemory(t *testing.T) {
+	t.Parallel()
+
+	var sent []string
+	sess := &chatSession{
+		agentID: "minimax",
+		sendFn: func(prompt string) error {
+			sent = append(sent, prompt)
+			return nil
+		},
+	}
+	loop := &chatLoop{
+		turnLog: []chatTurn{
+			{Role: "user", Text: "remember the release blocker"},
+			{Role: "assistant", AgentID: "claude", Text: "the blocker is auth on local models"},
+			{Role: "user", Text: "what is the status?"},
+		},
+	}
+
+	if err := loop.sendWithReconnect(sess, "what is the status?"); err != nil {
+		t.Fatalf("sendWithReconnect: %v", err)
+	}
+	if len(sent) != 1 {
+		t.Fatalf("sent prompts = %d, want 1", len(sent))
+	}
+	for _, want := range []string{"[milliways shared memory]", "remember the release blocker", "auth on local models", "[user prompt]", "what is the status?"} {
+		if !strings.Contains(sent[0], want) {
+			t.Fatalf("shared prompt missing %q:\n%s", want, sent[0])
+		}
+	}
+	if strings.Count(sent[0], "what is the status?") != 1 {
+		t.Fatalf("current prompt duplicated in shared memory:\n%s", sent[0])
+	}
+
+	if err := loop.sendWithReconnect(sess, "next prompt"); err != nil {
+		t.Fatalf("second sendWithReconnect: %v", err)
+	}
+	if sent[1] != "next prompt" {
+		t.Fatalf("second prompt = %q, want raw prompt", sent[1])
+	}
+}
+
+func TestPromptWithSharedMemoryStatelessClientRepeatsContext(t *testing.T) {
+	var sent []string
+	sess := &chatSession{
+		agentID: "claude",
+		sendFn: func(prompt string) error {
+			sent = append(sent, prompt)
+			return nil
+		},
+	}
+	loop := &chatLoop{
+		turnLog: []chatTurn{
+			{Role: "user", Text: "remember the API decision"},
+			{Role: "assistant", AgentID: "claude", Text: "we chose bearer auth"},
+			{Role: "user", Text: "summarize it"},
+		},
+	}
+
+	if err := loop.sendWithReconnect(sess, "summarize it"); err != nil {
+		t.Fatalf("first sendWithReconnect: %v", err)
+	}
+	loop.turnLog = append(loop.turnLog, chatTurn{Role: "assistant", AgentID: "claude", Text: "bearer auth was chosen"})
+	loop.turnLog = append(loop.turnLog, chatTurn{Role: "user", Text: "what auth did we choose?"})
+	if err := loop.sendWithReconnect(sess, "what auth did we choose?"); err != nil {
+		t.Fatalf("second sendWithReconnect: %v", err)
+	}
+	if len(sent) != 2 {
+		t.Fatalf("sent prompts = %d, want 2", len(sent))
+	}
+	for i, prompt := range sent {
+		if !strings.Contains(prompt, "[milliways shared memory]") {
+			t.Fatalf("prompt %d missing shared memory:\n%s", i, prompt)
+		}
+	}
+}
+
+func TestPromptWithSharedMemoryExcludesCurrentPromptAfterPalaceEnrichment(t *testing.T) {
+	loop := &chatLoop{
+		turnLog: []chatTurn{
+			{Role: "user", Text: "remember the release blocker"},
+			{Role: "assistant", AgentID: "minimax", Text: "local auth is the blocker"},
+			{Role: "user", Text: "what is the status?"},
+		},
+	}
+	enriched := "<project_memory source=\"mempalace\">\n- release/local: auth blocker\n</project_memory>\n\nwhat is the status?"
+
+	got, ok := loop.buildSharedMemoryPrompt("minimax", enriched)
+	if !ok {
+		t.Fatal("expected shared memory prompt")
+	}
+	if strings.Count(got, "what is the status?") != 1 {
+		t.Fatalf("current prompt duplicated after enrichment:\n%s", got)
+	}
+}
+
+func TestPromptWithSharedMemorySkipsNativeSlashCommand(t *testing.T) {
+	sess := &chatSession{agentID: "copilot"}
+	loop := &chatLoop{turnLog: []chatTurn{{Role: "user", Text: "remember this"}}}
+	got, primed := loop.promptWithSharedMemory(sess, "/diff")
+	if primed {
+		t.Fatal("native slash command should not be memory-primed")
+	}
+	if got != "/diff" {
+		t.Fatalf("slash command changed: %q", got)
 	}
 }
 
@@ -1380,9 +1498,9 @@ func TestHandleSlash_Smoke(t *testing.T) {
 		"/login", "/login minimax",
 		"/briefing",
 		"/model", "/model minimax",
-		"/1", "/2", "/3", "/4", "/5", "/6", "/7",
+		"/1", "/2", "/3", "/4", "/5", "/6", "/7", "/8", "/9",
 		"/claude", "/codex", "/copilot", "/minimax",
-		"/gemini", "/local", "/pool",
+		"/kimi", "/deepseek", "/gemini", "/local", "/pool",
 		"/switch claude",
 		"/install",
 		"/install-local-server",
@@ -1668,12 +1786,14 @@ func TestTakeoverSendsBriefingExplicitly(t *testing.T) {
 			return nil
 		},
 	}
+	writer := &captureHandoffWriter{}
 	loop := &chatLoop{
-		sess:     claude,
-		deck:     newSessionDeck(chatSwitchableAgents),
-		sessions: map[string]*chatSession{"claude": claude, "codex": codex},
-		out:      &stdout,
-		errw:     &stderr,
+		sess:          claude,
+		deck:          newSessionDeck(chatSwitchableAgents),
+		sessions:      map[string]*chatSession{"claude": claude, "codex": codex},
+		out:           &stdout,
+		errw:          &stderr,
+		handoffWriter: writer,
 		turnLog: []chatTurn{
 			{Role: "user", Text: "important workstream context"},
 			{Role: "assistant", AgentID: "claude", Text: "context retained"},
@@ -1694,6 +1814,9 @@ func TestTakeoverSendsBriefingExplicitly(t *testing.T) {
 	if loop.lastBriefing == "" {
 		t.Fatal("/takeover did not store last briefing")
 	}
+	if writer.calledTarget != "codex" || writer.calledFrom != "claude" || writer.calledBriefing == "" {
+		t.Fatalf("/takeover did not persist cross-pane handoff: %#v", writer)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1708,6 +1831,28 @@ func TestPrintBriefingBlock_NoTurns(t *testing.T) {
 	loop.printBriefingBlock(nil, "claude")
 	if out.Len() != 0 {
 		t.Errorf("expected no output for empty turns, got: %q", out.String())
+	}
+}
+
+func TestRenderTurnsWithBudgetKeepsChronologicalOrder(t *testing.T) {
+	t.Parallel()
+	got := renderTurnsWithBudget([]chatTurn{
+		{Role: "user", Text: "user1"},
+		{Role: "assistant", AgentID: "claude", Text: "assistant1"},
+		{Role: "user", Text: "user2"},
+		{Role: "assistant", AgentID: "claude", Text: "assistant2"},
+	}, 4096)
+	wantOrder := []string{"user1", "assistant1", "user2", "assistant2"}
+	last := -1
+	for _, want := range wantOrder {
+		idx := strings.Index(got, want)
+		if idx < 0 {
+			t.Fatalf("rendered turns missing %q in %q", want, got)
+		}
+		if idx < last {
+			t.Fatalf("rendered turns out of order: %q", got)
+		}
+		last = idx
 	}
 }
 

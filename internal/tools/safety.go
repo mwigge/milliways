@@ -42,7 +42,6 @@ import (
 	"strings"
 )
 
-
 // WorkspaceRoot returns the absolute path of the directory tools may
 // touch via Read/Write/Edit/Grep/Glob. Resolves $MILLIWAYS_WORKSPACE_ROOT
 // if set; otherwise defaults to process cwd. Empty string on error so
@@ -83,13 +82,9 @@ var dotfileDenylist = []string{
 // workspace root and does not match the dotfile denylist. Returns the
 // resolved absolute path on success, or an error describing the refusal.
 //
-// Symlink resolution: this function uses filepath.Abs (which does not
-// resolve symlinks). For the threat model, this is intentional —
-// EvalSymlinks would require the path to exist, which fails for newly
-// created files. The trade-off is that a symlink inside the workspace
-// pointing outside it can escape; users who care about that should
-// configure the workspace root to a directory under their control and
-// audit symlinks within it.
+// Symlink resolution: existing paths and nearest existing parent directories
+// are resolved before the containment check. This prevents a workspace-local
+// symlink from escaping the file-tool jail while still allowing new files.
 func containedPath(path string) (string, error) {
 	if path == "" {
 		return "", errors.New("path is required")
@@ -98,18 +93,59 @@ func containedPath(path string) (string, error) {
 	if root == "" {
 		return "", errors.New("workspace root unresolvable; refusing tool access")
 	}
-	abs, err := filepath.Abs(path)
+	rootAbs, err := filepath.Abs(root)
 	if err != nil {
-		return "", fmt.Errorf("resolve %q: %w", path, err)
+		return "", fmt.Errorf("resolve workspace root %q: %w", root, err)
 	}
-	rel, err := filepath.Rel(root, abs)
+	rootResolved, err := filepath.EvalSymlinks(rootAbs)
+	if err != nil {
+		return "", fmt.Errorf("resolve workspace root %q: %w", root, err)
+	}
+	abs, err := resolveToolPath(path)
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(rootResolved, abs)
 	if err != nil || strings.HasPrefix(rel, "..") || rel == ".." {
-		return "", fmt.Errorf("path %q outside workspace root %q (set MILLIWAYS_WORKSPACE_ROOT to widen)", path, root)
+		return "", fmt.Errorf("path %q outside workspace root %q (set MILLIWAYS_WORKSPACE_ROOT to widen)", path, rootResolved)
 	}
 	if denied := matchDenylist(abs); denied != "" {
 		return "", fmt.Errorf("path %q matches credential denylist %q", path, denied)
 	}
 	return abs, nil
+}
+
+func resolveToolPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve %q: %w", path, err)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("resolve symlinks %q: %w", path, err)
+	}
+
+	parent := filepath.Dir(abs)
+	var missing []string
+	for {
+		resolvedParent, err := filepath.EvalSymlinks(parent)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolvedParent = filepath.Join(resolvedParent, missing[i])
+			}
+			return filepath.Join(resolvedParent, filepath.Base(abs)), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("resolve parent symlinks %q: %w", parent, err)
+		}
+		missing = append(missing, filepath.Base(parent))
+		next := filepath.Dir(parent)
+		if next == parent {
+			return "", fmt.Errorf("resolve %q: no existing parent", path)
+		}
+		parent = next
+	}
 }
 
 // matchDenylist returns the first dotfile-denylist entry that matches abs,

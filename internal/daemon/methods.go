@@ -88,14 +88,16 @@ type RoutingDecision struct {
 // historyAgents is the allowlist for history.append agent_ids.
 // Only these agents may have their history recorded.
 var historyAgents = map[string]bool{
-	"_echo":   true,
-	"claude":  true,
-	"codex":   true,
-	"copilot": true,
-	"gemini":  true,
-	"pool":    true,
-	"minimax": true,
-	"local":   true,
+	"_echo":    true,
+	"claude":   true,
+	"codex":    true,
+	"copilot":  true,
+	"gemini":   true,
+	"pool":     true,
+	"minimax":  true,
+	"kimi":     true,
+	"deepseek": true,
+	"local":    true,
 }
 
 const (
@@ -204,7 +206,7 @@ func (s *Server) buildStatus() Status {
 }
 
 func clientEnforcementSnapshot() map[string]runners.EnforcementMetadata {
-	agents := []string{"claude", "codex", "copilot", "gemini", "pool", "minimax", "local"}
+	agents := []string{"claude", "codex", "copilot", "gemini", "pool", "minimax", "kimi", "deepseek", "local"}
 	out := make(map[string]runners.EnforcementMetadata, len(agents))
 	for _, agent := range agents {
 		out[agent] = runners.ClientEnforcementMetadata(agent)
@@ -218,7 +220,7 @@ func (s *Server) buildQuotaSnapshots() []QuotaSnapshot {
 	if s.metrics == nil {
 		return nil
 	}
-	agents := []string{"claude", "codex", "copilot", "gemini", "pool", "minimax", "local"}
+	agents := []string{"claude", "codex", "copilot", "gemini", "pool", "minimax", "kimi", "deepseek", "local"}
 	r1h := &metrics.Range{From: "-1h"}
 	var out []QuotaSnapshot
 	for _, agent := range agents {

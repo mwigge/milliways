@@ -31,13 +31,15 @@ type MetricsObserver interface {
 // constants so all runner sites share one spelling (and tests can refer
 // to the same identifier without typos).
 const (
-	AgentIDClaude  = "claude"
-	AgentIDCodex   = "codex"
-	AgentIDCopilot = "copilot"
-	AgentIDMiniMax = "minimax"
-	AgentIDLocal   = "local"
-	AgentIDGemini  = "gemini"
-	AgentIDPool    = "pool"
+	AgentIDClaude   = "claude"
+	AgentIDCodex    = "codex"
+	AgentIDCopilot  = "copilot"
+	AgentIDMiniMax  = "minimax"
+	AgentIDLocal    = "local"
+	AgentIDGemini   = "gemini"
+	AgentIDPool     = "pool"
+	AgentIDKimi     = "kimi"
+	AgentIDDeepSeek = "deepseek"
 )
 
 // Note: opsx is intentionally not a daemon AgentID. It was reclassified

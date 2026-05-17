@@ -51,6 +51,20 @@ echo "[smoke] building milliwaysd and milliwaysctl"
 go build -o "${SMOKE_ROOT}/milliwaysd" "${REPO_ROOT}/cmd/milliwaysd/"
 go build -o "${SMOKE_ROOT}/milliwaysctl" "${REPO_ROOT}/cmd/milliwaysctl/"
 
+echo "[smoke] exercising local one-model install smoke with generated API key"
+LOCAL_SMOKE_HOME="${SMOKE_ROOT}/local-home"
+LOCAL_SMOKE_CONFIG="${LOCAL_SMOKE_HOME}/.config"
+mkdir -p "${LOCAL_SMOKE_HOME}" "${LOCAL_SMOKE_CONFIG}"
+HOME="${LOCAL_SMOKE_HOME}" \
+XDG_CONFIG_HOME="${LOCAL_SMOKE_CONFIG}" \
+MILLIWAYS_LOCAL_INSTALL_SMOKE=1 \
+PORT=8876 \
+  bash "${REPO_ROOT}/scripts/install_local.sh" >"${SMOKE_ROOT}/local-install.out" 2>"${SMOKE_ROOT}/local-install.err"
+assert_output_contains local-install "smoke local server installed"
+assert_contains "${LOCAL_SMOKE_CONFIG}/milliways/local.env" "MILLIWAYS_LOCAL_ENDPOINT=http://127.0.0.1:8876/v1"
+assert_contains "${LOCAL_SMOKE_CONFIG}/milliways/local.env" "MILLIWAYS_LOCAL_MODEL=qwen2.5-7b"
+assert_contains "${LOCAL_SMOKE_CONFIG}/milliways/local.env" "MILLIWAYS_LOCAL_API_KEY=smoke-local-key"
+
 WORKSPACE="${SMOKE_ROOT}/workspace"
 mkdir -p "${WORKSPACE}/.github/workflows"
 cat >"${WORKSPACE}/go.mod" <<'EOF'
@@ -187,6 +201,12 @@ assert_contains "${REPO_ROOT}/README.md" "osv-scanner"
 assert_contains "${REPO_ROOT}/README.md" "gitleaks"
 assert_contains "${REPO_ROOT}/README.md" "semgrep"
 assert_contains "${REPO_ROOT}/README.md" "govulncheck"
+assert_contains "${REPO_ROOT}/README.md" "External Postgres support is planned"
+assert_contains "${REPO_ROOT}/README.md" "Router maturity controls"
+assert_contains "${REPO_ROOT}/README.md" "AQE/OpenAI-compatible governance contract exports"
+assert_contains "${REPO_ROOT}/examples/policy-operations-runbook.md" "External Postgres support is planned"
+assert_contains "${REPO_ROOT}/examples/policy-operations-runbook.md" "admission and backpressure"
+assert_contains "${REPO_ROOT}/examples/policy-operations-runbook.md" "AQE/OpenAI-compatible governance contract exports"
 assert_contains "${REPO_ROOT}/cmd/milliwaysctl/milliways.lua" "local function security_badge(sec)"
 assert_contains "${REPO_ROOT}/cmd/milliwaysctl/milliways.lua" "SEC OK"
 assert_contains "${REPO_ROOT}/cmd/milliwaysctl/milliways.lua" "SEC WARN"

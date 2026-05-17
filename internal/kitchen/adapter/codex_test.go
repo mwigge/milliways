@@ -58,7 +58,7 @@ func TestBuildCodexArgs_DefaultsInjectSandboxAndApproval(t *testing.T) {
 
 	wantContains := [][]string{
 		{"--sandbox", "workspace-write"},
-		{"--ask-for-approval", "never"},
+		{"--ask-for-approval", "on-request"},
 	}
 	for _, pair := range wantContains {
 		if !containsPair(args, pair[0], pair[1]) {
@@ -88,8 +88,8 @@ func TestBuildCodexArgs_RespectsUserSandbox(t *testing.T) {
 	if !containsPair(args, "--sandbox", "read-only") {
 		t.Errorf("user --sandbox read-only not present: %v", args)
 	}
-	if !containsPair(args, "--ask-for-approval", "never") {
-		t.Errorf("default --ask-for-approval never should still be injected: %v", args)
+	if !containsPair(args, "--ask-for-approval", "on-request") {
+		t.Errorf("default --ask-for-approval on-request should still be injected: %v", args)
 	}
 }
 

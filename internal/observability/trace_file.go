@@ -37,14 +37,16 @@ func OpenTraceFile(sessionID string) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve trace dir: %w", err)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create trace dir: %w", err)
 	}
+	_ = os.Chmod(dir, 0o700)
 	path := filepath.Join(dir, sessionID+".jsonl")
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0o644)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open trace file %s: %w", path, err)
 	}
+	_ = os.Chmod(path, 0o600)
 	return file, nil
 }
 
@@ -76,16 +78,7 @@ func ReadTraceFile(sessionID string) ([]AgentTraceEvent, error) {
 		defer file.Close()
 		return ParseTraceEvents(file)
 	}
-	dir, err := traceDirPath()
-	if err != nil {
-		return nil, fmt.Errorf("resolve trace dir: %w", err)
-	}
-	file, err := os.Open(filepath.Join(dir, sessionID+".jsonl"))
-	if err != nil {
-		return nil, fmt.Errorf("open trace file: %w", err)
-	}
-	defer file.Close()
-	return ParseTraceEvents(file)
+	return ReadTraceEvents(sessionID)
 }
 
 // ParseTraceEvents parses flattened trace JSONL content.
@@ -101,7 +94,7 @@ func ParseTraceEvents(reader io.Reader) ([]AgentTraceEvent, error) {
 		if len(line) == 0 {
 			continue
 		}
-		event, err := parseFlattenedTraceEvent(line)
+		event, err := parseTraceEventLine(line)
 		if err != nil {
 			return nil, err
 		}
@@ -111,6 +104,49 @@ func ParseTraceEvents(reader io.Reader) ([]AgentTraceEvent, error) {
 		return nil, fmt.Errorf("scan trace events: %w", err)
 	}
 	return events, nil
+}
+
+func parseTraceEventLine(line []byte) (AgentTraceEvent, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(line, &raw); err != nil {
+		return AgentTraceEvent{}, fmt.Errorf("decode trace event: %w", err)
+	}
+	if looksCanonicalTraceEvent(raw) {
+		var event AgentTraceEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			return AgentTraceEvent{}, err
+		}
+		return event, nil
+	}
+	return parseFlattenedTraceEvent(line)
+}
+
+func looksCanonicalTraceEvent(raw map[string]json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	if data, ok := raw["data"]; ok && json.Valid(data) && len(data) > 0 && data[0] == '{' {
+		return true
+	}
+	if _, ok := raw["ts"]; ok {
+		return false
+	}
+	if _, ok := raw["session"]; ok {
+		return false
+	}
+	if _, ok := raw["data"]; ok {
+		return true
+	}
+	if _, ok := raw["fields"]; ok {
+		return true
+	}
+	if _, ok := raw["session_id"]; ok {
+		return true
+	}
+	if _, ok := raw["conversation_id"]; ok {
+		return true
+	}
+	return false
 }
 
 func defaultTraceDirPath() (string, error) {

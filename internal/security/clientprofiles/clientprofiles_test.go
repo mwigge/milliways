@@ -30,8 +30,8 @@ func TestNewAllIncludesSupportedClients(t *testing.T) {
 
 	opts := testOptions(t)
 	checks := clientprofiles.NewAll(opts)
-	if len(checks) != 7 {
-		t.Fatalf("NewAll returned %d checks, want 7", len(checks))
+	if len(checks) != 9 {
+		t.Fatalf("NewAll returned %d checks, want 9", len(checks))
 	}
 
 	workspace := t.TempDir()
@@ -43,7 +43,7 @@ func TestNewAllIncludesSupportedClients(t *testing.T) {
 			t.Fatalf("Check(%q) error = %q", result.Client, result.Error)
 		}
 	}
-	for _, want := range []string{"claude", "codex", "copilot", "gemini", "pool", "minimax", "local"} {
+	for _, want := range []string{"claude", "codex", "copilot", "gemini", "pool", "minimax", "kimi", "deepseek", "local"} {
 		if !got[want] {
 			t.Fatalf("NewAll missing client %q; got %#v", want, got)
 		}
@@ -166,6 +166,21 @@ MILLIWAYS_LOCAL_BIND=0.0.0.0:8765
 	assertWarning(t, result, "local-public-bind-no-auth")
 }
 
+func TestLocalProfilePublicBindAcceptsGeneratedAPIKey(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	opts := testOptions(t)
+	opts.Env = map[string]string{
+		"MILLIWAYS_LOCAL_BIND":    "0.0.0.0:8765",
+		"MILLIWAYS_LOCAL_API_KEY": "generated-key",
+	}
+
+	result := clientprofiles.New("local", opts).Check(context.Background(), workspace)
+
+	assertNoWarning(t, result, "local-public-bind-no-auth")
+}
+
 func TestMiniMaxProfileDetectsKeyInConfig(t *testing.T) {
 	t.Parallel()
 
@@ -185,6 +200,27 @@ func TestMiniMaxProfileDetectsKeyInConfig(t *testing.T) {
 	assertWarning(t, result, "minimax-mcp-config")
 	assertWarning(t, result, "minimax-broad-path-scope")
 	assertWarning(t, result, "minimax-risky-env-var")
+}
+
+func TestAPIClientProfilesDetectKeysInLocalEnv(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	home := t.TempDir()
+	mustWrite(t, filepath.Join(home, ".config", "milliways", "local.env"), `
+KIMI_API_KEY=sk-kimi-test
+MOONSHOT_API_KEY=sk-moonshot-test
+DEEPSEEK_API_KEY=sk-deepseek-test
+`)
+	opts := testOptions(t)
+	opts.HomeDir = home
+	opts.ConfigDir = filepath.Join(home, ".config")
+
+	kimi := clientprofiles.New("kimi", opts).Check(context.Background(), workspace)
+	deepseek := clientprofiles.New("deepseek", opts).Check(context.Background(), workspace)
+
+	assertWarning(t, kimi, "kimi-key-in-config")
+	assertWarning(t, deepseek, "deepseek-key-in-config")
 }
 
 func TestProfilesHonorCanceledContext(t *testing.T) {
@@ -245,4 +281,14 @@ func assertWarning(t *testing.T, result clientprofiles.ProfileResult, id string)
 		}
 	}
 	t.Fatalf("warning %q not found in %#v", id, result.Warnings)
+}
+
+func assertNoWarning(t *testing.T, result clientprofiles.ProfileResult, id string) {
+	t.Helper()
+
+	for _, warning := range result.Warnings {
+		if warning.ID == id {
+			t.Fatalf("warning %q unexpectedly found in %#v", id, result.Warnings)
+		}
+	}
 }

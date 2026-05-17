@@ -95,11 +95,19 @@ var installSpecs = []installSpec{
 	{
 		client:  "local",
 		install: []string{}, // handled specially — shells to local install-server
-		info:    "Installs llama.cpp + a default coder model. Same as /install-local-server.",
+		info:    "Installs rs-llmctl + a default coder model. Same as /install-local-server.",
 	},
 	{
 		client: "minimax",
 		info:   "minimax is HTTP-only; no CLI to install. Set MINIMAX_API_KEY (and optionally MINIMAX_API_URL) and the runner will work.",
+	},
+	{
+		client: "kimi",
+		info:   "kimi is HTTP-only; no CLI to install. Set KIMI_API_KEY (or MOONSHOT_API_KEY) and the runner will work.",
+	},
+	{
+		client: "deepseek",
+		info:   "deepseek is HTTP-only; no CLI to install. Set DEEPSEEK_API_KEY and the runner will work.",
 	},
 	{
 		client: "pool",

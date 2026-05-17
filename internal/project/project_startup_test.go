@@ -24,9 +24,7 @@ func TestDetectStartupProjectWithoutPalaceGracefullyDegrades(t *testing.T) {
 	t.Parallel()
 
 	repoRoot := t.TempDir()
-	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
-		t.Fatalf("create .git dir: %v", err)
-	}
+	createTestGitRepo(t, repoRoot)
 
 	ctx, err := DetectStartupProject(repoRoot)
 	if err != nil {
@@ -62,9 +60,7 @@ func TestDetectStartupProjectWithPalacePresentCapturesPalaceInfo(t *testing.T) {
 	t.Parallel()
 
 	repoRoot := t.TempDir()
-	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
-		t.Fatalf("create .git dir: %v", err)
-	}
+	createTestGitRepo(t, repoRoot)
 	palacePath := filepath.Join(repoRoot, ".mempalace")
 	if err := os.Mkdir(palacePath, 0o755); err != nil {
 		t.Fatalf("create .mempalace dir: %v", err)

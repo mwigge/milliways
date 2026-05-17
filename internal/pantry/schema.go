@@ -465,3 +465,12 @@ CREATE INDEX IF NOT EXISTS idx_mw_security_policy_decisions_decision
 
 INSERT OR IGNORE INTO mw_schema (version) VALUES (14);
 `
+
+const schemaV15 = `
+ALTER TABLE mw_memory_items ADD COLUMN workspace TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_mw_memory_items_workspace_type_status
+    ON mw_memory_items(workspace, memory_type, status);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (15);
+`

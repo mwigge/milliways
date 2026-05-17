@@ -19,7 +19,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // ErrNoRepository indicates that no git repository was found.
@@ -91,7 +93,7 @@ func DetectPalace(repoRoot string) (palacePath string, exists bool) {
 	return palacePath, true
 }
 
-// FindRepoRoot walks up from startDir until it finds a .git directory.
+// FindRepoRoot walks up from startDir until it finds a valid git repository.
 func FindRepoRoot(startDir string) (string, error) {
 	currentDir, err := filepath.Abs(startDir)
 	if err != nil {
@@ -101,7 +103,7 @@ func FindRepoRoot(startDir string) (string, error) {
 	for {
 		gitDir := filepath.Join(currentDir, ".git")
 		info, statErr := os.Stat(gitDir)
-		if statErr == nil && info.IsDir() {
+		if statErr == nil && info.IsDir() && validGitRepoRoot(currentDir) {
 			return currentDir, nil
 		}
 
@@ -112,6 +114,36 @@ func FindRepoRoot(startDir string) (string, error) {
 
 		currentDir = parentDir
 	}
+}
+
+func validGitRepoRoot(dir string) bool {
+	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
+	out, err := cmd.Output()
+	if err != nil {
+		return validGitDirLayout(filepath.Join(dir, ".git"))
+	}
+	root := strings.TrimSpace(string(out))
+	if root == "" {
+		return false
+	}
+	got, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	want, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	return got == want
+}
+
+func validGitDirLayout(gitDir string) bool {
+	for _, rel := range []string{"HEAD", "objects", "refs"} {
+		if _, err := os.Stat(filepath.Join(gitDir, rel)); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // ResolveProject resolves the active project context from an override or the current working directory.
@@ -135,7 +167,7 @@ func ResolveProject(overrideRoot string) (*ProjectContext, error) {
 
 		gitDir := filepath.Join(repoRoot, ".git")
 		gitInfo, err := os.Stat(gitDir)
-		if err != nil || !gitInfo.IsDir() {
+		if err != nil || !gitInfo.IsDir() || !validGitRepoRoot(repoRoot) {
 			return nil, fmt.Errorf("No git repository at %s", repoRoot)
 		}
 

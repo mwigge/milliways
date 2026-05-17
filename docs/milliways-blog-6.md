@@ -2,7 +2,7 @@
 
 *Local models are useful only when they are boring to operate. MilliWays now treats hardware detection, model choice, service activation, and `/local` handoff as one install path.*
 
-Running a local coding model should not require remembering which GPU vendor uses which llama.cpp backend, where the GGUF landed, which port the server chose, or whether the daemon has recreated its Unix socket after a restart.
+Running a local coding model should not require remembering where rs-llmctl is installed, which GPU-sized GGUF was selected, which port the server chose, or whether the daemon has recreated its Unix socket after a restart.
 
 The user-facing command is intentionally small:
 

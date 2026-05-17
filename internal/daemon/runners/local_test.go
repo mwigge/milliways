@@ -129,9 +129,12 @@ func TestRunLocal_PayloadIncludesSystemPromptAndToolsByDefault(t *testing.T) {
 		if last["role"] != "user" || last["content"] != "hi" {
 			t.Errorf("last message = %v, want {role:user content:hi}", last)
 		}
-		toolsAny, ok := body["tools"].([]any)
-		if !ok || len(toolsAny) == 0 {
-			t.Fatalf("tools missing or empty: %v", body["tools"])
+		content, _ := first["content"].(string)
+		if !strings.Contains(content, "Available tools:") || !strings.Contains(content, "<name>Bash</name>") {
+			t.Fatalf("XML system prompt missing tool definitions:\n%s", content)
+		}
+		if _, hasTools := body["tools"]; hasTools {
+			t.Fatalf("XML local model should not expose JSON tools: %v", body["tools"])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("server never received request")
@@ -168,6 +171,17 @@ func TestRunLocal_ToolsDisabledByEnv(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("server never received request")
+	}
+}
+
+func TestToolsDisabledByEnvAliases(t *testing.T) {
+	for _, value := range []string{"0", "off", "false", " OFF "} {
+		if !toolsDisabledByEnv(value) {
+			t.Fatalf("toolsDisabledByEnv(%q) = false, want true", value)
+		}
+	}
+	if toolsDisabledByEnv("1") {
+		t.Fatal("toolsDisabledByEnv(1) = true, want false")
 	}
 }
 
@@ -411,6 +425,15 @@ func TestRunLocal_ApprovalGatePlansBeforeTools(t *testing.T) {
 	body, _ := firstBody.Load().(map[string]any)
 	if _, hasTools := body["tools"]; hasTools {
 		t.Fatalf("planning request exposed tools: %v", body)
+	}
+	messages, _ := body["messages"].([]any)
+	if len(messages) == 0 {
+		t.Fatalf("planning request missing messages: %v", body)
+	}
+	system, _ := messages[0].(map[string]any)
+	content, _ := system["content"].(string)
+	if !strings.Contains(content, "Available tools:") || !strings.Contains(content, "echo") {
+		t.Fatalf("XML planning prompt lost tool definitions:\n%s", content)
 	}
 	var sawPrompt, sawNeedsInput bool
 	for _, e := range pusher.snapshot() {

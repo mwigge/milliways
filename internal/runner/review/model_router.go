@@ -18,12 +18,19 @@ var ErrModelNotFound = errors.New("model not found")
 // appropriate GroupClient based on the alias prefix.
 type HTTPModelRouter struct {
 	endpoint string
+	apiKey   string
 	http     *http.Client
 }
 
 // NewModelRouter returns a ModelRouter that routes requests to endpoint.
 func NewModelRouter(endpoint string) ModelRouter {
-	return &HTTPModelRouter{endpoint: endpoint, http: http.DefaultClient}
+	return NewModelRouterWithAPIKey(endpoint, "")
+}
+
+// NewModelRouterWithAPIKey returns a ModelRouter that sends bearer auth when
+// apiKey is non-empty.
+func NewModelRouterWithAPIKey(endpoint, apiKey string) ModelRouter {
+	return &HTTPModelRouter{endpoint: endpoint, apiKey: strings.TrimSpace(apiKey), http: http.DefaultClient}
 }
 
 // Route confirms alias is listed by the server and returns the appropriate
@@ -36,35 +43,59 @@ func (r *HTTPModelRouter) Route(alias string) (GroupClient, ModelCaps, error) {
 // GroupClient wired with the optional CodeGraph client cg. Pass nil to disable
 // CodeGraph context injection.
 func (r *HTTPModelRouter) RouteWithCG(alias string, cg CodeGraphClient) (GroupClient, ModelCaps, error) {
-	if err := r.confirmModel(alias); err != nil {
+	resolved, err := r.resolveModelAlias(alias)
+	if err != nil {
 		return nil, ModelCaps{}, err
 	}
 
-	format := DetectFormat(alias)
-	caps := capsForFormat(alias, format)
+	format := DetectFormat(resolved)
+	caps := capsForFormat(resolved, format)
 
 	var client GroupClient
 	switch format {
 	case FormatXML, FormatQwenXML:
-		client = XMLGroupClient{Endpoint: r.endpoint, Model: alias, HTTP: r.http, MaxFileLines: defaultMaxFileLines, CG: cg}
+		client = XMLGroupClient{Endpoint: r.endpoint, APIKey: r.apiKey, Model: resolved, HTTP: r.http, MaxFileLines: defaultMaxFileLines, CG: cg}
 	default:
-		client = OpenAIGroupClient{Endpoint: r.endpoint, Model: alias, HTTP: r.http, MaxFileLines: defaultMaxFileLines, CG: cg}
+		client = OpenAIGroupClient{Endpoint: r.endpoint, APIKey: r.apiKey, Model: resolved, HTTP: r.http, MaxFileLines: defaultMaxFileLines, CG: cg}
 	}
 	return client, caps, nil
 }
 
-// confirmModel calls /v1/models and returns ErrModelNotFound if the alias is
-// absent.
-func (r *HTTPModelRouter) confirmModel(alias string) error {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, r.endpoint+"/v1/models", nil)
+func (r *HTTPModelRouter) resolveModelAlias(alias string) (string, error) {
+	alias = strings.TrimSpace(alias)
+	models, err := r.listModels()
 	if err != nil {
-		return fmt.Errorf("create models request: %w", err)
+		return "", err
 	}
+	if alias == "" {
+		if len(models) == 0 {
+			return "", fmt.Errorf("%w: no models returned by endpoint", ErrModelNotFound)
+		}
+		return models[0], nil
+	}
+	for _, model := range models {
+		if model == alias {
+			return alias, nil
+		}
+	}
+	return "", fmt.Errorf("%w: %s", ErrModelNotFound, alias)
+}
+
+func (r *HTTPModelRouter) listModels() ([]string, error) {
+	modelsURL := strings.TrimRight(r.endpoint, "/") + "/models"
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, modelsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create models request: %w", err)
+	}
+	setReviewAuth(req, r.apiKey)
 	resp, err := r.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("models request: %w", err)
+		return nil, fmt.Errorf("models request: %w", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("models request %s returned HTTP %d", req.URL.Path, resp.StatusCode)
+	}
 
 	var body struct {
 		Data []struct {
@@ -72,14 +103,15 @@ func (r *HTTPModelRouter) confirmModel(alias string) error {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return fmt.Errorf("decode models response: %w", err)
+		return nil, fmt.Errorf("decode models response: %w", err)
 	}
+	models := make([]string, 0, len(body.Data))
 	for _, m := range body.Data {
-		if m.ID == alias {
-			return nil
+		if strings.TrimSpace(m.ID) != "" {
+			models = append(models, m.ID)
 		}
 	}
-	return fmt.Errorf("%w: %s", ErrModelNotFound, alias)
+	return models, nil
 }
 
 // DetectFormat infers the wire format from the model alias name. Pure string

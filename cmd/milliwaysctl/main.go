@@ -398,7 +398,7 @@ func watchStatus(socket, stateDir string, debounceMs int) {
 }
 
 // observeConfig holds the static list of available agents shown in the status bar.
-var observeAgents = []string{"claude", "codex", "copilot", "minimax", "gemini", "local", "pool"}
+var observeAgents = []string{"claude", "codex", "copilot", "minimax", "kimi", "deepseek", "gemini", "local", "pool"}
 
 func normalizeObserveSecurityStatus(result map[string]any) map[string]any {
 	if len(result) == 0 {
@@ -848,7 +848,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  history-summary --agent <id> [--index N]    — compact cost+token summary for wezterm status")
 	fmt.Fprintln(os.Stderr, "  local <verb> [args...]                     — local-model bootstrap (try `milliwaysctl local --help`)")
 	fmt.Fprintln(os.Stderr, "  opsx <verb> [args...]                      — openspec wrapper (try `milliwaysctl opsx --help`)")
-	fmt.Fprintln(os.Stderr, "  install <client>                           — install upstream CLI (claude|codex|copilot|gemini|local)")
+	fmt.Fprintln(os.Stderr, "  install <client>                           — install/setup client (claude|codex|copilot|minimax|kimi|deepseek|gemini|local)")
 	fmt.Fprintln(os.Stderr, "  upgrade [--check] [--yes] [--version <tag>] — upgrade milliways to the latest release")
 	fmt.Fprintln(os.Stderr, "  codegraph <verb> [args...]                 — CodeGraph index management (try `milliwaysctl codegraph --help`)")
 	fmt.Fprintln(os.Stderr, "  check                                      — health check — verify all features are installed")

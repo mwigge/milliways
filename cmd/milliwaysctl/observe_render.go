@@ -447,13 +447,32 @@ func formatObserveSecurity(sec observeRenderSecurity) string {
 	} else if posture == "warn" {
 		label = fmt.Sprintf("SEC WARN %d", warnings)
 	}
+	modeHint := observeSecurityModeHint(mode, blocks)
 	if !sec.Installed {
 		if posture == "ok" || posture == "" {
 			label = "SEC WARN"
 		}
-		return fmt.Sprintf("%s (mode %s, osv scanner missing)", label, mode)
+		return fmt.Sprintf("%s (mode %s: %s, osv scanner missing)", label, mode, modeHint)
 	}
-	return fmt.Sprintf("%s (mode %s)", label, mode)
+	return fmt.Sprintf("%s (mode %s: %s)", label, mode, modeHint)
+}
+
+func observeSecurityModeHint(mode string, blocks int) string {
+	switch strings.TrimSpace(mode) {
+	case "off":
+		return "checks disabled"
+	case "observe":
+		return "record only"
+	case "strict":
+		return "block gates"
+	case "ci":
+		return "fail closed"
+	default:
+		if blocks > 0 {
+			return "audit/continue"
+		}
+		return "warn/audit"
+	}
 }
 
 func formatObserveSecurityDetail(sec observeRenderSecurity) string {
@@ -503,6 +522,9 @@ func formatObserveClientEnforcement(security, status map[string]observeRenderEnf
 		level := strings.TrimSpace(enforcement.Level)
 		if level == "" {
 			level = "unknown"
+		}
+		if level == "brokered" && (strings.TrimSpace(enforcement.BrokerPath) == "" || !enforcement.ControlledEnv) {
+			level = "preflight-only"
 		}
 		counts[level]++
 	}

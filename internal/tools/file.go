@@ -74,8 +74,12 @@ func handleWrite(_ context.Context, args map[string]any) (string, error) {
 		return "", fmt.Errorf("create parent dir for %q: %w", path, err)
 	}
 	if existing, err := os.ReadFile(path); err == nil {
-		if err := os.WriteFile(path+".bak", existing, 0o600); err != nil {
-			return "", fmt.Errorf("write backup for %q: %w", path, err)
+		backupPath, err := backupPathFor(path)
+		if err != nil {
+			return "", fmt.Errorf("backup path refused for %q: %w", path, err)
+		}
+		if err := os.WriteFile(backupPath, existing, 0o600); err != nil {
+			return "", fmt.Errorf("write backup for %q: %w", backupPath, err)
 		}
 	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -107,13 +111,25 @@ func handleEdit(_ context.Context, args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path+".bak", originalBytes, 0o600); err != nil {
-		return "", fmt.Errorf("write backup for %q: %w", path, err)
+	backupPath, err := backupPathFor(path)
+	if err != nil {
+		return "", fmt.Errorf("backup path refused for %q: %w", path, err)
+	}
+	if err := os.WriteFile(backupPath, originalBytes, 0o600); err != nil {
+		return "", fmt.Errorf("write backup for %q: %w", backupPath, err)
 	}
 	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
 		return "", fmt.Errorf("write edited file %q: %w", path, err)
 	}
 	return "ok", nil
+}
+
+func backupPathFor(path string) (string, error) {
+	raw := path + ".bak"
+	if info, err := os.Lstat(raw); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("backup path %q is a symlink", raw)
+	}
+	return containedPath(raw)
 }
 
 // handleGrep searches files under the given path for regex matches.
@@ -208,8 +224,14 @@ func handleGlob(_ context.Context, args map[string]any) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("glob %q: %w", pattern, err)
 	}
-	sort.Strings(matches)
-	return strings.Join(matches, "\n"), nil
+	kept := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if _, err := containedPath(match); err == nil {
+			kept = append(kept, match)
+		}
+	}
+	sort.Strings(kept)
+	return strings.Join(kept, "\n"), nil
 }
 
 // handleWebFetch fetches a URL and returns the response body. Validates

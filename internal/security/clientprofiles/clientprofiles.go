@@ -44,13 +44,15 @@ const (
 
 // Client names used by built-in profile checks.
 const (
-	ClientClaude  = "claude"
-	ClientCodex   = "codex"
-	ClientCopilot = "copilot"
-	ClientGemini  = "gemini"
-	ClientPool    = "pool"
-	ClientMiniMax = "minimax"
-	ClientLocal   = "local"
+	ClientClaude   = "claude"
+	ClientCodex    = "codex"
+	ClientCopilot  = "copilot"
+	ClientGemini   = "gemini"
+	ClientPool     = "pool"
+	ClientMiniMax  = "minimax"
+	ClientKimi     = "kimi"
+	ClientDeepSeek = "deepseek"
+	ClientLocal    = "local"
 )
 
 // ProfileWarning is a structured per-client warning that can be aggregated by
@@ -108,6 +110,8 @@ func NewAll(opts Options) []ClientProfileCheck {
 		New(ClientGemini, opts),
 		New(ClientPool, opts),
 		New(ClientMiniMax, opts),
+		New(ClientKimi, opts),
+		New(ClientDeepSeek, opts),
 		New(ClientLocal, opts),
 	}
 }
@@ -149,6 +153,10 @@ func (p profileCheck) Check(ctx context.Context, workspace string) ProfileResult
 		warnings = p.checkPool(ctx, workspace)
 	case ClientMiniMax:
 		warnings = p.checkMiniMax(ctx, workspace)
+	case ClientKimi:
+		warnings = p.checkAPIClient(ctx, workspace, ClientKimi, "kimi", []string{"KIMI_FLAGS", "KIMI_ARGS"})
+	case ClientDeepSeek:
+		warnings = p.checkAPIClient(ctx, workspace, ClientDeepSeek, "deepseek", []string{"DEEPSEEK_FLAGS", "DEEPSEEK_ARGS"})
 	case ClientLocal:
 		warnings = p.checkLocal(ctx, workspace)
 	default:
@@ -280,6 +288,26 @@ func (p profileCheck) checkMiniMax(ctx context.Context, workspace string) []Prof
 	return warnings
 }
 
+func (p profileCheck) checkAPIClient(ctx context.Context, workspace, client, family string, envFlags []string) []ProfileWarning {
+	var warnings []ProfileWarning
+	for _, path := range p.candidatePaths(workspace,
+		"."+family+"/config.json",
+		"."+family+"/settings.json",
+		filepath.Join(".config", family, "config.json"),
+		filepath.Join(".config", family, "settings.json"),
+		filepath.Join(".config", "milliways", "local.env"),
+	) {
+		if ctx.Err() != nil {
+			return warnings
+		}
+		warnings = append(warnings, scanConfigFile(client, path, family)...)
+		warnings = append(warnings, scanSecretFile(client, path)...)
+	}
+	warnings = append(warnings, scanEnvFlags(client, p.opts.Env, envFlags)...)
+	warnings = append(warnings, scanWorkspacePackage(workspace, client)...)
+	return warnings
+}
+
 func (p profileCheck) checkLocal(ctx context.Context, workspace string) []ProfileWarning {
 	var warnings []ProfileWarning
 	for _, path := range p.candidatePaths(workspace,
@@ -296,12 +324,12 @@ func (p profileCheck) checkLocal(ctx context.Context, workspace string) []Profil
 	if endpoint := strings.TrimSpace(p.opts.Env["MILLIWAYS_LOCAL_ENDPOINT"]); endpoint != "" {
 		warnings = append(warnings, localEndpointWarning("", "MILLIWAYS_LOCAL_ENDPOINT", endpoint)...)
 	}
-	if bind := strings.TrimSpace(p.opts.Env["MILLIWAYS_LOCAL_BIND"]); isPublicBind(bind) && strings.TrimSpace(p.opts.Env["MILLIWAYS_LOCAL_AUTH_TOKEN"]) == "" {
+	if bind := strings.TrimSpace(p.opts.Env["MILLIWAYS_LOCAL_BIND"]); isPublicBind(bind) && strings.TrimSpace(p.opts.Env["MILLIWAYS_LOCAL_API_KEY"]) == "" && strings.TrimSpace(p.opts.Env["MILLIWAYS_LOCAL_AUTH_TOKEN"]) == "" {
 		warnings = append(warnings, ProfileWarning{
 			Client:   ClientLocal,
 			ID:       "local-public-bind-no-auth",
 			Severity: SeverityCritical,
-			Summary:  "Local model server is configured to bind publicly without an auth token.",
+			Summary:  "Local model server is configured to bind publicly without an API key or auth token.",
 			Key:      "MILLIWAYS_LOCAL_BIND",
 		})
 	}
@@ -633,10 +661,58 @@ func scanSecretFile(client, path string) []ProfileWarning {
 		return nil
 	}
 	lower := strings.ToLower(string(data))
-	if containsAny(lower, []string{"minimax_api_key=", "minimax-api-key", "\"minimax_api_key\"", "api_key:"}) && containsAny(lower, []string{"sk-", "api_key=", "apikey"}) {
-		return []ProfileWarning{warning(client, "minimax-key-in-config", SeverityHigh, "MiniMax API key material appears to be stored in a local config file.", path, "api_key")}
+	var warnings []ProfileWarning
+	for _, marker := range secretConfigMarkersForClient(client) {
+		if containsAny(lower, marker.keys) && containsAny(lower, marker.values) {
+			warnings = append(warnings, warning(client, marker.id, SeverityHigh, marker.summary, path, marker.key))
+		}
 	}
-	return nil
+	return warnings
+}
+
+type secretConfigMarker struct {
+	id      string
+	key     string
+	summary string
+	keys    []string
+	values  []string
+}
+
+func secretConfigMarkersForClient(client string) []secretConfigMarker {
+	switch client {
+	case ClientMiniMax:
+		return []secretConfigMarker{{
+			id:      "minimax-key-in-config",
+			key:     "api_key",
+			summary: "MiniMax API key material appears to be stored in a local config file.",
+			keys:    []string{"minimax_api_key=", "minimax-api-key", "\"minimax_api_key\"", "api_key:"},
+			values:  []string{"sk-", "api_key=", "apikey"},
+		}}
+	case ClientKimi:
+		return []secretConfigMarker{{
+			id:      "kimi-key-in-config",
+			key:     "KIMI_API_KEY",
+			summary: "Kimi API key material appears to be stored in a local config file.",
+			keys:    []string{"kimi_api_key=", "kimi-api-key", "kimi_api_key:", "\"kimi_api_key\"", "kimi_api_key"},
+			values:  []string{"sk-", "api_key=", "apikey", "bearer", "moonshot"},
+		}, {
+			id:      "kimi-key-in-config",
+			key:     "MOONSHOT_API_KEY",
+			summary: "Kimi/Moonshot API key material appears to be stored in a local config file.",
+			keys:    []string{"moonshot_api_key=", "moonshot-api-key", "moonshot_api_key:", "\"moonshot_api_key\"", "moonshot_api_key"},
+			values:  []string{"sk-", "api_key=", "apikey", "bearer", "moonshot"},
+		}}
+	case ClientDeepSeek:
+		return []secretConfigMarker{{
+			id:      "deepseek-key-in-config",
+			key:     "DEEPSEEK_API_KEY",
+			summary: "DeepSeek API key material appears to be stored in a local config file.",
+			keys:    []string{"deepseek_api_key=", "deepseek-api-key", "deepseek_api_key:", "\"deepseek_api_key\"", "deepseek_api_key"},
+			values:  []string{"sk-", "api_key=", "apikey", "bearer"},
+		}}
+	default:
+		return nil
+	}
 }
 
 func scanLocalEndpointFile(path string) []ProfileWarning {

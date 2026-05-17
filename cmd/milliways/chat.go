@@ -152,13 +152,15 @@ func friendlyError(prefix string, rawMsg string, err error) string {
 // dispatch table in internal/daemon/agents.go but ordered for the
 // landing-zone display (most-used first).
 var chatSwitchableAgents = []string{
-	"claude",  // /1
-	"codex",   // /2
-	"copilot", // /3
-	"minimax", // /4 — matches wezterm Leader+1..4 mapping
-	"gemini",  // /5
-	"local",   // /6
-	"pool",    // /7
+	"claude",   // /1
+	"codex",    // /2
+	"copilot",  // /3
+	"minimax",  // /4 — matches wezterm Leader+1..4 mapping
+	"kimi",     // /5
+	"deepseek", // /6
+	"gemini",   // /7
+	"local",    // /8
+	"pool",     // /9
 }
 
 // chatCtlAliases maps user-facing slash commands to the milliwaysctl
@@ -310,12 +312,12 @@ func (s *switchableCompleter) set(ac []string) {
 // buildCompleter returns completion candidates for all slash commands.
 // agentID, when non-empty, appends the client's native slash commands so
 // they appear in tab completion while that runner is active.
-// Agent shortcuts (/claude, /gemini, …) and numbered aliases (/1..7) are
+// Agent shortcuts (/claude, /gemini, …) and numbered aliases (/1..9) are
 // derived from chatSwitchableAgents; ctl aliases from chatCtlAliases.
 func buildCompleter(agentID string) []string {
 	items := []string{
-		// Numbered shortcuts /1../7
-		"/1", "/2", "/3", "/4", "/5", "/6", "/7",
+		// Numbered shortcuts /1../9
+		"/1", "/2", "/3", "/4", "/5", "/6", "/7", "/8", "/9",
 		// Agent name shortcuts
 	}
 	for _, name := range chatSwitchableAgents {
@@ -327,11 +329,11 @@ func buildCompleter(agentID string) []string {
 		"/parallel", "/parallel --providers", "/scan", "/security", "/security status",
 		"/security cra-scaffold", "/security client", "/security command-check --", "/security warnings", "/help", "/exit",
 		// Install / Upgrade
-		"/install", "/install claude", "/install codex", "/install copilot", "/install gemini", "/install local",
+		"/install", "/install claude", "/install codex", "/install copilot", "/install minimax", "/install kimi", "/install deepseek", "/install gemini", "/install local",
 		"/install-local-server", "/install-local-gpu-server", "/install-local-gpu-server --dry-run",
 		"/install-local-gpu-server --accel vulkan", "/install-local-gpu-server --accel hip", "/install-local-gpu-server --accel cuda", "/install-local-swap",
 		"/upgrade", "/upgrade --check", "/upgrade --yes", "/upgrade --version",
-		"/list-local-models", "/switch-local-server", "/switch-local-server llama-server",
+		"/list-local-models", "/switch-local-server", "/switch-local-server rs-llmctl", "/switch-local-server llama-server",
 		"/switch-local-server llama-swap", "/switch-local-server ollama", "/switch-local-server vllm",
 		"/switch-local-server lmstudio", "/download-local-model", "/download-model", "/setup-local-model",
 		"/setup-model", "/setup-model list", "/setup-model refresh", "/list-models-catalog",
@@ -367,9 +369,7 @@ func buildCompleter(agentID string) []string {
 func runChat(ctx context.Context) error {
 	// Load local.env into this process so display and health checks reflect
 	// the same endpoint/model that the daemon uses.
-	if home, err := os.UserHomeDir(); err == nil {
-		daemon.LoadLocalEnv(filepath.Join(home, ".config", "milliways", "local.env"))
-	}
+	reloadChatLocalEnv()
 
 	sock := daemonSocket()
 	if !socketReachable(sock, 500*time.Millisecond) {
@@ -496,8 +496,8 @@ func chatCmd() *cobra.Command {
 be running (start with MilliWays.app or 'milliwaysd &').
 
 Slash commands:
-  /<runner>          switch active runner (claude / codex / copilot / gemini /
-                     local / minimax / pool)
+  /<runner>          switch active runner (claude / codex / copilot / minimax /
+                     kimi / deepseek / gemini / local / pool)
   /switch <runner>   same
   /agents            list runners with auth status
   /quota             current quota snapshot
@@ -645,12 +645,25 @@ type rpcHandoffWriter struct {
 }
 
 func (w *rpcHandoffWriter) WriteHandoff(targetProvider, fromProvider, briefing string) error {
-	var result any
-	return w.client.Call("mempalace.write_handoff", map[string]any{
+	var result struct {
+		OK     bool   `json:"ok"`
+		Reason string `json:"reason"`
+	}
+	if err := w.client.Call("mempalace.write_handoff", map[string]any{
 		"target_provider": targetProvider,
 		"from_provider":   fromProvider,
 		"briefing":        briefing,
-	}, &result)
+	}, &result); err != nil {
+		return err
+	}
+	if !result.OK {
+		reason := strings.TrimSpace(result.Reason)
+		if reason == "" {
+			reason = "unknown reason"
+		}
+		return fmt.Errorf("%w: %s", errHandoffFailed, reason)
+	}
+	return nil
 }
 
 // chatSession owns the lifecycle of one (agent.open + agent.stream)
@@ -677,6 +690,17 @@ type chatSession struct {
 	// chunk_end signal to know when the next prompt can be issued.
 	busyMu sync.Mutex
 	busy   bool
+
+	// pendingAssistant accumulates streamed deltas for this session's
+	// in-flight assistant response. It is session-scoped so concurrent
+	// background streams cannot mix responses.
+	pendingMu        sync.Mutex
+	pendingAssistant strings.Builder
+
+	// memoryPrimed is set after the first prompt sent through this chat process
+	// includes shared turn-log context. Daemon-side model sessions keep their
+	// own history after that first send.
+	memoryPrimed bool
 }
 
 func (s *chatSession) setModel(model, source string) {
@@ -839,13 +863,6 @@ type chatLoop struct {
 	// /switch so the user can re-read it with /briefing.
 	lastBriefingFrom string
 	lastBriefing     string
-	// pendingAssistant accumulates streamed deltas for the in-flight
-	// assistant response. Drained into turnLog on chunk_end.
-	// pendingMu protects pendingAssistant which is written by the drainStream
-	// goroutine and reset by activateSession on the main goroutine.
-	pendingMu        sync.Mutex
-	pendingAssistant strings.Builder
-
 	// sessionCost accumulates cost_usd across all chunk_end events for the
 	// lifetime of this chat session. Shown as a running total in the window
 	// title so the user can track spend at a glance without doing mental
@@ -1057,13 +1074,11 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 					} else {
 						_, _ = l.out.Write(raw)
 					}
-					// Accumulate for the in-flight assistant turn so /switch
-					// can carry the response forward as part of the briefing.
-					// Bug 1: lock pendingAssistant — written here (drainStream goroutine),
-					// reset in activateSession (main goroutine).
-					l.pendingMu.Lock()
-					l.pendingAssistant.Write(raw)
-					l.pendingMu.Unlock()
+					// Accumulate per session so concurrent background streams
+					// cannot mix assistant turns.
+					sess.pendingMu.Lock()
+					sess.pendingAssistant.Write(raw)
+					sess.pendingMu.Unlock()
 					// Bug 5: update deck streaming state.
 					if l.deck != nil {
 						l.deck.AppendData(sess.agentID, string(raw), l.sess == sess)
@@ -1081,11 +1096,10 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 				fmt.Fprintln(l.out)
 			}
 			// Snapshot + reset the streamed response into a turn entry.
-			// Bug 1: lock pendingAssistant around read + reset.
-			l.pendingMu.Lock()
-			assistantText := strings.TrimRight(l.pendingAssistant.String(), "\n")
-			l.pendingAssistant.Reset()
-			l.pendingMu.Unlock()
+			sess.pendingMu.Lock()
+			assistantText := strings.TrimRight(sess.pendingAssistant.String(), "\n")
+			sess.pendingAssistant.Reset()
+			sess.pendingMu.Unlock()
 			if assistantText != "" {
 				l.appendTurn(chatTurn{Role: "assistant", AgentID: sess.agentID, Text: assistantText})
 			}
@@ -1429,7 +1443,7 @@ func (l *chatLoop) handleSlash(line string) {
 		verb = verb[:i]
 	}
 
-	// Numeric shortcut: /1 .. /7 → chatSwitchableAgents[N-1]
+	// Numeric shortcut: /1 .. /N → chatSwitchableAgents[N-1]
 	if n, ok := parseDigitInRange(verb, 1, len(chatSwitchableAgents)); ok {
 		agentID := chatSwitchableAgents[n-1]
 		if rest != "" {
@@ -1470,7 +1484,7 @@ func (l *chatLoop) handleSlash(line string) {
 
 	// Curated ctl alias: /<alias> → milliwaysctl <args...> [rest...]
 	if args, ok := chatCtlAliases[verb]; ok {
-		if l.runCtl(append(append([]string{}, args...), splitFields(rest)...)) && isLocalInstallAlias(verb) {
+		if l.runCtl(append(append([]string{}, args...), splitFields(rest)...)) && (isLocalInstallAlias(verb) || (verb == "install" && strings.TrimSpace(rest) == "local")) {
 			if err := l.reconnectAfterLocalInstall(); err != nil {
 				fmt.Fprintln(l.errw, friendlyError("warn: reconnect milliwaysd: ", "", err))
 			}
@@ -1856,7 +1870,17 @@ func (l *chatLoop) reconnectAfterLocalInstall() error {
 	if l == nil || !l.reconnectOnOpenError {
 		return nil
 	}
-	return l.reconnectDaemonConnection()
+	if err := l.reconnectDaemonConnection(); err != nil {
+		return err
+	}
+	reloadChatLocalEnv()
+	return nil
+}
+
+func reloadChatLocalEnv() {
+	if home, err := os.UserHomeDir(); err == nil {
+		daemon.LoadLocalEnv(filepath.Join(home, ".config", "milliways", "local.env"))
+	}
 }
 
 func (l *chatLoop) reconnectDaemonConnection() error {
@@ -1912,7 +1936,11 @@ func (l *chatLoop) sendWithReconnect(sess *chatSession, prompt string) error {
 	if sess == nil {
 		return fmt.Errorf("no active agent session")
 	}
-	err := sess.send(prompt)
+	payload, primed := l.promptWithSharedMemory(sess, prompt)
+	err := sess.send(payload)
+	if err == nil && primed {
+		sess.memoryPrimed = true
+	}
 	if err == nil || !l.reconnectOnOpenError || !isTransientRPCConnectionError(err) {
 		return err
 	}
@@ -1937,7 +1965,86 @@ func (l *chatLoop) sendWithReconnect(sess *chatSession, prompt string) error {
 	if wasActive {
 		l.activateSession(next)
 	}
-	return next.send(prompt)
+	payload, primed = l.promptWithSharedMemory(next, prompt)
+	err = next.send(payload)
+	if err == nil && primed {
+		next.memoryPrimed = true
+	}
+	return err
+}
+
+func (l *chatLoop) promptWithSharedMemory(sess *chatSession, prompt string) (string, bool) {
+	if l == nil || sess == nil || strings.HasPrefix(strings.TrimSpace(prompt), "/") {
+		return prompt, false
+	}
+	if sess.memoryPrimed && !chatAgentNeedsTurnLogMemory(sess.agentID) {
+		return prompt, false
+	}
+	shared, ok := l.buildSharedMemoryPrompt(sess.agentID, prompt)
+	if !ok {
+		return prompt, false
+	}
+	return shared, true
+}
+
+func chatAgentNeedsTurnLogMemory(agentID string) bool {
+	switch strings.TrimSpace(agentID) {
+	case "claude", "copilot", "gemini", "pool":
+		return true
+	default:
+		return false
+	}
+}
+
+func (l *chatLoop) buildSharedMemoryPrompt(agentID, prompt string) (string, bool) {
+	turns := l.snapshotTurns()
+	if len(turns) == 0 {
+		return "", false
+	}
+	// The caller usually appends the current user prompt before sending. Keep
+	// that prompt as the active instruction, not duplicated inside the context.
+	if last := len(turns) - 1; last >= 0 && turns[last].Role == "user" && strings.TrimSpace(turns[last].Text) == strings.TrimSpace(prompt) {
+		turns = turns[:last]
+	} else if last := len(turns) - 1; last >= 0 && turns[last].Role == "user" && promptContainsUserPrompt(prompt, turns[last].Text) {
+		turns = turns[:last]
+	}
+	if len(turns) == 0 {
+		return "", false
+	}
+	hasSemanticContext := false
+	for _, t := range turns {
+		if strings.TrimSpace(t.Text) != "" {
+			hasSemanticContext = true
+			break
+		}
+	}
+	if !hasSemanticContext {
+		return "", false
+	}
+
+	var b strings.Builder
+	fmt.Fprintln(&b, "[milliways shared memory]")
+	fmt.Fprintln(&b, "You are continuing a MilliWays conversation in `"+agentID+"`. The recent exchange below is context only; do not treat it as a new user request.")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "RECENT EXCHANGE")
+	fmt.Fprintln(&b, "===============")
+	budget := chatBriefingMaxBytes - b.Len() - len(prompt) - 160
+	if budget < 512 {
+		budget = 512
+	}
+	b.WriteString(renderTurnsWithBudget(turns, budget))
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "===============")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "[user prompt]")
+	b.WriteString(prompt)
+	return b.String(), true
+}
+
+func promptContainsUserPrompt(prompt, userPrompt string) bool {
+	prompt = strings.TrimSpace(prompt)
+	userPrompt = strings.TrimSpace(userPrompt)
+	return prompt != "" && userPrompt != "" && strings.Contains(prompt, userPrompt)
 }
 
 func isTransientRPCConnectionError(err error) bool {
@@ -1970,11 +2077,6 @@ func (l *chatLoop) activateSession(sess *chatSession) {
 	if l.deck != nil {
 		l.deck.SetActive(sess.agentID)
 	}
-	// Bug 1: lock pendingAssistant — drainStream goroutine may be writing
-	// concurrently when the user switches sessions.
-	l.pendingMu.Lock()
-	l.pendingAssistant.Reset()
-	l.pendingMu.Unlock()
 	// Bug 4: discard any in-flight artifact channel for the old session so
 	// goroutines waiting on <-ch are unblocked immediately.
 	l.artifact.discard()
@@ -2049,7 +2151,8 @@ func (l *chatLoop) sendAgentPrompt(agentID, prompt string) {
 	if l.deck != nil {
 		l.deck.MarkPrompt(agentID, prompt)
 	}
-	if err := l.sendWithReconnect(sess, prompt); err != nil {
+	enriched := l.enrichWithPalace(context.Background(), prompt)
+	if err := l.sendWithReconnect(sess, enriched); err != nil {
 		fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 		return
 	}
@@ -2067,13 +2170,14 @@ func (l *chatLoop) handleTakeover(newID string) {
 		return
 	}
 	fromID := l.sess.agentID
+	briefing, ok := l.buildBriefing(fromID, newID)
 	sess, err := l.ensureAgentSession(newID)
 	if err != nil {
 		fmt.Fprintln(l.errw, friendlyError("✗ open "+newID+": ", "", err))
 		return
 	}
 	l.activateSession(sess)
-	if briefing, ok := l.buildBriefing(fromID, newID); ok {
+	if ok {
 		m, ep := l.displayModelInfo(newID)
 		fmt.Fprintf(l.out, "%s  model: %s  (%s)\n", newID, m, ep)
 		l.printBriefingBlock(l.snapshotTurns(), fromID)
@@ -2133,7 +2237,15 @@ func (l *chatLoop) switchAgent(newID string) {
 func checkLocalEndpoint(endpoint string, out, errw io.Writer) {
 	url := strings.TrimRight(endpoint, "/") + "/models"
 	client := &http.Client{Timeout: 4 * time.Second}
-	resp, err := client.Get(url) //nolint:noctx
+	req, err := http.NewRequest(http.MethodGet, url, nil) //nolint:noctx
+	if err != nil {
+		fmt.Fprintf(errw, "  ✗ local server not reachable at %s\n", endpoint)
+		return
+	}
+	if apiKey := strings.TrimSpace(os.Getenv("MILLIWAYS_LOCAL_API_KEY")); apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Fprintf(errw, "  ✗ local server not reachable at %s\n", endpoint)
 		fmt.Fprintf(errw, "    run: /install-local-server  or  /local-endpoint <url>\n")
@@ -2227,6 +2339,7 @@ func (l *chatLoop) writeHandoffBriefing(targetProvider, fromProvider, briefing s
 	}
 	if err := l.handoffWriter.WriteHandoff(targetProvider, fromProvider, briefing); err != nil {
 		slog.Debug("cross-pane handoff write failed", "target", targetProvider, "err", err)
+		fmt.Fprintln(l.errw, "warn: cross-pane handoff not saved; same-pane context was still sent")
 	}
 }
 
@@ -2235,30 +2348,13 @@ func (l *chatLoop) writeHandoffBriefing(targetProvider, fromProvider, briefing s
 // (most-recent kept); within a kept turn that's individually too long,
 // the body is truncated with a marker.
 func renderTurnsWithBudget(turns []chatTurn, budget int) string {
-	// Find the index of the last user turn so we can guarantee it fits.
-	lastUserIdx := -1
-	for i := len(turns) - 1; i >= 0; i-- {
-		if turns[i].Role == "user" {
-			lastUserIdx = i
-			break
-		}
-	}
-	lastUserText := ""
-	if lastUserIdx >= 0 {
-		lastUserText = renderOneTurn(turns[lastUserIdx])
-	}
-	remaining := budget - len(lastUserText)
-
 	var blocks []string
 	used := 0
 	for i := len(turns) - 1; i >= 0; i-- {
-		if i == lastUserIdx {
-			continue // appended unconditionally below
-		}
 		t := turns[i]
 		text := renderOneTurn(t)
-		if used+len(text) > remaining {
-			room := remaining - used
+		if used+len(text) > budget {
+			room := budget - used
 			if room < 80 {
 				break
 			}
@@ -2266,17 +2362,14 @@ func renderTurnsWithBudget(turns []chatTurn, budget int) string {
 		}
 		blocks = append(blocks, text)
 		used += len(text)
-		if used >= remaining {
+		if used >= budget {
 			break
 		}
 	}
-	// Reverse to chronological order, then append the guaranteed last user turn.
+	// Reverse to chronological order after selecting the most recent suffix.
 	var b strings.Builder
 	for i := len(blocks) - 1; i >= 0; i-- {
 		b.WriteString(blocks[i])
-	}
-	if lastUserText != "" {
-		b.WriteString(lastUserText)
 	}
 	return b.String()
 }
@@ -2961,6 +3054,7 @@ func (l *chatLoop) handleRetry() {
 		return
 	}
 	fmt.Fprintf(l.out, "  retrying: %s\n\n", truncate(lastUser, 80))
+	l.appendTurn(chatTurn{Role: "user", Text: lastUser})
 	enriched := l.enrichWithPalace(context.Background(), lastUser)
 	if err := l.sendWithReconnect(l.sess, enriched); err != nil {
 		fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
@@ -3246,7 +3340,7 @@ func (l *chatLoop) handleLocalHot(args string) {
 // the next runner.
 func (l *chatLoop) handlePrompt(prompt string) {
 	if l.sess == nil {
-		fmt.Fprintln(l.errw, "✗ no client picked yet — type /1 (claude), /2 (codex), /4 (minimax), /6 (local) etc, or /help for the full list")
+		fmt.Fprintln(l.errw, "✗ no client picked yet — type /1 (claude), /2 (codex), /4 (minimax), /8 (local) etc, or /help for the full list")
 		return
 	}
 	l.ringMu.Lock()
@@ -3437,6 +3531,10 @@ func agentColor(name string) string {
 		return "\033[38;5;69m" // cornflower blue
 	case "minimax":
 		return "\033[38;5;141m" // soft purple
+	case "kimi":
+		return "\033[38;5;111m" // sky blue
+	case "deepseek":
+		return "\033[38;5;42m" // green
 	case "gemini":
 		return "\033[38;5;208m" // orange
 	case "local":
@@ -3469,6 +3567,10 @@ func agentBadgeBackground(name string) string {
 		return "\033[48;5;26m" // cornflower blue (lighter)
 	case "minimax":
 		return "\033[48;5;61m" // medium purple
+	case "kimi":
+		return "\033[48;5;25m" // blue
+	case "deepseek":
+		return "\033[48;5;29m" // green
 	case "gemini":
 		return "\033[48;5;166m" // orange
 	case "local":
@@ -3495,6 +3597,10 @@ func agentThinkingColor(name string) string {
 		return "\033[38;5;67m" // muted blue
 	case "minimax":
 		return "\033[38;5;98m" // muted purple
+	case "kimi":
+		return "\033[38;5;74m" // muted blue
+	case "deepseek":
+		return "\033[38;5;35m" // muted green
 	case "gemini":
 		return "\033[38;5;166m" // muted orange
 	case "local":
@@ -3582,7 +3688,7 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out)
 
 	fmt.Fprintln(l.out, "Client install / upgrade:")
-	fmt.Fprintln(l.out, "  /install <client>             claude | codex | copilot | gemini | local")
+	fmt.Fprintln(l.out, "  /install <client>             claude | codex | copilot | minimax | kimi | deepseek | gemini | local")
 	fmt.Fprintln(l.out, "  /install                      list supported install routes")
 	fmt.Fprintln(l.out, "  /upgrade                      upgrade milliways to the latest release")
 	fmt.Fprintln(l.out, "  /upgrade --check              check if a newer version is available (no install)")
@@ -3597,16 +3703,16 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out)
 
 	fmt.Fprintln(l.out, "Local-model bootstrap:")
-	fmt.Fprintln(l.out, "  /install-local-server         install llama.cpp + default coder model")
+	fmt.Fprintln(l.out, "  /install-local-server         install rs-llmctl + default coder model")
 	fmt.Fprintln(l.out, "  /install-local-gpu-server     detect NVIDIA/AMD GPU + install largest fitting model")
 	fmt.Fprintln(l.out, "    --accel vulkan              force Vulkan GPU backend")
 	fmt.Fprintln(l.out, "    --accel hip                 force AMD ROCm/HIP backend")
 	fmt.Fprintln(l.out, "    --accel cuda                force NVIDIA CUDA backend")
 	fmt.Fprintln(l.out, "  /install-local-swap           install llama-swap (hot model swap)")
 	fmt.Fprintln(l.out, "  /list-local-models            show models the active backend serves")
-	fmt.Fprintln(l.out, "  /switch-local-server <kind>   llama-server | llama-swap | ollama | vllm | lmstudio")
+	fmt.Fprintln(l.out, "  /switch-local-server <kind>   rs-llmctl | llama-server | llama-swap | ollama | vllm | lmstudio")
 	fmt.Fprintln(l.out, "  /download-local-model <repo>  fetch a GGUF from HuggingFace")
-	fmt.Fprintln(l.out, "  /setup-local-model <repo>     download + register in llama-swap.yaml")
+	fmt.Fprintln(l.out, "  /setup-local-model <repo>     download, register, and activate when possible")
 	fmt.Fprintln(l.out)
 	fmt.Fprintln(l.out, "Local-model tuning (runtime, survives daemon restart):")
 	fmt.Fprintln(l.out, "  /local-endpoint <url>         point at a different OpenAI-compatible backend")
@@ -3634,7 +3740,7 @@ func (l *chatLoop) printHelp() {
 
 	fmt.Fprintln(l.out, "Session:")
 	fmt.Fprintln(l.out, "  /model                        list models for active runner + switch instructions")
-	fmt.Fprintln(l.out, "  /model <name>                 switch model live (minimax / local only)")
+	fmt.Fprintln(l.out, "  /model <name>                 switch model live (minimax / kimi / deepseek / local)")
 	fmt.Fprintln(l.out, "  /agents                       list clients with live auth status")
 	fmt.Fprintln(l.out, "  /quota                        current quota snapshot")
 	fmt.Fprintln(l.out, "  /metrics                      live metrics dashboard (token usage, costs, ops)")
@@ -3711,10 +3817,40 @@ func runnerModelSpec(agentID string) modelSpec {
 			endpoint: ep,
 			choices:  globalModelCache.Models("minimax"),
 		}
+	case "kimi":
+		cur := os.Getenv("KIMI_MODEL")
+		if cur == "" {
+			cur = "kimi-k2.6"
+		}
+		ep := os.Getenv("KIMI_API_URL")
+		if ep == "" {
+			ep = "https://api.moonshot.ai/v1/chat/completions"
+		}
+		return modelSpec{
+			envKey:   "KIMI_MODEL",
+			current:  cur,
+			endpoint: ep,
+			choices:  globalModelCache.Models("kimi"),
+		}
+	case "deepseek":
+		cur := os.Getenv("DEEPSEEK_MODEL")
+		if cur == "" {
+			cur = "deepseek-v4-flash"
+		}
+		ep := os.Getenv("DEEPSEEK_API_URL")
+		if ep == "" {
+			ep = "https://api.deepseek.com/chat/completions"
+		}
+		return modelSpec{
+			envKey:   "DEEPSEEK_MODEL",
+			current:  cur,
+			endpoint: ep,
+			choices:  globalModelCache.Models("deepseek"),
+		}
 	case "local":
 		cur := os.Getenv("MILLIWAYS_LOCAL_MODEL")
 		if cur == "" {
-			cur = "qwen2.5-coder-1.5b"
+			cur = "qwen2.5-7b"
 		}
 		ep := os.Getenv("MILLIWAYS_LOCAL_ENDPOINT")
 		if ep == "" {
@@ -3907,13 +4043,15 @@ type loginSpec struct {
 }
 
 var loginSpecs = map[string]loginSpec{
-	"claude":  {cliCmd: []string{"claude", "auth", "login"}},
-	"codex":   {cliCmd: []string{"codex", "login"}},
-	"copilot": {cliCmd: []string{"gh", "auth", "login"}},
-	"gemini":  {cliCmd: []string{"gemini"}},
-	"minimax": {envKey: "MINIMAX_API_KEY"},
-	"local":   {cliSteps: []string{"run /install-local-server, or set MILLIWAYS_LOCAL_ENDPOINT"}},
-	"pool":    {cliCmd: []string{"pool", "login"}},
+	"claude":   {cliCmd: []string{"claude", "auth", "login"}},
+	"codex":    {cliCmd: []string{"codex", "login"}},
+	"copilot":  {cliCmd: []string{"gh", "auth", "login"}},
+	"gemini":   {cliCmd: []string{"gemini"}},
+	"minimax":  {envKey: "MINIMAX_API_KEY"},
+	"kimi":     {envKey: "KIMI_API_KEY"},
+	"deepseek": {envKey: "DEEPSEEK_API_KEY"},
+	"local":    {cliSteps: []string{"run /install-local-server, or set MILLIWAYS_LOCAL_ENDPOINT"}},
+	"pool":     {cliCmd: []string{"pool", "login"}},
 }
 
 func effectiveLoginPath() string {

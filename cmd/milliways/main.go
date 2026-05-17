@@ -838,6 +838,7 @@ func makeConversationHydrator(pdb *pantry.DB, prompt string) orchestrator.Contex
 		if conv == nil || pdb == nil {
 			return nil
 		}
+		workspace := currentMemoryWorkspace()
 		task := prompt
 		if task == "" {
 			task = conv.Prompt
@@ -846,7 +847,7 @@ func makeConversationHydrator(pdb *pantry.DB, prompt string) orchestrator.Contex
 			Plan: conversation.DefaultRetrievalPlan(),
 			Backend: conversation.RetrievalBackend{
 				FetchProcedural: func(ctx context.Context, _ string) ([]string, error) {
-					items, _ := pdb.MemoryItems().ListActiveByType(conversation.MemoryProcedural, "project")
+					items, _ := pdb.MemoryItems().ListActiveByTypeForWorkspace(conversation.MemoryProcedural, "project", workspace)
 					items = append(items,
 						"openspec/changes/milliways-provider-continuity/specs/provider-continuity/spec.md",
 						"openspec/changes/milliways-provider-continuity/specs/exhaustion-detection/spec.md",
@@ -855,7 +856,7 @@ func makeConversationHydrator(pdb *pantry.DB, prompt string) orchestrator.Contex
 					return items, nil
 				},
 				FetchSemantic: func(ctx context.Context, task string) (string, error) {
-					if items, _ := pdb.MemoryItems().ListActiveByType(conversation.MemorySemantic, "project"); len(items) > 0 {
+					if items, _ := pdb.MemoryItems().ListActiveByTypeForWorkspace(conversation.MemorySemantic, "project", workspace); len(items) > 0 {
 						return strings.Join(items, "\n"), nil
 					}
 					return fetchMemPalaceContext(ctx, task), nil
@@ -877,17 +878,28 @@ func makeConversationHydrator(pdb *pantry.DB, prompt string) orchestrator.Contex
 		if invalidated, err := invalidateExpiredMemory(pdb); err == nil {
 			conv.Context.InvalidatedMemoryCount = int(invalidated)
 		}
-		_ = promoteProceduralMemory(ctx, pdb, conv)
-		_ = promoteSemanticMemory(ctx, pdb, conv)
+		_ = promoteProceduralMemory(ctx, pdb, conv, workspace)
+		_ = promoteSemanticMemory(ctx, pdb, conv, workspace)
 		return nil
 	}
 }
 
-func promoteProceduralMemory(ctx context.Context, pdb *pantry.DB, conv *conversation.Conversation) error {
+func currentMemoryWorkspace() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	if abs, err := filepath.Abs(wd); err == nil {
+		return abs
+	}
+	return wd
+}
+
+func promoteProceduralMemory(ctx context.Context, pdb *pantry.DB, conv *conversation.Conversation, workspace string) error {
 	if conv == nil || pdb == nil || len(conv.Context.SpecRefs) == 0 {
 		return nil
 	}
-	existing, _ := pdb.MemoryItems().ListActiveByType(conversation.MemoryProcedural, "project")
+	existing, _ := pdb.MemoryItems().ListActiveByTypeForWorkspace(conversation.MemoryProcedural, "project", workspace)
 	cmd := os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD")
 	var client *pantry.MemPalaceClient
 	if cmd != "" {
@@ -912,7 +924,7 @@ func promoteProceduralMemory(ctx context.Context, pdb *pantry.DB, conv *conversa
 		if !decision.Accept {
 			continue
 		}
-		if _, err := pdb.MemoryItems().Insert(candidate, conv.ID); err == nil {
+		if _, err := pdb.MemoryItems().InsertForWorkspace(candidate, conv.ID, workspace); err == nil {
 			existing = append(existing, ref)
 		}
 		if client != nil {
@@ -928,11 +940,11 @@ func promoteProceduralMemory(ctx context.Context, pdb *pantry.DB, conv *conversa
 	return nil
 }
 
-func promoteSemanticMemory(ctx context.Context, pdb *pantry.DB, conv *conversation.Conversation) error {
+func promoteSemanticMemory(ctx context.Context, pdb *pantry.DB, conv *conversation.Conversation, workspace string) error {
 	if conv == nil || pdb == nil || conv.Context.MemPalaceText == "" {
 		return nil
 	}
-	existing, _ := pdb.MemoryItems().ListActiveByType(conversation.MemorySemantic, "project")
+	existing, _ := pdb.MemoryItems().ListActiveByTypeForWorkspace(conversation.MemorySemantic, "project", workspace)
 	candidate := conversation.MemoryCandidate{
 		SourceKind: "accepted_fact",
 		MemoryType: conversation.MemorySemantic,
@@ -944,7 +956,7 @@ func promoteSemanticMemory(ctx context.Context, pdb *pantry.DB, conv *conversati
 	if !decision.Accept {
 		return nil
 	}
-	_, err := pdb.MemoryItems().Insert(candidate, conv.ID)
+	_, err := pdb.MemoryItems().InsertForWorkspace(candidate, conv.ID, workspace)
 	return err
 }
 

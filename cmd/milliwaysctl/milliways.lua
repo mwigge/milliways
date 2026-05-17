@@ -171,6 +171,8 @@ local abbrs = {
   codex   = 'X',
   copilot = 'Cp',
   minimax = 'M',
+  kimi    = 'K',
+  deepseek = 'Ds',
   gemini  = 'G',
   ['local'] = 'L',
   pool    = 'P',
@@ -187,6 +189,8 @@ local client_themes = {
   codex   = { accent='#ffb454', cursor='#ffb454', tab_bg='#2b1a00', tab_fg='#ffd08a', bar_bg='#180f00' },
   copilot = { accent='#5f8cff', cursor='#5f8cff', tab_bg='#071633', tab_fg='#a9c2ff', bar_bg='#040b1a' },
   minimax = { accent='#af87d7', cursor='#af87d7', tab_bg='#21132f', tab_fg='#d7b8ff', bar_bg='#130a1c' },
+  kimi    = { accent='#87afff', cursor='#87afff', tab_bg='#061733', tab_fg='#b8d2ff', bar_bg='#030b1a' },
+  deepseek = { accent='#00d75f', cursor='#00d75f', tab_bg='#052414', tab_fg='#8affb8', bar_bg='#021209' },
   gemini  = { accent='#ff8700', cursor='#ff8700', tab_bg='#2b1300', tab_fg='#ffbd66', bar_bg='#170a00' },
   ['local'] = { accent='#d70000', cursor='#d70000', tab_bg='#2a0000', tab_fg='#ff8a8a', bar_bg='#150000' },
   pool    = { accent='#87d7ff', cursor='#87d7ff', tab_bg='#061c2a', tab_fg='#b8e7ff', bar_bg='#031018' },
@@ -247,7 +251,7 @@ local function security_badge(sec)
   local preflight = 0
   if type(enforcement) == 'table' then
     for _, meta in pairs(enforcement) do
-      if type(meta) == 'table' and meta.level == 'preflight-only' then
+      if type(meta) == 'table' and (meta.level == 'preflight-only' or (meta.level == 'brokered' and (not meta.broker_path or meta.broker_path == '' or meta.controlled_env ~= true))) then
         preflight = preflight + 1
       end
     end
@@ -267,12 +271,13 @@ local function security_badge(sec)
 
   if posture == 'block' then
     local detail = startup_stale and ' · startup stale' or ''
+    local mode_hint = (mode == 'warn' or mode == 'observe') and 'audit/continue' or 'gates may block'
     return {
       label = 'SEC BLOCK ' .. tostring(math.floor(blocks)),
       color = '#fb4934',
       key = 'block:' .. tostring(math.floor(blocks)) .. ':' .. tostring(math.floor(warnings)) .. ':' .. tostring(startup_stale),
       banner = blocks > 0,
-      message = 'SEC BLOCK ' .. tostring(math.floor(blocks)) .. ' · mode ' .. mode .. detail,
+      message = 'SEC BLOCK ' .. tostring(math.floor(blocks)) .. ' · mode ' .. mode .. ' (' .. mode_hint .. ')' .. detail,
     }
   end
   if posture == 'warn' then
@@ -474,14 +479,22 @@ config.keys = {
   },
   {
     key = '5', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'gemini' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'kimi' } },
   },
   {
     key = '6', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'local' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'deepseek' } },
   },
   {
     key = '7', mods = 'LEADER',
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'gemini' } },
+  },
+  {
+    key = '8', mods = 'LEADER',
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'local' } },
+  },
+  {
+    key = '9', mods = 'LEADER',
     action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'pool' } },
   },
   -- Leader + r  →  resume modal after sleep/wake
@@ -585,12 +598,12 @@ local ctl_choices = {
   { label = '/opsx-validate …          validate a change',                        id = 'opsx validate ' },
   -- Local-model bootstrap (slash-command alias on the left, ctl invocation on the right)
   { label = '/list-local-models        show models served by the active backend',  id = 'local list-models' },
-  { label = '/install-local-server     install llama.cpp + default coder model',   id = 'local install-server' },
+  { label = '/install-local-server     install rs-llmctl + default coder model',   id = 'local install-server' },
   { label = '/install-local-gpu-server detect GPU + install largest fitting model', id = 'local install-gpu-server ' },
   { label = '/install-local-swap       install llama-swap (hot model swap)',       id = 'local install-swap' },
-  { label = '/switch-local-server …    pick backend (llama-server | ollama | …)',  id = 'local switch-server ' },
+  { label = '/switch-local-server …    pick backend (rs-llmctl | llama-swap | …)', id = 'local switch-server ' },
   { label = '/download-local-model …   fetch a GGUF from HuggingFace',             id = 'local download-model ' },
-  { label = '/setup-local-model …      download + register in llama-swap.yaml',    id = 'local setup-model ' },
+  { label = '/setup-local-model …      download, register, activate when possible', id = 'local setup-model ' },
   -- Free-form escape hatch (kept last so casual fuzzy-typing finds curated entries first)
   { label = '… free-form milliwaysctl invocation …',                                id = '__free_form__' },
 }

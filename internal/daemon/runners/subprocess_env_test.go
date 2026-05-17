@@ -114,6 +114,37 @@ func TestControlledRunnerEnvMILLIWAYSPathStillOverridesInheritedPath(t *testing.
 	}
 }
 
+func TestControlledRunnerEnvExcludesHTTPProviderSecrets(t *testing.T) {
+	for _, key := range []string{
+		"MINIMAX_API_KEY",
+		"KIMI_API_KEY",
+		"MOONSHOT_API_KEY",
+		"DEEPSEEK_API_KEY",
+		"MILLIWAYS_LOCAL_API_KEY",
+		"AWS_SECRET_ACCESS_KEY",
+		"GITHUB_TOKEN",
+		"GH_TOKEN",
+	} {
+		t.Setenv(key, "secret")
+	}
+
+	env := controlledRunnerEnv(controlledRunnerEnvOptions{ClientID: AgentIDCodex})
+	for _, key := range []string{
+		"MINIMAX_API_KEY",
+		"KIMI_API_KEY",
+		"MOONSHOT_API_KEY",
+		"DEEPSEEK_API_KEY",
+		"MILLIWAYS_LOCAL_API_KEY",
+		"AWS_SECRET_ACCESS_KEY",
+		"GITHUB_TOKEN",
+		"GH_TOKEN",
+	} {
+		if got := envValue(env, key); got != "" {
+			t.Fatalf("%s leaked into controlled runner env as %q", key, got)
+		}
+	}
+}
+
 func envValue(env []string, key string) string {
 	prefix := key + "="
 	for _, entry := range env {

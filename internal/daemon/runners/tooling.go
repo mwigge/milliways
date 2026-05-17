@@ -536,7 +536,8 @@ func executeOneToolCall(ctx context.Context, registry *tools.Registry, sessionID
 		}
 	}
 	toolCtx, toolSpan := startToolSpan(ctx, call.Name)
-	if blockMsg := evaluateCommandFirewall(ctx, commandFirewall, sessionID, call.Name, args, logger); blockMsg != "" {
+	blockMsg, warnMsg := evaluateCommandFirewall(ctx, commandFirewall, sessionID, call.Name, args, logger)
+	if blockMsg != "" {
 		toolSpan.SetAttributes(attribute.Bool("ai.tool.blocked", true))
 		endToolSpan(toolSpan, blockMsg)
 		return blockMsg, false
@@ -560,6 +561,9 @@ func executeOneToolCall(ctx context.Context, registry *tools.Registry, sessionID
 		result = fmt.Sprintf("error: %v", err)
 	} else {
 		endToolSpan(toolSpan, "")
+	}
+	if warnMsg != "" {
+		result = warnMsg + "\n\n" + result
 	}
 	if haveBefore {
 		var blocked bool
@@ -890,13 +894,13 @@ func outputGateShouldBlock(mode security.Mode, exec outputgate.ExecutionResult) 
 	return false
 }
 
-func evaluateCommandFirewall(ctx context.Context, commandFirewall CommandFirewall, sessionID, toolName string, args map[string]any, logger *slog.Logger) string {
+func evaluateCommandFirewall(ctx context.Context, commandFirewall CommandFirewall, sessionID, toolName string, args map[string]any, logger *slog.Logger) (string, string) {
 	if commandFirewall == nil || !strings.EqualFold(toolName, "Bash") {
-		return ""
+		return "", ""
 	}
 	command, ok := args["command"].(string)
 	if !ok || strings.TrimSpace(command) == "" {
-		return ""
+		return "", ""
 	}
 	result, err := commandFirewall.EvaluateCommand(ctx, CommandFirewallRequest{
 		Command:   command,
@@ -904,7 +908,7 @@ func evaluateCommandFirewall(ctx context.Context, commandFirewall CommandFirewal
 		SessionID: sessionID,
 	})
 	if err != nil {
-		return fmt.Sprintf("error: command firewall check failed: %v", err)
+		return fmt.Sprintf("error: command firewall check failed: %v", err), ""
 	}
 	switch result.Decision {
 	case firewall.DecisionBlock, firewall.DecisionNeedsConfirmation:
@@ -921,7 +925,7 @@ func evaluateCommandFirewall(ctx context.Context, commandFirewall CommandFirewal
 				"risk_categories", commandFirewallRiskCategories(result.Risks),
 			)
 		}
-		return "error: command blocked by security firewall: " + reason
+		return "error: command blocked by security firewall: " + reason, ""
 	default:
 		if result.Decision == firewall.DecisionWarn && logger != nil {
 			logger.Warn("command firewall warning",
@@ -932,7 +936,14 @@ func evaluateCommandFirewall(ctx context.Context, commandFirewall CommandFirewal
 				"risk_categories", commandFirewallRiskCategories(result.Risks),
 			)
 		}
-		return ""
+		if result.Decision == firewall.DecisionWarn {
+			reason := strings.TrimSpace(result.Reason)
+			if reason == "" {
+				reason = "command matched a risky primitive"
+			}
+			return "", "[security warning] command allowed in warn mode: " + reason
+		}
+		return "", ""
 	}
 }
 

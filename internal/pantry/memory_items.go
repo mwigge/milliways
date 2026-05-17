@@ -17,6 +17,7 @@ package pantry
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mwigge/milliways/internal/conversation"
@@ -35,6 +36,7 @@ type MemoryItemRecord struct {
 	ValidUntil     string
 	CreatedAt      string
 	InvalidatedAt  string
+	Workspace      string
 }
 
 // MemoryItemStore provides access to mw_memory_items.
@@ -44,15 +46,21 @@ type MemoryItemStore struct {
 
 // Insert writes a durable memory item.
 func (s *MemoryItemStore) Insert(candidate conversation.MemoryCandidate, conversationID string) (int64, error) {
+	return s.InsertForWorkspace(candidate, conversationID, "")
+}
+
+// InsertForWorkspace writes a durable memory item scoped to a workspace.
+func (s *MemoryItemStore) InsertForWorkspace(candidate conversation.MemoryCandidate, conversationID, workspace string) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	validUntil := ""
 	if candidate.FreshUntil != nil {
 		validUntil = candidate.FreshUntil.UTC().Format(time.RFC3339)
 	}
+	workspace = strings.TrimSpace(workspace)
 	result, err := s.db.Exec(
-		`INSERT INTO mw_memory_items (conversation_id, memory_type, source_kind, scope, text, confidence, status, valid_until, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
-		conversationID, string(candidate.MemoryType), candidate.SourceKind, candidate.Scope, candidate.Text, candidate.Confidence, validUntil, now,
+		`INSERT INTO mw_memory_items (conversation_id, workspace, memory_type, source_kind, scope, text, confidence, status, valid_until, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+		conversationID, workspace, string(candidate.MemoryType), candidate.SourceKind, candidate.Scope, candidate.Text, candidate.Confidence, validUntil, now,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting memory item: %w", err)
@@ -62,11 +70,26 @@ func (s *MemoryItemStore) Insert(candidate conversation.MemoryCandidate, convers
 
 // ListActiveByType returns active memory texts for a given type and optional scope.
 func (s *MemoryItemStore) ListActiveByType(memoryType conversation.MemoryType, scope string) ([]string, error) {
+	return s.ListActiveByTypeForWorkspace(memoryType, scope, "")
+}
+
+// ListActiveByTypeForWorkspace returns active memory texts for a type, scope,
+// and workspace. Non-empty workspaces also include legacy/global rows with an
+// empty workspace so pre-v15 promoted memory remains visible after upgrade.
+func (s *MemoryItemStore) ListActiveByTypeForWorkspace(memoryType conversation.MemoryType, scope, workspace string) ([]string, error) {
 	query := `SELECT text FROM mw_memory_items WHERE memory_type = ? AND status = 'active'`
 	args := []any{string(memoryType)}
 	if scope != "" {
 		query += ` AND scope = ?`
 		args = append(args, scope)
+	}
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		query += ` AND workspace = ?`
+		args = append(args, "")
+	} else {
+		query += ` AND workspace IN (?, '')`
+		args = append(args, workspace)
 	}
 	query += ` ORDER BY id ASC`
 	rows, err := s.db.Query(query, args...)

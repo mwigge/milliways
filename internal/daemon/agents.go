@@ -64,6 +64,7 @@ type AgentSession struct {
 	cancel          context.CancelFunc
 	input           chan []byte
 	closed          atomic.Bool
+	turnActive      atomic.Bool
 	streamReady     chan struct{} // closed when the first stream is attached
 	streamReadyOnce sync.Once
 
@@ -73,15 +74,28 @@ type AgentSession struct {
 	// Feeds the apply.extract RPC.
 	respMu      sync.Mutex
 	responseBuf []byte
+	turnRespBuf []byte
 
 	// firstSendDone is 0 until the first agent.send runs context injection,
 	// then atomically set to 1 so subsequent sends skip injection.
 	firstSendDone atomic.Uint32
 
-	// onTurnComplete is called once per completed turn (when an "end" event
-	// arrives from the runner). The argument is the final response text.
+	// pendingContextBlocks holds session-open context that must be delivered
+	// with the first user prompt, not as standalone model turns.
+	pendingContextMu     sync.Mutex
+	pendingContextBlocks []string
+	pendingHandoffs      []pendingHandoffInvalidation
+	pendingFirstSend     []string
+	pendingFirstSendSet  bool
+
+	// onTurnComplete is called once per completed turn. The argument is the
+	// final response text for that turn.
 	// nil means no hook is installed.
 	onTurnComplete func(finalText string)
+	// onFirstSendDelivered is called once first-send context reaches a
+	// successful runner chunk_end. This keeps handoff invalidation tied to
+	// delivery, not just channel enqueue.
+	onFirstSendDelivered func()
 
 	stateMu        sync.Mutex
 	status         string
@@ -113,6 +127,7 @@ type AgentSession struct {
 // enough for several screens of typical agent output and keeps memory
 // bounded even with many concurrent sessions.
 const responseBufCap = 64 * 1024
+const turnResponseExtractCap = 1024 * 1024
 
 const deckBufferCap = 80
 
@@ -122,6 +137,12 @@ type DeckBlock struct {
 	Kind string    `json:"kind"`
 	Text string    `json:"text"`
 	At   time.Time `json:"at"`
+}
+
+type pendingHandoffInvalidation struct {
+	Subject   string
+	Predicate string
+	Object    string
 }
 
 // DeckSessionSnapshot is the daemon-backed status for one open agent session.
@@ -229,19 +250,39 @@ func (p *recordingPusher) Push(event any) {
 		}
 		switch t {
 		case "chunk_end":
+			p.sess.turnActive.Store(false)
 			p.sess.recordChunkEnd(intFromEvent(m["input_tokens"]), intFromEvent(m["output_tokens"]), floatFromEvent(m["cost_usd"]))
+			if p.sess.confirmFirstSendDelivery() {
+				if hook := p.sess.onFirstSendDelivered; hook != nil {
+					hook()
+				}
+			}
+			if hook := p.sess.onTurnComplete; hook != nil {
+				if finalText := p.sess.completeTurnResponse(); strings.TrimSpace(finalText) != "" {
+					go hook(finalText)
+				}
+			}
 		case "err":
 			msg, _ := m["msg"].(string)
 			p.sess.recordError(msg)
+			p.sess.failFirstSendDelivery()
 		case "end":
+			p.sess.turnActive.Store(false)
 			p.sess.recordIdle()
+			if p.sess.confirmFirstSendDelivery() {
+				if hook := p.sess.onFirstSendDelivered; hook != nil {
+					hook()
+				}
+			}
 		}
 		p.sess.appendHistory(payload)
-		// Fire onTurnComplete once per completed turn when the runner signals "end".
+		// Some internal/test runners do not emit chunk_end. Fall back to end
+		// so memory extraction still runs once for any unflushed turn buffer.
 		if t == "end" {
 			if hook := p.sess.onTurnComplete; hook != nil {
-				finalText := p.sess.snapshotResponse()
-				go hook(finalText)
+				if finalText := p.sess.completeTurnResponse(); strings.TrimSpace(finalText) != "" {
+					go hook(finalText)
+				}
 			}
 		}
 	default:
@@ -364,6 +405,10 @@ func (r *AgentRegistry) OpenWithWorkspace(agentID, securityWorkspace string) (*A
 		go runCopilot(sess, mo)
 	case "minimax":
 		go runMiniMax(sess, mo)
+	case "kimi":
+		go runKimi(sess, mo)
+	case "deepseek":
+		go runDeepSeek(sess, mo)
 	case "local":
 		go runLocal(sess, mo)
 	case "gemini":
@@ -440,6 +485,26 @@ func runMiniMax(sess *AgentSession, metrics runners.MetricsObserver) {
 	runners.RunMiniMaxWithSecurityWorkspace(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics, sess.SecurityWorkspace)
 	sess.closeStreams()
 	slog.Debug("minimax session ended", "handle", sess.Handle)
+}
+
+func runKimi(sess *AgentSession, metrics runners.MetricsObserver) {
+	stream := waitForStream(sess)
+	if stream == nil {
+		return
+	}
+	runners.RunKimiWithSecurityWorkspace(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics, sess.SecurityWorkspace)
+	sess.closeStreams()
+	slog.Debug("kimi session ended", "handle", sess.Handle)
+}
+
+func runDeepSeek(sess *AgentSession, metrics runners.MetricsObserver) {
+	stream := waitForStream(sess)
+	if stream == nil {
+		return
+	}
+	runners.RunDeepSeekWithSecurityWorkspace(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics, sess.SecurityWorkspace)
+	sess.closeStreams()
+	slog.Debug("deepseek session ended", "handle", sess.Handle)
 }
 
 func runLocal(sess *AgentSession, metrics runners.MetricsObserver) {
@@ -557,6 +622,125 @@ func (s *AgentSession) Close() {
 	}
 }
 
+func (s *AgentSession) queueContextBlock(block string) {
+	if s == nil {
+		return
+	}
+	block = strings.TrimSpace(block)
+	if block == "" {
+		return
+	}
+	s.pendingContextMu.Lock()
+	defer s.pendingContextMu.Unlock()
+	s.pendingContextBlocks = append(s.pendingContextBlocks, block)
+}
+
+func (s *AgentSession) queueHandoffInvalidation(subject, predicate, object string) {
+	if s == nil || strings.TrimSpace(subject) == "" || strings.TrimSpace(predicate) == "" || strings.TrimSpace(object) == "" {
+		return
+	}
+	s.pendingContextMu.Lock()
+	defer s.pendingContextMu.Unlock()
+	s.pendingHandoffs = append(s.pendingHandoffs, pendingHandoffInvalidation{
+		Subject:   strings.TrimSpace(subject),
+		Predicate: strings.TrimSpace(predicate),
+		Object:    strings.TrimSpace(object),
+	})
+}
+
+func (s *AgentSession) drainContextBlocks() []string {
+	if s == nil {
+		return nil
+	}
+	s.pendingContextMu.Lock()
+	defer s.pendingContextMu.Unlock()
+	if len(s.pendingContextBlocks) == 0 {
+		return nil
+	}
+	blocks := append([]string(nil), s.pendingContextBlocks...)
+	s.pendingContextBlocks = nil
+	return blocks
+}
+
+func (s *AgentSession) requeueContextBlocks(blocks []string) {
+	if s == nil || len(blocks) == 0 {
+		return
+	}
+	s.pendingContextMu.Lock()
+	defer s.pendingContextMu.Unlock()
+	kept := make([]string, 0, len(blocks)+len(s.pendingContextBlocks))
+	for _, block := range blocks {
+		block = strings.TrimSpace(block)
+		if block != "" {
+			kept = append(kept, block)
+		}
+	}
+	kept = append(kept, s.pendingContextBlocks...)
+	s.pendingContextBlocks = kept
+}
+
+func (s *AgentSession) markFirstSendPending(blocks []string) {
+	if s == nil {
+		return
+	}
+	s.pendingContextMu.Lock()
+	defer s.pendingContextMu.Unlock()
+	s.pendingFirstSend = append([]string(nil), blocks...)
+	s.pendingFirstSendSet = true
+}
+
+func (s *AgentSession) failFirstSendDelivery() {
+	if s == nil {
+		return
+	}
+	s.pendingContextMu.Lock()
+	blocks := append([]string(nil), s.pendingFirstSend...)
+	s.pendingFirstSend = nil
+	hadPending := s.pendingFirstSendSet
+	s.pendingFirstSendSet = false
+	s.pendingContextMu.Unlock()
+	if !hadPending {
+		return
+	}
+	s.firstSendDone.Store(0)
+	s.requeueContextBlocks(blocks)
+}
+
+func (s *AgentSession) confirmFirstSendDelivery() bool {
+	if s == nil {
+		return false
+	}
+	s.pendingContextMu.Lock()
+	hadPending := s.pendingFirstSendSet
+	s.pendingFirstSend = nil
+	s.pendingFirstSendSet = false
+	s.pendingContextMu.Unlock()
+	return hadPending
+}
+
+func (s *AgentSession) drainHandoffInvalidations() []pendingHandoffInvalidation {
+	if s == nil {
+		return nil
+	}
+	s.pendingContextMu.Lock()
+	defer s.pendingContextMu.Unlock()
+	if len(s.pendingHandoffs) == 0 {
+		return nil
+	}
+	out := append([]pendingHandoffInvalidation(nil), s.pendingHandoffs...)
+	s.pendingHandoffs = nil
+	return out
+}
+
+func (s *AgentSession) requeueHandoffInvalidations(items []pendingHandoffInvalidation) {
+	if s == nil || len(items) == 0 {
+		return
+	}
+	s.pendingContextMu.Lock()
+	defer s.pendingContextMu.Unlock()
+	s.pendingHandoffs = append(items, s.pendingHandoffs...)
+}
+
 // AttachStream allocates a fresh subscriber stream for the session. The first
 // subscriber unblocks the runner; later subscribers receive the same future
 // events via session fanout.
@@ -615,6 +799,10 @@ func (s *AgentSession) recordResponse(b []byte) {
 	if len(s.responseBuf) > responseBufCap {
 		s.responseBuf = s.responseBuf[len(s.responseBuf)-responseBufCap:]
 	}
+	s.turnRespBuf = append(s.turnRespBuf, b...)
+	if len(s.turnRespBuf) > turnResponseExtractCap {
+		s.turnRespBuf = s.turnRespBuf[len(s.turnRespBuf)-turnResponseExtractCap:]
+	}
 }
 
 func (s *AgentSession) recordPrompt(text string) {
@@ -639,6 +827,9 @@ func (s *AgentSession) recordPrompt(text string) {
 	s.lastError = ""
 	s.lastUpdated = now
 	s.appendDeckBlockLocked("prompt", text)
+	s.respMu.Lock()
+	s.turnRespBuf = nil
+	s.respMu.Unlock()
 }
 
 func (s *AgentSession) appendHistory(payload map[string]any) {
@@ -871,6 +1062,14 @@ func (s *AgentSession) snapshotResponse() string {
 	return string(s.responseBuf)
 }
 
+func (s *AgentSession) completeTurnResponse() string {
+	s.respMu.Lock()
+	defer s.respMu.Unlock()
+	out := string(s.turnRespBuf)
+	s.turnRespBuf = nil
+	return out
+}
+
 func (r *AgentRegistry) DeckSnapshot(active string) DeckSnapshot {
 	r.mu.Lock()
 	sessions := make([]*AgentSession, 0, len(r.sessions))
@@ -939,6 +1138,7 @@ func runEcho(sess *AgentSession) {
 			"t":   "data",
 			"b64": base64.StdEncoding.EncodeToString(bytes),
 		})
+		pusher.Push(map[string]any{"t": "chunk_end"})
 	}
 	pusher.Push(map[string]any{"t": "end"})
 	sess.closeStreams()

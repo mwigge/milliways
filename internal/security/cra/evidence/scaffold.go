@@ -49,6 +49,8 @@ type templateFile struct {
 	content string
 }
 
+const placeholderMarker = "MILLIWAYS_CRA_PLACEHOLDER"
+
 // Scaffold creates missing CRA evidence files in a workspace. Existing files
 // are left untouched unless Force is set.
 func Scaffold(opts Options) (Result, error) {
@@ -112,7 +114,9 @@ func fileExists(path string) (bool, error) {
 var scaffoldFiles = []templateFile{
 	{
 		relPath: "SECURITY.md",
-		content: `# Security Policy
+		content: `<!-- MILLIWAYS_CRA_PLACEHOLDER: replace this scaffold before using it as CRA evidence. -->
+
+# Security Policy
 
 ## Reporting a Vulnerability
 
@@ -143,13 +147,15 @@ Please allow a reasonable remediation window before public disclosure. We coordi
 	},
 	{
 		relPath: "SUPPORT.md",
-		content: `# Support Policy
+		content: `<!-- MILLIWAYS_CRA_PLACEHOLDER: replace this scaffold before using it as CRA evidence. -->
+
+# Support Policy
 
 ## Security Support
 
 Security support is provided for the current stable release line.
 
-Security support until: 2029-12-31
+Security support until: TODO-YYYY-MM-DD
 
 Supported surfaces include maintained source code, release artifacts, installer and update flows, documented configuration, and vulnerability handling processes.
 
@@ -158,7 +164,9 @@ Report vulnerabilities through the process in [SECURITY.md](SECURITY.md).
 	},
 	{
 		relPath: "docs/update-policy.md",
-		content: `# Security Update Policy
+		content: `<!-- MILLIWAYS_CRA_PLACEHOLDER: replace this scaffold before using it as CRA evidence. -->
+
+# Security Update Policy
 
 ## Update Channels
 
@@ -182,7 +190,9 @@ Security fixes should include an advisory or release note entry, affected versio
 	},
 	{
 		relPath: "docs/cra-technical-file.md",
-		content: `# CRA Technical File
+		content: `<!-- MILLIWAYS_CRA_PLACEHOLDER: replace this scaffold before using it as CRA evidence. -->
+
+# CRA Technical File
 
 ## Product
 

@@ -122,12 +122,11 @@ func (s *Server) parallelDispatch(enc *json.Encoder, req *Request) {
 			slog.Warn("parallel: handle missing after dispatch", "handle", slot.Handle, "provider", slot.Provider)
 			continue
 		}
-		if result.ContextPreamble != "" {
-			if err := sess.Send([]byte(result.ContextPreamble)); err != nil {
-				slog.Warn("parallel: preamble send failed", "handle", slot.Handle, "err", err)
-			}
+		promptBytes := []byte(p.Prompt)
+		if strings.TrimSpace(result.ContextPreamble) != "" {
+			promptBytes = mergeContextIntoPrompt([]string{result.ContextPreamble}, p.Prompt)
 		}
-		if err := sess.Send([]byte(p.Prompt)); err != nil {
+		if err := sess.Send(promptBytes); err != nil {
 			slog.Warn("parallel: prompt send failed", "handle", slot.Handle, "err", err)
 		}
 	}
@@ -366,7 +365,7 @@ func (s *Server) consensusAggregate(enc *json.Encoder, req *Request) {
 }
 
 // mempalaceClient returns a parallel.MPClient backed by the MemPalace MCP
-// server when MEMPALACE_MCP_CMD is set. Returns nil gracefully when unset.
+// server when MemPalace MCP config is set. Returns nil gracefully when unset.
 // In tests, testMPClient overrides the real client.
 func (s *Server) mempalaceClient() parallel.MPClient {
 	if s.testMPClient != nil {
@@ -385,29 +384,24 @@ type mempalaceParallelAdapter struct {
 }
 
 func (a *mempalaceParallelAdapter) KGQuery(ctx context.Context, subjectPrefix, predicate string, filters map[string]string) ([]parallel.KGTriple, error) {
-	results, err := a.c.Search(ctx, subjectPrefix, 20)
+	results, err := a.c.KGQuery(ctx, subjectPrefix, predicate, filters)
 	if err != nil {
 		return nil, err
 	}
 	triples := make([]parallel.KGTriple, 0, len(results))
 	for _, r := range results {
 		triples = append(triples, parallel.KGTriple{
-			Subject:    r.DrawerID,
-			Predicate:  predicate,
-			Object:     r.Content,
-			Properties: map[string]string{"source": r.Wing, "ts": ""},
+			Subject:    r.Subject,
+			Predicate:  r.Predicate,
+			Object:     r.Object,
+			Properties: cloneStringMap(r.Properties),
 		})
 	}
 	return triples, nil
 }
 
 func (a *mempalaceParallelAdapter) KGAdd(ctx context.Context, subject, predicate, object string, props map[string]string) error {
-	wing := props["source"]
-	if wing == "" {
-		wing = "parallel"
-	}
-	drawerID := predicate + ":" + truncate(object, 80)
-	return a.c.Write(ctx, wing, subject, drawerID, object)
+	return a.c.KGAdd(ctx, subject, predicate, object, props)
 }
 
 func (a *mempalaceParallelAdapter) KGInvalidate(ctx context.Context, subject, predicate, object string) error {
@@ -427,6 +421,17 @@ func (a *mempalaceParallelAdapter) KGInvalidate(ctx context.Context, subject, pr
 		}
 	}
 	return nil
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // codeGraphClient returns a CodeGraph-backed context client when

@@ -2,7 +2,7 @@
 
 > Secure MilliWays: all clients in one place, shared memory, shared sessions, one security layer, delivered through one security control plane.
 
-Milliways is an AI terminal for macOS and Linux. Claude, Codex, Pool, Gemini, Copilot, MiniMax, and local models all run from the same workspace, with the same observable control plane around them.
+Milliways is an AI terminal for macOS and Linux. Claude, Codex, Pool, Gemini, Copilot, MiniMax, Kimi, DeepSeek, and local models all run from the same workspace, with the same observable control plane around them.
 
 Open a tab and you're talking to a runner. Switch runners mid-session with a structured briefing from the active turn log. Hit a quota limit and milliways rotates to the next one automatically. Daemon event history, metrics, project memory, and security posture are persisted and surfaced while you work; the live REPL turn log stays in memory until it is compacted, handed off, or written through the daemon.
 
@@ -17,7 +17,7 @@ Architecture updates: [memory, persistence, and observability](docs/milliways-bl
 | Layer | What Milliways adds |
 |---|---|
 | Startup | First-workspace posture scan for package hooks, client config, task runners, IOC files/domains, user services, and macOS LaunchAgents. |
-| Client switch | Per-client checks for Claude, Codex, Copilot, Gemini, Pool, MiniMax, and local endpoints before handoff. |
+| Client switch | Per-client checks for Claude, Codex, Copilot, Gemini, Pool, MiniMax, Kimi, DeepSeek, and local endpoints before handoff. |
 | Protection state | Navigation and status surfaces show `protected` only when Milliways has real control-plane coverage for that client; otherwise they show `unprotected` or `preflight-only`. |
 | Command path | Deterministic firewall and broker shims for package installs, persistence, secret reads, exfiltration patterns, network download, shell eval, IOC hits, and complex commands. |
 | Output path | Generated/staged file planning for secrets, SAST, dependency changes, SBOM refresh, and strict/CI blocking. |
@@ -184,7 +184,7 @@ MilliWays.app is a native macOS terminal built on a patched wezterm. Every new w
 | Key | Action |
 |-----|--------|
 | `a` | Open milliways pane split below |
-| `1` … `7` | Switch to the corresponding runner |
+| `1` … `9` | Switch to the corresponding runner |
 | `r` | Resume modal — shows wake summary, re-opens last agent |
 | `k` | Context overlay |
 | `w` | Observability render overlay |
@@ -203,7 +203,7 @@ Start the AI terminal with `milliways` (default when no arguments are given). Th
 ```text
 milliways v1.0.1
   /login [client]  set up auth      /help  show all commands      /exit  quit
-  /1 claude  /2 codex  /3 copilot  /4 minimax  /5 gemini  /6 local  /7 pool
+  /1 claude  /2 codex  /3 copilot  /4 minimax  /5 kimi  /6 deepseek  /7 gemini  /8 local  /9 pool
 
 ▶ /claude
 → claude  model: claude-opus-4-5  (claude CLI)
@@ -235,8 +235,8 @@ Tab completion is available for all commands. Type `/` and press Tab to see the 
 
 | Command | Description |
 |---------|-------------|
-| `/claude` `/codex` `/copilot` `/minimax` `/gemini` `/local` `/pool` | Switch to a runner |
-| `/1` … `/7` | Numeric shortcut for the runner list |
+| `/claude` `/codex` `/copilot` `/minimax` `/kimi` `/deepseek` `/gemini` `/local` `/pool` | Switch to a runner |
+| `/1` … `/9` | Numeric shortcut for the runner list |
 | `/switch <runner>` | Same as `/<runner>` |
 | `/model` | Show active model and available choices (fetched live from the provider API) |
 | `/model <name>` | Switch model for the active runner |
@@ -269,13 +269,13 @@ Tab completion is available for all commands. Type `/` and press Tab to see the 
 
 | Command | Description |
 |---------|-------------|
-| `/install-local-server` | Install or refresh llama.cpp + the default local model, restart services, and switch to `/local` |
-| `/install-local-gpu-server` | Detect NVIDIA/AMD/macOS GPU memory, install the largest fitting curated model, restart services, and switch to `/local` |
-| `/install-local-swap` | Install llama-swap (hot model switching) |
+| `/install-local-server` | Install or refresh `rs-llmctl` + the default local model, generate a local API key, restart services, and switch to `/local` |
+| `/install-local-gpu-server` | Detect NVIDIA/AMD/macOS GPU memory, install the largest fitting curated model through `rs-llmctl`, restart services, and switch to `/local` |
+| `/install-local-swap` | Install and activate llama-swap for existing `llama-server` workers |
 | `/list-local-models` | Show models the backend serves |
-| `/switch-local-server <kind>` | Switch backend: `llama-server` \| `llama-swap` \| `ollama` \| `vllm` \| `lmstudio` |
+| `/switch-local-server <kind>` | Switch backend: `rs-llmctl` \| `llama-server` \| `llama-swap` \| `ollama` \| `vllm` \| `lmstudio` |
 | `/download-local-model <repo>` | Fetch a GGUF from HuggingFace |
-| `/setup-local-model <repo>` | Download + register in llama-swap.yaml |
+| `/setup-local-model <repo>` | Download, register for llama-swap, and activate/update the current local server when possible |
 
 **OpenSpec**
 
@@ -371,6 +371,8 @@ See `milliways --help` for the canonical authoritative flag/subcommand list. The
 | claude | green | Thinking, planning, code review | Cloud |
 | codex | amber | Agentic coding, tool use | Cloud |
 | minimax | purple | Reasoning, image/music/lyrics generation | Cloud |
+| kimi | blue | Long-context coding and agent tasks | Cloud |
+| deepseek | green | Cost-efficient coding and reasoning | Cloud |
 | copilot | red | GitHub Copilot chat | Subscription |
 | pool | cyan | Large codebase navigation, ACP agent | Cloud |
 | gemini | blue | Research, web search, 1M-token context | Free tier |
@@ -462,6 +464,30 @@ kitchens:
 ▶ /model MiniMax-M2.7      # switch model live; list fetched from MiniMax API
 ```
 
+### Kimi
+
+**Website:** [platform.kimi.ai](https://platform.kimi.ai)
+
+Kimi is an OpenAI-compatible HTTP runner backed by Moonshot AI. Milliways uses the same streaming/tool-loop contract as MiniMax: token usage is parsed from SSE chunks, model-requested tools run through the MilliWays registry, and `/model` switches `KIMI_MODEL` live.
+
+```bash
+▶ /login kimi              # sets KIMI_API_KEY
+▶ /kimi
+▶ /model kimi-k2.6
+```
+
+### DeepSeek
+
+**Website:** [api-docs.deepseek.com](https://api-docs.deepseek.com)
+
+DeepSeek is an OpenAI-compatible HTTP runner for cost-efficient coding and reasoning. The default model is `deepseek-v4-flash`; `/model` switches `DEEPSEEK_MODEL` live, and token/cost metrics are emitted on `chunk_end`.
+
+```bash
+▶ /login deepseek          # sets DEEPSEEK_API_KEY
+▶ /deepseek
+▶ /model deepseek-v4-flash
+```
+
 ### GitHub Copilot
 
 **Website:** [github.com/features/copilot](https://github.com/features/copilot)
@@ -503,11 +529,11 @@ milliways runs `gemini -p <prompt> -y` (`-y` auto-approves all tool actions — 
 gcloud auth login          # auth (run once)
 ```
 
-### Local (llama.cpp + Unsloth)
+### Local (rs-llmctl + Unsloth)
 
-**Website:** [github.com/ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) · [unsloth.ai](https://unsloth.ai/)
+**Website:** [github.com/mwigge/rs-llmctl](https://github.com/mwigge/rs-llmctl) · [unsloth.ai](https://unsloth.ai/) · [github.com/ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp)
 
-The `local` runner is for when the wifi is down, the bill is up, or you just want to know what these things actually do without a credit card in the loop. It talks to any OpenAI-compatible endpoint — by default `llama-server` from llama.cpp on `http://localhost:8765/v1`, but the same code works with llama-swap, vLLM, and LMStudio.
+The `local` runner is for when the wifi is down, the bill is up, or you just want to know what these things actually do without a credit card in the loop. It talks to any OpenAI-compatible endpoint — by default the built-in installer provisions `rs-llmctl` on `http://localhost:8765/v1` with a generated local API key, while llama-swap, vLLM, LMStudio, Ollama, and raw llama.cpp endpoints remain compatible.
 
 ```bash
 ▶ /local
@@ -572,7 +598,7 @@ Kitchen: claude  Tier: learned  Risk: high
 
 ## Runner switching and takeover
 
-Type `/<runner>` or `/switch <runner>` to move to a different runner mid-session. In the same REPL process, milliways builds a structured briefing from the recent turn log and injects it as the new runner's first prompt, so it picks up where the previous one left off. Cross-pane takeover uses MemPalace handoff when project memory is configured; without it, the switch still works but only has the context available in the current process.
+Type `/<runner>` or `/switch <runner>` to move to a different runner mid-session. In the same REPL process, milliways builds a structured briefing from the recent turn log and folds it into that runner's next user prompt, so HTTP runners do not answer the briefing as a separate turn. Cross-pane takeover uses MemPalace handoff when project memory is configured; without it, the switch still works but only has the context available in the current process.
 
 ```
 [briefing from claude → codex]
@@ -585,7 +611,7 @@ Continue from here. The user's next prompt follows.
 
 ### Automatic rotation ring
 
-Configure a priority ring and milliways auto-rotates when a runner hits its session limit, quota, or context window — for all seven runners:
+Configure a priority ring and milliways auto-rotates when a runner hits its session limit, quota, or context window — for all first-class runners:
 
 ```bash
 ▶ /ring claude,codex,minimax,pool   # set rotation order
@@ -601,9 +627,9 @@ When claude hits its limit the terminal shows:
 [codex] ▶ ▌
 ```
 
-The new runner receives the turn-log briefing as its first prompt. Exhausted runners are skipped automatically. The exhausted set clears on each new user prompt so runners become available again after a cooling period.
+The new runner receives the turn-log briefing inside the re-dispatched user prompt. Exhausted runners are skipped automatically. The exhausted set clears on each new user prompt so runners become available again after a cooling period.
 
-For minimax and local (HTTP runners with a 100-turn agentic loop), hitting the limit triggers a structured summarisation before rotation:
+For minimax, kimi, deepseek, and local (HTTP runners with a 100-turn agentic loop), hitting the limit triggers a structured summarisation before rotation:
 
 ```
 ────────────────────────────────────────
@@ -704,7 +730,7 @@ Milliways follows the [OpenTelemetry Semantic Conventions for Generative AI](htt
 
 ```
 gen_ai.client.operation (per dispatch)
-  gen_ai.system = "anthropic" | "openai" | "google" | "minimax" | "poolside" | "local"
+  gen_ai.system = "anthropic" | "openai" | "google" | "minimax" | "moonshot" | "deepseek" | "poolside" | "local"
   gen_ai.operation.name = "chat"
   gen_ai.request.model = "claude-opus-4-5"
   gen_ai.usage.input_tokens = 1200
@@ -718,7 +744,7 @@ gen_ai.client.operation (per dispatch)
         milliways.tool.duration_ms = 142
 ```
 
-CLI runners (claude, codex, copilot, gemini, pool) emit one span per subprocess invocation. HTTP runners (minimax, local) emit one parent span per dispatch plus one child span per tool call in the agentic loop.
+CLI runners (claude, codex, copilot, gemini, pool) emit one span per subprocess invocation. HTTP runners (minimax, kimi, deepseek, local) emit one parent span per dispatch plus one child span per tool call in the agentic loop.
 
 **Configure the OTel export:**
 
@@ -742,6 +768,8 @@ milliwaysctl metrics --metric error_count --tier raw --range -1h
 ```
 
 Available metrics: `tokens_in`, `tokens_out`, `cost_usd`, `error_count`, `dispatch_count`, `dispatch_latency_ms`.
+
+External Postgres support is planned as a contracted server deployment option for teams that need shared policy, router, and metrics state. SQLite remains the local default. The Postgres deployment contract will preserve the same rollup tiers, policy audit semantics, and local/offline behavior instead of becoming a separate product mode.
 
 ---
 
@@ -780,7 +808,7 @@ The indexed path is written to `MILLIWAYS_CODEGRAPH_WORKSPACE` in `~/.config/mil
 
 ## Local models
 
-The `local` runner exists for offline work, privacy-sensitive prompts, and the simple case of "I just want a coder to autocomplete this". It speaks the OpenAI-compatible Chat Completions protocol so any backend that does the same — llama.cpp's `llama-server`, llama-swap, vLLM, LMStudio, even Ollama's `/v1` shim — drops in without code changes.
+The `local` runner exists for offline work, privacy-sensitive prompts, and the simple case of "I just want a coder to autocomplete this". It speaks the OpenAI-compatible Chat Completions protocol. The built-in single-model installer now provisions `rs-llmctl` as the default local control plane, while llama-swap, vLLM, LMStudio, and Ollama's `/v1` shim remain compatible backends.
 
 We default to **Unsloth dynamic quants** because they consistently produce better quality-per-byte than vanilla GGUF (15–30% faster generation, noticeably better code output, especially on smaller models where every bit matters).
 
@@ -801,8 +829,9 @@ There are two deployment shapes, picked by which installer you ran:
    single-server (install_local.sh)             swap (install_local_swap.sh)
                   │                                                │
         ┌─────────▼──────────┐                          ┌──────────▼──────────┐
-        │  llama-server      │                          │  llama-swap proxy   │
+        │  rs-llmctl         │                          │  llama-swap proxy   │
         │  one model loaded  │                          │  routes by model id │
+        │  generated API key │                          │  llama.cpp workers  │
         │  port 8765         │                          │  port 8765          │
         └────────────────────┘                          └────┬───────┬───────┘
                                                              │       │
@@ -867,39 +896,46 @@ In milliways-term, the same flow is available via the `Leader + /` palette: pres
 
 The ready path is intentionally strict. The installer downloads or reuses the model cache, refreshes the launcher and service files, restarts the local backend, restarts `milliwaysd`, prints `Waiting for services to finish installation`, and only prints `/local is ready` after both the OpenAI-compatible model endpoint and the daemon socket accept connections.
 
-**Hot-swap between several models:**
+`install-server` resolves `rs-llmctl` in this order: `RS_LLMCTL_BIN` when set, `llmctl` on `PATH`, a local checkout from `RS_LLMCTL_LOCAL_REPO` or a sibling `../rs-llmctl` directory, then the published `mwigge/rs-llmctl` release pinned by `RS_LLMCTL_VERSION` (default `v1.2.1`).
+
+**Hot-swap between several llama.cpp models:**
 
 ```bash
 milliwaysctl local install-server                              # first model
 milliwaysctl local download-model unsloth/Qwen2.5-Coder-7B-Instruct-GGUF
+# install llama.cpp's llama-server before enabling llama-swap
 milliwaysctl local install-swap --hot                          # warm every model at startup
 # Or for memory-safe (unload after idle):
 milliwaysctl local install-swap                                # standby
 ```
 
+The swap path uses llama-swap with `llama-server` workers, so `llama-server` must already be on `PATH`. Use `/install-local-server` for the rs-llmctl single-model default when you do not need live multi-model routing.
+
 `milliwaysctl local setup-model <repo>` composes the download + llama-swap config registration + verification in one shot — useful for adding a new model to an already-running swap proxy.
 
-`milliwaysctl local switch-server <kind>` writes `~/.config/milliways/local.env` to point milliways at `llama-server`, `llama-swap`, `ollama`, `vllm`, or `lmstudio` without re-installing anything.
+`milliwaysctl local switch-server <kind>` writes `~/.config/milliways/local.env` to point milliways at `rs-llmctl`, `llama-server`, `llama-swap`, `ollama`, `vllm`, or `lmstudio` without re-installing anything.
 
 `milliwaysctl local list-models` prints what the active backend is currently serving (handy after a `setup-model` to confirm registration took).
 
-The installer drops a launchd plist (macOS) or systemd-user unit (Linux) bound to port 8765, so the swap proxy comes back up after reboot.
+The installer drops launchd plists (macOS) or systemd-user units (Linux) bound to port 8765, so the active single-model server or swap proxy comes back up after reboot.
 
-**Fallback (the old script-direct flow):** the underlying scripts are still callable for CI or air-gapped setups: `./scripts/install_local.sh` and `./scripts/install_local_swap.sh`. The `milliwaysctl local` verbs are thin wrappers over them.
+**Fallback (the old script-direct flow):** the underlying scripts are still callable for CI or air-gapped setups: `./scripts/install_local.sh` and `./scripts/install_local_swap.sh`. `milliwaysctl local install-server` and `install-swap` wrap those scripts; the other `local` verbs are ctl-native helpers around endpoint config, model catalogues, server status, and model activation.
 
 ### Bootstrap commands
 
-These dispatch to `milliwaysctl local <verb>` via the milliways-term `Leader + /` palette (Ctrl+Space then `/`). Pick from the list, fuzzy-filter by typing, hit Enter — or invoke `milliwaysctl local <verb>` directly in any tab. Adding a new ctl subcommand surfaces it in the palette automatically.
+These dispatch to `milliwaysctl local <verb>` via the milliways-term `Leader + /` palette (Ctrl+Space then `/`). Pick from the list, fuzzy-filter by typing, hit Enter — or invoke `milliwaysctl local <verb>` directly in any tab. New shortcuts are added to the palette when the alias table is updated.
 
 | Command | Underlying ctl | Action |
 |---|---|---|
-| `/install-local-server` | `milliwaysctl local install-server` | install or refresh llama.cpp + the default local model, restart local services, wait for readiness, and switch to `/local` |
-| `/install-local-gpu-server` | `milliwaysctl local install-gpu-server` | detect NVIDIA/AMD/macOS GPU memory, pick the largest fitting curated model, install with GPU offload, restart services, wait for readiness, and switch to `/local`; add `--accel vulkan|cuda|hip` on Linux to force a path |
-| `/install-local-swap` | `milliwaysctl local install-swap` | install llama-swap (memory-safe, unloads on TTL); add `--hot` to warm every model at startup |
+| `/install-local-server` | `milliwaysctl local install-server` | install or refresh `rs-llmctl` + the default local model, generate a local API key, restart local services, wait for readiness, and switch to `/local` |
+| `/install-local-gpu-server` | `milliwaysctl local install-gpu-server` | detect NVIDIA/AMD/macOS GPU memory, pick the largest fitting curated model, configure `rs-llmctl`, restart services, wait for readiness, and switch to `/local`; add `--accel vulkan|cuda|hip` on Linux to preserve the operator intent for GPU-aware installs |
+| `/install-local-swap` | `milliwaysctl local install-swap` | install and activate llama-swap for existing `llama-server` workers (memory-safe, unloads on TTL); add `--hot` to warm every model at startup |
 | `/list-local-models` | `milliwaysctl local list-models` | list models the active backend serves (hits `/v1/models`) |
-| `/switch-local-server <kind>` | `milliwaysctl local switch-server <kind>` | rebind milliways to `llama-server` / `llama-swap` / `ollama` / `vllm` / `lmstudio` |
+| `/switch-local-server <kind>` | `milliwaysctl local switch-server <kind>` | rebind milliways to `rs-llmctl` / `llama-server` / `llama-swap` / `ollama` / `vllm` / `lmstudio` |
 | `/download-local-model <repo>` | `milliwaysctl local download-model <repo>` | curl a GGUF from HuggingFace into `$MODEL_DIR` |
-| `/setup-local-model <repo>` | `milliwaysctl local setup-model <repo>` | download → idempotent insert into `~/.config/milliways/llama-swap.yaml` → verify |
+| `/setup-local-model <repo>` | `milliwaysctl local setup-model <repo>` | download → idempotent insert into `~/.config/milliways/llama-swap.yaml` → activate/update the current local server when possible → verify |
+
+Advanced maintenance verbs are available from `milliwaysctl local`: `server-status`, `server-start`, `server-stop`, `server-port`, `server-uninstall`, `swap-mode`, `default-model` for llama-swap installs, and `review-code`.
 
 ### In-session commands
 
@@ -921,8 +957,8 @@ All standard milliways commands work with `local`. The runner-prefixed forms are
 | Variable | Default | Purpose |
 |---|---|---|
 | `MILLIWAYS_LOCAL_ENDPOINT` | `http://localhost:8765/v1` | Where the OpenAI-compatible API lives |
-| `MILLIWAYS_LOCAL_MODEL` | installer-selected, often `qwen3-8b` on 16 GB GPUs | Initial model id sent in every request |
-| `MILLIWAYS_LOCAL_API_KEY` | — | Sent as `Authorization: Bearer …` (for llama-server `--api-key`, vLLM strict mode) |
+| `MILLIWAYS_LOCAL_MODEL` | installer-selected, default `qwen2.5-7b` | Initial model id sent in every request |
+| `MILLIWAYS_LOCAL_API_KEY` | generated by `install-server` | Sent as `Authorization: Bearer …` for `rs-llmctl` and other strict OpenAI-compatible backends |
 | `MILLIWAYS_LOCAL_TEMP` | `default` (server picks) | Sampling temperature — set via `/local-temp`; `default` omits the field |
 | `MILLIWAYS_LOCAL_MAX_TOKENS` | `off` (unlimited) | Cap reply length — set via `/local-max-tokens`; `off` omits the field |
 
@@ -942,17 +978,17 @@ Switch at runtime with `/local-temp 0.7` or `/local-temp default` (lets the serv
 
 ### Troubleshooting
 
-**`HTTP 401: Authorization header missing or malformed`** — something else (often a corp SSH tunnel or Spring Boot dev service) is bound to port 8765 and milliways is talking to it. Find it with `lsof -i :8765`, kill it, and restart `milliways-local-server`. The installer auto-shifts to a free port if 8765 is busy at install-time, but a tunnel started afterwards won't be detected.
+**`HTTP 401: Authorization header missing or malformed`** — either milliways is missing the generated `MILLIWAYS_LOCAL_API_KEY` from `~/.config/milliways/local.env`, or something else (often a corp SSH tunnel or Spring Boot dev service) is bound to port 8765 and milliways is talking to it. Check `~/.config/milliways/local.env`, then find port conflicts with `lsof -i :8765`, kill the stale process, and restart `milliways-local-server`. The installer auto-shifts to a free port if 8765 is busy at install-time, but a tunnel started afterwards won't be detected.
 
 **Slow first prompt after idle (standby mode)** — this is by design. llama-swap evicts the model after `TTL_SECONDS` of no traffic; the next request pays a 5–15s cold-load. Switch to hot mode (`HOT_MODE=1 ./scripts/install_local_swap.sh`) or run `/local-hot on` to keep them resident.
 
-**`failed to download model from Hugging Face` / Zscaler block page** — corporate proxies that categorise HF as "Generative AI" often intercept the API endpoints (`api.huggingface.co`) but leave the CDN (`cas-bridge.xethub.hf.co`) alone. The installer goes straight to the CDN with `curl`, so this usually just works. If not, request HF be allowlisted under "Developer Tools".
+**`failed to download model from Hugging Face` / Zscaler block page** — corporate proxies that categorise HF as "Generative AI" often intercept Hugging Face endpoints. The installer downloads with `curl`; if your proxy blocks the request, request Hugging Face be allowlisted under "Developer Tools" or pre-place the GGUF in `$MODEL_DIR`.
 
-**`/model X` says "X not in backend models"** — with single-server (`install_local.sh`), the model field in the API request is ignored — only the `-m` GGUF actually loaded is served. Restart the server with a different `-m`, or run `install_local_swap.sh` to get real per-request model routing.
+**`/model X` says "X not in backend models"** — with the single-server `rs-llmctl` install, only the configured local GGUF is active. Run `/setup-local-model <repo>` or rerun `/install-local-server` with a different model to change it, or run `install_local_swap.sh` when you need multiple llama.cpp workers behind a swap proxy.
 
 **Memory pressure / OOM** — drop to a smaller model (`MODEL_REPO=unsloth/Phi-3.5-mini-instruct-GGUF`), lower `CTX_SIZE`, or stay in standby mode (default for swap). `top` / `Activity Monitor` will show you which `llama-server` child is the heavyweight.
 
-**llama-server died at startup** — `tail ~/.local/share/milliways/local/server.err`. Most common cause: a GGUF that didn't download fully (verify size matches what HuggingFace shows) or a context size larger than the model supports (set `CTX_SIZE=4096` and re-run the installer).
+**Local server died at startup** — `tail ~/.local/share/milliways/local/server.err`. Most common cause: a GGUF that didn't download fully (verify size matches what HuggingFace shows) or a context size larger than the model supports (set `CTX_SIZE=4096` and re-run the installer).
 
 ---
 
@@ -960,7 +996,7 @@ Switch at runtime with `/local-temp 0.7` or `/local-temp default` (lets the serv
 
 Secure MilliWays is the release security theme, not a separate binary and not a repository rename: all clients in one place, shared memory, shared sessions, one security layer, delivered through one security control plane.
 
-Milliways wraps Claude, Codex, Copilot, Gemini, Pool, MiniMax, and local models behind one terminal surface. That makes the security model explicit: the runner changes, but the workspace, memory, session handoff, observability, and security posture are managed in one place.
+Milliways wraps Claude, Codex, Copilot, Gemini, Pool, MiniMax, Kimi, DeepSeek, and local models behind one terminal surface. That makes the security model explicit: the runner changes, but the workspace, memory, session handoff, observability, and security posture are managed in one place.
 
 The control-plane model is business-casual on purpose: MilliWays does the common safety work once, then shares the signal with every client. Startup scan, client profile checks, command policy, generated-output planning, scanner status, CRA evidence, and policy audit events all report through the daemon. The CLI, terminal slash commands, command shims, and observability badges read that same posture instead of asking each AI client to invent a separate view of risk.
 
@@ -996,6 +1032,10 @@ For CLI clients that can inherit a controlled environment, MilliWays also genera
 | Terminal/app startup | First-workspace startup scan is recorded automatically and status shows required/stale until current. | Agent opens wait for a current startup scan; `strict`/`ci` block real client handoff when BLOCK findings remain. |
 
 CRA readiness is treated as more important than NVD enrichment. NVD can improve CVE metadata, but the EU Cyber Resilience Act defines process obligations and evidence a product team must be able to show: cybersecurity risk assessment, secure defaults, vulnerability handling, machine-readable SBOM, support/update posture, and incident reporting readiness. MilliWays should therefore use NVD as one optional input, not as the compliance model.
+
+Router maturity controls are part of the release contract for shared and server deployments: admission and backpressure decisions must be explicit, timeout budgets must be bounded per request and per downstream runner, and non-secret failure responses must avoid leaking prompts, credentials, headers, or tool output while still preserving enough classification for operators.
+
+AQE/OpenAI-compatible governance contract exports are planned for policy and compliance consumers. The export surface should include policy decisions, router maturity posture, scanner posture, SBOM and CRA evidence, accepted-risk metadata, and non-secret request/response classifications in a form that can be consumed beside OpenAI-compatible model gateways without exposing secrets.
 
 ### Mode semantics
 
@@ -1093,7 +1133,7 @@ When startup scan reports a BLOCK finding for AI-agent package compromise indica
 
 ### Tool-loop guardrails
 
-The HTTP-based runners (minimax, local) drive an agentic tool loop that lets the model invoke `bash`, file `read`/`write`/`edit`, `grep`/`glob`, and `web_fetch` on your machine. Milliways applies guardrails by default; the bars can be raised but should not be lowered for shared or multi-tenant deployments.
+The HTTP-based runners (minimax, kimi, deepseek, local) drive an agentic tool loop that lets the model invoke `bash`, file `read`/`write`/`edit`, `grep`/`glob`, and `web_fetch` on your machine. Milliways applies guardrails by default; the bars can be raised but should not be lowered for shared or multi-tenant deployments.
 
 | Constraint | Default | Override | Why |
 |---|---|---|---|
@@ -1103,9 +1143,9 @@ The HTTP-based runners (minimax, local) drive an agentic tool loop that lets the
 | **Bash command logging** | length + sha256 prefix | not overridable | Model-generated commands can contain secrets via env-var interpolation; the full command is intentionally dropped from the daemon log. |
 | **Tool result wrapping** | `<tool_result>...</tool_result>` markers | not overridable | Tool output is wrapped + system prompt declares it untrusted, mitigating prompt-injection via tool fold-back (a model `Read`-ing an attacker-planted file can't smuggle directives). |
 | **Subprocess env** | safelisted (PATH/HOME/USER/SHELL/TERM/LANG/LC_*/TMPDIR/XDG_* + per-CLI auth keys) | edit `safeRunnerEnvKeys` in the source | claude/codex/copilot/gemini/pool subprocesses do not inherit the daemon's full env. Closes the codex-printenv exfil path. |
-| **Codex sandbox** | `--sandbox workspace-write --ask-for-approval never` | per-kitchen `cfg.Args` overrides win | Without these, codex `exec --json` silently refuses tool execution. The trade-off is documented in `SECURITY.md`. |
-| **Disable tools entirely** | n/a | `MINIMAX_TOOLS=off`, `MILLIWAYS_LOCAL_TOOLS=off` | Chat-only mode for the HTTP runners (debugging, comparison testing). |
-| **Agentic loop turn cap** | 10 | n/a | Hard upper bound on assistant→tool→assistant cycles per dispatch; `chunk_end` carries `max_turns_hit:true` when reached. |
+| **Codex sandbox** | `--sandbox workspace-write --ask-for-approval on-request` | per-kitchen `cfg.Args` overrides win | Keeps Codex writable inside the workspace while preserving human approval prompts by default. The trade-off is documented in `SECURITY.md`. |
+| **Disable tools entirely** | n/a | `MINIMAX_TOOLS=off`, `KIMI_TOOLS=off`, `DEEPSEEK_TOOLS=off`, `MILLIWAYS_LOCAL_TOOLS=off` | Chat-only mode for the HTTP runners (debugging, comparison testing). |
+| **Agentic loop turn cap** | 100 | `MILLIWAYS_MAX_TURNS=<n>` | Hard upper bound on assistant→tool→assistant cycles per dispatch; `chunk_end` carries `max_turns_hit:true` when reached. |
 
 CLI-based runners (claude/codex/copilot/gemini/pool) inherit tool execution from their underlying CLI process. Codex's sandbox applies via the kitchen adapter / daemon-side defaults; the others manage their own filesystem/network access.
 

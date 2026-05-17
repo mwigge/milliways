@@ -112,8 +112,8 @@ func TestMigrateV14PreservesSecurityDataAndCreatesPolicyDecisions(t *testing.T) 
 	if err := db.conn.QueryRow("SELECT COALESCE(MAX(version), 0) FROM mw_schema").Scan(&version); err != nil {
 		t.Fatalf("query schema version: %v", err)
 	}
-	if version != 14 {
-		t.Fatalf("schema version = %d, want 14", version)
+	if version != 15 {
+		t.Fatalf("schema version = %d, want 15", version)
 	}
 	var tableCount int
 	if err := db.conn.QueryRow(`
@@ -602,5 +602,59 @@ func TestMemoryItems_InsertListAndInvalidate(t *testing.T) {
 	}
 	if len(semantic) != 0 {
 		t.Fatalf("semantic items = %#v", semantic)
+	}
+}
+
+func TestMemoryItems_WorkspaceIsolation(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	if _, err := db.MemoryItems().InsertForWorkspace(conversation.MemoryCandidate{
+		SourceKind: "accepted_fact",
+		MemoryType: conversation.MemorySemantic,
+		Text:       "repo a fact",
+		Scope:      "project",
+		Confidence: 0.9,
+	}, "conv-a", "/repo/a"); err != nil {
+		t.Fatalf("InsertForWorkspace repo a: %v", err)
+	}
+	if _, err := db.MemoryItems().InsertForWorkspace(conversation.MemoryCandidate{
+		SourceKind: "accepted_fact",
+		MemoryType: conversation.MemorySemantic,
+		Text:       "repo b fact",
+		Scope:      "project",
+		Confidence: 0.9,
+	}, "conv-b", "/repo/b"); err != nil {
+		t.Fatalf("InsertForWorkspace repo b: %v", err)
+	}
+	if _, err := db.MemoryItems().Insert(conversation.MemoryCandidate{
+		SourceKind: "accepted_fact",
+		MemoryType: conversation.MemorySemantic,
+		Text:       "legacy global fact",
+		Scope:      "project",
+		Confidence: 0.9,
+	}, "conv-legacy"); err != nil {
+		t.Fatalf("Insert legacy global: %v", err)
+	}
+
+	got, err := db.MemoryItems().ListActiveByTypeForWorkspace(conversation.MemorySemantic, "project", "/repo/a")
+	if err != nil {
+		t.Fatalf("ListActiveByTypeForWorkspace repo a: %v", err)
+	}
+	if len(got) != 2 || got[0] != "repo a fact" || got[1] != "legacy global fact" {
+		t.Fatalf("repo a items = %#v", got)
+	}
+	got, err = db.MemoryItems().ListActiveByTypeForWorkspace(conversation.MemorySemantic, "project", "/repo/b")
+	if err != nil {
+		t.Fatalf("ListActiveByTypeForWorkspace repo b: %v", err)
+	}
+	if len(got) != 2 || got[0] != "repo b fact" || got[1] != "legacy global fact" {
+		t.Fatalf("repo b items = %#v", got)
+	}
+	global, err := db.MemoryItems().ListActiveByType(conversation.MemorySemantic, "project")
+	if err != nil {
+		t.Fatalf("ListActiveByType global: %v", err)
+	}
+	if len(global) != 1 || global[0] != "legacy global fact" {
+		t.Fatalf("global items = %#v, want legacy only", global)
 	}
 }

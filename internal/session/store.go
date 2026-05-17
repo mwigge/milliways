@@ -81,6 +81,10 @@ func (s *FileStore) Save(session Session) error {
 		_ = tempFile.Close()
 		return fmt.Errorf("write temp session %q: %w", session.ID, err)
 	}
+	if err := tempFile.Sync(); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("sync temp session %q: %w", session.ID, err)
+	}
 	if err := tempFile.Chmod(0o600); err != nil {
 		_ = tempFile.Close()
 		return fmt.Errorf("chmod temp session %q: %w", session.ID, err)
@@ -88,8 +92,11 @@ func (s *FileStore) Save(session Session) error {
 	if err := tempFile.Close(); err != nil {
 		return fmt.Errorf("close temp session %q: %w", session.ID, err)
 	}
-	if err := os.Rename(tempPath, s.filePath(session.ID)); err != nil {
+	if err := renameWithRetry(tempPath, s.filePath(session.ID)); err != nil {
 		return fmt.Errorf("rename session %q: %w", session.ID, err)
+	}
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("sync session dir %q: %w", dir, err)
 	}
 	return nil
 }
@@ -201,4 +208,26 @@ func defaultSessionDir() string {
 		return filepath.Join(".", "sessions")
 	}
 	return filepath.Join(home, ".config", "milliways", "sessions")
+}
+
+func renameWithRetry(oldPath, newPath string) error {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := os.Rename(oldPath, newPath); err != nil {
+			lastErr = err
+			time.Sleep(time.Duration(attempt+1) * 25 * time.Millisecond)
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }

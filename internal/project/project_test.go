@@ -22,6 +22,20 @@ import (
 	"testing"
 )
 
+func createTestGitRepo(t *testing.T, repoRoot string) {
+	t.Helper()
+
+	gitDir := filepath.Join(repoRoot, ".git")
+	for _, rel := range []string{"objects", "refs", "refs/heads"} {
+		if err := os.MkdirAll(filepath.Join(gitDir, rel), 0o755); err != nil {
+			t.Fatalf("create .git/%s: %v", rel, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatalf("write .git/HEAD: %v", err)
+	}
+}
+
 func TestDefaultAccessRules(t *testing.T) {
 	t.Parallel()
 
@@ -101,10 +115,7 @@ func TestFindRepoRootInCurrentDirectory(t *testing.T) {
 	t.Parallel()
 
 	repoRoot := t.TempDir()
-	gitDir := filepath.Join(repoRoot, ".git")
-	if err := os.Mkdir(gitDir, 0o755); err != nil {
-		t.Fatalf("create .git dir: %v", err)
-	}
+	createTestGitRepo(t, repoRoot)
 
 	got, err := FindRepoRoot(repoRoot)
 	if err != nil {
@@ -119,10 +130,7 @@ func TestFindRepoRootInParentDirectory(t *testing.T) {
 	t.Parallel()
 
 	repoRoot := t.TempDir()
-	gitDir := filepath.Join(repoRoot, ".git")
-	if err := os.Mkdir(gitDir, 0o755); err != nil {
-		t.Fatalf("create .git dir: %v", err)
-	}
+	createTestGitRepo(t, repoRoot)
 
 	startDir := filepath.Join(repoRoot, "src", "nested")
 	if err := os.MkdirAll(startDir, 0o755); err != nil {
@@ -250,10 +258,7 @@ func TestResolveProjectWithOverride(t *testing.T) {
 	t.Parallel()
 
 	repoRoot := t.TempDir()
-	gitDir := filepath.Join(repoRoot, ".git")
-	if err := os.Mkdir(gitDir, 0o755); err != nil {
-		t.Fatalf("create .git dir: %v", err)
-	}
+	createTestGitRepo(t, repoRoot)
 
 	ctx, err := ResolveProject(repoRoot)
 	if err != nil {
@@ -293,10 +298,7 @@ func TestResolveProjectWithOverrideAndCodeGraph(t *testing.T) {
 	t.Parallel()
 
 	repoRoot := t.TempDir()
-	gitDir := filepath.Join(repoRoot, ".git")
-	if err := os.Mkdir(gitDir, 0o755); err != nil {
-		t.Fatalf("create .git dir: %v", err)
-	}
+	createTestGitRepo(t, repoRoot)
 	codeGraphDir := filepath.Join(repoRoot, ".codegraph")
 	if err := os.Mkdir(codeGraphDir, 0o755); err != nil {
 		t.Fatalf("create .codegraph dir: %v", err)
@@ -319,10 +321,7 @@ func TestResolveProjectWithOverrideAndPalace(t *testing.T) {
 	t.Parallel()
 
 	repoRoot := t.TempDir()
-	gitDir := filepath.Join(repoRoot, ".git")
-	if err := os.Mkdir(gitDir, 0o755); err != nil {
-		t.Fatalf("create .git dir: %v", err)
-	}
+	createTestGitRepo(t, repoRoot)
 	palaceDir := filepath.Join(repoRoot, ".mempalace")
 	if err := os.Mkdir(palaceDir, 0o755); err != nil {
 		t.Fatalf("create .mempalace dir: %v", err)
@@ -388,10 +387,7 @@ func TestResolveProjectFromWorkingDirectory(t *testing.T) {
 	})
 
 	repoRoot := t.TempDir()
-	gitDir := filepath.Join(repoRoot, ".git")
-	if err := os.Mkdir(gitDir, 0o755); err != nil {
-		t.Fatalf("create .git dir: %v", err)
-	}
+	createTestGitRepo(t, repoRoot)
 	nestedDir := filepath.Join(repoRoot, "nested", "dir")
 	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
 		t.Fatalf("create nested dir: %v", err)

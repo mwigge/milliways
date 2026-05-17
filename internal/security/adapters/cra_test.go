@@ -26,14 +26,19 @@ func TestCRAAdapterEvaluatesCompleteEvidence(t *testing.T) {
 
 	supportUntil := time.Date(2029, 12, 31, 0, 0, 0, 0, time.UTC)
 	report := adapters.NewCRAAdapter().Evaluate(adapters.CRAEvidenceInput{
-		ProductName:                     "MilliWays",
-		AsOf:                            time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC),
-		SBOMPaths:                       []string{"dist/milliways.spdx.json"},
-		VulnerabilityHandlingPolicy:     "SECURITY.md",
-		VulnerabilityReportingContact:   "security@example.test",
-		VulnerabilityReportingProcess:   "docs/security-reporting.md",
-		SecureByDefaultEvidence:         []string{"docs/secure-defaults.md"},
-		ScannerCoverage:                 []adapters.CRAScannerCoverage{{Name: "osv-scanner", Kind: "dependency"}, {Name: "gitleaks", Kind: "secret"}},
+		ProductName:                   "MilliWays",
+		AsOf:                          time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC),
+		SBOMPaths:                     []string{"dist/milliways.spdx.json"},
+		VulnerabilityHandlingPolicy:   "SECURITY.md",
+		VulnerabilityReportingContact: "security@example.test",
+		VulnerabilityReportingProcess: "docs/security-reporting.md",
+		SecureByDefaultEvidence:       []string{"docs/secure-defaults.md"},
+		ScannerCoverage: []adapters.CRAScannerCoverage{
+			{Name: "osv-scanner", Kind: "dependency"},
+			{Name: "gitleaks", Kind: "secret"},
+			{Name: "semgrep", Kind: "sast"},
+			{Name: "govulncheck", Kind: "dependency"},
+		},
 		SupportPeriod:                   "security updates through 2029",
 		SupportUntil:                    &supportUntil,
 		ConformityDocumentationPaths:    []string{"docs/cra-technical-file.md"},
@@ -106,6 +111,34 @@ func TestCRAAdapterCanUseCustomChecklistWithoutNetworkConfiguration(t *testing.T
 	if check.ID != "custom-evidence" || check.Status != adapters.CRAEvidencePresent || check.DeadlineStatus != adapters.CRADeadlineActive {
 		t.Fatalf("custom check = %#v", check)
 	}
+}
+
+func TestCRAAdapterTreatsSingleScannerAsPartialCoverage(t *testing.T) {
+	t.Parallel()
+
+	report := adapters.NewCRAAdapter().Evaluate(adapters.CRAEvidenceInput{
+		ProductName:     "MilliWays",
+		AsOf:            time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC),
+		ScannerCoverage: []adapters.CRAScannerCoverage{{Name: "osv-scanner", Kind: "dependency"}},
+	})
+	check := craCheck(t, report, "cra-scanner-coverage")
+	if check.Status != adapters.CRAEvidencePartial {
+		t.Fatalf("scanner coverage status = %q, want partial; missing %v", check.Status, check.MissingEvidence)
+	}
+	for _, want := range []string{"scanner_coverage_secret", "scanner_coverage_sast", "scanner_coverage_go_vuln"} {
+		if !containsString(check.MissingEvidence, want) {
+			t.Fatalf("scanner coverage missing evidence lacks %q: %v", want, check.MissingEvidence)
+		}
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func craCheck(t *testing.T, report adapters.CRAReport, id string) adapters.CRACheck {

@@ -70,6 +70,7 @@ func (l *chatLoop) handleCompact() {
 		fmt.Fprintln(l.errw, "✗ no runner active — pick one first")
 		return
 	}
+	agentID := l.sess.agentID
 	turns := l.snapshotTurns()
 	if len(turns) == 0 {
 		fmt.Fprintln(l.out, "  (nothing to compact)")
@@ -101,10 +102,40 @@ func (l *chatLoop) handleCompact() {
 			return
 		}
 		l.turnMu.Lock()
-		l.turnLog = []chatTurn{{Role: "system", Text: "[context compacted]\n" + summary}}
+		l.turnLog = []chatTurn{
+			{Role: "user", Text: "Continue from the compacted conversation context."},
+			{Role: "assistant", AgentID: agentID, Text: "[context compacted]\n" + summary},
+		}
 		l.turnMu.Unlock()
+		if err := l.resetAgentSessionAfterCompact(agentID); err != nil {
+			fmt.Fprintln(l.errw, friendlyError("warn: compact reset: ", "", err))
+		}
 		fmt.Fprintln(l.out, "  ✓ context compacted")
 	}()
+}
+
+func (l *chatLoop) resetAgentSessionAfterCompact(agentID string) error {
+	if l == nil || strings.TrimSpace(agentID) == "" {
+		return nil
+	}
+	if l.sessions != nil {
+		if sess := l.sessions[agentID]; sess != nil {
+			_ = sess.close()
+			delete(l.sessions, agentID)
+		}
+	}
+	wasActive := l.sess != nil && l.sess.agentID == agentID
+	if wasActive {
+		l.sess = nil
+	}
+	if wasActive {
+		sess, err := l.ensureAgentSession(agentID)
+		if err != nil {
+			return err
+		}
+		l.activateSession(sess)
+	}
+	return nil
 }
 
 // handleClear wipes the local turn log so the next /switch briefing starts fresh.

@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,7 +78,7 @@ func TestListTraceSessions(t *testing.T) {
 	traceDirPath = func() (string, error) { return tempDir, nil }
 	t.Cleanup(func() { traceDirPath = oldTraceDir })
 
-	for _, name := range []string{"b.jsonl", "a.jsonl", "ignore.txt"} {
+	for _, name := range []string{"b.jsonl", "a.jsonl", "a.20260517T120000Z.jsonl", "ignore.txt"} {
 		if err := os.WriteFile(filepath.Join(tempDir, name), []byte("\n"), 0o600); err != nil {
 			t.Fatalf("WriteFile(%s) error = %v", name, err)
 		}
@@ -89,6 +90,35 @@ func TestListTraceSessions(t *testing.T) {
 	}
 	if !reflect.DeepEqual(sessions, []string{"a", "b"}) {
 		t.Fatalf("sessions = %v, want [a b]", sessions)
+	}
+}
+
+func TestReadTraceEventsIncludesRotatedFragments(t *testing.T) {
+	tempDir := t.TempDir()
+	oldTraceDir := traceDirPath
+	traceDirPath = func() (string, error) { return tempDir, nil }
+	t.Cleanup(func() { traceDirPath = oldTraceDir })
+
+	writeTraceFixture := func(name, id string) {
+		path := filepath.Join(tempDir, name)
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatalf("OpenFile(%s): %v", name, err)
+		}
+		defer f.Close()
+		if err := WriteTraceEvent(f, AgentTraceEvent{ID: id, SessionID: "sess", Type: AgentTraceTool, Timestamp: time.Now().UTC()}); err != nil {
+			t.Fatalf("WriteTraceEvent(%s): %v", name, err)
+		}
+	}
+	writeTraceFixture("sess.20260517T120000Z.jsonl", "old")
+	writeTraceFixture("sess.jsonl", "new")
+
+	events, err := ReadTraceEvents("sess")
+	if err != nil {
+		t.Fatalf("ReadTraceEvents: %v", err)
+	}
+	if len(events) != 2 || events[0].ID != "old" || events[1].ID != "new" {
+		t.Fatalf("events = %#v, want old then new", events)
 	}
 }
 
@@ -135,6 +165,115 @@ func TestTraceEmitterEmitAndClose(t *testing.T) {
 	}
 }
 
+func TestTraceEmitterRotatesLargeTraceFile(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("MILLIWAYS_TRACE_MAX_BYTES", "1")
+	if err := os.WriteFile(filepath.Join(tempDir, "rotate.jsonl"), []byte("existing\n"), 0o644); err != nil {
+		t.Fatalf("prewrite trace file: %v", err)
+	}
+	emitter, err := NewTraceEmitterForDir("rotate", tempDir)
+	if err != nil {
+		t.Fatalf("NewTraceEmitterForDir() error = %v", err)
+	}
+	if err := emitter.Emit(context.Background(), AgentTraceEvent{
+		Type: AgentTraceTool,
+		Data: map[string]any{"tool": "read"},
+	}); err != nil {
+		t.Fatalf("Emit() error = %v", err)
+	}
+	if err := emitter.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	var rotated bool
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "rotate.") && strings.HasSuffix(entry.Name(), ".jsonl") {
+			rotated = true
+		}
+	}
+	if !rotated {
+		t.Fatalf("expected rotated trace file, entries=%v", entries)
+	}
+}
+
+func TestTraceEmitterMultipleRotationsKeepUniqueFragments(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("MILLIWAYS_TRACE_MAX_BYTES", "1")
+	if err := os.WriteFile(filepath.Join(tempDir, "rotate-many.jsonl"), []byte("existing\n"), 0o600); err != nil {
+		t.Fatalf("prewrite trace file: %v", err)
+	}
+	emitter, err := NewTraceEmitterForDir("rotate-many", tempDir)
+	if err != nil {
+		t.Fatalf("NewTraceEmitterForDir() error = %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := emitter.Emit(context.Background(), AgentTraceEvent{
+			Type: AgentTraceTool,
+			Data: map[string]any{"tool": "read"},
+		}); err != nil {
+			t.Fatalf("Emit(%d) error = %v", i, err)
+		}
+	}
+	if err := emitter.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	var rotated int
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "rotate-many.") && strings.HasSuffix(entry.Name(), ".jsonl") {
+			rotated++
+		}
+	}
+	if rotated < 3 {
+		t.Fatalf("rotated fragments = %d, want at least 3; entries=%v", rotated, entries)
+	}
+	oldTraceDir := traceDirPath
+	traceDirPath = func() (string, error) { return tempDir, nil }
+	t.Cleanup(func() { traceDirPath = oldTraceDir })
+	sessions, err := ListTraceSessions()
+	if err != nil {
+		t.Fatalf("ListTraceSessionsForTest: %v", err)
+	}
+	if !reflect.DeepEqual(sessions, []string{"rotate-many"}) {
+		t.Fatalf("sessions = %#v, want rotate-many", sessions)
+	}
+}
+
+func TestTraceEmitterUsesPrivatePermissions(t *testing.T) {
+	tempDir := t.TempDir()
+	oldTraceDir := traceDirPath
+	traceDirPath = func() (string, error) { return tempDir, nil }
+	t.Cleanup(func() { traceDirPath = oldTraceDir })
+
+	emitter, err := NewTraceEmitter("private", nil)
+	if err != nil {
+		t.Fatalf("NewTraceEmitter() error = %v", err)
+	}
+	if err := emitter.Close(context.Background()); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	dirInfo, err := os.Stat(tempDir)
+	if err != nil {
+		t.Fatalf("stat trace dir: %v", err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o700 {
+		t.Fatalf("trace dir mode = %v, want 0700", got)
+	}
+	fileInfo, err := os.Stat(filepath.Join(tempDir, "private.jsonl"))
+	if err != nil {
+		t.Fatalf("stat trace file: %v", err)
+	}
+	if got := fileInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("trace file mode = %v, want 0600", got)
+	}
+}
+
 func TestWriteAndParseTraceEvents(t *testing.T) {
 	buf := bytes.NewBuffer(nil)
 	ts := time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC)
@@ -169,6 +308,69 @@ func TestWriteAndParseTraceEvents(t *testing.T) {
 	}
 	if !reflect.DeepEqual(parsed[0].Data, map[string]any{"blocked": true, "count": float64(3), "tool": "bash"}) {
 		t.Fatalf("Data = %#v, want %#v", parsed[0].Data, event.Data)
+	}
+}
+
+func TestWriteAndParseFlattenedTraceEventWithCanonicalDataKeys(t *testing.T) {
+	buf := bytes.NewBuffer(nil)
+	ts := time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC)
+	event := AgentTraceEvent{
+		ID:        "evt-collision",
+		Type:      AgentTraceObserve,
+		SessionID: "sess-1",
+		Timestamp: ts,
+		Data: map[string]any{
+			"timestamp": "tool-start",
+			"data":      "payload",
+		},
+	}
+
+	if err := WriteTraceEvent(nopSyncFile{Buffer: buf}, event); err != nil {
+		t.Fatalf("WriteTraceEvent() error = %v", err)
+	}
+	parsed, err := ParseTraceEvents(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("ParseTraceEvents() error = %v", err)
+	}
+	if len(parsed) != 1 {
+		t.Fatalf("len(ParseTraceEvents()) = %d, want 1", len(parsed))
+	}
+	if parsed[0].Data["timestamp"] != "tool-start" || parsed[0].Data["data"] != "payload" {
+		t.Fatalf("Data = %#v", parsed[0].Data)
+	}
+}
+
+func TestParseCanonicalTraceEventWithDataAndFlattenedKeys(t *testing.T) {
+	ts := time.Date(2026, time.April, 20, 10, 0, 0, 0, time.UTC)
+	line, err := AgentTraceEvent{
+		ID:        "evt-canonical",
+		Type:      AgentTraceObserve,
+		SessionID: "sess-1",
+		Timestamp: ts,
+		Data: map[string]any{
+			"data": "nested payload",
+			"tool": "bash",
+		},
+	}.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON() error = %v", err)
+	}
+
+	parsed, err := ParseTraceEvents(bytes.NewReader(append(line, '\n')))
+	if err != nil {
+		t.Fatalf("ParseTraceEvents() error = %v", err)
+	}
+	if len(parsed) != 1 {
+		t.Fatalf("len(ParseTraceEvents()) = %d, want 1", len(parsed))
+	}
+	if parsed[0].ID != "evt-canonical" || parsed[0].SessionID != "sess-1" || parsed[0].Type != AgentTraceObserve {
+		t.Fatalf("parsed event identity = %#v", parsed[0])
+	}
+	if !parsed[0].Timestamp.Equal(ts) {
+		t.Fatalf("Timestamp = %v, want %v", parsed[0].Timestamp, ts)
+	}
+	if !reflect.DeepEqual(parsed[0].Data, map[string]any{"data": "nested payload", "tool": "bash"}) {
+		t.Fatalf("Data = %#v", parsed[0].Data)
 	}
 }
 

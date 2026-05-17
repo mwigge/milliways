@@ -45,7 +45,7 @@ MilliWays now treats client state more carefully:
 
 | State | Meaning |
 |---|---|
-| `full` | MilliWays owns the request path and the tool execution path. MiniMax and local model tooling are in this category. |
+| `full` | MilliWays owns the request path and the tool execution path. MiniMax, Kimi, DeepSeek, and local model tooling are in this category. |
 | `brokered` | The external CLI is launched through a controlled environment and command shims are active, so command decisions can go through MilliWays policy and audit. |
 | `preflight-only` | MilliWays can scan startup posture and client configuration, but the command broker is not active for that client path. |
 | `unprotected` | MilliWays does not have enough information or control to claim protection. |
@@ -142,7 +142,7 @@ The goal is not to replace Claude, Codex, Gemini, Copilot, Pool, MiniMax, local 
 
 ![Secure MilliWays evidence and control flow](images/secure-control-plane-overview.png)
 
-AI client security should not be scattered across seven CLIs, three package managers, a few hidden hooks, and a pile of terminal scrollback.
+AI client security should not be scattered across a growing set of CLIs and HTTP APIs, three package managers, a few hidden hooks, and a pile of terminal scrollback.
 
 It should be part of the terminal where the work is happening.
 

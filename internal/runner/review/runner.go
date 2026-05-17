@@ -17,15 +17,16 @@ const loopGuardMax = 8
 
 // Config holds the runtime configuration for a ReviewRunner run.
 type Config struct {
-	RepoPath   string
-	Endpoint   string // default "http://localhost:8765/v1"
-	ModelAlias string // override; empty = query /v1/models
-	OutPath    string // write final report here; empty = return in result only
-	Resume     bool   // continue from existing scratch file
-	NoMemory   bool   // skip all MemPalace calls
-	SocketPath string // daemon socket for MemPalace; default ~/.local/state/milliways/sock
-	GitCommit  bool   // auto-commit after each group that produces file edits
-	LintAfterEdit bool // run lint/tests after edits and feed failures back
+	RepoPath      string
+	Endpoint      string // default "http://localhost:8765/v1"
+	APIKey        string // optional bearer token for strict local backends
+	ModelAlias    string // override; empty = query /v1/models
+	OutPath       string // write final report here; empty = return in result only
+	Resume        bool   // continue from existing scratch file
+	NoMemory      bool   // skip all MemPalace calls
+	SocketPath    string // daemon socket for MemPalace; default ~/.local/state/milliways/sock
+	GitCommit     bool   // auto-commit after each group that produces file edits
+	LintAfterEdit bool   // run lint/tests after edits and feed failures back
 }
 
 // Runner orchestrates the detect→plan→map→write→reduce review cycle.
@@ -33,13 +34,13 @@ type Runner struct {
 	detector Detector
 	planner  Planner
 	router   ModelRouter
-	cg       CodeGraphClient  // optional; nil disables CodeGraph context injection
+	cg       CodeGraphClient // optional; nil disables CodeGraph context injection
 	scratch  ScratchWriter
 	memory   Memory // nil = no memory operations
 	reducer  Reducer
-	git      GitIntegration   // nil = no git operations
-	linter   Linter           // nil = no lint after edits
-	context  ContextTracker   // tracks active file set for architect mode
+	git      GitIntegration // nil = no git operations
+	linter   Linter         // nil = no lint after edits
+	context  ContextTracker // tracks active file set for architect mode
 }
 
 // New wires real dependencies from cfg and returns a Runner ready to run.
@@ -49,7 +50,7 @@ func New(cfg Config) (*Runner, error) {
 		endpoint = "http://localhost:8765/v1"
 	}
 
-	router := NewModelRouter(endpoint)
+	router := NewModelRouterWithAPIKey(endpoint, cfg.APIKey)
 	cg := NewCodeGraphClient(cfg.SocketPath)
 
 	// Route now to get caps for the planner; re-route during Run.
@@ -57,6 +58,7 @@ func New(cfg Config) (*Runner, error) {
 	if err != nil {
 		return nil, fmt.Errorf("new runner route %s: %w", cfg.ModelAlias, err)
 	}
+	cfg.ModelAlias = caps.Alias
 	_ = caps // used implicitly through the router during Run
 
 	summarise := func(ctx context.Context, prompt string) (string, error) {
@@ -139,6 +141,7 @@ func (r *Runner) Run(ctx context.Context, cfg Config) (ReviewResult, error) {
 	if err != nil {
 		return ReviewResult{}, fmt.Errorf("route model %s: %w", cfg.ModelAlias, err)
 	}
+	cfg.ModelAlias = caps.Alias
 
 	// Load prior context from memory (best-effort).
 	var prior PriorContext

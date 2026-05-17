@@ -82,7 +82,7 @@ func SetBrokerPathProvider(fn BrokerPathProvider) {
 // status surfaces can show expected enforcement for every first-class client.
 func ClientEnforcementMetadata(agentID string) EnforcementMetadata {
 	switch agentID {
-	case AgentIDMiniMax, AgentIDLocal:
+	case AgentIDMiniMax, AgentIDLocal, AgentIDKimi, AgentIDDeepSeek:
 		return EnforcementMetadata{
 			Level:  EnforcementFull,
 			Reason: "milliways owns model-requested tool execution",

@@ -535,6 +535,34 @@ func TestSecurityCRAUsesSupportUntilEvidence(t *testing.T) {
 	t.Fatalf("cra-support-period check missing: %v", checks)
 }
 
+func TestSecurityCRAIgnoresScaffoldPlaceholders(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	writeSecurityMethodFile(t, filepath.Join(workspace, "SUPPORT.md"), "<!-- MILLIWAYS_CRA_PLACEHOLDER -->\nSecurity support until: 2029-12-31\n")
+	writeSecurityMethodFile(t, filepath.Join(workspace, "docs", "cra-technical-file.md"), "<!-- MILLIWAYS_CRA_PLACEHOLDER -->\n# CRA Technical File\n")
+
+	s := &Server{pantryDB: db, spans: observability.NewRing(10)}
+	enc, buf := newCapturingEncoder()
+	s.dispatch(enc, &Request{Method: "security.cra", ID: mustSecurityMethodParams(t, 1)})
+
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	if _, ok := resp["error"]; ok {
+		t.Fatalf("security.cra returned error: %v", resp)
+	}
+	result := resp["result"].(map[string]any)
+	checks, _ := result["checks"].([]any)
+	for _, raw := range checks {
+		check := raw.(map[string]any)
+		switch check["id"] {
+		case "cra-support-period", "cra-conformity-documentation":
+			if status, _ := check["status"].(string); status == "present" {
+				t.Fatalf("%s status = present for scaffold placeholder; check=%v", check["id"], check)
+			}
+		}
+	}
+}
+
 func TestSecurityModeStoresWorkspaceMode(t *testing.T) {
 	db := openSecurityMethodTestDB(t)
 	workspace := t.TempDir()
@@ -633,8 +661,48 @@ func TestSecurityCommandCheckRPCQuotesArgvFallbackForAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPolicyDecisions: %v", err)
 	}
-	if len(decisions) != 1 || decisions[0].Command != wantCommand || !strings.Contains(decisions[0].ArgvJSON, "printf") {
-		t.Fatalf("policy decisions = %#v, want quoted command and argv audit", decisions)
+	if len(decisions) != 1 || !strings.Contains(decisions[0].Command, "printf") || !strings.Contains(decisions[0].Command, "$HOME") || !strings.Contains(decisions[0].ArgvJSON, "printf") {
+		t.Fatalf("policy decisions = %#v, want quoted command and argv audit for %q", decisions, wantCommand)
+	}
+}
+
+func TestSecurityCommandCheckRPCRedactsAuditSecrets(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+
+	s := &Server{pantryDB: db, currentAgent: "codex", spans: observability.NewRing(10)}
+	enc, buf := newCapturingEncoder()
+	s.dispatch(enc, &Request{
+		Method: "security.command_check",
+		ID:     mustSecurityMethodParams(t, 1),
+		Params: mustSecurityMethodParams(t, map[string]any{
+			"argv":      []string{"curl", "-H", "Authorization: Bearer sk-test-secret", "https://example.test"},
+			"workspace": workspace,
+			"cwd":       workspace,
+			"mode":      "warn",
+			"env_summary": map[string]any{
+				"API_TOKEN": "sk-test-secret",
+			},
+		}),
+	})
+
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	if _, ok := resp["error"]; ok {
+		t.Fatalf("security.command_check returned error: %v", resp)
+	}
+	decisions, err := db.Security().ListPolicyDecisions(workspace, 10)
+	if err != nil {
+		t.Fatalf("ListPolicyDecisions: %v", err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("policy decisions = %d, want 1", len(decisions))
+	}
+	auditBlob := decisions[0].Command + "\n" + decisions[0].ArgvJSON + "\n" + decisions[0].EnvSummaryJSON
+	if strings.Contains(auditBlob, "sk-test-secret") {
+		t.Fatalf("audit output leaked secret: %s", auditBlob)
+	}
+	if !strings.Contains(auditBlob, "[REDACTED]") || !strings.Contains(auditBlob, "command_sha256") {
+		t.Fatalf("audit output missing redaction/hash metadata: %s", auditBlob)
 	}
 }
 

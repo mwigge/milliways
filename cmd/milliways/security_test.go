@@ -209,10 +209,13 @@ func TestHandleSecurityStatusCallsRPC(t *testing.T) {
 
 	loop, calls, stdout, stderr := newSecurityTestLoop(t, map[string]any{
 		"security.status": map[string]any{
-			"mode":                 "warn",
-			"posture":              "warn",
-			"warnings":             float64(2),
-			"blocks":               float64(1),
+			"mode":     "warn",
+			"posture":  "warn",
+			"warnings": float64(2),
+			"blocks":   float64(1),
+			"top_active_blocks": []any{
+				map[string]any{"category": "command-policy", "message": "shim blocked npm install"},
+			},
 			"last_startup_scan_at": "2026-05-14T10:00:00Z",
 			"shims": map[string]any{
 				"ready":            false,
@@ -253,7 +256,7 @@ func TestHandleSecurityStatusCallsRPC(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("unexpected stderr: %s", stderr.String())
 	}
-	for _, want := range []string{"mode: warn", "posture: WARN", "warnings: 2", "blocks: 1", "installed osv-scanner", "missing gitleaks", "shims: not ready 1/2; missing broker milliwaysctl; missing git", "codex unprotected (brokered, shim not ready)", "minimax protected (full)", "last startup scan", "cra: 67%"} {
+	for _, want := range []string{"mode: warn", "posture: WARN", "warnings: 2", "blocks: 1", "meaning: 1 active block-severity finding", "top blocks: command-policy: shim blocked npm install", "installed osv-scanner", "missing gitleaks", "shims: not ready 1/2; missing broker milliwaysctl; missing git", "codex preflight-only (brokered, shim not ready)", "minimax protected (full)", "last startup scan", "cra: 67%"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("status output missing %q:\n%s", want, stdout.String())
 		}

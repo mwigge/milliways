@@ -32,6 +32,7 @@ jobs:
           sudo apt-get install -y libgl-dev libxcursor-dev libxinerama-dev libxi-dev libxrandr-dev libssl-dev pkg-config libfontconfig-dev libwayland-dev
       - run: cargo check --manifest-path crates/milliways-term/Cargo.toml -p milliways
       - run: cargo test --manifest-path crates/milliways-term/Cargo.toml -p milliways --lib
+      - run: cargo test --test release_docs
 
   codegen-drift:
     runs-on: ubuntu-latest

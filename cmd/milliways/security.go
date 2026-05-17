@@ -375,6 +375,9 @@ func renderSecurityStatus(stdout io.Writer, label string, result map[string]any)
 	}
 	summary = append(summary, fmt.Sprintf("warnings: %d", warnCount), fmt.Sprintf("blocks: %d", blockCount))
 	fmt.Fprintf(stdout, "[%s] %s\n", label, strings.Join(summary, "  "))
+	if explanation := securityPostureExplanation(mode, warnCount, blockCount); explanation != "" {
+		fmt.Fprintf(stdout, "meaning: %s\n", explanation)
+	}
 
 	if scanners := renderSecurityScanners(result["scanners"]); scanners != "" {
 		fmt.Fprintf(stdout, "scanners: %s\n", scanners)
@@ -386,6 +389,9 @@ func renderSecurityStatus(stdout io.Writer, label string, result map[string]any)
 	if clients := renderSecurityClientEnforcement(result["client_enforcement"], shimsReady, hasShims); clients != "" {
 		fmt.Fprintf(stdout, "clients: %s\n", clients)
 	}
+	if blocks := renderSecurityStatusTopBlocks(result["top_active_blocks"]); blocks != "" {
+		fmt.Fprintf(stdout, "top blocks: %s\n", blocks)
+	}
 	if lastStartup := firstStringField(result, "last_startup_scan", "last_startup_scan_at"); lastStartup != "" {
 		fmt.Fprintf(stdout, "last startup scan: %s\n", lastStartup)
 	}
@@ -395,6 +401,51 @@ func renderSecurityStatus(stdout io.Writer, label string, result map[string]any)
 	if cra, _ := result["cra"].(map[string]any); len(cra) > 0 {
 		fmt.Fprintf(stdout, "cra: %s\n", formatSecurityCRASummary(cra))
 	}
+}
+
+func securityPostureExplanation(mode string, warnings, blocks int) string {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		mode = "warn"
+	}
+	switch {
+	case blocks > 0 && (mode == "warn" || mode == "observe"):
+		return fmt.Sprintf("%d active block-severity finding(s) are visible, but mode %s keeps the session running; inspect `/security warnings`, then switch to `strict` or `ci` when you want these to gate startup/client use.", blocks, mode)
+	case blocks > 0:
+		return fmt.Sprintf("%d active block-severity finding(s) can stop startup, client handoff, or command execution in mode %s; run `/security warnings` for the exact remediation.", blocks, mode)
+	case warnings > 0:
+		return fmt.Sprintf("%d active warning(s) are being surfaced and audited in mode %s; run `/security warnings` for details.", warnings, mode)
+	default:
+		return fmt.Sprintf("no active warning/block findings; mode %s controls how future command risks are handled.", mode)
+	}
+}
+
+func renderSecurityStatusTopBlocks(raw any) string {
+	items, ok := raw.([]any)
+	if !ok || len(items) == 0 {
+		return ""
+	}
+	var parts []string
+	for i, rawItem := range items {
+		if i >= 3 {
+			break
+		}
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		category := stringField(item, "category")
+		if category == "" {
+			category = "block"
+		}
+		message := firstStringField(item, "message", "remediation")
+		if message == "" {
+			parts = append(parts, category)
+		} else {
+			parts = append(parts, category+": "+truncateSecurityString(message, 96))
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 func renderSecurityCRA(stdout io.Writer, label string, result map[string]any) {
@@ -724,8 +775,8 @@ func securityClientProtectionState(level string, controlled bool, brokerPath str
 		if controlled && hasShims && shimsReady {
 			return "protected"
 		}
-		if controlled && !hasShims && strings.TrimSpace(brokerPath) != "" {
-			return "protected"
+		if controlled || strings.TrimSpace(brokerPath) != "" {
+			return "preflight-only"
 		}
 		return "unprotected"
 	default:

@@ -179,7 +179,7 @@ type chatCompletionResponse struct {
 
 // doChat POSTs a chatRequest to {endpoint}/chat/completions and returns the
 // first choice content string.
-func doChat(ctx context.Context, client *http.Client, endpoint string, payload chatRequest) (string, error) {
+func doChat(ctx context.Context, client *http.Client, endpoint, apiKey string, payload chatRequest) (string, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)
@@ -191,6 +191,7 @@ func doChat(ctx context.Context, client *http.Client, endpoint string, payload c
 		return "", fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	setReviewAuth(req, apiKey)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -215,6 +216,14 @@ func doChat(ctx context.Context, client *http.Client, endpoint string, payload c
 		return "", fmt.Errorf("no choices in response")
 	}
 	return chatResp.Choices[0].Message.Content, nil
+}
+
+func setReviewAuth(req *http.Request, apiKey string) {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 }
 
 // buildCodeGraphContext fetches caller/callee/impact context from CodeGraph

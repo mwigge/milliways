@@ -494,9 +494,13 @@ func TestRunCodex_EmptyPromptPushesChunkEnd(t *testing.T) {
 // TestRunCodex_NoBinary asserts that a missing codex binary surfaces
 // an error_count tick (and no token observations).
 func TestRunCodex_NoBinary(t *testing.T) {
+	codexBinaryTestMu.Lock()
 	prev := codexBinary
 	codexBinary = "/no/such/binary/that/should/not/exist"
-	defer func() { codexBinary = prev }()
+	defer func() {
+		codexBinary = prev
+		codexBinaryTestMu.Unlock()
+	}()
 
 	pusher := &fakePusher{}
 	obs := &mockObserver{}
@@ -535,9 +539,13 @@ func TestRunCodex_NoBinary(t *testing.T) {
 }
 
 func TestRunCodex_ResolvesBinaryFromMilliwaysPath(t *testing.T) {
+	codexBinaryTestMu.Lock()
 	prev := codexBinary
 	codexBinary = "codex"
-	t.Cleanup(func() { codexBinary = prev })
+	t.Cleanup(func() {
+		codexBinary = prev
+		codexBinaryTestMu.Unlock()
+	})
 
 	dir := t.TempDir()
 	argsFile := filepath.Join(t.TempDir(), "args.tsv")
@@ -559,9 +567,13 @@ func TestRunCodex_ResolvesBinaryFromMilliwaysPath(t *testing.T) {
 }
 
 func TestRunCodex_ControlledEnvUsesShimPathWithoutBreakingBinaryDiscovery(t *testing.T) {
+	codexBinaryTestMu.Lock()
 	prev := codexBinary
 	codexBinary = "codex"
-	t.Cleanup(func() { codexBinary = prev })
+	t.Cleanup(func() {
+		codexBinary = prev
+		codexBinaryTestMu.Unlock()
+	})
 	SetBrokerPathProvider(nil)
 	t.Cleanup(func() { SetBrokerPathProvider(nil) })
 

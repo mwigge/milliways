@@ -98,6 +98,7 @@ jobs:
       - name: Run Secure MilliWays release smoke
         run: |
           GOCACHE=/tmp/mw-gocache GOMODCACHE=/tmp/mw-gomodcache go test ./cmd/milliways ./cmd/milliwaysctl ./internal/daemon ./internal/security/... -count=1
+          cargo test --test release_docs
           GOCACHE=/tmp/mw-gocache GOMODCACHE=/tmp/mw-gomodcache bash tests/smoke/smoke_security_release.sh
 
       # ── Package agent toolkit bundle (if sibling repo is present) ────────

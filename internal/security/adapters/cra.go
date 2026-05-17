@@ -36,6 +36,10 @@ const (
 	CRAEvidenceFieldReportingProcess        = "vulnerability_reporting_process"
 	CRAEvidenceFieldSecureByDefault         = "secure_by_default_evidence"
 	CRAEvidenceFieldScannerCoverage         = "scanner_coverage"
+	CRAEvidenceFieldScannerDependency       = "scanner_coverage_dependency"
+	CRAEvidenceFieldScannerSecret           = "scanner_coverage_secret"
+	CRAEvidenceFieldScannerSAST             = "scanner_coverage_sast"
+	CRAEvidenceFieldScannerGoVuln           = "scanner_coverage_go_vuln"
 	CRAEvidenceFieldSupportPeriod           = "support_period"
 	CRAEvidenceFieldSupportUntil            = "support_until"
 	CRAEvidenceFieldConformityDocumentation = "conformity_documentation_paths"
@@ -238,13 +242,18 @@ func defaultCRARequirements() []CRARequirement {
 			},
 		},
 		{
-			ID:             "cra-scanner-coverage",
-			Title:          "Scanner coverage evidence",
-			Category:       CRACategoryScannerCoverage,
-			Article:        "Annex I Part II",
-			DueDate:        craFullApplyDue,
-			SourceURL:      craSummarySource,
-			RequiredFields: []string{CRAEvidenceFieldScannerCoverage},
+			ID:        "cra-scanner-coverage",
+			Title:     "Scanner coverage evidence",
+			Category:  CRACategoryScannerCoverage,
+			Article:   "Annex I Part II",
+			DueDate:   craFullApplyDue,
+			SourceURL: craSummarySource,
+			RequiredFields: []string{
+				CRAEvidenceFieldScannerDependency,
+				CRAEvidenceFieldScannerSecret,
+				CRAEvidenceFieldScannerSAST,
+				CRAEvidenceFieldScannerGoVuln,
+			},
 		},
 		{
 			ID:        "cra-support-period",
@@ -285,7 +294,11 @@ func (input CRAEvidenceInput) presentEvidence() map[string]bool {
 		CRAEvidenceFieldReportingContact:        input.VulnerabilityReportingContact != "",
 		CRAEvidenceFieldReportingProcess:        input.VulnerabilityReportingProcess != "",
 		CRAEvidenceFieldSecureByDefault:         len(input.SecureByDefaultEvidence) > 0,
-		CRAEvidenceFieldScannerCoverage:         len(input.ScannerCoverage) > 0,
+		CRAEvidenceFieldScannerCoverage:         scannerCoverageHasAny(input.ScannerCoverage),
+		CRAEvidenceFieldScannerDependency:       scannerCoverageHasKind(input.ScannerCoverage, "dependency"),
+		CRAEvidenceFieldScannerSecret:           scannerCoverageHasKind(input.ScannerCoverage, "secret"),
+		CRAEvidenceFieldScannerSAST:             scannerCoverageHasKind(input.ScannerCoverage, "sast"),
+		CRAEvidenceFieldScannerGoVuln:           scannerCoverageHasName(input.ScannerCoverage, "govulncheck"),
 		CRAEvidenceFieldSupportPeriod:           input.SupportPeriod != "",
 		CRAEvidenceFieldSupportUntil:            input.SupportUntil != nil,
 		CRAEvidenceFieldConformityDocumentation: len(input.ConformityDocumentationPaths) > 0,
@@ -298,6 +311,28 @@ func (input CRAEvidenceInput) presentEvidence() map[string]bool {
 		delete(present, key)
 	}
 	return present
+}
+
+func scannerCoverageHasAny(coverage []CRAScannerCoverage) bool {
+	return len(coverage) > 0
+}
+
+func scannerCoverageHasKind(coverage []CRAScannerCoverage, kind string) bool {
+	for _, item := range coverage {
+		if item.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func scannerCoverageHasName(coverage []CRAScannerCoverage, name string) bool {
+	for _, item := range coverage {
+		if item.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func evidenceStatus(present, missing int) CRAEvidenceStatus {

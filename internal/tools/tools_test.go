@@ -80,6 +80,64 @@ func TestHandleReadWriteAndEdit(t *testing.T) {
 	}
 }
 
+func TestHandleReadRejectsSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", dir)
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := handleRead(context.Background(), map[string]any{"path": link}); err == nil {
+		t.Fatal("handleRead() allowed symlink escape")
+	}
+}
+
+func TestHandleGlobFiltersSymlinkEscapes(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "visible.txt"), []byte("visible"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", dir)
+	link := filepath.Join(dir, "outside")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	got, err := handleGlob(context.Background(), map[string]any{"path": dir, "pattern": "*/*.txt"})
+	if err != nil {
+		t.Fatalf("handleGlob() error = %v", err)
+	}
+	if strings.Contains(got, "secret.txt") || strings.Contains(got, outside) {
+		t.Fatalf("handleGlob leaked symlink escape: %q", got)
+	}
+}
+
+func TestHandleWriteRejectsBackupSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	path := filepath.Join(dir, "sample.txt")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", dir)
+	if err := os.Symlink(outside, path+".bak"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := handleWrite(context.Background(), map[string]any{"path": path, "content": "new"}); err == nil {
+		t.Fatal("handleWrite() allowed backup symlink escape")
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("outside backup target was touched: %v", err)
+	}
+}
+
 func TestHandleGrepAndGlob(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", dir)

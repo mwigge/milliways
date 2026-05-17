@@ -28,13 +28,15 @@ import (
 // genAISystem maps milliways agent IDs to the OTel gen_ai.system value
 // from the OpenTelemetry Semantic Conventions for Generative AI.
 var genAISystem = map[string]string{
-	AgentIDClaude:  "anthropic",
-	AgentIDCodex:   "openai",
-	AgentIDCopilot: "github_copilot",
-	AgentIDGemini:  "google",
-	AgentIDPool:    "poolside",
-	AgentIDMiniMax: "minimax",
-	AgentIDLocal:   "local",
+	AgentIDClaude:   "anthropic",
+	AgentIDCodex:    "openai",
+	AgentIDCopilot:  "github_copilot",
+	AgentIDGemini:   "google",
+	AgentIDPool:     "poolside",
+	AgentIDMiniMax:  "minimax",
+	AgentIDLocal:    "local",
+	AgentIDKimi:     "moonshot",
+	AgentIDDeepSeek: "deepseek",
 }
 
 const tracerName = "github.com/mwigge/milliways/runners"
@@ -143,6 +145,16 @@ func currentModel(agentID string) string {
 			return m
 		}
 		return minimaxDefaultModel
+	case AgentIDKimi:
+		if m := strings.TrimSpace(os.Getenv("KIMI_MODEL")); m != "" {
+			return m
+		}
+		return openAICompatibleConfigs[AgentIDKimi].DefaultModel
+	case AgentIDDeepSeek:
+		if m := strings.TrimSpace(os.Getenv("DEEPSEEK_MODEL")); m != "" {
+			return m
+		}
+		return openAICompatibleConfigs[AgentIDDeepSeek].DefaultModel
 	case AgentIDLocal:
 		if m := strings.TrimSpace(os.Getenv("MILLIWAYS_LOCAL_MODEL")); m != "" {
 			return m

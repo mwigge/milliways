@@ -54,9 +54,10 @@ var runnerSystemPathFallbacks = []string{
 //     → required for the respective CLI to authenticate
 //   - OLLAMA_HOST → required if the user's local CLI workflow involves it
 //
-// Notably absent: MINIMAX_API_KEY, MILLIWAYS_LOCAL_API_KEY, AWS_*,
-// GITHUB_TOKEN, GH_TOKEN — these are not required by any of the CLIs we
-// shell to, so withholding them prevents accidental exfil.
+// Notably absent: MINIMAX_API_KEY, KIMI_API_KEY, MOONSHOT_API_KEY,
+// DEEPSEEK_API_KEY, MILLIWAYS_LOCAL_API_KEY, AWS_*, GITHUB_TOKEN,
+// GH_TOKEN — these are not required by any of the CLIs we shell to, so
+// withholding them prevents accidental exfil.
 var safeRunnerEnvKeys = map[string]bool{
 	"PATH": true, "HOME": true, "USER": true, "SHELL": true,
 	"TERM": true, "LANG": true, "LC_ALL": true, "LC_CTYPE": true,
@@ -68,7 +69,7 @@ var safeRunnerEnvKeys = map[string]bool{
 	// takes effect without restarting the daemon or its subprocesses.
 	"ANTHROPIC_MODEL": true, "OPENAI_MODEL": true, "CODEX_MODEL": true,
 	"CLAUDE_MODEL": true, "GEMINI_MODEL": true, "GOOGLE_MODEL": true,
-	"COPILOT_MODEL": true,
+	"COPILOT_MODEL": true, "KIMI_MODEL": true, "DEEPSEEK_MODEL": true,
 	// Claude Code 2.x runtime identity vars. CLAUDE_CODE_EXECPATH tells the
 	// binary where its versioned install lives (used to locate the credential
 	// store). Without these the daemon subprocess reports "Not logged in" even
