@@ -645,6 +645,17 @@ func executeOneToolCall(ctx context.Context, registry *tools.Registry, sessionID
 			}
 			toolSpan.SetAttributes(attribute.Bool("ai.tool.blocked", true))
 			endToolSpan(toolSpan, msg)
+			runToolAfterHook(ctx, hooks, ToolExecutionEvent{
+				SessionID:       sessionID,
+				Call:            call,
+				ToolName:        call.Name,
+				Args:            args,
+				Result:          msg,
+				OutputBytes:     len(msg),
+				OutputTruncated: toolOutputWouldTruncate(msg),
+				Blocked:         true,
+				Metadata:        decisionMetadata,
+			}, logger)
 			return msg, false
 		}
 	}

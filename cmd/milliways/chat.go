@@ -326,6 +326,7 @@ func buildCompleter(agentID string) []string {
 	// Session commands
 	items = append(items,
 		"/switch", "/takeover", "/login", "/briefing", "/model", "/agents", "/quota",
+		"/approvals", "/approve", "/deny",
 		"/parallel", "/parallel --providers", "/scan", "/security", "/security status",
 		"/security cra-scaffold", "/security client", "/security command-check --", "/security warnings", "/help", "/exit",
 		// Install / Upgrade
@@ -1529,6 +1530,12 @@ func (l *chatLoop) handleSlash(line string) {
 		l.printLastBriefing()
 	case "quota":
 		l.printQuota()
+	case "approvals":
+		l.handleApprovals()
+	case "approve":
+		l.handleApprovalRespond("approve", rest)
+	case "deny":
+		l.handleApprovalRespond("deny", rest)
 	case "ring":
 		l.handleRing(rest)
 	case "blocks":
@@ -1794,6 +1801,32 @@ type chatCodingDiffResult struct {
 	ID      int64  `json:"id,omitempty"`
 	Diff    string `json:"diff"`
 	Storage string `json:"storage"`
+}
+
+type chatApprovalListResult struct {
+	Approvals []chatApprovalRequest `json:"approvals"`
+	Storage   string                `json:"storage"`
+}
+
+type chatApprovalRequest struct {
+	ID        string `json:"id"`
+	AgentID   string `json:"agent_id,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Summary   string `json:"summary,omitempty"`
+	Command   string `json:"command,omitempty"`
+	Path      string `json:"path,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
+	Decision  string `json:"decision,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+type chatApprovalRespondResult struct {
+	OK       bool   `json:"ok"`
+	Accepted bool   `json:"accepted"`
+	ID       string `json:"id"`
+	Decision string `json:"decision"`
+	Storage  string `json:"storage"`
 }
 
 // runCtl shells to milliwaysctl with the given argv and streams its
@@ -3130,6 +3163,81 @@ func (l *chatLoop) handleChanges() {
 	}
 }
 
+func (l *chatLoop) handleApprovals() {
+	if l.client == nil {
+		fmt.Fprintln(l.out, "  no approval daemon client available")
+		return
+	}
+	var result chatApprovalListResult
+	if err := l.client.Call("approval.list", nil, &result); err != nil {
+		fmt.Fprintln(l.errw, friendlyError("✗ approval.list: ", "", err))
+		return
+	}
+	pending := make([]chatApprovalRequest, 0, len(result.Approvals))
+	for _, approval := range result.Approvals {
+		if strings.EqualFold(strings.TrimSpace(approval.Decision), "pending") {
+			pending = append(pending, approval)
+		}
+	}
+	if len(pending) == 0 {
+		fmt.Fprintln(l.out, "  no pending tool approvals")
+		return
+	}
+	fmt.Fprintln(l.out, "Pending tool approvals:")
+	for _, approval := range pending {
+		agent := fallbackString(approval.AgentID, "agent")
+		kind := fallbackString(approval.Kind, "tool")
+		summary := approval.Summary
+		if summary == "" {
+			summary = strings.TrimSpace(strings.Join(nonEmptyStrings(approval.Command, approval.Path), " "))
+		}
+		if summary == "" {
+			summary = "approval required"
+		}
+		fmt.Fprintf(l.out, "  #%s %-10s %-8s %s", approval.ID, agent, kind, summary)
+		if approval.Path != "" && !strings.Contains(summary, approval.Path) {
+			fmt.Fprintf(l.out, "  %s", approval.Path)
+		}
+		fmt.Fprintln(l.out)
+		fmt.Fprintf(l.out, "      /approve %s <reason>    /deny %s <reason>\n", approval.ID, approval.ID)
+	}
+}
+
+func (l *chatLoop) handleApprovalRespond(decision, rest string) {
+	fields := splitFields(rest)
+	if len(fields) == 0 {
+		fmt.Fprintf(l.errw, "usage: /%s <approval-id> [reason]\n", decision)
+		return
+	}
+	if l.client == nil {
+		fmt.Fprintln(l.out, "  no approval daemon client available")
+		return
+	}
+	id := fields[0]
+	reason := strings.TrimSpace(strings.TrimPrefix(rest, id))
+	var result chatApprovalRespondResult
+	if err := l.client.Call("approval.respond", map[string]string{
+		"id":       id,
+		"decision": decision,
+		"reason":   reason,
+	}, &result); err != nil {
+		fmt.Fprintln(l.errw, friendlyError("✗ approval.respond: ", "", err))
+		return
+	}
+	if !result.OK || !result.Accepted {
+		fmt.Fprintf(l.out, "  approval %s was not accepted\n", id)
+		return
+	}
+	fmt.Fprintf(l.out, "  approval %s accepted: %s\n", decision, fallbackString(result.ID, id))
+}
+
+func fallbackString(primary, secondary string) string {
+	if strings.TrimSpace(primary) != "" {
+		return primary
+	}
+	return secondary
+}
+
 func (l *chatLoop) handleDiff(rest string) {
 	if l.client == nil {
 		fmt.Fprintln(l.out, "  no tracked coding-agent diff")
@@ -3880,6 +3988,9 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /model <name>                 switch model live (minimax / kimi / deepseek / local)")
 	fmt.Fprintln(l.out, "  /agents                       list clients with live auth status")
 	fmt.Fprintln(l.out, "  /quota                        current quota snapshot")
+	fmt.Fprintln(l.out, "  /approvals                    list pending live tool approvals")
+	fmt.Fprintln(l.out, "  /approve <id> [reason]        approve a pending tool request")
+	fmt.Fprintln(l.out, "  /deny <id> [reason]           deny a pending tool request")
 	fmt.Fprintln(l.out, "  /metrics                      live metrics dashboard (token usage, costs, ops)")
 	fmt.Fprintln(l.out, "  /briefing                     re-show the full context handed off on last /takeover")
 	fmt.Fprintln(l.out, "  /login [client]               auth setup — API key prompt or CLI steps")

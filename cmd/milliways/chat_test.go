@@ -15,10 +15,12 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -27,6 +29,54 @@ import (
 
 	"github.com/mwigge/milliways/internal/rpc"
 )
+
+type fakeChatRPCRequest struct {
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+	ID     int64           `json:"id"`
+}
+
+func startFakeChatRPC(t *testing.T, handler func(fakeChatRPCRequest) any) (*rpc.Client, *[]fakeChatRPCRequest) {
+	t.Helper()
+	sock := filepath.Join(t.TempDir(), "milliwaysd.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen fake rpc: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	requests := []fakeChatRPCRequest{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		scan := bufio.NewScanner(conn)
+		enc := json.NewEncoder(conn)
+		for scan.Scan() {
+			var req fakeChatRPCRequest
+			if err := json.Unmarshal(scan.Bytes(), &req); err != nil {
+				return
+			}
+			requests = append(requests, req)
+			result := handler(req)
+			_ = enc.Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req.ID,
+				"result":  result,
+			})
+		}
+	}()
+	t.Cleanup(func() { <-done })
+	client, err := rpc.Dial(sock)
+	if err != nil {
+		t.Fatalf("dial fake rpc: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	return client, &requests
+}
 
 func TestDrainStreamRecordsModelEvent(t *testing.T) {
 	stream := make(chan []byte, 2)
@@ -483,6 +533,7 @@ func TestChatHelpEnumeratesKnownCommands(t *testing.T) {
 		"/login",
 		"/briefing",
 		"/model",
+		"/approvals", "/approve", "/deny",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("help output missing %q; got:\n%s", want, stdout.String())
@@ -1581,6 +1632,139 @@ func TestHandleSlashCodingAgentStubsAreNonDestructive(t *testing.T) {
 			}
 			if !strings.Contains(stdout.String(), tc.want) {
 				t.Fatalf("%s output missing %q:\n%s", tc.cmd, tc.want, stdout.String())
+			}
+		})
+	}
+}
+
+func TestHandleSlashApprovalsNilClientIsNonDestructive(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		cmd  string
+		want string
+	}{
+		{cmd: "/approvals", want: "no approval daemon client available"},
+		{cmd: "/approve 7 reviewed", want: "no approval daemon client available"},
+		{cmd: "/deny 8 outside scope", want: "no approval daemon client available"},
+	} {
+		t.Run(tc.cmd, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			loop := &chatLoop{
+				out:  &stdout,
+				errw: &stderr,
+			}
+
+			loop.handleSlash(tc.cmd)
+
+			if stderr.Len() != 0 {
+				t.Fatalf("%s stderr = %q, want empty", tc.cmd, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), tc.want) {
+				t.Fatalf("%s output missing %q:\n%s", tc.cmd, tc.want, stdout.String())
+			}
+		})
+	}
+}
+
+func TestHandleSlashApprovalsListsPendingRequests(t *testing.T) {
+	t.Parallel()
+
+	client, requests := startFakeChatRPC(t, func(req fakeChatRPCRequest) any {
+		if req.Method != "approval.list" {
+			t.Fatalf("method = %q, want approval.list", req.Method)
+		}
+		return map[string]any{
+			"storage": "pantry",
+			"approvals": []map[string]any{
+				{
+					"id":         "12",
+					"agent_id":   "codex",
+					"kind":       "shell",
+					"summary":    "run go test ./cmd/milliways",
+					"path":       "/repo",
+					"created_at": "2026-05-18T09:00:00Z",
+					"decision":   "pending",
+				},
+				{
+					"id":       "13",
+					"agent_id": "local",
+					"summary":  "already handled",
+					"decision": "approve",
+				},
+			},
+		}
+	})
+	var stdout, stderr bytes.Buffer
+	loop := &chatLoop{
+		client: client,
+		out:    &stdout,
+		errw:   &stderr,
+	}
+
+	loop.handleSlash("/approvals")
+
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	got := stdout.String()
+	for _, want := range []string{"Pending tool approvals", "#12", "codex", "shell", "run go test ./cmd/milliways", "/repo", "/approve 12", "/deny 12"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("approvals output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "already handled") {
+		t.Fatalf("approved request should not be shown by default:\n%s", got)
+	}
+	if len(*requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(*requests))
+	}
+}
+
+func TestHandleSlashApprovalRespondsWithReason(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		cmd      string
+		decision string
+		id       string
+		reason   string
+		want     string
+	}{
+		{cmd: "/approve 12 reviewed the diff", decision: "approve", id: "12", reason: "reviewed the diff", want: "approval approve accepted: 12"},
+		{cmd: "/deny 13 outside workspace", decision: "deny", id: "13", reason: "outside workspace", want: "approval deny accepted: 13"},
+	} {
+		t.Run(tc.cmd, func(t *testing.T) {
+			client, requests := startFakeChatRPC(t, func(req fakeChatRPCRequest) any {
+				if req.Method != "approval.respond" {
+					t.Fatalf("method = %q, want approval.respond", req.Method)
+				}
+				var params map[string]string
+				if err := json.Unmarshal(req.Params, &params); err != nil {
+					t.Fatalf("decode params: %v", err)
+				}
+				if params["id"] != tc.id || params["decision"] != tc.decision || params["reason"] != tc.reason {
+					t.Fatalf("params = %#v, want id=%q decision=%q reason=%q", params, tc.id, tc.decision, tc.reason)
+				}
+				return map[string]any{"ok": true, "accepted": true, "id": tc.id, "decision": tc.decision, "storage": "pantry"}
+			})
+			var stdout, stderr bytes.Buffer
+			loop := &chatLoop{
+				client: client,
+				out:    &stdout,
+				errw:   &stderr,
+			}
+
+			loop.handleSlash(tc.cmd)
+
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q, want empty", stderr.String())
+			}
+			if !strings.Contains(stdout.String(), tc.want) {
+				t.Fatalf("response acknowledgement missing %q:\n%s", tc.want, stdout.String())
+			}
+			if len(*requests) != 1 {
+				t.Fatalf("request count = %d, want 1", len(*requests))
 			}
 		})
 	}

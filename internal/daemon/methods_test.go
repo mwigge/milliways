@@ -460,6 +460,301 @@ func TestApprovalRespondResumesWaitingToolDecision(t *testing.T) {
 	}
 }
 
+func TestApprovalWaitTimeoutCleansWaiter(t *testing.T) {
+	t.Setenv("MILLIWAYS_PERMISSION_MODE", "auto")
+	t.Setenv("MILLIWAYS_APPROVAL_WAIT_TIMEOUT", "20ms")
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	path := filepath.Join(workspace, "old.txt")
+	if err := os.WriteFile(path, []byte("delete me"), 0o600); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+	db, err := pantry.Open(filepath.Join(t.TempDir(), "milliways.db"))
+	if err != nil {
+		t.Fatalf("pantry.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	hooks := codingToolHooks(db.Coding(), "minimax", workspace)
+	resultCh := make(chan runners.ToolDecisionResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		result, err := hooks.Decide(context.Background(), runners.ToolDecisionRequest{
+			SessionID: "sess-timeout",
+			Call: runners.ToolCall{
+				ID:   "call-delete-timeout",
+				Name: "Delete",
+				Args: `{"path":"` + filepath.ToSlash(path) + `"}`,
+			},
+			ToolName: "Delete",
+			Args: map[string]any{
+				"path": path,
+			},
+		})
+		resultCh <- result
+		errCh <- err
+	}()
+
+	var result runners.ToolDecisionResult
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("tool decision error = %v", err)
+		}
+		result = <-resultCh
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("tool decision did not return after approval wait timeout")
+	}
+	if result.Decision != runners.ToolDecisionBlock {
+		t.Fatalf("tool decision = %+v, want block", result)
+	}
+	if !strings.Contains(result.Message, "approval wait timed out") {
+		t.Fatalf("tool decision message = %q, want timeout", result.Message)
+	}
+
+	approvals, err := db.Coding().ListToolApprovals("", "", 10)
+	if err != nil {
+		t.Fatalf("ListToolApprovals: %v", err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("approval count = %d, want 1", len(approvals))
+	}
+	if approvals[0].Decision != "deny" {
+		t.Fatalf("approval decision after timeout = %q, want deny", approvals[0].Decision)
+	}
+	if !strings.Contains(approvals[0].Reason, "approval wait timed out") {
+		t.Fatalf("approval reason after timeout = %q, want timeout", approvals[0].Reason)
+	}
+	id := approvals[0].ID
+
+	toolApprovalWaiters.Lock()
+	waiterCount := len(toolApprovalWaiters.chans[id])
+	toolApprovalWaiters.Unlock()
+	if waiterCount != 0 {
+		t.Fatalf("approval waiter count for %d = %d, want 0", id, waiterCount)
+	}
+}
+
+func TestCodingToolHookMetadataRedactsMutationPreview(t *testing.T) {
+	t.Setenv("MILLIWAYS_PERMISSION_MODE", "default")
+	t.Setenv("MILLIWAYS_APPROVAL_WAIT_TIMEOUT", "20ms")
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	path := filepath.Join(workspace, "secret.txt")
+	db, err := pantry.Open(filepath.Join(t.TempDir(), "milliways.db"))
+	if err != nil {
+		t.Fatalf("pantry.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	hooks := codingToolHooks(db.Coding(), "minimax", workspace)
+	secret := "super-secret-token"
+	result, err := hooks.Decide(context.Background(), runners.ToolDecisionRequest{
+		SessionID: "sess-redact",
+		Call: runners.ToolCall{
+			ID:   "call-write",
+			Name: "Write",
+			Args: `{"path":"` + filepath.ToSlash(path) + `"}`,
+		},
+		ToolName: "Write",
+		Args: map[string]any{
+			"path":    path,
+			"content": secret,
+		},
+	})
+	if err != nil {
+		t.Fatalf("tool decision error = %v", err)
+	}
+	if result.Decision != runners.ToolDecisionBlock {
+		t.Fatalf("tool decision = %+v, want block after approval timeout", result)
+	}
+	rawMetadata, err := json.Marshal(result.Metadata)
+	if err != nil {
+		t.Fatalf("marshal metadata: %v", err)
+	}
+	if strings.Contains(string(rawMetadata), secret) {
+		t.Fatalf("tool decision metadata leaked mutation preview: %s", rawMetadata)
+	}
+
+	approvals, err := db.Coding().ListToolApprovals("", "", 10)
+	if err != nil {
+		t.Fatalf("ListToolApprovals: %v", err)
+	}
+	if len(approvals) != 1 {
+		t.Fatalf("approval count = %d, want 1", len(approvals))
+	}
+	if approvals[0].Preview != secret {
+		t.Fatalf("approval preview = %q, want audit preview", approvals[0].Preview)
+	}
+	if approvals[0].Decision != "deny" {
+		t.Fatalf("approval decision after timeout = %q, want deny", approvals[0].Decision)
+	}
+}
+
+func TestApprovalRespondDenyResumesWaitingToolDecisionAsBlock(t *testing.T) {
+	t.Setenv("MILLIWAYS_PERMISSION_MODE", "auto")
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	path := filepath.Join(workspace, "old.txt")
+	if err := os.WriteFile(path, []byte("delete me"), 0o600); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+	db, err := pantry.Open(filepath.Join(t.TempDir(), "milliways.db"))
+	if err != nil {
+		t.Fatalf("pantry.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	hooks := codingToolHooks(db.Coding(), "minimax", workspace)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	resultCh := make(chan runners.ToolDecisionResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		result, err := hooks.Decide(ctx, runners.ToolDecisionRequest{
+			SessionID: "sess-deny",
+			Call: runners.ToolCall{
+				ID:   "call-delete-deny",
+				Name: "Delete",
+				Args: `{"path":"` + filepath.ToSlash(path) + `"}`,
+			},
+			ToolName: "Delete",
+			Args: map[string]any{
+				"path": path,
+			},
+		})
+		resultCh <- result
+		errCh <- err
+	}()
+
+	var approvalID string
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		approvals, err := db.Coding().ListToolApprovals("", "", 10)
+		if err != nil {
+			t.Fatalf("ListToolApprovals: %v", err)
+		}
+		if len(approvals) > 0 {
+			approvalID = strconv.FormatInt(approvals[0].ID, 10)
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if approvalID == "" {
+		t.Fatal("waiting tool decision did not record a pending approval")
+	}
+
+	srv := &Server{spans: observability.NewRing(10), pantryDB: db}
+	var respondBuf bytes.Buffer
+	params := json.RawMessage(`{"id":"` + approvalID + `","decision":"deny","reason":"not safe"}`)
+	srv.dispatch(json.NewEncoder(&respondBuf), &Request{
+		JSONRPC: "2.0",
+		Method:  "approval.respond",
+		Params:  params,
+		ID:      json.RawMessage(`1`),
+	})
+	var respondResp Response
+	if err := json.Unmarshal(respondBuf.Bytes(), &respondResp); err != nil {
+		t.Fatalf("decode approval.respond response: %v", err)
+	}
+	if respondResp.Error != nil {
+		t.Fatalf("approval.respond error = %+v", respondResp.Error)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("tool decision error = %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("tool decision did not resume after denial")
+	}
+	select {
+	case result := <-resultCh:
+		if result.Decision != runners.ToolDecisionBlock {
+			t.Fatalf("tool decision = %+v, want block", result)
+		}
+		if !strings.Contains(result.Message, "denied by approval response") {
+			t.Fatalf("tool decision message = %q, want denial reason", result.Message)
+		}
+		if result.Metadata["approval_decision"] != "deny" {
+			t.Fatalf("approval metadata = %+v, want approval_decision deny", result.Metadata)
+		}
+	case <-ctx.Done():
+		t.Fatal("tool decision result missing after denial")
+	}
+
+	approvals, err := db.Coding().ListToolApprovals("", "", 10)
+	if err != nil {
+		t.Fatalf("ListToolApprovals: %v", err)
+	}
+	if len(approvals) != 1 || approvals[0].Decision != "deny" || approvals[0].Reason != "not safe" {
+		t.Fatalf("approval record after deny = %+v", approvals)
+	}
+}
+
+func TestToolApprovalWaiterCancellationCleansWaiter(t *testing.T) {
+	db, err := pantry.Open(filepath.Join(t.TempDir(), "milliways.db"))
+	if err != nil {
+		t.Fatalf("pantry.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	id, err := db.Coding().RecordToolApproval(pantry.ToolApproval{
+		Workspace: "/repo",
+		SessionID: "sess-cancel",
+		Client:    "minimax",
+		ToolName:  "Delete",
+		Operation: "delete",
+		Path:      "/repo/old.txt",
+		Decision:  "pending",
+	})
+	if err != nil {
+		t.Fatalf("RecordToolApproval: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := waitForToolApproval(ctx, db.Coding(), id)
+		errCh <- err
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		toolApprovalWaiters.Lock()
+		waiterCount := len(toolApprovalWaiters.chans[id])
+		toolApprovalWaiters.Unlock()
+		if waiterCount == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	toolApprovalWaiters.Lock()
+	waiterCount := len(toolApprovalWaiters.chans[id])
+	toolApprovalWaiters.Unlock()
+	if waiterCount != 1 {
+		t.Fatalf("waiter count before cancel = %d, want 1", waiterCount)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "canceled") {
+			t.Fatalf("waitForToolApproval err = %v, want canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("waitForToolApproval did not return after cancellation")
+	}
+
+	toolApprovalWaiters.Lock()
+	_, stillRegistered := toolApprovalWaiters.chans[id]
+	toolApprovalWaiters.Unlock()
+	if stillRegistered {
+		t.Fatalf("waiter for approval %d remained registered after cancellation", id)
+	}
+}
+
 // TestHistoryRPC simulates appending history via history.append and reading
 // it back via history.get through the internal helpers. Uses a temp dir as
 // the server state dir to avoid touching the real runtime state.

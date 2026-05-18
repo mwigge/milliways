@@ -181,6 +181,70 @@ func TestRunAgenticLoop_PreToolDecisionHookBlocksBeforeExecution(t *testing.T) {
 	}
 }
 
+func TestRunAgenticLoop_PreToolDecisionBlockEmitsAfterHookEvent(t *testing.T) {
+	t.Parallel()
+
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "echo", Args: `{"text":"blocked"}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	executed := false
+	registry.Register("echo", func(_ context.Context, _ map[string]any) (string, error) {
+		executed = true
+		return "should not run", nil
+	}, provider.ToolDef{Name: "echo"})
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+	afterEvents := make(chan ToolExecutionEvent, 1)
+
+	_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		SessionID: "session-block",
+		ToolHooks: ToolHooks{
+			Decide: func(_ context.Context, _ ToolDecisionRequest) (ToolDecisionResult, error) {
+				return ToolDecisionResult{
+					Decision: ToolDecisionBlock,
+					Message:  "approval denied",
+					Metadata: map[string]any{
+						"approval_id":       int64(42),
+						"approval_decision": "deny",
+					},
+				}, nil
+			},
+			After: func(_ context.Context, ev ToolExecutionEvent) error {
+				afterEvents <- ev
+				return nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	if executed {
+		t.Fatal("tool executed despite pre-tool block")
+	}
+
+	select {
+	case event := <-afterEvents:
+		if !event.Blocked {
+			t.Fatalf("after event Blocked = false, want true: %#v", event)
+		}
+		if event.SessionID != "session-block" || event.Call.ID != "c1" || event.ToolName != "echo" {
+			t.Fatalf("after event metadata = %#v, want blocked tool call metadata", event)
+		}
+		if !strings.Contains(event.Result, "approval denied") {
+			t.Fatalf("after event result = %q, want denial message", event.Result)
+		}
+		if event.Metadata["approval_decision"] != "deny" {
+			t.Fatalf("after event metadata = %+v, want approval_decision deny", event.Metadata)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("after hook was not called for pre-tool decision block")
+	}
+}
+
 func TestRunAgenticLoop_PreToolDecisionHookCanResumeOriginalToolCall(t *testing.T) {
 	t.Parallel()
 

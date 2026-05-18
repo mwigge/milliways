@@ -48,7 +48,7 @@ func codingToolHooks(store *pantry.CodingStore, agentID, workspace string) runne
 					Metadata: metadata,
 				}, nil
 			} else if ok {
-				metadata["mutation"] = meta
+				metadata["mutation"] = observableMutationMetadata(meta)
 				if store != nil {
 					var err error
 					approvalID, err = recordToolApproval(store, pantry.ToolApproval{
@@ -102,6 +102,7 @@ func codingToolHooks(store *pantry.CodingStore, agentID, workspace string) runne
 				if approvalID > 0 {
 					decision, err := waitForToolApproval(ctx, store, approvalID)
 					if err != nil {
+						markPendingToolApprovalDenied(store, approvalID, err.Error())
 						return runners.ToolDecisionResult{
 							Decision: runners.ToolDecisionBlock,
 							Message:  "approval wait cancelled before tool execution: " + err.Error(),
@@ -170,6 +171,32 @@ func recordToolApproval(store *pantry.CodingStore, approval pantry.ToolApproval,
 		approval.Decision = "pending"
 	}
 	return store.RecordToolApproval(approval)
+}
+
+func markPendingToolApprovalDenied(store *pantry.CodingStore, approvalID int64, reason string) {
+	if store == nil || approvalID <= 0 {
+		return
+	}
+	decision, err := currentToolApprovalDecision(store, approvalID)
+	if err != nil || decision != "" {
+		return
+	}
+	_ = store.UpdateToolApprovalDecision(approvalID, "deny", reason)
+}
+
+func observableMutationMetadata(meta mwtools.MutationMetadata) map[string]any {
+	return map[string]any{
+		"tool_name":       meta.ToolName,
+		"operation":       string(meta.Operation),
+		"path":            meta.Path,
+		"workspace_root":  meta.WorkspaceRoot,
+		"before_hash":     meta.BeforeHash,
+		"before_exists":   meta.BeforeExists,
+		"preview_bytes":   len(meta.Preview),
+		"diff_bytes":      len(meta.Diff),
+		"preview_present": meta.Preview != "",
+		"diff_present":    meta.Diff != "",
+	}
 }
 
 func sensitiveToolPreview(req mwtools.ToolPermissionRequest) string {

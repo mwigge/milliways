@@ -16,7 +16,9 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -29,9 +31,18 @@ var toolApprovalWaiters = struct {
 	chans map[int64][]chan string
 }{chans: map[int64][]chan string{}}
 
+const defaultToolApprovalWaitTimeout = 30 * time.Minute
+
+var errToolApprovalWaitTimeout = errors.New("approval wait timed out")
+
 func waitForToolApproval(ctx context.Context, store *pantry.CodingStore, id int64) (string, error) {
 	if store == nil || id <= 0 {
 		return "", fmt.Errorf("approval wait requires pantry storage and a positive id")
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, toolApprovalWaitTimeout())
+		defer cancel()
 	}
 	ch := registerToolApprovalWaiter(id)
 	defer unregisterToolApprovalWaiter(id, ch)
@@ -48,6 +59,9 @@ func waitForToolApproval(ctx context.Context, store *pantry.CodingStore, id int6
 		}
 		select {
 		case <-ctx.Done():
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return "", errToolApprovalWaitTimeout
+			}
 			return "", ctx.Err()
 		case decision := <-ch:
 			decision = normalizeStoredApprovalDecision(decision)
@@ -57,6 +71,18 @@ func waitForToolApproval(ctx context.Context, store *pantry.CodingStore, id int6
 		case <-ticker.C:
 		}
 	}
+}
+
+func toolApprovalWaitTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("MILLIWAYS_APPROVAL_WAIT_TIMEOUT"))
+	if raw == "" {
+		return defaultToolApprovalWaitTimeout
+	}
+	timeout, err := time.ParseDuration(raw)
+	if err != nil || timeout <= 0 {
+		return defaultToolApprovalWaitTimeout
+	}
+	return timeout
 }
 
 func registerToolApprovalWaiter(id int64) chan string {
