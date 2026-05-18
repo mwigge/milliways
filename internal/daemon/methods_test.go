@@ -835,7 +835,7 @@ func TestHistoryRPC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tmpdir: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	agent := "_test-agent"
 	p := map[string]any{"hello": "world"}

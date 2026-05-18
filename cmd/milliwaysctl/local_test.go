@@ -991,7 +991,7 @@ func TestWaitDaemonSocketReadyWaitsForSocket(t *testing.T) {
 			close(ready)
 			return
 		}
-		defer ln.Close()
+		defer func() { _ = ln.Close() }() //nolint:errcheck // test listener cleanup
 		close(ready)
 		conn, err := ln.Accept()
 		if err == nil {

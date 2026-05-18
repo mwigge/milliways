@@ -136,7 +136,11 @@ func TestAgentOpen_SecurityContextInjected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mkdtemp: %v", err)
 	}
-	defer os.RemoveAll(stateDir)
+	defer func() {
+		if err := os.RemoveAll(stateDir); err != nil {
+			t.Errorf("RemoveAll state dir: %v", err)
+		}
+	}()
 
 	sock := filepath.Join(stateDir, "sock")
 
@@ -145,7 +149,7 @@ func TestAgentOpen_SecurityContextInjected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pantry.Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	workspace, _ := os.Getwd()
 	if err := db.Security().UpsertFinding(pantry.SecurityFinding{
@@ -167,14 +171,14 @@ func TestAgentOpen_SecurityContextInjected(t *testing.T) {
 		t.Fatalf("NewServer: %v", err)
 	}
 	srv.pantryDB = db
-	go srv.Serve()
-	defer srv.Close()
+	serveTestServer(t, srv)
+	defer closeTestServer(t, srv)
 
 	time.Sleep(50 * time.Millisecond)
 
 	conn, sidecar, handle, _ := dialAndSetup(t, sock)
-	defer conn.Close()
-	defer sidecar.Close()
+	defer closeTestConn(t, conn)
+	defer closeTestConn(t, sidecar)
 
 	// Send a test message to the _echo agent so the stream is active.
 	enc := json.NewEncoder(conn)
@@ -221,7 +225,11 @@ func TestAgentOpen_SecurityContextSuppressed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mkdtemp: %v", err)
 	}
-	defer os.RemoveAll(stateDir)
+	defer func() {
+		if err := os.RemoveAll(stateDir); err != nil {
+			t.Errorf("RemoveAll state dir: %v", err)
+		}
+	}()
 
 	sock := filepath.Join(stateDir, "sock")
 
@@ -229,7 +237,7 @@ func TestAgentOpen_SecurityContextSuppressed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pantry.Open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	workspace, _ := os.Getwd()
 	if err := db.Security().UpsertFinding(pantry.SecurityFinding{
@@ -249,8 +257,8 @@ func TestAgentOpen_SecurityContextSuppressed(t *testing.T) {
 		t.Fatalf("NewServer: %v", err)
 	}
 	srv.pantryDB = db
-	go srv.Serve()
-	defer srv.Close()
+	serveTestServer(t, srv)
+	defer closeTestServer(t, srv)
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -258,7 +266,7 @@ func TestAgentOpen_SecurityContextSuppressed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+	defer closeTestConn(t, conn)
 
 	enc := json.NewEncoder(conn)
 	reader := bufio.NewReader(conn)
@@ -318,7 +326,7 @@ func TestAgentOpen_SecurityContextSuppressed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial sidecar: %v", err)
 	}
-	defer sidecar.Close()
+	defer closeTestConn(t, sidecar)
 	if _, err := sidecar.Write([]byte("STREAM " + itoa(streamID) + " 0\n")); err != nil {
 		t.Fatalf("write sidecar preamble: %v", err)
 	}

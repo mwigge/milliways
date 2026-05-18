@@ -125,7 +125,7 @@ func (a *CodexAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Even
 		defer func() {
 			a.mu.Lock()
 			if a.stdinPipe != nil {
-				a.stdinPipe.Close()
+				_ = a.stdinPipe.Close()
 				a.stdinPipe = nil
 			}
 			a.processID = 0

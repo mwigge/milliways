@@ -518,7 +518,7 @@ func readNPMRC(path string) map[string]string {
 	if err != nil {
 		return values
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())

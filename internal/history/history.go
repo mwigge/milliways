@@ -43,15 +43,17 @@ func AppendAgentHistory(stateDir, agentID string, payload any, maxLines int) err
 	enc := map[string]any{"t": time.Now().UnixMilli(), "v": payload}
 	b, err := json.Marshal(enc)
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	if _, err := f.Write(append(b, '\n')); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	_ = f.Sync() // best effort
-	f.Close()
+	if err := f.Close(); err != nil {
+		return err
+	}
 
 	// Trim to maxLines by rewinding and copying last maxLines lines.
 	// Simple but not optimal for very large files.
@@ -72,7 +74,9 @@ func ReadAgentHistory(stateDir, agentID string, limit int) ([]map[string]any, er
 		}
 		return nil, err
 	}
-	defer f.Close()
+	defer func() {
+		_ = f.Close()
+	}()
 	var out []map[string]any
 	s := bufio.NewScanner(f)
 	for s.Scan() {
@@ -98,7 +102,9 @@ func trimFileToLines(path string, maxLines int) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		_ = f.Close()
+	}()
 
 	s := bufio.NewScanner(f)
 	var lines [][]byte
@@ -121,7 +127,7 @@ func trimFileToLines(path string, maxLines int) error {
 	}
 	for i := start; i < len(lines); i++ {
 		if _, err := tf.Write(append(lines[i], '\n')); err != nil {
-			tf.Close()
+			_ = tf.Close()
 			return err
 		}
 	}

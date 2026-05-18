@@ -141,8 +141,12 @@ func TestClientKGQueryAddInvalidate(t *testing.T) {
 func TestNewClientFromEnvRequiresCommand(t *testing.T) {
 	t.Parallel()
 
-	os.Unsetenv("MILLIWAYS_MEMPALACE_MCP_CMD")
-	os.Unsetenv("MEMPALACE_MCP_CMD")
+	if err := os.Unsetenv("MILLIWAYS_MEMPALACE_MCP_CMD"); err != nil {
+		t.Fatalf("Unsetenv MILLIWAYS_MEMPALACE_MCP_CMD: %v", err)
+	}
+	if err := os.Unsetenv("MEMPALACE_MCP_CMD"); err != nil {
+		t.Fatalf("Unsetenv MEMPALACE_MCP_CMD: %v", err)
+	}
 	_, err := NewClientFromEnv()
 	if err == nil {
 		t.Fatal("expected missing env error")

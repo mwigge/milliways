@@ -72,10 +72,14 @@ func launchWezTerm(result DispatchResult, groupID string) error {
 
 // printHeadlessFallback writes a human-readable slot summary to w.
 func printHeadlessFallback(w io.Writer, result DispatchResult) error {
-	fmt.Fprintln(w, "[parallel] WezTerm not detected — running headless.")
+	if _, err := fmt.Fprintln(w, "[parallel] WezTerm not detected — running headless."); err != nil {
+		return err
+	}
 	for _, slot := range result.Slots {
-		fmt.Fprintf(w, "  slot %d: %s  (milliways attach %d)\n",
-			slot.SlotN, slot.Provider, slot.Handle)
+		if _, err := fmt.Fprintf(w, "  slot %d: %s  (milliways attach %d)\n",
+			slot.SlotN, slot.Provider, slot.Handle); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//nolint:errcheck // Interactive terminal writes are best-effort; command/RPC errors are handled explicitly.
 package main
 
 // Interactive chat loop on top of daemon RPC. The user persona this
@@ -947,7 +948,7 @@ func (l *chatLoop) run(ctx context.Context) error {
 		line, err := l.rl.Readline()
 		if errors.Is(err, errLineInterrupt) {
 			if l.cancelActiveSession() {
-				fmt.Fprintln(l.errw, "Active stream cancelled. Use /switch <client> to start again, or /exit to quit.")
+				_, _ = fmt.Fprintln(l.errw, "Active stream cancelled. Use /switch <client> to start again, or /exit to quit.")
 			}
 			continue
 		}
@@ -1089,10 +1090,10 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			if h, ok := l.out.(*codeHighlighter); ok {
 				_ = h.Flush()
 				if !h.endsWithNewline() {
-					fmt.Fprintln(h.out)
+					_, _ = fmt.Fprintln(h.out)
 				}
 			} else {
-				fmt.Fprintln(l.out)
+				_, _ = fmt.Fprintln(l.out)
 			}
 			// Snapshot + reset the streamed response into a turn entry.
 			sess.pendingMu.Lock()
@@ -1141,9 +1142,9 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			msg, _ := ev["msg"].(string)
 			agent, _ := ev["agent"].(string)
 			l.beginStreamOutput(sess)
-			fmt.Fprintln(l.errw, "✗ "+msg)
+			_, _ = fmt.Fprintln(l.errw, "✗ "+msg)
 			if strings.Contains(msg, "not set") || strings.Contains(msg, "API_KEY") {
-				fmt.Fprintln(l.errw, "  → /login  for auth setup")
+				_, _ = fmt.Fprintln(l.errw, "  → /login  for auth setup")
 			}
 			sess.busyMu.Lock()
 			sess.busy = false
@@ -1171,7 +1172,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			flushThinking()
 			status, _ := ev["status"].(string)
 			l.beginStreamOutput(sess)
-			fmt.Fprintln(l.errw, "⚠ rate limit: "+status)
+			_, _ = fmt.Fprintln(l.errw, "⚠ rate limit: "+status)
 			sess.busyMu.Lock()
 			sess.busy = false
 			sess.busyMu.Unlock()
@@ -1416,9 +1417,9 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any, turnSaved bool) {
 	}
 
 	if mh, _ := chunkEnd["max_turns_hit"].(bool); mh {
-		fmt.Fprintln(l.out, "\n────────────────────────────────────────")
-		fmt.Fprintln(l.out, " ⚑  Reached the 100-turn agentic limit.")
-		fmt.Fprintln(l.out, "────────────────────────────────────────")
+		_, _ = fmt.Fprintln(l.out, "\n────────────────────────────────────────")
+		_, _ = fmt.Fprintln(l.out, " ⚑  Reached the 100-turn agentic limit.")
+		_, _ = fmt.Fprintln(l.out, "────────────────────────────────────────")
 		if l.sess != nil {
 			// Send a summarization prompt — the response streams back
 			// normally so the user gets a clean handoff summary.
@@ -1474,7 +1475,7 @@ func (l *chatLoop) handleSlash(line string) {
 			if strings.TrimPrefix(cmd, "/") == verb {
 				l.appendTurn(chatTurn{Role: "user", Text: line})
 				if err := l.sendWithReconnect(l.sess, line); err != nil {
-					fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
+					_, _ = fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 				}
 				return
 			}
@@ -1485,7 +1486,7 @@ func (l *chatLoop) handleSlash(line string) {
 	if args, ok := chatCtlAliases[verb]; ok {
 		if l.runCtl(append(append([]string{}, args...), splitFields(rest)...)) && (isLocalInstallAlias(verb) || (verb == "install" && strings.TrimSpace(rest) == "local")) {
 			if err := l.reconnectAfterLocalInstall(); err != nil {
-				fmt.Fprintln(l.errw, friendlyError("warn: reconnect milliwaysd: ", "", err))
+				_, _ = fmt.Fprintln(l.errw, friendlyError("warn: reconnect milliwaysd: ", "", err))
 			}
 			l.switchAgent("local")
 		}
@@ -1495,7 +1496,7 @@ func (l *chatLoop) handleSlash(line string) {
 	switch verb {
 	case "switch":
 		if rest == "" {
-			fmt.Fprintln(l.errw, "usage: /switch <agent>  — see /agents for the list")
+			_, _ = fmt.Fprintln(l.errw, "usage: /switch <agent>  — see /agents for the list")
 			return
 		}
 		l.switchAgent(rest)
@@ -1632,9 +1633,9 @@ func (l *chatLoop) confirmExitRequested(source string) bool {
 	// Bug 6: name the blocking session so the user knows which one to address.
 	blocking := l.busySessionName()
 	if blocking != "" {
-		fmt.Fprintf(l.errw, "%s: response still in progress — switch to it and wait, or press Ctrl+C to cancel (%s ignored); use /cancel to stop it or /exit! to quit anyway\n", blocking, source)
+		_, _ = fmt.Fprintf(l.errw, "%s: response still in progress — switch to it and wait, or press Ctrl+C to cancel (%s ignored); use /cancel to stop it or /exit! to quit anyway\n", blocking, source)
 	} else {
-		fmt.Fprintf(l.errw, "response still in progress — %s ignored; use /cancel to stop it or /exit! to quit anyway\n", source)
+		_, _ = fmt.Fprintf(l.errw, "response still in progress — %s ignored; use /cancel to stop it or /exit! to quit anyway\n", source)
 	}
 	return false
 }
@@ -1719,7 +1720,7 @@ func writeMilliwaysExitUserVar(w io.Writer) {
 		return
 	}
 	value := base64.StdEncoding.EncodeToString([]byte(milliwaysExitUserVarValue))
-	fmt.Fprintf(w, "\x1b]1337;SetUserVar=%s=%s\x07", milliwaysExitUserVar, value)
+	_, _ = fmt.Fprintf(w, "\x1b]1337;SetUserVar=%s=%s\x07", milliwaysExitUserVar, value)
 }
 
 func (l *chatLoop) anyBusy() bool {
@@ -1840,7 +1841,7 @@ func (l *chatLoop) runCtl(args []string) bool {
 		fmt.Fprintln(l.errw, "✗ milliwaysctl not on PATH; install with `make install` or set MILLIWAYSCTL_BIN")
 		return false
 	}
-	fmt.Fprintf(l.out, "• Ran `%s %s`\n", filepath.Base(bin), strings.Join(args, " "))
+	_, _ = fmt.Fprintf(l.out, "• Ran `%s %s`\n", filepath.Base(bin), strings.Join(args, " "))
 	c := exec.Command(bin, args...)
 	c.Stdin = os.Stdin
 	c.Stdout = l.out
@@ -2220,7 +2221,7 @@ func (l *chatLoop) sendAgentPrompt(agentID, prompt string) {
 		l.setPromptState("thinking")
 	}
 	if !wasActive {
-		fmt.Fprintf(l.out, "%s background started\n", agentID)
+		_, _ = fmt.Fprintf(l.out, "%s background started\n", agentID)
 	}
 }
 
@@ -2239,7 +2240,7 @@ func (l *chatLoop) handleTakeover(newID string) {
 	l.activateSession(sess)
 	if ok {
 		m, ep := l.displayModelInfo(newID)
-		fmt.Fprintf(l.out, "%s  model: %s  (%s)\n", newID, m, ep)
+		_, _ = fmt.Fprintf(l.out, "%s  model: %s  (%s)\n", newID, m, ep)
 		l.printBriefingBlock(l.snapshotTurns(), fromID)
 		l.lastBriefingFrom = fromID
 		l.lastBriefing = briefing
@@ -2249,7 +2250,7 @@ func (l *chatLoop) handleTakeover(newID string) {
 		}
 		return
 	}
-	fmt.Fprintf(l.out, "%s active\n", newID)
+	_, _ = fmt.Fprintf(l.out, "%s active\n", newID)
 }
 
 // switchAgent changes the visible workspace without sending a handoff.
@@ -2277,7 +2278,7 @@ func (l *chatLoop) switchAgent(newID string) {
 
 	// Print the live model + endpoint so the user knows exactly what's active.
 	m, ep := l.displayModelInfo(newID)
-	fmt.Fprintf(l.out, "%s  model: %s  (%s)\n", newID, m, ep)
+	_, _ = fmt.Fprintf(l.out, "%s  model: %s  (%s)\n", newID, m, ep)
 
 	// Health-check the local runner endpoint immediately on switch so the
 	// user knows before their first prompt whether the server is reachable.
@@ -2299,7 +2300,7 @@ func checkLocalEndpoint(endpoint string, out, errw io.Writer) {
 	client := &http.Client{Timeout: 4 * time.Second}
 	req, err := http.NewRequest(http.MethodGet, url, nil) //nolint:noctx
 	if err != nil {
-		fmt.Fprintf(errw, "  ✗ local server not reachable at %s\n", endpoint)
+		_, _ = fmt.Fprintf(errw, "  ✗ local server not reachable at %s\n", endpoint)
 		return
 	}
 	if apiKey := strings.TrimSpace(os.Getenv("MILLIWAYS_LOCAL_API_KEY")); apiKey != "" {
@@ -2307,13 +2308,13 @@ func checkLocalEndpoint(endpoint string, out, errw io.Writer) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Fprintf(errw, "  ✗ local server not reachable at %s\n", endpoint)
-		fmt.Fprintf(errw, "    run: /install-local-server  or  /local-endpoint <url>\n")
+		_, _ = fmt.Fprintf(errw, "  ✗ local server not reachable at %s\n", endpoint)
+		_, _ = fmt.Fprintf(errw, "    run: /install-local-server  or  /local-endpoint <url>\n")
 		return
 	}
 	defer resp.Body.Close() //nolint:errcheck // best-effort close after local health response is consumed
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(errw, "  ✗ local server at %s returned HTTP %d\n", endpoint, resp.StatusCode)
+		_, _ = fmt.Fprintf(errw, "  ✗ local server at %s returned HTTP %d\n", endpoint, resp.StatusCode)
 		return
 	}
 	// Parse model list and show what's loaded.
@@ -2324,7 +2325,7 @@ func checkLocalEndpoint(endpoint string, out, errw io.Writer) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 	if err := json.Unmarshal(body, &result); err != nil || len(result.Data) == 0 {
-		fmt.Fprintf(out, "  ✓ local server reachable (no models listed)\n")
+		_, _ = fmt.Fprintf(out, "  ✓ local server reachable (no models listed)\n")
 		return
 	}
 	names := make([]string, 0, len(result.Data))
@@ -2333,7 +2334,7 @@ func checkLocalEndpoint(endpoint string, out, errw io.Writer) {
 			names = append(names, d.ID)
 		}
 	}
-	fmt.Fprintf(out, "  ✓ local server ready  models: %s\n", strings.Join(names, ", "))
+	_, _ = fmt.Fprintf(out, "  ✓ local server ready  models: %s\n", strings.Join(names, ", "))
 }
 
 // buildBriefing assembles a handoff message summarising the recent
@@ -2471,7 +2472,7 @@ func (l *chatLoop) printBriefingBlock(turns []chatTurn, fromID string) {
 	if len(turns) != 1 {
 		noun = "turns"
 	}
-	fmt.Fprintf(l.out, "  ╷ context from %s (%d %s)\n", fromID, len(turns), noun)
+	_, _ = fmt.Fprintf(l.out, "  ╷ context from %s (%d %s)\n", fromID, len(turns), noun)
 	for _, t := range turns {
 		role := "user"
 		if t.Role == "assistant" {
@@ -2492,9 +2493,9 @@ func (l *chatLoop) printBriefingBlock(turns []chatTurn, fromID string) {
 			}
 			line = line[:cut] + "…"
 		}
-		fmt.Fprintf(l.out, "  │ %s %s\n", label, line)
+		_, _ = fmt.Fprintf(l.out, "  │ %s %s\n", label, line)
 	}
-	fmt.Fprintf(l.out, "  ╵ /briefing to re-read full context\n")
+	_, _ = fmt.Fprintf(l.out, "  ╵ /briefing to re-read full context\n")
 }
 
 // printLastBriefing shows the full briefing text sent on the most recent
@@ -2504,7 +2505,7 @@ func (l *chatLoop) printLastBriefing() {
 		fmt.Fprintln(l.out, "  (no briefing yet — switch runners first)")
 		return
 	}
-	fmt.Fprintf(l.out, "  ╷ Summary · full briefing sent to active runner (from %s)\n", l.lastBriefingFrom)
+	_, _ = fmt.Fprintf(l.out, "  ╷ Summary · full briefing sent to active runner (from %s)\n", l.lastBriefingFrom)
 	writePrefixedRenderedMarkdown(l.out, l.lastBriefing, "  │ ")
 	fmt.Fprintln(l.out, "  ╵")
 }

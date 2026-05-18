@@ -89,7 +89,7 @@ func (s *Store) RollupGet(p RollupGetParams) (*RollupGetResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	buckets := make([]Bucket, 0, 64)
 	for rows.Next() {

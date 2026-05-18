@@ -321,7 +321,9 @@ func TestSpan_StatusValues(t *testing.T) {
 		}
 
 		var raw map[string]any
-		json.Unmarshal(data, &raw)
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("failed to unmarshal span: %v", err)
+		}
 
 		// Status field should be present regardless of value
 		if raw["status"] != tc.status {
@@ -510,7 +512,9 @@ func TestSpan_JSONFieldNames(t *testing.T) {
 	}
 	data, _ := json.Marshal(span)
 	var decoded map[string]any
-	json.Unmarshal(data, &decoded)
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
 
 	expectedFields := []string{"trace_id", "span_id", "name", "start_ts", "duration_ms", "status"}
 	for _, field := range expectedFields {
@@ -597,7 +601,9 @@ func TestSpan_FullFields(t *testing.T) {
 	}
 
 	var decoded map[string]any
-	json.Unmarshal(data, &decoded)
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
 
 	if decoded["trace_id"] != "full-trace" {
 		t.Error("trace_id mismatch")

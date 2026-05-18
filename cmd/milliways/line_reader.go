@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//nolint:errcheck // Interactive terminal control writes are best-effort; input errors are returned explicitly.
 package main
 
 import (
@@ -217,7 +218,7 @@ func (r *chatLineReader) Readline() (string, error) {
 			} else {
 				if empty && r.eofPrompt != "" {
 					r.mu.Lock()
-					fmt.Fprint(r.out, "\r\n"+r.eofPrompt+"\r\n")
+					_, _ = fmt.Fprint(r.out, "\r\n"+r.eofPrompt+"\r\n") //nolint:errcheck // best-effort terminal prompt before EOF
 					r.mu.Unlock()
 				}
 				if empty {
@@ -368,9 +369,9 @@ func (r *chatLineReader) applyCompletion() {
 		return
 	}
 	r.mu.Lock()
-	fmt.Fprint(r.out, "\r\n")
+	_, _ = fmt.Fprint(r.out, "\r\n") //nolint:errcheck // best-effort terminal redraw
 	for _, s := range suffixes {
-		fmt.Fprintln(r.out, s)
+		_, _ = fmt.Fprintln(r.out, s) //nolint:errcheck // best-effort terminal completion list
 	}
 	r.redrawLocked()
 	r.mu.Unlock()
@@ -504,19 +505,19 @@ func (r *chatLineReader) redrawLocked() {
 		r.rows = 1
 	}
 	r.clearPromptLocked()
-	fmt.Fprint(r.out, r.prompt)
+	_, _ = fmt.Fprint(r.out, r.prompt) //nolint:errcheck // best-effort terminal redraw
 	// In raw mode \n moves down without returning to column 0; use \r\n.
-	fmt.Fprint(r.out, strings.ReplaceAll(string(r.buf), "\n", "\r\n"))
+	_, _ = fmt.Fprint(r.out, strings.ReplaceAll(string(r.buf), "\n", "\r\n")) //nolint:errcheck // best-effort terminal redraw
 
 	r.rows = bufTotalRows(r.prompt, r.buf, width)
 	cursorRow, cursorCol := bufCursorPos(r.prompt, r.buf, r.cursor, width)
 	endRow := r.rows - 1
 	if endRow > cursorRow {
-		fmt.Fprintf(r.out, "\033[%dA", endRow-cursorRow)
+		_, _ = fmt.Fprintf(r.out, "\033[%dA", endRow-cursorRow) //nolint:errcheck // best-effort terminal cursor movement
 	}
-	fmt.Fprint(r.out, "\r")
+	_, _ = fmt.Fprint(r.out, "\r") //nolint:errcheck // best-effort terminal cursor movement
 	if cursorCol > 0 {
-		fmt.Fprintf(r.out, "\033[%dC", cursorCol)
+		_, _ = fmt.Fprintf(r.out, "\033[%dC", cursorCol) //nolint:errcheck // best-effort terminal cursor movement
 	}
 }
 
@@ -535,20 +536,20 @@ func (r *chatLineReader) clearPromptLocked() {
 		rows = 1
 	}
 	cursorRow, _ := bufCursorPos(r.prompt, r.buf, r.cursor, width)
-	fmt.Fprint(r.out, "\r")
+	_, _ = fmt.Fprint(r.out, "\r") //nolint:errcheck // best-effort terminal cursor movement
 	if cursorRow > 0 {
-		fmt.Fprintf(r.out, "\033[%dA", cursorRow)
+		_, _ = fmt.Fprintf(r.out, "\033[%dA", cursorRow) //nolint:errcheck // best-effort terminal cursor movement
 	}
 	for i := 0; i < rows; i++ {
 		if i > 0 {
-			fmt.Fprint(r.out, "\033[1B")
+			_, _ = fmt.Fprint(r.out, "\033[1B") //nolint:errcheck // best-effort terminal cursor movement
 		}
-		fmt.Fprint(r.out, "\r\033[2K")
+		_, _ = fmt.Fprint(r.out, "\r\033[2K") //nolint:errcheck // best-effort terminal redraw
 	}
 	if rows > 1 {
-		fmt.Fprintf(r.out, "\033[%dA", rows-1)
+		_, _ = fmt.Fprintf(r.out, "\033[%dA", rows-1) //nolint:errcheck // best-effort terminal cursor movement
 	}
-	fmt.Fprint(r.out, "\r")
+	_, _ = fmt.Fprint(r.out, "\r") //nolint:errcheck // best-effort terminal cursor movement
 }
 
 // bufTotalRows returns the total visual rows occupied by prompt + buf at the given terminal width.

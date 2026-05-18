@@ -65,7 +65,7 @@ func shortSecurityTestSocket(t *testing.T) string {
 }
 
 func handleSecurityRPCTestConn(conn net.Conn, results map[string]any, calls chan<- securityRPCCall) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	scanner := bufio.NewScanner(conn)
 	enc := json.NewEncoder(conn)
 	for scanner.Scan() {
@@ -396,7 +396,7 @@ func TestRunSecurityShimExecMarksNonInteractiveBroker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open stdin file: %v", err)
 	}
-	defer stdinFile.Close()
+	defer func() { _ = stdinFile.Close() }()
 	oldStdin := os.Stdin
 	os.Stdin = stdinFile
 	t.Cleanup(func() { os.Stdin = oldStdin })

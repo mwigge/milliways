@@ -554,7 +554,9 @@ func writeExecutableIfChanged(path string, content []byte) (bool, error) {
 		return false, fmt.Errorf("install command shims: temp file for %q: %w", path, err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() {
+		_ = os.Remove(tmpName)
+	}()
 	if _, err := tmp.Write(content); err != nil {
 		_ = tmp.Close()
 		return false, fmt.Errorf("install command shims: write %q: %w", tmpName, err)

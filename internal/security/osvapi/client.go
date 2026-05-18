@@ -120,7 +120,9 @@ func (c *Client) QueryBatch(ctx context.Context, queries []Query) (BatchResponse
 	if err != nil {
 		return BatchResponse{}, fmt.Errorf("post osv querybatch: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//nolint:errcheck // Interactive parallel-status output writes are best-effort; RPC errors are handled explicitly.
 package main
 
 import (
@@ -239,7 +240,7 @@ func (l *chatLoop) printParallelView(groupID string, clear bool) bool {
 		return true
 	}
 	if clear {
-		fmt.Fprint(l.out, "\033[2J\033[H")
+		_, _ = fmt.Fprint(l.out, "\033[2J\033[H")
 	}
 	writeParallelComparison(l.out, status, consensus, 110)
 	return parallelGroupDone(status)

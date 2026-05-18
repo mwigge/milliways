@@ -166,7 +166,9 @@ func (k *HTTPKitchen) Exec(ctx context.Context, task kitchen.Task) (kitchen.Resu
 	if err != nil {
 		return kitchen.Result{ExitCode: 1, Duration: time.Since(start)}, fmt.Errorf("http request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))

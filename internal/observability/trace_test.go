@@ -105,7 +105,11 @@ func TestReadTraceEventsIncludesRotatedFragments(t *testing.T) {
 		if err != nil {
 			t.Fatalf("OpenFile(%s): %v", name, err)
 		}
-		defer f.Close()
+		defer func() {
+			if err := f.Close(); err != nil {
+				t.Fatalf("Close(%s): %v", name, err)
+			}
+		}()
 		if err := WriteTraceEvent(f, AgentTraceEvent{ID: id, SessionID: "sess", Type: AgentTraceTool, Timestamp: time.Now().UTC()}); err != nil {
 			t.Fatalf("WriteTraceEvent(%s): %v", name, err)
 		}
@@ -134,10 +138,12 @@ func TestTraceEmitterEmitAndClose(t *testing.T) {
 		t.Fatalf("NewTraceEmitter() error = %v", err)
 	}
 
-	emitter.Emit(context.Background(), AgentTraceEvent{
+	if err := emitter.Emit(context.Background(), AgentTraceEvent{
 		Type: AgentTraceTool,
 		Data: map[string]any{"tool": "read"},
-	})
+	}); err != nil {
+		t.Fatalf("Emit() error = %v", err)
+	}
 
 	if err := emitter.Close(context.Background()); err != nil {
 		t.Fatalf("Close() error = %v", err)

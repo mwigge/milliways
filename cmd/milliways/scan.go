@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//nolint:errcheck // Scan command output writes are best-effort; daemon errors are surfaced explicitly.
 package main
 
 import (

@@ -136,7 +136,7 @@ func (e *NVDEnricher) lookupCVE(ctx context.Context, cveID string) (nvdCVE, erro
 	if err != nil {
 		return nvdCVE{}, fmt.Errorf("get nvd cve: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close after NVD response is consumed
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))

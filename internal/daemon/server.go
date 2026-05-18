@@ -123,8 +123,7 @@ func NewServer(socket string) (*Server, error) {
 		return nil, fmt.Errorf("listen %s: %w", socket, err)
 	}
 	if err := os.Chmod(socket, 0o600); err != nil {
-		l.Close()
-		return nil, fmt.Errorf("chmod %s: %w", socket, err)
+		return nil, errors.Join(fmt.Errorf("chmod %s: %w", socket, err), l.Close())
 	}
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	s := &Server{
@@ -142,9 +141,8 @@ func NewServer(socket string) (*Server, error) {
 	metricsPath := filepath.Join(filepath.Dir(socket), "metrics.db")
 	mstore, err := metrics.Open(metricsPath)
 	if err != nil {
-		l.Close()
 		bgCancel()
-		return nil, fmt.Errorf("open metrics db: %w", err)
+		return nil, errors.Join(fmt.Errorf("open metrics db: %w", err), l.Close())
 	}
 	registerCoreMetrics(mstore)
 	mstore.Run()
@@ -327,7 +325,11 @@ func (s *Server) Serve() error {
 //   - `STREAM <id> <offset>` → sidecar attach for an existing stream.
 func (s *Server) handle(conn net.Conn) {
 	defer s.wg.Done()
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			slog.Debug("conn close err", "err", err)
+		}
+	}()
 
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -383,7 +385,9 @@ func (s *Server) handleSidecar(conn net.Conn, preamble []byte) {
 	slog.Debug("sidecar attached", "stream_id", streamID, "last_offset", lastOffset)
 	// Block until the conn closes. We don't expect more bytes from the
 	// sidecar — it's server-push-only.
-	io.Copy(io.Discard, conn)
+	if _, err := io.Copy(io.Discard, conn); err != nil && !errors.Is(err, net.ErrClosed) {
+		slog.Debug("sidecar drain err", "err", err, "stream_id", streamID)
+	}
 }
 
 // statusBroadcaster ticks at 1 Hz and pushes a Status snapshot to every
@@ -433,7 +437,9 @@ func (s *Server) Shutdown() {
 	s.bgCancel()
 	runners.SetCommandFirewallProvider(nil)
 	runners.SetToolHooksProvider(nil)
-	s.listener.Close()
+	if err := s.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		slog.Warn("listener close", "err", err)
+	}
 	s.wg.Wait()
 	s.bgWG.Wait()
 	if s.metrics != nil {

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//nolint:errcheck // CLI help/status output writes are best-effort; security command errors are handled explicitly.
 package main
 
 // `milliwaysctl security <verb>` — CVE/OSV finding management.

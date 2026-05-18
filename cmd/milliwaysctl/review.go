@@ -1,3 +1,4 @@
+//nolint:errcheck // CLI output writes are best-effort; review runner errors are handled explicitly.
 package main
 
 import (
@@ -104,7 +105,7 @@ func runLocalReviewCode(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stderr, "report written to %s\n", *out)
 	} else {
-		fmt.Fprint(stdout, report)
+		_, _ = fmt.Fprint(stdout, report)
 	}
 
 	fmt.Fprintf(stderr, "\ngroups: %d  findings: %d  model: %s\n",

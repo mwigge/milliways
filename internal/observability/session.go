@@ -75,6 +75,7 @@ func (s *TraceSession) Emit(ctx context.Context, event AgentTraceEvent) {
 	emitter := s.emitter
 	s.mu.Unlock()
 	if emitter != nil {
+		//nolint:errcheck // Trace emission is best effort; callers should not fail on sink errors.
 		emitter.Emit(ctx, event)
 	}
 }

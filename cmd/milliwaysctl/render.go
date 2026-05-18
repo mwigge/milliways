@@ -37,13 +37,13 @@ type historyCostChunk struct {
 // history.get and prints a compact one-line summary suitable for wezterm's
 // right-status area. Output format:
 //
-//   <agent_id> $<cost> <in>+<out>tok ▁▂▃▄▅▆▇ (cost sparkline)
+//	<agent_id> $<cost> <in>+<out>tok ▁▂▃▄▅▆▇ (cost sparkline)
 func historySummary(socket, agentID string, limit int) {
 	c, err := rpc.Dial(socket)
 	if err != nil {
 		die("dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	var res any
 	if err := c.Call("history.get", map[string]any{"agent_id": agentID, "limit": limit}, &res); err != nil {
 		die("history.get: %v", err)
@@ -182,7 +182,7 @@ func contextRender(socket, agentID string) {
 	if err != nil {
 		die("dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	all := agentID == "_all"
 	params := map[string]any{}

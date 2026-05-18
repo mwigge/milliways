@@ -77,7 +77,7 @@ func fetchDashboard(socket string) map[string]agentRow {
 	if err != nil {
 		die("dial %s: %v", socket, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 
 	result := make(map[string]agentRow)
 
@@ -207,7 +207,7 @@ func callMetricsRollup(socket, metricName, tier, fromRange, agentID string) {
 	if err != nil {
 		die("dial %s: %v", socket, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	var res any
 	if err := c.Call("metrics.rollup.get", p, &res); err != nil {
 		die("metrics.rollup.get: %v", err)

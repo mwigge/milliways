@@ -73,12 +73,20 @@ type checkItem struct {
 func runCheck(_ []string, stdout, _ io.Writer) int {
 	items := collectCheckItems()
 
-	fmt.Fprintln(stdout, "milliwaysctl check — milliways installation health")
-	fmt.Fprintln(stdout)
-	for _, item := range items {
-		fmt.Fprintf(stdout, "  [%s] %-32s %s\n", item.status, item.label, item.detail)
+	if _, err := fmt.Fprintln(stdout, "milliwaysctl check — milliways installation health"); err != nil {
+		return 1
 	}
-	fmt.Fprintln(stdout)
+	if _, err := fmt.Fprintln(stdout); err != nil {
+		return 1
+	}
+	for _, item := range items {
+		if _, err := fmt.Fprintf(stdout, "  [%s] %-32s %s\n", item.status, item.label, item.detail); err != nil {
+			return 1
+		}
+	}
+	if _, err := fmt.Fprintln(stdout); err != nil {
+		return 1
+	}
 
 	for _, item := range items {
 		if item.status == statusFail {
@@ -352,7 +360,7 @@ func checkLocalServer() checkItem {
 			detail: fmt.Sprintf("%s — not reachable (%v)", endpoint, err),
 		}
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close() //nolint:errcheck // response body is not read; status code is all this probe needs
 	if resp.StatusCode != http.StatusOK {
 		return checkItem{
 			label:  label,

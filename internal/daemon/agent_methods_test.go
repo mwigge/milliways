@@ -136,6 +136,29 @@ type agentMethodsHarness struct {
 	handle   int64
 }
 
+func serveTestServer(t *testing.T, srv *Server) {
+	t.Helper()
+	go func() {
+		if err := srv.Serve(); err != nil {
+			t.Errorf("Serve: %v", err)
+		}
+	}()
+}
+
+func closeTestServer(t *testing.T, srv *Server) {
+	t.Helper()
+	if err := srv.Close(); err != nil && !os.IsNotExist(err) {
+		t.Errorf("Close server: %v", err)
+	}
+}
+
+func closeTestConn(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if err := conn.Close(); err != nil {
+		t.Errorf("Close conn: %v", err)
+	}
+}
+
 // newAgentMethodsHarness creates a test server with the stub MP wired in.
 // It uses the parallel_methods_test.go pattern of starting a real Server
 // but replaces pantryDB with a real pantry db so guards pass.
@@ -149,7 +172,9 @@ func newAgentMethodsHarness(t *testing.T, mp parallel.MPClient) *agentMethodsHar
 
 	srv, err := NewServer(sock)
 	if err != nil {
-		os.RemoveAll(stateDir)
+		if removeErr := os.RemoveAll(stateDir); removeErr != nil {
+			t.Errorf("RemoveAll state dir: %v", removeErr)
+		}
 		t.Fatalf("NewServer: %v", err)
 	}
 
@@ -158,13 +183,15 @@ func newAgentMethodsHarness(t *testing.T, mp parallel.MPClient) *agentMethodsHar
 		srv.testMPClient = mp
 	}
 
-	go srv.Serve()
+	serveTestServer(t, srv)
 	time.Sleep(50 * time.Millisecond)
 
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
-		srv.Close()
-		os.RemoveAll(stateDir)
+		closeTestServer(t, srv)
+		if removeErr := os.RemoveAll(stateDir); removeErr != nil {
+			t.Errorf("RemoveAll state dir: %v", removeErr)
+		}
 		t.Fatalf("dial: %v", err)
 	}
 	enc := json.NewEncoder(conn)
@@ -179,12 +206,14 @@ func newAgentMethodsHarness(t *testing.T, mp parallel.MPClient) *agentMethodsHar
 		reader:   reader,
 	}
 	t.Cleanup(func() {
-		conn.Close()
+		closeTestConn(t, conn)
 		if h.sidecar != nil {
-			h.sidecar.Close()
+			closeTestConn(t, h.sidecar)
 		}
-		srv.Close()
-		os.RemoveAll(stateDir)
+		closeTestServer(t, srv)
+		if err := os.RemoveAll(stateDir); err != nil {
+			t.Errorf("RemoveAll state dir: %v", err)
+		}
 	})
 	return h
 }
@@ -300,10 +329,10 @@ func (h *agentMethodsHarness) attachAdditionalStream(id any) net.Conn {
 		h.t.Fatalf("dial sidecar: %v", err)
 	}
 	if _, err := sidecar.Write([]byte("STREAM " + itoa(streamID) + " 0\n")); err != nil {
-		sidecar.Close()
+		closeTestConn(h.t, sidecar)
 		h.t.Fatalf("write sidecar preamble: %v", err)
 	}
-	h.t.Cleanup(func() { sidecar.Close() })
+	h.t.Cleanup(func() { closeTestConn(h.t, sidecar) })
 	return sidecar
 }
 

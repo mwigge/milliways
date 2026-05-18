@@ -18,6 +18,8 @@
 // split in place; graphical non-WezTerm shells exec the bundled milliways-term
 // with the installed MilliWays config; headless shells fall back to chat in the
 // current TTY.
+//
+//nolint:errcheck // Launcher terminal output is best-effort; startup errors are returned explicitly.
 package main
 
 import (
@@ -102,7 +104,7 @@ Inside chat:
   /agents                        auth and model status
   /parallel --watch <prompt>     live grouped provider comparison
 `
-	fmt.Fprint(out, body)
+	_, _ = fmt.Fprint(out, body) //nolint:errcheck // best-effort terminal welcome text
 }
 
 // welcomeVersion returns the binary version string for the banner header.
@@ -146,7 +148,7 @@ func probeDaemonForWelcome(budget time.Duration) daemonStatusReport {
 			daemonLine: "✗ not reachable: " + err.Error(),
 		}
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }() //nolint:errcheck // best-effort RPC cleanup after welcome probe
 
 	// Two parallel reads with a tight deadline. agent.list is the cheapest
 	// signal of "daemon is responsive AND knows about runners".
@@ -424,7 +426,9 @@ func runDeck(_ context.Context, _ string, rightPaneID string) error {
 	}
 
 	// Signal to printLanding that the navigator is handling provider selection.
-	os.Setenv("MILLIWAYS_DECK_MODE", "1")
+	if err := os.Setenv("MILLIWAYS_DECK_MODE", "1"); err != nil {
+		return fmt.Errorf("set MILLIWAYS_DECK_MODE: %w", err)
+	}
 	return nil
 }
 

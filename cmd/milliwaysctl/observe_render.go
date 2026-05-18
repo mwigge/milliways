@@ -158,7 +158,7 @@ func observeRenderOnce(socket string) bool {
 	if err != nil {
 		return renderObserveWaiting(socket, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	events, cancel, err := c.Subscribe("observability.subscribe", nil)
 	if err != nil {
 		return renderObserveWaiting(socket, fmt.Errorf("observability.subscribe: %w", err))

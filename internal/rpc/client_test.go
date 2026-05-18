@@ -23,6 +23,43 @@ import (
 	"time"
 )
 
+func closeClient(t *testing.T, c *Client) {
+	t.Helper()
+	if err := c.Close(); err != nil {
+		t.Errorf("Close client: %v", err)
+	}
+}
+
+func closeListener(t *testing.T, ln net.Listener) {
+	t.Helper()
+	if err := ln.Close(); err != nil {
+		t.Errorf("Close listener: %v", err)
+	}
+}
+
+func closeConn(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if err := conn.Close(); err != nil {
+		t.Errorf("Close conn: %v", err)
+	}
+}
+
+func readConn(t *testing.T, conn net.Conn, buf []byte) bool {
+	t.Helper()
+	if _, err := conn.Read(buf); err != nil {
+		t.Errorf("Read conn: %v", err)
+		return false
+	}
+	return true
+}
+
+func writeConn(t *testing.T, conn net.Conn, data []byte) {
+	t.Helper()
+	if _, err := conn.Write(data); err != nil {
+		t.Errorf("Write conn: %v", err)
+	}
+}
+
 func TestRPCError_Error(t *testing.T) {
 	e := &RPCError{Code: -32600, Message: "invalid request"}
 	if got := e.Error(); got != "rpc error -32600: invalid request" {
@@ -66,7 +103,7 @@ func TestClient_Call_unreachable(t *testing.T) {
 	go func() {
 		conn, err := ln.Accept()
 		if err == nil {
-			conn.Close()
+			closeConn(t, conn)
 		}
 	}()
 
@@ -74,10 +111,12 @@ func TestClient_Call_unreachable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer closeClient(t, c)
 
 	// Close listener so no more connections can be made.
-	ln.Close()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("Close listener: %v", err)
+	}
 
 	// Give it a tiny bit of time to settle the close.
 	time.Sleep(10 * time.Millisecond)
@@ -96,24 +135,26 @@ func TestClient_Call_responseDecodesResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer closeListener(t, ln)
 
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer closeConn(t, conn)
 		buf := make([]byte, 1024)
-		conn.Read(buf)
-		conn.Write([]byte(`{"jsonrpc":"2.0","result":{"pong":true},"id":1}` + "\n"))
+		if !readConn(t, conn, buf) {
+			return
+		}
+		writeConn(t, conn, []byte(`{"jsonrpc":"2.0","result":{"pong":true},"id":1}`+"\n"))
 	}()
 
 	c, err := Dial(sock)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer closeClient(t, c)
 
 	var result struct {
 		Pong bool `json:"pong"`
@@ -135,24 +176,26 @@ func TestClient_Call_errorResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer closeListener(t, ln)
 
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer closeConn(t, conn)
 		buf := make([]byte, 1024)
-		conn.Read(buf)
-		conn.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-32600,"message":"bad"},"id":1}` + "\n"))
+		if !readConn(t, conn, buf) {
+			return
+		}
+		writeConn(t, conn, []byte(`{"jsonrpc":"2.0","error":{"code":-32600,"message":"bad"},"id":1}`+"\n"))
 	}()
 
 	c, err := Dial(sock)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer closeClient(t, c)
 
 	err = c.Call("test.method", nil, nil)
 	if err == nil {
@@ -175,24 +218,26 @@ func TestClient_Call_badJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer closeListener(t, ln)
 
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer closeConn(t, conn)
 		buf := make([]byte, 1024)
-		conn.Read(buf)
-		conn.Write([]byte("not json\n"))
+		if !readConn(t, conn, buf) {
+			return
+		}
+		writeConn(t, conn, []byte("not json\n"))
 	}()
 
 	c, err := Dial(sock)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer closeClient(t, c)
 
 	err = c.Call("test.method", nil, nil)
 	if err == nil {
@@ -208,31 +253,37 @@ func TestClient_Call_resultDecodeIncludesMethod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MkdirTemp: %v", err)
 	}
-	defer os.RemoveAll(tmp)
+	defer func() {
+		if err := os.RemoveAll(tmp); err != nil {
+			t.Errorf("RemoveAll(%s): %v", tmp, err)
+		}
+	}()
 	sock := filepath.Join(tmp, "s")
 
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer closeListener(t, ln)
 
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer closeConn(t, conn)
 		buf := make([]byte, 1024)
-		conn.Read(buf)
-		conn.Write([]byte(`{"jsonrpc":"2.0","result":{"pong":"not-bool"},"id":1}` + "\n"))
+		if !readConn(t, conn, buf) {
+			return
+		}
+		writeConn(t, conn, []byte(`{"jsonrpc":"2.0","result":{"pong":"not-bool"},"id":1}`+"\n"))
 	}()
 
 	c, err := Dial(sock)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer closeClient(t, c)
 
 	var result struct {
 		Pong bool `json:"pong"`
@@ -254,7 +305,7 @@ func TestClient_Call_idMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer closeListener(t, ln)
 
 	go func() {
 		for i := 0; i < 2; i++ {
@@ -263,10 +314,12 @@ func TestClient_Call_idMismatch(t *testing.T) {
 				return
 			}
 			go func(c net.Conn) {
-				defer c.Close()
+				defer closeConn(t, c)
 				buf := make([]byte, 1024)
-				c.Read(buf)
-				c.Write([]byte(`{"jsonrpc":"2.0","result":{"ok":true},"id":1}` + "\n"))
+				if !readConn(t, c, buf) {
+					return
+				}
+				writeConn(t, c, []byte(`{"jsonrpc":"2.0","result":{"ok":true},"id":1}`+"\n"))
 			}(conn)
 		}
 	}()
@@ -275,12 +328,12 @@ func TestClient_Call_idMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial c1: %v", err)
 	}
-	defer c1.Close()
+	defer closeClient(t, c1)
 	c2, err := Dial(sock)
 	if err != nil {
 		t.Fatalf("Dial c2: %v", err)
 	}
-	defer c2.Close()
+	defer closeClient(t, c2)
 
 	if err := c1.Call("m1", nil, nil); err != nil {
 		t.Fatalf("c1.Call: %v", err)
@@ -299,25 +352,27 @@ func TestClient_Subscribe_unreachable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
 	}
-	defer ln.Close()
+	defer closeListener(t, ln)
 
 	go func() {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer closeConn(t, conn)
 		// Respond to Call with error.
 		buf := make([]byte, 1024)
-		conn.Read(buf)
-		conn.Write([]byte(`{"jsonrpc":"2.0","error":{"code":-1,"message":"fail"},"id":1}` + "\n"))
+		if !readConn(t, conn, buf) {
+			return
+		}
+		writeConn(t, conn, []byte(`{"jsonrpc":"2.0","error":{"code":-1,"message":"fail"},"id":1}`+"\n"))
 	}()
 
 	c, err := Dial(sock)
 	if err != nil {
 		t.Fatalf("Dial: %v", err)
 	}
-	defer c.Close()
+	defer closeClient(t, c)
 
 	_, _, err = c.Subscribe("test.subscribe", nil)
 	if err == nil {

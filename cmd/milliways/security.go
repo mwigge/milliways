@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//nolint:errcheck // Security command output writes are best-effort; RPC errors are surfaced explicitly.
 package main
 
 import (

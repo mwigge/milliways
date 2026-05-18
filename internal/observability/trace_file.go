@@ -75,8 +75,11 @@ func ReadTraceFile(sessionID string) ([]AgentTraceEvent, error) {
 		if err != nil {
 			return nil, fmt.Errorf("open trace file: %w", err)
 		}
-		defer file.Close()
-		return ParseTraceEvents(file)
+		events, parseErr := ParseTraceEvents(file)
+		if closeErr := file.Close(); closeErr != nil && parseErr == nil {
+			return nil, fmt.Errorf("close trace file: %w", closeErr)
+		}
+		return events, parseErr
 	}
 	return ReadTraceEvents(sessionID)
 }

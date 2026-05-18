@@ -116,7 +116,7 @@ func runAttach(ctx context.Context, handle int64, jsonMode bool, out io.Writer, 
 	}
 	client, err := rpc.Dial(sock)
 	if err != nil {
-		fmt.Fprintln(errw, friendlyError("attach: ", "", err))
+		_, _ = fmt.Fprintln(errw, friendlyError("attach: ", "", err))
 		return fmt.Errorf("%s", friendlyError("attach: ", "", err))
 	}
 	defer func() { _ = client.Close() }()
@@ -124,7 +124,7 @@ func runAttach(ctx context.Context, handle int64, jsonMode bool, out io.Writer, 
 	events, cancel, err := client.Subscribe("agent.stream", map[string]any{"handle": handle})
 	if err != nil {
 		// Handle not found — check if the error message suggests an unknown handle.
-		fmt.Fprintf(errw, "unknown handle: %d\n", handle)
+		_, _ = fmt.Fprintf(errw, "unknown handle: %d\n", handle)
 		return fmt.Errorf("%s", friendlyError("attach stream: ", "", err))
 	}
 
@@ -158,7 +158,7 @@ func drainStreamToWriter(events <-chan []byte, w io.Writer, jsonMode bool) {
 				continue
 			}
 			if jsonMode {
-				fmt.Fprintln(w, formatDeltaEvent(string(decoded), time.Now().UTC()))
+				_, _ = fmt.Fprintln(w, formatDeltaEvent(string(decoded), time.Now().UTC()))
 			} else {
 				_, _ = w.Write(decoded)
 			}
@@ -170,7 +170,7 @@ func drainStreamToWriter(events <-chan []byte, w io.Writer, jsonMode bool) {
 			}
 			usage.CostUSD += ev.CostUSD
 			if jsonMode {
-				fmt.Fprintln(w, formatDoneEventWithUsage(usage, time.Now().UTC()))
+				_, _ = fmt.Fprintln(w, formatDoneEventWithUsage(usage, time.Now().UTC()))
 			}
 		case "end":
 			return

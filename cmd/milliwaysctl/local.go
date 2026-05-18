@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//nolint:errcheck // CLI status/help output writes are best-effort; command failures are handled explicitly.
 package main
 
 // `milliwaysctl local <verb>` — in-app local-model bootstrap. Lets users
@@ -99,37 +100,37 @@ func runLocal(args []string, stdout, stderr io.Writer) int {
 		printLocalUsage(stdout)
 		return 0
 	default:
-		fmt.Fprintf(stderr, "milliwaysctl local: unknown verb %q\n", verb)
+		_, _ = fmt.Fprintf(stderr, "milliwaysctl local: unknown verb %q\n", verb)
 		printLocalUsage(stderr)
 		return 2
 	}
 }
 
 func printLocalUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: milliwaysctl local <verb> [args...]")
-	fmt.Fprintln(w, "verbs:")
-	fmt.Fprintln(w, "  install-server                     install rs-llmctl + default model")
-	fmt.Fprintln(w, "  install-gpu-server [--dry-run] [--accel auto|vulkan|cuda|hip]")
-	fmt.Fprintln(w, "                                      detect NVIDIA/AMD GPU and install the largest fitting model")
-	fmt.Fprintln(w, "  install-swap [--hot]               install llama-swap (hot-swap setup)")
-	fmt.Fprintln(w, "  list-models                        list models exposed by the configured backend")
-	fmt.Fprintln(w, "  switch-server <kind>               kind = rs-llmctl | llama-server | llama-swap | ollama | vllm | lmstudio")
-	fmt.Fprintln(w, "  download-model <repo> [--quant Q] [--alias A]   curl a GGUF from HuggingFace")
-	fmt.Fprintln(w, "  setup-model list                                list curated top-10 models")
-	fmt.Fprintln(w, "  setup-model refresh                             refresh list from HuggingFace API")
-	fmt.Fprintln(w, "  setup-model    <repo> [--quant Q] [--alias A]   download + register in llama-swap")
-	fmt.Fprintln(w, "  swap-mode hot|cold [--ttl N]                    set llama-swap to hot (always-loaded) or cold (unload after TTL seconds, default 600)")
-	fmt.Fprintln(w, "  server-start                                    start the local server (launchctl / systemd / direct)")
-	fmt.Fprintln(w, "  server-stop                                     stop the local server")
-	fmt.Fprintln(w, "  server-status                                   check server reachability and list loaded models")
-	fmt.Fprintln(w, "  server-port                                     print the port number from MILLIWAYS_LOCAL_ENDPOINT")
-	fmt.Fprintln(w, "  server-uninstall [--yes]                        stop server, remove service files and launcher")
-	fmt.Fprintln(w, "  default-model <alias>                           set default llama-swap model in launcher and local.env")
-	fmt.Fprintln(w, "  review-code <path> [--model A] [--out F] [--resume] [--no-memory] [--git-commit] [--lint]")
-	fmt.Fprintln(w, "                                                  review a repository with the loaded local model")
-	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "Endpoint defaults to rs-llmctl on http://localhost:8765/v1; override with MILLIWAYS_LOCAL_ENDPOINT.")
-	fmt.Fprintln(w, "Models cache to $HOME/.local/share/milliways/models/; override with MODEL_DIR.")
+	_, _ = fmt.Fprintln(w, "usage: milliwaysctl local <verb> [args...]")
+	_, _ = fmt.Fprintln(w, "verbs:")
+	_, _ = fmt.Fprintln(w, "  install-server                     install rs-llmctl + default model")
+	_, _ = fmt.Fprintln(w, "  install-gpu-server [--dry-run] [--accel auto|vulkan|cuda|hip]")
+	_, _ = fmt.Fprintln(w, "                                      detect NVIDIA/AMD GPU and install the largest fitting model")
+	_, _ = fmt.Fprintln(w, "  install-swap [--hot]               install llama-swap (hot-swap setup)")
+	_, _ = fmt.Fprintln(w, "  list-models                        list models exposed by the configured backend")
+	_, _ = fmt.Fprintln(w, "  switch-server <kind>               kind = rs-llmctl | llama-server | llama-swap | ollama | vllm | lmstudio")
+	_, _ = fmt.Fprintln(w, "  download-model <repo> [--quant Q] [--alias A]   curl a GGUF from HuggingFace")
+	_, _ = fmt.Fprintln(w, "  setup-model list                                list curated top-10 models")
+	_, _ = fmt.Fprintln(w, "  setup-model refresh                             refresh list from HuggingFace API")
+	_, _ = fmt.Fprintln(w, "  setup-model    <repo> [--quant Q] [--alias A]   download + register in llama-swap")
+	_, _ = fmt.Fprintln(w, "  swap-mode hot|cold [--ttl N]                    set llama-swap to hot (always-loaded) or cold (unload after TTL seconds, default 600)")
+	_, _ = fmt.Fprintln(w, "  server-start                                    start the local server (launchctl / systemd / direct)")
+	_, _ = fmt.Fprintln(w, "  server-stop                                     stop the local server")
+	_, _ = fmt.Fprintln(w, "  server-status                                   check server reachability and list loaded models")
+	_, _ = fmt.Fprintln(w, "  server-port                                     print the port number from MILLIWAYS_LOCAL_ENDPOINT")
+	_, _ = fmt.Fprintln(w, "  server-uninstall [--yes]                        stop server, remove service files and launcher")
+	_, _ = fmt.Fprintln(w, "  default-model <alias>                           set default llama-swap model in launcher and local.env")
+	_, _ = fmt.Fprintln(w, "  review-code <path> [--model A] [--out F] [--resume] [--no-memory] [--git-commit] [--lint]")
+	_, _ = fmt.Fprintln(w, "                                                  review a repository with the loaded local model")
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "Endpoint defaults to rs-llmctl on http://localhost:8765/v1; override with MILLIWAYS_LOCAL_ENDPOINT.")
+	_, _ = fmt.Fprintln(w, "Models cache to $HOME/.local/share/milliways/models/; override with MODEL_DIR.")
 }
 
 // install-server / install-swap shell out to the existing install scripts so
@@ -154,37 +155,37 @@ func runLocalInstallGPUServer(args []string, stdout, stderr io.Writer) int {
 			dryRun = true
 		case "--accel":
 			if i+1 >= len(args) {
-				fmt.Fprintln(stderr, "local install-gpu-server: --accel requires auto|vulkan|cuda|hip")
+				_, _ = fmt.Fprintln(stderr, "local install-gpu-server: --accel requires auto|vulkan|cuda|hip")
 				return 2
 			}
 			accelOverride = strings.ToLower(args[i+1])
 			i++
 		default:
-			fmt.Fprintf(stderr, "local install-gpu-server: unknown flag %q\n", args[i])
+			_, _ = fmt.Fprintf(stderr, "local install-gpu-server: unknown flag %q\n", args[i])
 			return 2
 		}
 	}
 
 	gpu, err := detectBestLocalGPU()
 	if err != nil {
-		fmt.Fprintf(stderr, "local install-gpu-server: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "local install-gpu-server: %v\n", err)
 		return 1
 	}
 	model, err := selectGPUCatalogModel(gpu.VRAMGB)
 	if err != nil {
-		fmt.Fprintf(stderr, "local install-gpu-server: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "local install-gpu-server: %v\n", err)
 		return 1
 	}
 	accel, err := gpu.LlamaAccel(accelOverride)
 	if err != nil {
-		fmt.Fprintf(stderr, "local install-gpu-server: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "local install-gpu-server: %v\n", err)
 		return 2
 	}
-	fmt.Fprintf(stdout, "GPU: %s (%s, %.1fGB VRAM)\n", gpu.Name, gpu.Vendor, gpu.VRAMGB)
+	_, _ = fmt.Fprintf(stdout, "GPU: %s (%s, %.1fGB VRAM)\n", gpu.Name, gpu.Vendor, gpu.VRAMGB)
 	fmt.Fprintf(stdout, "Model: %s (%s %s, %.1fGB)\n", model.Name, model.Repo, model.Quant, model.sizeGB())
 	fmt.Fprintf(stdout, "Accel: %s\n", accel)
 	if os.Getenv("CTX_SIZE") == "" {
-		fmt.Fprintln(stdout, "Context: 8192 tokens")
+		_, _ = fmt.Fprintln(stdout, "Context: 8192 tokens")
 	}
 	if dryRun {
 		return 0
@@ -366,7 +367,7 @@ func runLocalListModels(_ []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "local: GET %s: %v (is the backend running? `milliwaysctl local install-server` to bootstrap)\n", url, err)
 		return 1
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort close after response body is consumed
 	if resp.StatusCode != http.StatusOK {
 		fmt.Fprintf(stderr, "local: backend HTTP %d at %s\n", resp.StatusCode, url)
 		return 1
@@ -382,7 +383,7 @@ func runLocalListModels(_ []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	for _, m := range models {
-		fmt.Fprintln(stdout, m)
+		_, _ = fmt.Fprintln(stdout, m)
 	}
 	return 0
 }
@@ -502,7 +503,7 @@ func syncLocalEnvDir(path string) error {
 	if err != nil {
 		return err
 	}
-	defer dir.Close()
+	defer func() { _ = dir.Close() }() //nolint:errcheck // directory fd is synced below; close failure is not actionable
 	return dir.Sync()
 }
 
@@ -527,7 +528,7 @@ func localEndpointForKind(kind string) (string, error) {
 
 func runLocalSwitchServer(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
-		fmt.Fprintln(stderr, "local switch-server: kind required (rs-llmctl | llama-server | llama-swap | ollama | vllm | lmstudio)")
+		_, _ = fmt.Fprintln(stderr, "local switch-server: kind required (rs-llmctl | llama-server | llama-swap | ollama | vllm | lmstudio)")
 		return 2
 	}
 	kind := args[0]
@@ -615,7 +616,7 @@ func runLocalDownloadModel(args []string, stdout, stderr io.Writer) int {
 		cmd.Stdout = stderr
 		cmd.Stderr = stderr
 		if err := cmd.Run(); err == nil {
-			fmt.Fprintln(stdout, dest)
+			_, _ = fmt.Fprintln(stdout, dest)
 			return 0
 		}
 	}
@@ -674,7 +675,7 @@ func resolveHFCDNURL(hfURL, token string) string {
 	if err != nil {
 		return ""
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close() //nolint:errcheck // HEAD-like redirect probe only needs response headers
 	if resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusTemporaryRedirect || resp.StatusCode == http.StatusMovedPermanently {
 		loc := resp.Header.Get("Location")
 		if strings.Contains(loc, "xethub.hf.co") || strings.Contains(loc, "cdn-lfs") {
@@ -686,7 +687,7 @@ func resolveHFCDNURL(hfURL, token string) string {
 
 func parseDownloadFlags(args []string, stderr io.Writer) (repo, quant, alias string, force bool, code int) {
 	if len(args) < 1 {
-		fmt.Fprintln(stderr, "local download-model: <repo> required (e.g. unsloth/Qwen2.5-Coder-7B-Instruct-GGUF)")
+		_, _ = fmt.Fprintln(stderr, "local download-model: <repo> required (e.g. unsloth/Qwen2.5-Coder-7B-Instruct-GGUF)")
 		return "", "", "", false, 2
 	}
 	repo = args[0]
@@ -695,14 +696,14 @@ func parseDownloadFlags(args []string, stderr io.Writer) (repo, quant, alias str
 		switch args[i] {
 		case "--quant":
 			if i+1 >= len(args) {
-				fmt.Fprintln(stderr, "local download-model: --quant requires a value")
+				_, _ = fmt.Fprintln(stderr, "local download-model: --quant requires a value")
 				return "", "", "", false, 2
 			}
 			quant = args[i+1]
 			i++
 		case "--alias":
 			if i+1 >= len(args) {
-				fmt.Fprintln(stderr, "local download-model: --alias requires a value")
+				_, _ = fmt.Fprintln(stderr, "local download-model: --alias requires a value")
 				return "", "", "", false, 2
 			}
 			alias = args[i+1]
@@ -786,14 +787,14 @@ func runLocalSetupModel(args []string, stdout, stderr io.Writer) int {
 	// then restart (or start) the server so the model is immediately active.
 	if err := updateLocalServerLauncher(dest, alias, stderr); err != nil {
 		fmt.Fprintf(stderr, "local setup-model: launcher update: %v\n", err)
-		fmt.Fprintln(stderr, "  Server not restarted — run /install-local-server manually to activate the model.")
+		_, _ = fmt.Fprintln(stderr, "  Server not restarted — run /install-local-server manually to activate the model.")
 		return 0 // non-fatal: model is registered, just needs manual restart
 	}
 
 	// Step 4: restart server with new model.
-	fmt.Fprintln(stdout, "Restarting local server with new model...")
+	_, _ = fmt.Fprintln(stdout, "Restarting local server with new model...")
 	if code := runLocalServerRestart(stdout, stderr); code != 0 {
-		fmt.Fprintln(stderr, "  Could not auto-restart — run /local server-start to activate.")
+		_, _ = fmt.Fprintln(stderr, "  Could not auto-restart — run /local server-start to activate.")
 	} else if err := waitLocalServerReady(90 * time.Second); err != nil {
 		fmt.Fprintf(stderr, "  Server restart did not become ready: %v\n", err)
 	}
@@ -1093,7 +1094,7 @@ func enrichedEnvForScripts() []string {
 // In the REPL: /swap hot  or  /swap cold
 func runLocalSwapMode(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: milliwaysctl local swap-mode hot|cold [--ttl N]")
+		_, _ = fmt.Fprintln(stderr, "usage: milliwaysctl local swap-mode hot|cold [--ttl N]")
 		return 2
 	}
 	mode := args[0]
@@ -1715,7 +1716,7 @@ func runModelCatalogRefresh(stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "  Showing built-in catalog instead (may be behind a proxy).\n")
 		return runModelCatalogList(stdout)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort close after HuggingFace catalog response
 	if resp.StatusCode != 200 {
 		fmt.Fprintf(stderr, "refresh: HuggingFace API returned HTTP %d\n", resp.StatusCode)
 		fmt.Fprintf(stderr, "  Showing built-in catalog instead.\n")
@@ -2244,7 +2245,7 @@ func runLocalServerStatus(_ []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "reason:   unreachable (%v)\n", err)
 		return 1
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort close after server status probe
 
 	if resp.StatusCode != http.StatusOK {
 		fmt.Fprintf(stdout, "status:   not running\n")

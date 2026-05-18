@@ -145,28 +145,28 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 
 	spec, ok := installSpecByClient(verb)
 	if !ok {
-		fmt.Fprintf(stderr, "milliwaysctl install: unknown client %q\n", verb)
+		_, _ = fmt.Fprintf(stderr, "milliwaysctl install: unknown client %q\n", verb)
 		printInstallUsage(stderr)
 		return 2
 	}
 
 	// HTTP-only / pool: just show info, don't try to install.
 	if len(spec.install) == 0 && spec.client != "local" {
-		fmt.Fprintln(stdout, spec.info)
+		_, _ = fmt.Fprintln(stdout, spec.info)
 		return 0
 	}
 
 	// local: shim to local install-server (single source of truth).
 	if spec.client == "local" {
-		fmt.Fprintln(stdout, "→ delegating to `milliwaysctl local install-server`")
+		_, _ = fmt.Fprintln(stdout, "→ delegating to `milliwaysctl local install-server`")
 		return runLocalInstallServer(nil, stdout, stderr)
 	}
 
 	// Prereq check.
 	if spec.prereq != "" {
 		if _, err := exec.LookPath(spec.prereq); err != nil {
-			fmt.Fprintf(stderr, "milliwaysctl install %s: prerequisite %q not on PATH\n", spec.client, spec.prereq)
-			fmt.Fprintf(stderr, "  → %s\n", spec.prereqHint)
+			_, _ = fmt.Fprintf(stderr, "milliwaysctl install %s: prerequisite %q not on PATH\n", spec.client, spec.prereq)
+			_, _ = fmt.Fprintf(stderr, "  → %s\n", spec.prereqHint)
 			return 1
 		}
 	}
@@ -174,26 +174,26 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 	// Already installed?
 	if len(spec.check) > 0 {
 		if alreadyInstalled(spec) {
-			fmt.Fprintf(stdout, "✓ %s already installed (skipping). %s\n", spec.client, spec.info)
+			_, _ = fmt.Fprintf(stdout, "✓ %s already installed (skipping). %s\n", spec.client, spec.info)
 			return 0
 		}
 	}
 
 	// Install.
-	fmt.Fprintf(stdout, "→ installing %s via: %s\n", spec.client, strings.Join(spec.install, " "))
+	_, _ = fmt.Fprintf(stdout, "→ installing %s via: %s\n", spec.client, strings.Join(spec.install, " "))
 	cmd := execCommand(spec.install[0], spec.install[1:]...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
-			fmt.Fprintf(stderr, "milliwaysctl install %s: install command exited %d\n", spec.client, ee.ExitCode())
+			_, _ = fmt.Fprintf(stderr, "milliwaysctl install %s: install command exited %d\n", spec.client, ee.ExitCode())
 			return ee.ExitCode()
 		}
-		fmt.Fprintf(stderr, "milliwaysctl install %s: %v\n", spec.client, err)
+		_, _ = fmt.Fprintf(stderr, "milliwaysctl install %s: %v\n", spec.client, err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "✓ %s installed. %s\n", spec.client, spec.info)
+	_, _ = fmt.Fprintf(stdout, "✓ %s installed. %s\n", spec.client, spec.info)
 	return 0
 }
 
@@ -217,15 +217,15 @@ func alreadyInstalled(spec installSpec) bool {
 }
 
 func printInstallUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: milliwaysctl install <client>")
-	fmt.Fprintln(w, "       /install <client>      (from inside the milliways chat)")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Installs the upstream CLI for a runner so milliways can drive it.")
-	fmt.Fprintln(w, "Run `milliwaysctl install list` for the supported clients.")
+	_, _ = fmt.Fprintln(w, "usage: milliwaysctl install <client>")
+	_, _ = fmt.Fprintln(w, "       /install <client>      (from inside the milliways chat)")
+	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintln(w, "Installs the upstream CLI for a runner so milliways can drive it.")
+	_, _ = fmt.Fprintln(w, "Run `milliwaysctl install list` for the supported clients.")
 }
 
 func printInstallList(w io.Writer) {
-	fmt.Fprintln(w, "Clients:")
+	_, _ = fmt.Fprintln(w, "Clients:")
 	// Stable display: by spec order, not map iteration.
 	clients := make([]string, 0, len(installSpecs))
 	for _, s := range installSpecs {
@@ -240,11 +240,11 @@ func printInstallList(w io.Writer) {
 		spec, _ := installSpecByClient(c)
 		switch {
 		case len(spec.install) > 0:
-			fmt.Fprintf(w, "  %-8s  %s\n", c, strings.Join(spec.install, " "))
+			_, _ = fmt.Fprintf(w, "  %-8s  %s\n", c, strings.Join(spec.install, " "))
 		case spec.client == "local":
-			fmt.Fprintf(w, "  %-8s  scripts/install_local.sh\n", c)
+			_, _ = fmt.Fprintf(w, "  %-8s  scripts/install_local.sh\n", c)
 		default:
-			fmt.Fprintf(w, "  %-8s  (no CLI; configure API key — see `milliwaysctl install %s`)\n", c, c)
+			_, _ = fmt.Fprintf(w, "  %-8s  (no CLI; configure API key — see `milliwaysctl install %s`)\n", c, c)
 		}
 	}
 }

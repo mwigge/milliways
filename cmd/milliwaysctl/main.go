@@ -93,7 +93,9 @@ func main() {
 	allFlag := fs.Bool("all", false, "aggregate across all agents (for `context`)")
 	chartKind := fs.String("kind", "", "chart kind: sparkline|bars (for `chart`)")
 	chartData := fs.String("data", "", "chart input as JSON (for `chart`)")
-	fs.Parse(rest)
+	if err := fs.Parse(rest); err != nil {
+		os.Exit(2)
+	}
 	if *socket == "" {
 		*socket = defaultSocket()
 	}
@@ -183,7 +185,7 @@ func main() {
 		if err != nil {
 			die("dial %s: %v", *socket, err)
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }() //nolint:errcheck // best-effort RPC cleanup after command completes
 		var appendRes any
 		if err := c.Call("history.append", map[string]any{"agent_id": *agentID, "payload": payload, "max_lines": 1000}, &appendRes); err != nil {
 			die("history.append: %v", err)
@@ -202,7 +204,7 @@ func main() {
 		if err != nil {
 			die("dial %s: %v", *socket, err)
 		}
-		defer cGet.Close()
+		defer func() { _ = cGet.Close() }() //nolint:errcheck // best-effort RPC cleanup after command completes
 		var res any
 		if err := cGet.Call("history.get", map[string]any{"agent_id": *agentID, "limit": limit}, &res); err != nil {
 			die("history.get: %v", err)
@@ -241,7 +243,7 @@ func callJSON(socket, method string, params any) {
 	if err != nil {
 		die("dial %s: %v", socket, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }() //nolint:errcheck // best-effort RPC cleanup after command completes
 	var result any
 	if err := c.Call(method, params, &result); err != nil {
 		die("%s: %v", method, err)
@@ -258,7 +260,7 @@ func subscribeStatus(socket string) {
 	if err != nil {
 		die("dial %s: %v", socket, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }() //nolint:errcheck // best-effort RPC cleanup after stream exits
 	events, cancel, err := c.Subscribe("status.subscribe", nil)
 	if err != nil {
 		die("subscribe: %v", err)
@@ -280,7 +282,7 @@ func watchStatus(socket, stateDir string, debounceMs int) {
 	if err != nil {
 		die("dial %s: %v", socket, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }() //nolint:errcheck // best-effort RPC cleanup after watch exits
 	events, cancel, err := c.Subscribe("status.subscribe", nil)
 	if err != nil {
 		die("subscribe: %v", err)
@@ -326,7 +328,9 @@ func watchStatus(socket, stateDir string, debounceMs int) {
 				return
 			}
 			if _, err := f.Write(append(b, '\n')); err != nil {
-				f.Close()
+				if closeErr := f.Close(); closeErr != nil {
+					slog.Warn("watchStatus: close tmp after write error", "err", closeErr)
+				}
 				slog.Warn("watchStatus: write tmp", "err", err)
 				return
 			}
@@ -476,7 +480,7 @@ func runObserve(socket, stateDir string, debounceMs int) {
 	if err != nil {
 		die("dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }() //nolint:errcheck // best-effort RPC cleanup after observe exits
 
 	events, cancel, err := c.Subscribe("status.subscribe", nil)
 	if err != nil {
@@ -486,7 +490,9 @@ func runObserve(socket, stateDir string, debounceMs int) {
 
 	// Also grab the agent list once.
 	var agentList []map[string]any
-	c.Call("agent.list", nil, &agentList)
+	if err := c.Call("agent.list", nil, &agentList); err != nil {
+		slog.Warn("observe: agent.list", "err", err)
+	}
 
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		die("state dir: %v", err)
@@ -560,7 +566,9 @@ func runObserve(socket, stateDir string, debounceMs int) {
 				return
 			}
 			if _, err := f.Write(append(b, '\n')); err != nil {
-				f.Close()
+				if closeErr := f.Close(); closeErr != nil {
+					slog.Warn("observe: close tmp after write error", "err", closeErr)
+				}
 				slog.Warn("observe: write tmp", "err", err)
 				return
 			}
@@ -677,7 +685,7 @@ func bridge(socket string, handle int64) {
 	if err != nil {
 		die("dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }() //nolint:errcheck // best-effort RPC cleanup after bridge exits
 
 	events, cancel, err := c.Subscribe("agent.stream", map[string]any{"handle": handle})
 	if err != nil {
@@ -693,7 +701,7 @@ func bridge(socket string, handle int64) {
 			fmt.Fprintf(os.Stderr, "bridge: send-dial: %v\n", err)
 			return
 		}
-		defer sendClient.Close()
+		defer func() { _ = sendClient.Close() }() //nolint:errcheck // best-effort RPC cleanup when stdin bridge exits
 		buf := make([]byte, 4096)
 		for {
 			n, err := os.Stdin.Read(buf)
@@ -732,7 +740,10 @@ func bridge(socket string, handle int64) {
 		case "data":
 			bytes, err := base64.StdEncoding.DecodeString(msg.B64)
 			if err == nil {
-				os.Stdout.Write(bytes)
+				if _, err := os.Stdout.Write(bytes); err != nil {
+					fmt.Fprintf(os.Stderr, "bridge: stdout: %v\n", err)
+					return
+				}
 			}
 		case "end":
 			return
@@ -752,7 +763,7 @@ func apply(socket string, handle int64, index int, outPath string) {
 	if err != nil {
 		die("dial %s: %v", socket, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }() //nolint:errcheck // best-effort RPC cleanup after apply completes
 
 	var result struct {
 		Blocks []struct {
