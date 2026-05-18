@@ -412,7 +412,7 @@ func (c *localClient) Send(ctx context.Context, messages []Message, toolDefs []p
 	if err != nil {
 		return TurnResult{}, fmt.Errorf("connect %s: %s (is the backend running? `milliwaysctl local install-server` to bootstrap)", sanitizeProviderURL(url), scrubProviderSecrets(err.Error()))
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close after streaming response is consumed
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

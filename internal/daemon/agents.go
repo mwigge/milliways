@@ -581,9 +581,7 @@ func closedWhenDone(sess *AgentSession) <-chan struct{} {
 			default:
 			}
 			// Brief yield so we don't spin at 100% in the rare gap.
-			select {
-			case <-time.After(time.Millisecond):
-			}
+			time.Sleep(time.Millisecond)
 		}
 		close(ch)
 	}()

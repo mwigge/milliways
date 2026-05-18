@@ -53,14 +53,6 @@ const (
 	modeChat
 )
 
-// modeCockpit, modeWelcome are deprecated aliases retained so external
-// code/tests that still reference them keep building. New code should
-// use modeChat.
-const (
-	modeCockpit = modeChat
-	modeWelcome = modeChat
-)
-
 // parseLauncherMode decides how to dispatch an invocation of `milliways`
 // based on the argv (excluding argv[0]).
 //
@@ -254,7 +246,7 @@ func runCockpit(ctx context.Context, _ []string) error {
 	socketPath := daemonSocket()
 	if !socketReachable(socketPath, 200*time.Millisecond) {
 		if err := startDaemonDetached(state); err != nil {
-			return fmt.Errorf("starting milliwaysd: %w\n\nCheck %s for daemon logs.", err, daemonLogPath())
+			return fmt.Errorf("starting milliwaysd: %w\n\nCheck %s for daemon logs", err, daemonLogPath())
 		}
 		if err := waitForSocket(ctx, socketPath, 5*time.Second); err != nil {
 			tail := tailFile(daemonLogPath(), 4096)
@@ -477,17 +469,6 @@ func parseWeztermSplitPaneID(out string) string {
 		}
 	}
 	return ""
-}
-
-// splitComma splits a comma-separated string and trims whitespace.
-func splitComma(s string) []string {
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		if t := strings.TrimSpace(p); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
 }
 
 // startDaemonDetached spawns `milliwaysd` in its own session so it survives

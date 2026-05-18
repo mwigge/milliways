@@ -175,7 +175,7 @@ based on what each tool does best.
 			// subcommand without a prompt — surface that explicitly.
 			if len(args) == 0 {
 				if cmd.Flags().Changed("timeout") {
-					return fmt.Errorf("--timeout only applies to one-shot prompts\n\nUse `milliways --timeout 2m \"explain this repo\"`, or run `milliways` with no flags for interactive chat.")
+					return fmt.Errorf("--timeout only applies to one-shot prompts\n\nUse `milliways --timeout 2m \"explain this repo\"`, or run `milliways` with no flags for interactive chat")
 				}
 				return fmt.Errorf("no prompt provided\n\nUse `milliways` (no flags) to launch milliways-term, or pass a prompt:\n  milliways \"explain the auth flow\"")
 			}

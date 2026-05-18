@@ -358,7 +358,7 @@ func handleWebFetch(ctx context.Context, args map[string]any) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fetch url: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close after response body is consumed
 	data, err := ioReadAllLimited(resp.Body, defaultReadLimit)
 	if err != nil {
 		return "", err

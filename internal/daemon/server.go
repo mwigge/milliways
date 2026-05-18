@@ -428,12 +428,6 @@ func (s *Server) registerStatusSubscriber(stream *Stream) {
 	s.statusMu.Unlock()
 }
 
-func (s *Server) unregisterStatusSubscriber(id int64) {
-	s.statusMu.Lock()
-	delete(s.statusSubscribers, id)
-	s.statusMu.Unlock()
-}
-
 // Shutdown stops accepting new connections and waits for active handlers to
 // drain. Idempotent.
 func (s *Server) Shutdown() {

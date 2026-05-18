@@ -544,10 +544,3 @@ func (a *codeGraphParallelAdapter) Impact(ctx context.Context, filePath string) 
 	}
 	return out, nil
 }
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
-}

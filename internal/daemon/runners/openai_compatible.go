@@ -335,11 +335,6 @@ func openAICompatibleCostUSD(cfg openAICompatibleRunnerConfig, u *openaiStreamUs
 	return in + out, true
 }
 
-func envFloatDefault(key string, def float64) float64 {
-	value, _ := envFloatDefaultKnown(key, def)
-	return value
-}
-
 func envFloatDefaultKnown(key string, def float64) (float64, bool) {
 	if key == "" {
 		return def, def > 0

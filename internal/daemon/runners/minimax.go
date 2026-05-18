@@ -320,7 +320,7 @@ func (c *minimaxClient) Send(ctx context.Context, messages []Message, toolDefs [
 	if err != nil {
 		return TurnResult{}, fmt.Errorf("connect %s: %s", sanitizeProviderURL(c.url), scrubProviderSecrets(err.Error()))
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close after streaming response is consumed
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

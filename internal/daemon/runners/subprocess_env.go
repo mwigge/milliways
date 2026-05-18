@@ -259,9 +259,7 @@ func execLookPathInRunnerPathExcluding(binary string, excludedDirs ...string) (s
 func runnerBinarySearchDirs() []string {
 	var paths []string
 	addPath := func(path string) {
-		for _, part := range splitPath(path) {
-			paths = append(paths, part)
-		}
+		paths = append(paths, splitPath(path)...)
 	}
 	addPath(os.Getenv("MILLIWAYS_PATH"))
 	addPath(os.Getenv("PATH"))

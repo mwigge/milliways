@@ -340,12 +340,17 @@ func TestBufCursorPos(t *testing.T) {
 	if row != 0 {
 		t.Fatalf("cursor row = %d, want 0", row)
 	}
-	// Cursor at start of "world" (position 6, after \n) → second logical line, col 1
+	if col != 7 {
+		t.Fatalf("cursor col = %d, want 7", col)
+	}
+	// Cursor at start of "world" (position 6, after \n) → second logical line, col 0
 	row, col = bufCursorPos("> ", buf, 6, width)
 	if row != 1 {
 		t.Fatalf("cursor row after newline = %d, want 1", row)
 	}
-	_ = col
+	if col != 0 {
+		t.Fatalf("cursor col after newline = %d, want 0", col)
+	}
 }
 
 func TestInsertRuneSkipsRedrawDuringPaste(t *testing.T) {

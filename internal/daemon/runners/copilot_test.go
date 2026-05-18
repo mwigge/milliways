@@ -99,7 +99,7 @@ func TestStreamCopilotStdout_LargePayload(t *testing.T) {
 }
 
 // TestStreamCopilotStdout_ReaderError stops cleanly on non-EOF errors.
-type errReader struct{ msg string }
+type errReader struct{}
 
 func (e *errReader) Read(p []byte) (int, error) {
 	return 0, io.ErrUnexpectedEOF

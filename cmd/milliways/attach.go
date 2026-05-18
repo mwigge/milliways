@@ -709,56 +709,6 @@ func readSGRMouse(br *bufio.Reader) (int, int, bool) {
 	return 0, 0, false
 }
 
-// obsProviderShort returns a 4-char abbreviation used in the Observability panel rows.
-func obsProviderShort(id string) string {
-	switch id {
-	case "claude":
-		return "clde"
-	case "codex":
-		return "cdex"
-	case "copilot":
-		return "cplt"
-	case "gemini":
-		return "gemi"
-	case "minimax":
-		return "mnmx"
-	case "kimi":
-		return "kimi"
-	case "deepseek":
-		return "dpsk"
-	case "local":
-		return "lcal"
-	case "pool":
-		return "pool"
-	default:
-		if len(id) >= 4 {
-			return id[:4]
-		}
-		return id + strings.Repeat(" ", 4-len(id))
-	}
-}
-
-// obsStatusRow returns the status glyph and a short label for an agent row in
-// the Observability panel.
-func obsStatusRow(status, lastError string) (glyph, label string) {
-	switch status {
-	case deckStatusThinking:
-		return "●", "think"
-	case deckStatusStreaming:
-		return "⟳", "stream"
-	case deckStatusRunning:
-		return "▶", "tool"
-	case deckStatusError:
-		reason := lastError
-		if len(reason) > 8 {
-			reason = reason[:8]
-		}
-		return "✗", "err:" + reason
-	default:
-		return "◌", "idle"
-	}
-}
-
 func formatDurationMS(ms float64) string {
 	switch {
 	case ms <= 0:
