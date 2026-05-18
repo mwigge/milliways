@@ -235,6 +235,9 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	if state == nil {
 		state = &localSessionState{}
 	}
+	if state.pendingApproval != nil && !planningApprovalGateEnabled() {
+		state.pendingApproval = nil
+	}
 	if state.pendingApproval != nil {
 		if approvalGateExpired(state.pendingApproval.Request, time.Now()) {
 			state.pendingApproval = nil
@@ -258,7 +261,7 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 				Request:        approvalGateNewRequest(AgentIDLocal, securityWorkspace, original, time.Now()),
 			}
 		}
-	} else if approvalGateNeedsPlan(text) {
+	} else if planningApprovalGateEnabled() && approvalGateNeedsPlan(text) {
 		state.pendingApproval = &approvalGatePending{
 			OriginalPrompt: text,
 			Request:        approvalGateNewRequest(AgentIDLocal, securityWorkspace, text, time.Now()),
@@ -313,6 +316,7 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		Compaction:             CompactionOptions{CtxTokens: ctxTokens},
 		StopOnUserInputRequest: true,
 		CommandFirewall:        commandFirewallForAgentWorkspace(AgentIDLocal, securityWorkspace),
+		ToolHooks:              toolHooksForAgentWorkspace(AgentIDLocal, securityWorkspace),
 	})
 	if err != nil {
 		observeError(metrics, AgentIDLocal)

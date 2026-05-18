@@ -65,7 +65,7 @@ func TestOpen_Idempotent(t *testing.T) {
 	_ = db2.Close()
 }
 
-func TestMigrateV14PreservesSecurityDataAndCreatesPolicyDecisions(t *testing.T) {
+func TestMigrateV16PreservesSecurityDataAndCreatesCodingTables(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "test.db")
 	conn, err := sql.Open("sqlite3", path)
@@ -112,17 +112,24 @@ func TestMigrateV14PreservesSecurityDataAndCreatesPolicyDecisions(t *testing.T) 
 	if err := db.conn.QueryRow("SELECT COALESCE(MAX(version), 0) FROM mw_schema").Scan(&version); err != nil {
 		t.Fatalf("query schema version: %v", err)
 	}
-	if version != 15 {
-		t.Fatalf("schema version = %d, want 15", version)
+	if version != 16 {
+		t.Fatalf("schema version = %d, want 16", version)
 	}
-	var tableCount int
-	if err := db.conn.QueryRow(`
-		SELECT count(*) FROM sqlite_master
-		WHERE type = 'table' AND name = 'mw_security_policy_decisions'`).Scan(&tableCount); err != nil {
-		t.Fatalf("query policy decisions table: %v", err)
-	}
-	if tableCount != 1 {
-		t.Fatalf("policy decisions table count = %d, want 1", tableCount)
+	for _, table := range []string{
+		"mw_security_policy_decisions",
+		"mw_coding_change_sets",
+		"mw_coding_file_changes",
+		"mw_tool_approvals",
+	} {
+		var tableCount int
+		if err := db.conn.QueryRow(`
+			SELECT count(*) FROM sqlite_master
+			WHERE type = 'table' AND name = ?`, table).Scan(&tableCount); err != nil {
+			t.Fatalf("query table %s: %v", table, err)
+		}
+		if tableCount != 1 {
+			t.Fatalf("table %s count = %d, want 1", table, tableCount)
+		}
 	}
 	findings, err := db.Security().ListActiveForWorkspace("/work", nil)
 	if err != nil {

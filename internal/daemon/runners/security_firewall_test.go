@@ -94,6 +94,65 @@ func TestClientEnforcementMetadata_FirstClassClients(t *testing.T) {
 	}
 }
 
+func TestClientCapabilities_HTTPClientsReportFullRunnerControlledCapabilities(t *testing.T) {
+	SetBrokerPathProvider(nil)
+	t.Cleanup(func() { SetBrokerPathProvider(nil) })
+
+	for _, agent := range []string{AgentIDMiniMax, AgentIDLocal, AgentIDKimi, AgentIDDeepSeek} {
+		got := ClientCapabilitiesForAgent(agent)
+		if got.EnforcementLevel != EnforcementFull {
+			t.Fatalf("%s enforcement level = %q, want %q", agent, got.EnforcementLevel, EnforcementFull)
+		}
+		if got.Tools != CapabilityRunnerControlled || got.Permissions != CapabilityRunnerControlled || got.FileChanges != CapabilityRunnerControlled {
+			t.Fatalf("%s coding controls = %#v, want runner-controlled tools/permissions/file changes", agent, got)
+		}
+		if got.Memory != CapabilityRunnerControlled || got.Observability != CapabilityRunnerControlled {
+			t.Fatalf("%s shared controls = %#v, want runner-controlled memory/observability", agent, got)
+		}
+		if got.LSP != CapabilityUnsupported || got.MCP != CapabilityUnsupported {
+			t.Fatalf("%s optional integrations = %#v, want unsupported lsp/mcp until adapters exist", agent, got)
+		}
+	}
+}
+
+func TestClientCapabilities_ExternalClientsReflectPreflightAndBrokeredLabels(t *testing.T) {
+	SetBrokerPathProvider(nil)
+	t.Cleanup(func() { SetBrokerPathProvider(nil) })
+
+	preflight := ClientCapabilitiesForAgent(AgentIDCodex)
+	if preflight.EnforcementLevel != EnforcementPreflightOnly {
+		t.Fatalf("codex enforcement = %q, want %q", preflight.EnforcementLevel, EnforcementPreflightOnly)
+	}
+	if preflight.Tools != CapabilityExternal || preflight.Permissions != CapabilityPreflightOnly || preflight.FileChanges != CapabilityPreflightOnly {
+		t.Fatalf("codex preflight capabilities = %#v, want external tools and preflight controls", preflight)
+	}
+
+	SetBrokerPathProvider(func(agentID string) string {
+		if agentID == AgentIDCodex {
+			return "/opt/milliways/bin/codex-broker"
+		}
+		return ""
+	})
+
+	brokered := ClientCapabilitiesForAgent(AgentIDCodex)
+	if brokered.EnforcementLevel != EnforcementBrokered {
+		t.Fatalf("codex brokered enforcement = %q, want %q", brokered.EnforcementLevel, EnforcementBrokered)
+	}
+	if brokered.Tools != CapabilityBrokered || brokered.Permissions != CapabilityBrokered || brokered.FileChanges != CapabilityBrokered {
+		t.Fatalf("codex brokered capabilities = %#v, want brokered coding controls", brokered)
+	}
+}
+
+func TestClientCapabilities_UnknownAgentIsFutureSafe(t *testing.T) {
+	got := ClientCapabilitiesForAgent("future-agent")
+	if got.EnforcementLevel != EnforcementUnknown {
+		t.Fatalf("unknown enforcement = %q, want %q", got.EnforcementLevel, EnforcementUnknown)
+	}
+	if got.Tools != CapabilityUnknown || got.Permissions != CapabilityUnknown || got.FileChanges != CapabilityUnknown {
+		t.Fatalf("unknown capabilities = %#v, want unknown coding controls", got)
+	}
+}
+
 func TestClientEnforcementMetadata_ExternalClientsReportBrokerPathWhenAvailable(t *testing.T) {
 	SetBrokerPathProvider(nil)
 	t.Cleanup(func() { SetBrokerPathProvider(nil) })

@@ -474,3 +474,77 @@ CREATE INDEX IF NOT EXISTS idx_mw_memory_items_workspace_type_status
 
 INSERT OR IGNORE INTO mw_schema (version) VALUES (15);
 `
+
+const schemaV16 = `
+CREATE TABLE IF NOT EXISTS mw_coding_change_sets (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace    TEXT NOT NULL DEFAULT '',
+    session_id   TEXT NOT NULL DEFAULT '',
+    client       TEXT NOT NULL DEFAULT '',
+    turn_id      TEXT NOT NULL DEFAULT '',
+    tool_call_id TEXT NOT NULL DEFAULT '',
+    operation    TEXT NOT NULL DEFAULT '',
+    status       TEXT NOT NULL DEFAULT 'open',
+    reason       TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    completed_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_coding_change_sets_workspace_created
+    ON mw_coding_change_sets(workspace, created_at);
+CREATE INDEX IF NOT EXISTS idx_mw_coding_change_sets_session_created
+    ON mw_coding_change_sets(session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS mw_coding_file_changes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    change_set_id INTEGER NOT NULL REFERENCES mw_coding_change_sets(id),
+    workspace     TEXT NOT NULL DEFAULT '',
+    session_id    TEXT NOT NULL DEFAULT '',
+    client        TEXT NOT NULL DEFAULT '',
+    turn_id       TEXT NOT NULL DEFAULT '',
+    tool_call_id  TEXT NOT NULL DEFAULT '',
+    operation     TEXT NOT NULL DEFAULT '',
+    path          TEXT NOT NULL DEFAULT '',
+    before_hash   TEXT NOT NULL DEFAULT '',
+    after_hash    TEXT NOT NULL DEFAULT '',
+    diff          TEXT NOT NULL DEFAULT '',
+    preview       TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_coding_file_changes_change_set
+    ON mw_coding_file_changes(change_set_id, id);
+CREATE INDEX IF NOT EXISTS idx_mw_coding_file_changes_workspace_path
+    ON mw_coding_file_changes(workspace, path);
+
+CREATE TABLE IF NOT EXISTS mw_tool_approvals (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace    TEXT NOT NULL DEFAULT '',
+    session_id   TEXT NOT NULL DEFAULT '',
+    client       TEXT NOT NULL DEFAULT '',
+    turn_id      TEXT NOT NULL DEFAULT '',
+    tool_call_id TEXT NOT NULL DEFAULT '',
+    tool_name    TEXT NOT NULL DEFAULT '',
+    operation    TEXT NOT NULL DEFAULT '',
+    path         TEXT NOT NULL DEFAULT '',
+    before_hash  TEXT NOT NULL DEFAULT '',
+    after_hash   TEXT NOT NULL DEFAULT '',
+    diff         TEXT NOT NULL DEFAULT '',
+    preview      TEXT NOT NULL DEFAULT '',
+    decision     TEXT NOT NULL DEFAULT 'pending',
+    reason       TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_tool_approvals_workspace_created
+    ON mw_tool_approvals(workspace, created_at);
+CREATE INDEX IF NOT EXISTS idx_mw_tool_approvals_session_created
+    ON mw_tool_approvals(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_mw_tool_approvals_decision_created
+    ON mw_tool_approvals(decision, created_at);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (16);
+`

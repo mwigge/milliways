@@ -36,10 +36,38 @@ const (
 // security enforcement. Keep it small so cockpit badges can consume it without
 // knowing runner internals.
 type EnforcementMetadata struct {
-	Level         EnforcementLevel `json:"level"`
-	ControlledEnv bool             `json:"controlled_env,omitempty"`
-	BrokerPath    string           `json:"broker_path,omitempty"`
-	Reason        string           `json:"reason,omitempty"`
+	Level         EnforcementLevel   `json:"level"`
+	ControlledEnv bool               `json:"controlled_env,omitempty"`
+	BrokerPath    string             `json:"broker_path,omitempty"`
+	Label         string             `json:"label,omitempty"`
+	Reason        string             `json:"reason,omitempty"`
+	Capabilities  ClientCapabilities `json:"capabilities,omitempty"`
+}
+
+// CapabilitySupport labels how MilliWays can participate in one client
+// capability. The labels are intentionally stable strings for status surfaces.
+type CapabilitySupport string
+
+const (
+	CapabilityRunnerControlled CapabilitySupport = "runner-controlled"
+	CapabilityBrokered         CapabilitySupport = "brokered"
+	CapabilityPreflightOnly    CapabilitySupport = "preflight-only"
+	CapabilityExternal         CapabilitySupport = "external"
+	CapabilityUnsupported      CapabilitySupport = "unsupported"
+	CapabilityUnknown          CapabilitySupport = "unknown"
+)
+
+// ClientCapabilities reports the coding-agent control surface available for a
+// runner. Unknown clients stay explicit rather than inheriting unsafe defaults.
+type ClientCapabilities struct {
+	Tools            CapabilitySupport `json:"tools"`
+	Permissions      CapabilitySupport `json:"permissions"`
+	FileChanges      CapabilitySupport `json:"file_changes"`
+	LSP              CapabilitySupport `json:"lsp"`
+	MCP              CapabilitySupport `json:"mcp"`
+	Memory           CapabilitySupport `json:"memory"`
+	Observability    CapabilitySupport `json:"observability"`
+	EnforcementLevel EnforcementLevel  `json:"enforcement_level"`
 }
 
 // CommandFirewallProvider returns the current command firewall for a runner.
@@ -61,6 +89,16 @@ var brokerPathProvider struct {
 	fn BrokerPathProvider
 }
 
+// ToolHooksProvider returns the permission/change-tracking hooks for a runner
+// session. It is configured by the daemon so runner-owned HTTP/local tools can
+// share the same approval, audit, and memory plumbing as the control plane.
+type ToolHooksProvider func(agentID, workspace string) ToolHooks
+
+var toolHooksProvider struct {
+	mu sync.RWMutex
+	fn ToolHooksProvider
+}
+
 // SetCommandFirewallProvider configures the runtime firewall provider. Passing
 // nil disables runtime command firewall injection.
 func SetCommandFirewallProvider(fn CommandFirewallProvider) {
@@ -77,15 +115,26 @@ func SetBrokerPathProvider(fn BrokerPathProvider) {
 	brokerPathProvider.fn = fn
 }
 
+// SetToolHooksProvider configures runner-owned tool permission/change hooks.
+// Passing nil disables hook injection.
+func SetToolHooksProvider(fn ToolHooksProvider) {
+	toolHooksProvider.mu.Lock()
+	defer toolHooksProvider.mu.Unlock()
+	toolHooksProvider.fn = fn
+}
+
 // ClientEnforcementMetadata returns the current enforcement metadata for an
 // agent id. It is intentionally independent of availability/auth probing so
 // status surfaces can show expected enforcement for every first-class client.
 func ClientEnforcementMetadata(agentID string) EnforcementMetadata {
+	caps := ClientCapabilitiesForAgent(agentID)
 	switch agentID {
 	case AgentIDMiniMax, AgentIDLocal, AgentIDKimi, AgentIDDeepSeek:
 		return EnforcementMetadata{
-			Level:  EnforcementFull,
-			Reason: "milliways owns model-requested tool execution",
+			Level:        EnforcementFull,
+			Label:        "http/local full",
+			Reason:       "milliways owns model-requested tool execution",
+			Capabilities: caps,
 		}
 	case AgentIDClaude, AgentIDCodex, AgentIDCopilot, AgentIDGemini, AgentIDPool:
 		if path := brokerPathForAgent(agentID); path != "" {
@@ -93,16 +142,72 @@ func ClientEnforcementMetadata(agentID string) EnforcementMetadata {
 				Level:         EnforcementBrokered,
 				ControlledEnv: true,
 				BrokerPath:    path,
+				Label:         "external brokered",
 				Reason:        "launched by milliways with filtered environment and broker shim path metadata",
+				Capabilities:  caps,
 			}
 		}
 		return EnforcementMetadata{
 			Level:         EnforcementPreflightOnly,
 			ControlledEnv: true,
+			Label:         "external preflight",
 			Reason:        "broker shim path unavailable; startup preflight is enforced but command brokerage is not active",
+			Capabilities:  caps,
 		}
 	default:
-		return EnforcementMetadata{Level: EnforcementUnknown}
+		return EnforcementMetadata{Level: EnforcementUnknown, Label: "unknown", Capabilities: caps}
+	}
+}
+
+// ClientCapabilitiesForAgent returns a future-safe capability report for known
+// first-class runners and explicit unknowns for agents added outside this build.
+func ClientCapabilitiesForAgent(agentID string) ClientCapabilities {
+	switch agentID {
+	case AgentIDMiniMax, AgentIDLocal, AgentIDKimi, AgentIDDeepSeek:
+		return ClientCapabilities{
+			Tools:            CapabilityRunnerControlled,
+			Permissions:      CapabilityRunnerControlled,
+			FileChanges:      CapabilityRunnerControlled,
+			LSP:              CapabilityUnsupported,
+			MCP:              CapabilityUnsupported,
+			Memory:           CapabilityRunnerControlled,
+			Observability:    CapabilityRunnerControlled,
+			EnforcementLevel: EnforcementFull,
+		}
+	case AgentIDClaude, AgentIDCodex, AgentIDCopilot, AgentIDGemini, AgentIDPool:
+		if brokerPathForAgent(agentID) != "" {
+			return ClientCapabilities{
+				Tools:            CapabilityBrokered,
+				Permissions:      CapabilityBrokered,
+				FileChanges:      CapabilityBrokered,
+				LSP:              CapabilityUnsupported,
+				MCP:              CapabilityUnsupported,
+				Memory:           CapabilityRunnerControlled,
+				Observability:    CapabilityRunnerControlled,
+				EnforcementLevel: EnforcementBrokered,
+			}
+		}
+		return ClientCapabilities{
+			Tools:            CapabilityExternal,
+			Permissions:      CapabilityPreflightOnly,
+			FileChanges:      CapabilityPreflightOnly,
+			LSP:              CapabilityUnsupported,
+			MCP:              CapabilityUnsupported,
+			Memory:           CapabilityRunnerControlled,
+			Observability:    CapabilityRunnerControlled,
+			EnforcementLevel: EnforcementPreflightOnly,
+		}
+	default:
+		return ClientCapabilities{
+			Tools:            CapabilityUnknown,
+			Permissions:      CapabilityUnknown,
+			FileChanges:      CapabilityUnknown,
+			LSP:              CapabilityUnknown,
+			MCP:              CapabilityUnknown,
+			Memory:           CapabilityUnknown,
+			Observability:    CapabilityUnknown,
+			EnforcementLevel: EnforcementUnknown,
+		}
 	}
 }
 
@@ -128,6 +233,16 @@ func brokerPathForAgent(agentID string) string {
 		return ""
 	}
 	return fn(agentID)
+}
+
+func toolHooksForAgentWorkspace(agentID, workspace string) ToolHooks {
+	toolHooksProvider.mu.RLock()
+	fn := toolHooksProvider.fn
+	toolHooksProvider.mu.RUnlock()
+	if fn == nil {
+		return ToolHooks{}
+	}
+	return fn(agentID, workspace)
 }
 
 func brokerShimDirForAgent(agentID string) string {

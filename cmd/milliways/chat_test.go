@@ -477,6 +477,7 @@ func TestChatHelpEnumeratesKnownCommands(t *testing.T) {
 		"claude", "codex", "copilot", "deepseek", "gemini", "kimi", "local", "minimax", "pool",
 		// Full help section
 		"/switch", "/agents", "/quota", "/help", "/exit", "!<cmd>",
+		"/changes", "/diff", "/redo", "/undo",
 		"/install", "/install-local-server", "/list-local-models", "/setup-local-model",
 		"/opsx-list",
 		"/login",
@@ -614,6 +615,26 @@ func TestApplyAgentStatusesConsumesFlatAgentList(t *testing.T) {
 	}
 	if got := statuses["claude"]; got.mark != "✗" || got.model != "claude CLI default" {
 		t.Fatalf("claude status = %#v, want missing credentials with model", got)
+	}
+}
+
+func TestApplyAgentStatusesIncludesEnforcementState(t *testing.T) {
+	statuses := map[string]agentStatus{"codex": {mark: "?", model: ""}}
+	applyAgentStatuses(statuses, []agentListEntry{
+		{
+			ID:         "codex",
+			AuthStatus: "ok",
+			Model:      "gpt-5.5",
+			Enforcement: agentEnforcementInfo{
+				Level:         "preflight-only",
+				ControlledEnv: true,
+			},
+		},
+	})
+
+	got := statuses["codex"]
+	if got.enforcement != "preflight-only/env" {
+		t.Fatalf("codex enforcement = %q, want preflight-only/env", got.enforcement)
 	}
 }
 
@@ -1495,6 +1516,7 @@ func TestHandleSlash_Smoke(t *testing.T) {
 	// Commands that are expected to write to stdout (non-empty check).
 	wantOutput := []string{
 		"/help", "/agents", "/quota",
+		"/changes", "/diff", "/redo",
 		"/login", "/login minimax",
 		"/briefing",
 		"/model", "/model minimax",
@@ -1530,6 +1552,36 @@ func TestHandleSlash_Smoke(t *testing.T) {
 				}()
 				loop.handleSlash(cmd)
 			}()
+		})
+	}
+}
+
+func TestHandleSlashCodingAgentStubsAreNonDestructive(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		cmd  string
+		want string
+	}{
+		{cmd: "/changes", want: "no tracked coding-agent changes"},
+		{cmd: "/diff", want: "no tracked coding-agent diff"},
+		{cmd: "/redo", want: "no redo available"},
+	} {
+		t.Run(tc.cmd, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			loop := &chatLoop{
+				out:  &stdout,
+				errw: &stderr,
+			}
+
+			loop.handleSlash(tc.cmd)
+
+			if stderr.Len() != 0 {
+				t.Fatalf("%s stderr = %q, want empty", tc.cmd, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), tc.want) {
+				t.Fatalf("%s output missing %q:\n%s", tc.cmd, tc.want, stdout.String())
+			}
 		})
 	}
 }

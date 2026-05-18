@@ -42,14 +42,40 @@ func NewBuiltInRegistryWithStore(store *pantry.SecurityStore) *Registry {
 	})
 	r.Register("Edit", handleEdit, provider.ToolDef{
 		Name:        "Edit",
+		Description: "Replace one exact string occurrence in a file",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":       map[string]any{"type": "string"},
+				"file_path":  map[string]any{"type": "string"},
+				"old_string": map[string]any{"type": "string"},
+				"new_string": map[string]any{"type": "string"},
+			},
+			"required": []string{"old_string", "new_string"},
+		},
+	})
+	r.Register("ApplyPatch", handleApplyPatch, provider.ToolDef{
+		Name:        "ApplyPatch",
 		Description: "Apply a unified diff to a file",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path": map[string]any{"type": "string"},
-				"diff": map[string]any{"type": "string"},
+				"path":      map[string]any{"type": "string"},
+				"file_path": map[string]any{"type": "string"},
+				"diff":      map[string]any{"type": "string"},
 			},
-			"required": []string{"path", "diff"},
+			"required": []string{"diff"},
+		},
+	})
+	r.Register("Delete", handleDelete, provider.ToolDef{
+		Name:        "Delete",
+		Description: "Delete a workspace file",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path":      map[string]any{"type": "string"},
+				"file_path": map[string]any{"type": "string"},
+			},
 		},
 	})
 	r.Register("Glob", handleGlob, provider.ToolDef{
@@ -112,6 +138,28 @@ func NewBuiltInRegistryWithStore(store *pantry.SecurityStore) *Registry {
 				"content":   map[string]any{"type": "string"},
 			},
 			"required": []string{"content"},
+		},
+	})
+	r.Register("Todo", handleTodo, provider.ToolDef{
+		Name:        "Todo",
+		Description: "Record model planning state",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"items": map[string]any{"type": "array"},
+				"note":  map[string]any{"type": "string"},
+			},
+		},
+	})
+	r.Register("Question", handleQuestion, provider.ToolDef{
+		Name:        "Question",
+		Description: "Record a question for the user or runner",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"question": map[string]any{"type": "string"},
+				"prompt":   map[string]any{"type": "string"},
+			},
 		},
 	})
 	r.Register("security_scan", securityScanHandler(store), securityScanToolDef())

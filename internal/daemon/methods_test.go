@@ -19,11 +19,14 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/mwigge/milliways/internal/daemon/observability"
 	"github.com/mwigge/milliways/internal/daemon/runners"
 	"github.com/mwigge/milliways/internal/history"
+	"github.com/mwigge/milliways/internal/pantry"
 )
 
 func TestPingReportsBuildVersion(t *testing.T) {
@@ -68,6 +71,289 @@ func TestBuildStatusIncludesClientEnforcement(t *testing.T) {
 	}
 	if got := status.ClientEnforcement["local"].Level; got != runners.EnforcementFull {
 		t.Fatalf("local enforcement = %q, want %q", got, runners.EnforcementFull)
+	}
+}
+
+func TestApprovalRPCStubsWireShape(t *testing.T) {
+	srv := &Server{spans: observability.NewRing(10)}
+
+	var listBuf bytes.Buffer
+	srv.dispatch(json.NewEncoder(&listBuf), &Request{
+		JSONRPC: "2.0",
+		Method:  "approval.list",
+		ID:      json.RawMessage(`1`),
+	})
+	var listResp struct {
+		Result struct {
+			Approvals []any  `json:"approvals"`
+			Storage   string `json:"storage"`
+		} `json:"result"`
+		Error *Error `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(listBuf.Bytes(), &listResp); err != nil {
+		t.Fatalf("decode approval.list response: %v", err)
+	}
+	if listResp.Error != nil {
+		t.Fatalf("approval.list error = %+v", listResp.Error)
+	}
+	if listResp.Result.Approvals == nil {
+		t.Fatal("approval.list approvals is nil, want empty array")
+	}
+	if len(listResp.Result.Approvals) != 0 {
+		t.Fatalf("approval.list approvals len = %d, want 0", len(listResp.Result.Approvals))
+	}
+	if listResp.Result.Storage != "stub" {
+		t.Fatalf("approval.list storage = %q, want stub", listResp.Result.Storage)
+	}
+
+	var respondBuf bytes.Buffer
+	params := json.RawMessage(`{"id":"appr-1","decision":"deny","reason":"test"}`)
+	srv.dispatch(json.NewEncoder(&respondBuf), &Request{
+		JSONRPC: "2.0",
+		Method:  "approval.respond",
+		Params:  params,
+		ID:      json.RawMessage(`2`),
+	})
+	var respondResp struct {
+		Result struct {
+			OK       bool   `json:"ok"`
+			Accepted bool   `json:"accepted"`
+			ID       string `json:"id"`
+			Decision string `json:"decision"`
+			Storage  string `json:"storage"`
+		} `json:"result"`
+		Error *Error `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(respondBuf.Bytes(), &respondResp); err != nil {
+		t.Fatalf("decode approval.respond response: %v", err)
+	}
+	if respondResp.Error != nil {
+		t.Fatalf("approval.respond error = %+v", respondResp.Error)
+	}
+	if !respondResp.Result.OK || !respondResp.Result.Accepted {
+		t.Fatalf("approval.respond result = %+v, want ok accepted", respondResp.Result)
+	}
+	if respondResp.Result.ID != "appr-1" || respondResp.Result.Decision != "deny" {
+		t.Fatalf("approval.respond echoed id/decision = %+v", respondResp.Result)
+	}
+	if respondResp.Result.Storage != "stub" {
+		t.Fatalf("approval.respond storage = %q, want stub", respondResp.Result.Storage)
+	}
+}
+
+func TestApprovalRespondRejectsMissingID(t *testing.T) {
+	var buf bytes.Buffer
+	srv := &Server{spans: observability.NewRing(10)}
+	srv.dispatch(json.NewEncoder(&buf), &Request{
+		JSONRPC: "2.0",
+		Method:  "approval.respond",
+		Params:  json.RawMessage(`{"decision":"approve"}`),
+		ID:      json.RawMessage(`1`),
+	})
+
+	var resp Response
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("decode approval.respond response: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != ErrInvalidParams {
+		t.Fatalf("approval.respond error = %+v, want invalid params", resp.Error)
+	}
+}
+
+func TestApprovalRPCUsesPantryStorage(t *testing.T) {
+	db, err := pantry.Open(filepath.Join(t.TempDir(), "milliways.db"))
+	if err != nil {
+		t.Fatalf("pantry.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	id, err := db.Coding().RecordToolApproval(pantry.ToolApproval{
+		Workspace:  "/repo",
+		SessionID:  "sess-1",
+		Client:     "minimax",
+		ToolCallID: "call-1",
+		ToolName:   "Write",
+		Operation:  "write",
+		Path:       "/repo/main.go",
+		BeforeHash: "sha256:old",
+		Preview:    "package main\n",
+		Decision:   "pending",
+	})
+	if err != nil {
+		t.Fatalf("RecordToolApproval: %v", err)
+	}
+
+	srv := &Server{spans: observability.NewRing(10), pantryDB: db}
+
+	var listBuf bytes.Buffer
+	srv.dispatch(json.NewEncoder(&listBuf), &Request{
+		JSONRPC: "2.0",
+		Method:  "approval.list",
+		ID:      json.RawMessage(`1`),
+	})
+	var listResp struct {
+		Result struct {
+			Approvals []struct {
+				ID       string `json:"id"`
+				AgentID  string `json:"agent_id"`
+				Kind     string `json:"kind"`
+				Path     string `json:"path"`
+				Decision string `json:"decision"`
+			} `json:"approvals"`
+			Storage string `json:"storage"`
+		} `json:"result"`
+		Error *Error `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(listBuf.Bytes(), &listResp); err != nil {
+		t.Fatalf("decode approval.list response: %v", err)
+	}
+	if listResp.Error != nil {
+		t.Fatalf("approval.list error = %+v", listResp.Error)
+	}
+	if listResp.Result.Storage != "pantry" {
+		t.Fatalf("approval.list storage = %q, want pantry", listResp.Result.Storage)
+	}
+	if len(listResp.Result.Approvals) != 1 {
+		t.Fatalf("approval.list approvals len = %d, want 1", len(listResp.Result.Approvals))
+	}
+	got := listResp.Result.Approvals[0]
+	if got.ID != "1" || got.AgentID != "minimax" || got.Kind != "write" || got.Path != "/repo/main.go" || got.Decision != "pending" {
+		t.Fatalf("approval.list approval = %+v", got)
+	}
+
+	var respondBuf bytes.Buffer
+	params := json.RawMessage(`{"id":"` + strconv.FormatInt(id, 10) + `","decision":"approve","reason":"reviewed"}`)
+	srv.dispatch(json.NewEncoder(&respondBuf), &Request{
+		JSONRPC: "2.0",
+		Method:  "approval.respond",
+		Params:  params,
+		ID:      json.RawMessage(`2`),
+	})
+	var respondResp struct {
+		Result struct {
+			OK       bool   `json:"ok"`
+			Decision string `json:"decision"`
+			Storage  string `json:"storage"`
+		} `json:"result"`
+		Error *Error `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(respondBuf.Bytes(), &respondResp); err != nil {
+		t.Fatalf("decode approval.respond response: %v", err)
+	}
+	if respondResp.Error != nil {
+		t.Fatalf("approval.respond error = %+v", respondResp.Error)
+	}
+	if !respondResp.Result.OK || respondResp.Result.Decision != "approve" || respondResp.Result.Storage != "pantry" {
+		t.Fatalf("approval.respond result = %+v", respondResp.Result)
+	}
+
+	approvals, err := db.Coding().ListToolApprovals("", "", 10)
+	if err != nil {
+		t.Fatalf("ListToolApprovals: %v", err)
+	}
+	if len(approvals) != 1 || approvals[0].Decision != "approve" || approvals[0].Reason != "reviewed" {
+		t.Fatalf("updated approvals = %+v", approvals)
+	}
+}
+
+func TestCodingRPCUsesPantryStorage(t *testing.T) {
+	db, err := pantry.Open(filepath.Join(t.TempDir(), "milliways.db"))
+	if err != nil {
+		t.Fatalf("pantry.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	changeID, err := db.Coding().InsertChangeSet(pantry.CodingChangeSet{
+		Workspace: "/repo",
+		SessionID: "sess-1",
+		Client:    "minimax",
+		Operation: "edit",
+		Status:    "applied",
+		Reason:    "tool result",
+	})
+	if err != nil {
+		t.Fatalf("InsertChangeSet: %v", err)
+	}
+	if _, err := db.Coding().InsertFileChange(pantry.CodingFileChange{
+		ChangeSetID: changeID,
+		Workspace:   "/repo",
+		SessionID:   "sess-1",
+		Client:      "minimax",
+		Operation:   "edit",
+		Path:        "/repo/main.go",
+		Diff:        "--- a/main.go\n+++ b/main.go\n@@\n-old\n+new\n",
+	}); err != nil {
+		t.Fatalf("InsertFileChange: %v", err)
+	}
+
+	srv := &Server{spans: observability.NewRing(10), pantryDB: db}
+
+	var changesBuf bytes.Buffer
+	srv.dispatch(json.NewEncoder(&changesBuf), &Request{
+		JSONRPC: "2.0",
+		Method:  "coding.changes",
+		ID:      json.RawMessage(`1`),
+	})
+	var changesResp struct {
+		Result struct {
+			Changes []struct {
+				ID        int64    `json:"id"`
+				Client    string   `json:"client"`
+				Operation string   `json:"operation"`
+				Status    string   `json:"status"`
+				Paths     []string `json:"paths"`
+			} `json:"changes"`
+			Storage string `json:"storage"`
+		} `json:"result"`
+		Error *Error `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(changesBuf.Bytes(), &changesResp); err != nil {
+		t.Fatalf("decode coding.changes response: %v", err)
+	}
+	if changesResp.Error != nil {
+		t.Fatalf("coding.changes error = %+v", changesResp.Error)
+	}
+	if changesResp.Result.Storage != "pantry" {
+		t.Fatalf("coding.changes storage = %q, want pantry", changesResp.Result.Storage)
+	}
+	if len(changesResp.Result.Changes) != 1 {
+		t.Fatalf("coding.changes len = %d, want 1", len(changesResp.Result.Changes))
+	}
+	change := changesResp.Result.Changes[0]
+	if change.ID != changeID || change.Client != "minimax" || change.Operation != "edit" || change.Status != "applied" {
+		t.Fatalf("coding.changes change = %+v", change)
+	}
+	if len(change.Paths) != 1 || change.Paths[0] != "/repo/main.go" {
+		t.Fatalf("coding.changes paths = %+v", change.Paths)
+	}
+
+	var diffBuf bytes.Buffer
+	params := json.RawMessage(`{"id":` + strconv.FormatInt(changeID, 10) + `}`)
+	srv.dispatch(json.NewEncoder(&diffBuf), &Request{
+		JSONRPC: "2.0",
+		Method:  "coding.diff",
+		Params:  params,
+		ID:      json.RawMessage(`2`),
+	})
+	var diffResp struct {
+		Result struct {
+			ID      int64  `json:"id"`
+			Diff    string `json:"diff"`
+			Storage string `json:"storage"`
+		} `json:"result"`
+		Error *Error `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(diffBuf.Bytes(), &diffResp); err != nil {
+		t.Fatalf("decode coding.diff response: %v", err)
+	}
+	if diffResp.Error != nil {
+		t.Fatalf("coding.diff error = %+v", diffResp.Error)
+	}
+	if diffResp.Result.ID != changeID || diffResp.Result.Storage != "pantry" {
+		t.Fatalf("coding.diff result = %+v", diffResp.Result)
+	}
+	if !strings.Contains(diffResp.Result.Diff, "-old") || !strings.Contains(diffResp.Result.Diff, "+new") {
+		t.Fatalf("coding.diff missing diff body:\n%s", diffResp.Result.Diff)
 	}
 }
 

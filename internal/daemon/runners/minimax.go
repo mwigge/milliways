@@ -168,6 +168,9 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	if state == nil {
 		state = &minimaxSessionState{}
 	}
+	if state.pendingApproval != nil && !planningApprovalGateEnabled() {
+		state.pendingApproval = nil
+	}
 	if state.pendingApproval != nil {
 		if approvalGateExpired(state.pendingApproval.Request, time.Now()) {
 			state.pendingApproval = nil
@@ -191,7 +194,7 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 				Request:        approvalGateNewRequest(AgentIDMiniMax, securityWorkspace, original, time.Now()),
 			}
 		}
-	} else if approvalGateNeedsPlan(text) {
+	} else if planningApprovalGateEnabled() && approvalGateNeedsPlan(text) {
 		state.pendingApproval = &approvalGatePending{
 			OriginalPrompt: text,
 			Request:        approvalGateNewRequest(AgentIDMiniMax, securityWorkspace, text, time.Now()),
@@ -241,6 +244,7 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		Logger:                 slog.Default(),
 		StopOnUserInputRequest: true,
 		CommandFirewall:        commandFirewallForAgentWorkspace(AgentIDMiniMax, securityWorkspace),
+		ToolHooks:              toolHooksForAgentWorkspace(AgentIDMiniMax, securityWorkspace),
 	})
 	if err != nil {
 		observeError(metrics, AgentIDMiniMax)

@@ -1,11 +1,26 @@
 package runners
 
 import (
+	"os"
 	"strings"
 	"time"
 )
 
 const approvalGateDefaultTTL = 10 * time.Minute
+
+// planningApprovalGateEnabled preserves the old coarse "plan then approve the
+// whole task" flow for deployments that explicitly want it. The normal agentic
+// path keeps tools exposed; write/edit/delete approval belongs at the individual
+// file mutation boundary, not at session or task scope.
+func planningApprovalGateEnabled() bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv("MILLIWAYS_PLAN_APPROVAL_GATE")))
+	switch value {
+	case "1", "true", "yes", "on", "strict":
+		return true
+	default:
+		return false
+	}
+}
 
 type approvalGateRequest struct {
 	Client       string

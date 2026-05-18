@@ -296,6 +296,14 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		s.agentClose(enc, req)
 	case "deck.snapshot":
 		s.deckSnapshot(enc, req)
+	case "approval.list":
+		s.approvalList(enc, req)
+	case "approval.respond":
+		s.approvalRespond(enc, req)
+	case "coding.changes":
+		s.codingChanges(enc, req)
+	case "coding.diff":
+		s.codingDiff(enc, req)
 	case "apply.extract":
 		s.applyExtract(enc, req)
 	case "context.get":

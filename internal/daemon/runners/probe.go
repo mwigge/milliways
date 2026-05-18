@@ -32,11 +32,12 @@ import (
 // here (not in package daemon) to avoid a circular import; the daemon
 // package converts to its own AgentInfo before serializing.
 type AgentInfo struct {
-	ID          string
-	Available   bool
-	AuthStatus  string // "ok" | "missing_credentials" | "expired" | "unknown"
-	Model       string
-	Enforcement EnforcementMetadata
+	ID           string
+	Available    bool
+	AuthStatus   string // "ok" | "missing_credentials" | "expired" | "unknown"
+	Model        string
+	Enforcement  EnforcementMetadata
+	Capabilities ClientCapabilities
 }
 
 // Probe walks the canonical chat-surface runners and returns one
@@ -58,6 +59,7 @@ func Probe(ctx context.Context) []AgentInfo {
 	for _, p := range probes {
 		info := p(ctx)
 		info.Enforcement = ClientEnforcementMetadata(info.ID)
+		info.Capabilities = ClientCapabilitiesForAgent(info.ID)
 		out = append(out, info)
 	}
 	return out

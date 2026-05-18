@@ -216,6 +216,19 @@ func NewServer(socket string) (*Server, error) {
 				Store:    pdb.Security(),
 			}
 		})
+		runners.SetToolHooksProvider(func(agentID, workspace string) runners.ToolHooks {
+			root := strings.TrimSpace(workspace)
+			if root == "" {
+				root = s.agentSecurityWorkspace(agentID)
+			}
+			if root == "" {
+				root = workspaceRoot
+				if abs, err := filepath.Abs(root); err == nil {
+					root = abs
+				}
+			}
+			return codingToolHooks(pdb.Coding(), agentID, root)
+		})
 		s.secRunner.Start(bgCtx)
 		s.bgWG.Add(1)
 		go func(root string) {
@@ -429,6 +442,7 @@ func (s *Server) Shutdown() {
 	}
 	s.bgCancel()
 	runners.SetCommandFirewallProvider(nil)
+	runners.SetToolHooksProvider(nil)
 	s.listener.Close()
 	s.wg.Wait()
 	s.bgWG.Wait()

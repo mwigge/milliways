@@ -378,6 +378,7 @@ func TestRunLocal_AgenticToolLoop(t *testing.T) {
 }
 
 func TestRunLocal_ApprovalGatePlansBeforeTools(t *testing.T) {
+	t.Setenv("MILLIWAYS_PLAN_APPROVAL_GATE", "on")
 	var turn atomic.Int32
 	var firstBody atomic.Value
 	stubLocalTransport(t, func(r *http.Request) (*http.Response, error) {

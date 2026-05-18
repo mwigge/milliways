@@ -128,6 +128,119 @@ func TestRunAgenticLoop_MultipleToolCallsExecutedInOrder(t *testing.T) {
 	}
 }
 
+func TestRunAgenticLoop_PreToolDecisionHookBlocksBeforeExecution(t *testing.T) {
+	t.Parallel()
+
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "echo", Args: `{"text":"blocked"}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	executed := false
+	registry.Register("echo", func(_ context.Context, _ map[string]any) (string, error) {
+		executed = true
+		return "should not run", nil
+	}, provider.ToolDef{Name: "echo"})
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	var seen ToolDecisionRequest
+	result, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		ToolHooks: ToolHooks{
+			Decide: func(_ context.Context, req ToolDecisionRequest) (ToolDecisionResult, error) {
+				seen = req
+				return ToolDecisionResult{
+					Decision: ToolDecisionBlock,
+					Message:  "approval required before echo",
+					Metadata: map[string]any{
+						"policy": "unit-test",
+					},
+				}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	if executed {
+		t.Fatal("tool executed despite pre-tool block")
+	}
+	if result.StoppedAt != StopReasonStop {
+		t.Fatalf("stopped = %q, want stop", result.StoppedAt)
+	}
+	if seen.Call.ID != "c1" || seen.ToolName != "echo" || seen.Args["text"] != "blocked" {
+		t.Fatalf("decision request = %#v, want parsed call metadata", seen)
+	}
+	if len(messages) < 3 || messages[2].Role != RoleTool || !strings.Contains(messages[2].Content, "approval required before echo") {
+		t.Fatalf("blocked tool result not folded into message stream: %+v", messages)
+	}
+	if !strings.Contains(messages[2].Content, "policy") {
+		t.Fatalf("blocked tool result missing decision metadata: %q", messages[2].Content)
+	}
+}
+
+func TestRunAgenticLoop_PostToolHookReceivesFileChangesAndOutputMetadata(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "write_file", Args: `{"path":"generated.txt"}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	registry.Register("write_file", func(_ context.Context, args map[string]any) (string, error) {
+		path, _ := args["path"].(string)
+		if err := os.WriteFile(filepath.Join(workspace, path), []byte("hello"), 0o644); err != nil {
+			return "", err
+		}
+		return "wrote generated.txt", nil
+	}, provider.ToolDef{Name: "write_file"})
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	var event ToolExecutionEvent
+	_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		ToolHooks: ToolHooks{
+			Workspace: workspace,
+			After: func(_ context.Context, ev ToolExecutionEvent) error {
+				event = ev
+				return nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	if event.Call.ID != "c1" || event.ToolName != "write_file" || event.SessionID != "" {
+		t.Fatalf("post-tool event metadata = %#v, want tool call metadata", event)
+	}
+	if event.OutputBytes != len("wrote generated.txt") || event.OutputTruncated {
+		t.Fatalf("output metadata = bytes:%d truncated:%v, want full output bytes", event.OutputBytes, event.OutputTruncated)
+	}
+	if len(event.FileChanges) != 1 || event.FileChanges[0].Path != "generated.txt" || event.FileChanges[0].Status != "added" {
+		t.Fatalf("file changes = %#v, want generated.txt added", event.FileChanges)
+	}
+}
+
+func TestWrapToolResultUsesRuntimeLimit(t *testing.T) {
+	t.Setenv("MILLIWAYS_TOOL_RESULT_MAX_BYTES", "8")
+
+	wrapped := wrapToolResult("Read", "0123456789abcdef")
+	if !strings.Contains(wrapped, "01234567") {
+		t.Fatalf("wrapped result missing retained prefix: %q", wrapped)
+	}
+	if strings.Contains(wrapped, "89abcdef") {
+		t.Fatalf("wrapped result was not truncated at runtime limit: %q", wrapped)
+	}
+	if !strings.Contains(wrapped, "tool output exceeded 8 bytes") {
+		t.Fatalf("wrapped result missing truncation notice: %q", wrapped)
+	}
+}
+
 func TestRunAgenticLoop_CommandFirewallWarnAllowsBashExecution(t *testing.T) {
 	t.Parallel()
 

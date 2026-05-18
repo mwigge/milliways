@@ -146,6 +146,53 @@ func TestRunMiniMax_ToolsDisabledByEnv(t *testing.T) {
 	}
 }
 
+func TestRunMiniMax_MutatingPromptExposesToolsByDefault(t *testing.T) {
+	captured := make(chan map[string]any, 1)
+	withMiniMaxDaemonTransport(t, func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		var parsed map[string]any
+		_ = json.Unmarshal(body, &parsed)
+		select {
+		case captured <- parsed:
+		default:
+		}
+		fakeSSE := strings.Join([]string{
+			`data: {"choices":[{"finish_reason":"stop","delta":{"content":"ok"}}]}`,
+			``,
+			`data: [DONE]`,
+			``,
+		}, "\n")
+		return minimaxDaemonResponse(http.StatusOK, fakeSSE, http.Header{"Content-Type": {"text/event-stream"}}), nil
+	})
+
+	t.Setenv("MINIMAX_API_KEY", "k")
+	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/chat/completions")
+	withMinimaxToolRegistry(t, tools.NewBuiltInRegistry())
+
+	in := make(chan []byte, 1)
+	in <- []byte("implement the feature and write the file")
+	close(in)
+	done := make(chan struct{})
+	go func() {
+		RunMiniMax(context.Background(), in, &fakePusher{}, &mockObserver{})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunMiniMax did not return")
+	}
+
+	select {
+	case body := <-captured:
+		if _, ok := body["tools"].([]any); !ok {
+			t.Fatalf("mutating prompt did not expose tools by default: %v", body["tools"])
+		}
+	default:
+		t.Fatalf("server never received request")
+	}
+}
+
 // TestRunMiniMax_AgenticToolLoop — when the model returns tool_calls the
 // daemon executes them via the registry, appends results to the conversation,
 // and re-requests until the model issues finish_reason: stop.
@@ -270,6 +317,7 @@ func TestRunMiniMax_AgenticToolLoop(t *testing.T) {
 }
 
 func TestRunMiniMax_ApprovalGatePlansBeforeTools(t *testing.T) {
+	t.Setenv("MILLIWAYS_PLAN_APPROVAL_GATE", "on")
 	var turn atomic.Int32
 	var firstBody atomic.Value
 	withMiniMaxDaemonTransport(t, func(r *http.Request) (*http.Response, error) {
@@ -341,6 +389,7 @@ func TestRunMiniMax_ApprovalGatePlansBeforeTools(t *testing.T) {
 }
 
 func TestRunMiniMax_ApprovalGateRequiresYesBeforeToolExecution(t *testing.T) {
+	t.Setenv("MILLIWAYS_PLAN_APPROVAL_GATE", "on")
 	var turn atomic.Int32
 	withMiniMaxDaemonTransport(t, func(r *http.Request) (*http.Response, error) {
 		switch turn.Add(1) {
@@ -406,6 +455,7 @@ func TestRunMiniMax_ApprovalGateRequiresYesBeforeToolExecution(t *testing.T) {
 }
 
 func TestRunMiniMax_AsksConfirmationStopsBeforeToolExecution(t *testing.T) {
+	t.Setenv("MILLIWAYS_PLAN_APPROVAL_GATE", "on")
 	var turn atomic.Int32
 
 	withMiniMaxDaemonTransport(t, func(r *http.Request) (*http.Response, error) {

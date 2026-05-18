@@ -85,6 +85,9 @@ func (db *DB) Parallel() *ParallelStore { return &ParallelStore{db: db.conn} }
 // Security returns the security findings and accepted-risks store.
 func (db *DB) Security() *SecurityStore { return &SecurityStore{db: db.conn} }
 
+// Coding returns the coding change tracking and approval store.
+func (db *DB) Coding() *CodingStore { return &CodingStore{db: db.conn} }
+
 // Path returns the database file path.
 func (db *DB) Path() string { return db.path }
 
@@ -178,6 +181,11 @@ func migrate(conn *sql.DB) error {
 	if version < 15 {
 		if _, err := conn.Exec(schemaV15); err != nil {
 			return fmt.Errorf("applying schema v15: %w", err)
+		}
+	}
+	if version < 16 {
+		if _, err := conn.Exec(schemaV16); err != nil {
+			return fmt.Errorf("applying schema v16: %w", err)
 		}
 	}
 

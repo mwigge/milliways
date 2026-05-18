@@ -349,7 +349,7 @@ func buildCompleter(agentID string) []string {
 		// Artifact + context commands (milliways-level, work for all runners).
 		"/ring", "/blocks", "/search", "/jump", "/copy-last", "/copy-last response",
 		"/copy-last prompt", "/copy-last block", "/copy-last code", "/history", "/cost",
-		"/trace", "/retry", "/undo", "/compact", "/clear", "/review", "/pptx", "/drawio",
+		"/trace", "/changes", "/diff", "/retry", "/redo", "/undo", "/compact", "/clear", "/review", "/pptx", "/drawio",
 	)
 	// Append the active client's native slash commands.
 	for _, cmd := range clientSlashCommands[agentID] {
@@ -1545,8 +1545,14 @@ func (l *chatLoop) handleSlash(line string) {
 		l.printCost()
 	case "trace", "traces":
 		l.printTrace(rest)
+	case "changes":
+		l.handleChanges()
+	case "diff":
+		l.handleDiff(rest)
 	case "retry":
 		l.handleRetry()
+	case "redo":
+		l.handleRedo()
 	case "undo":
 		l.handleUndo()
 	case "compact":
@@ -1765,6 +1771,29 @@ type chatTraceSpan struct {
 	DurationMS float64        `json:"duration_ms"`
 	Status     string         `json:"status"`
 	Attributes map[string]any `json:"attributes,omitempty"`
+}
+
+type chatCodingChangesResult struct {
+	Changes []chatCodingChange `json:"changes"`
+	Storage string             `json:"storage"`
+}
+
+type chatCodingChange struct {
+	ID        int64    `json:"id"`
+	Workspace string   `json:"workspace,omitempty"`
+	SessionID string   `json:"session_id,omitempty"`
+	Client    string   `json:"client,omitempty"`
+	Operation string   `json:"operation,omitempty"`
+	Status    string   `json:"status,omitempty"`
+	Reason    string   `json:"reason,omitempty"`
+	Paths     []string `json:"paths,omitempty"`
+	CreatedAt string   `json:"created_at,omitempty"`
+}
+
+type chatCodingDiffResult struct {
+	ID      int64  `json:"id,omitempty"`
+	Diff    string `json:"diff"`
+	Storage string `json:"storage"`
 }
 
 // runCtl shells to milliwaysctl with the given argv and streams its
@@ -3061,6 +3090,85 @@ func (l *chatLoop) handleRetry() {
 	}
 }
 
+func (l *chatLoop) handleChanges() {
+	if l.client == nil {
+		fmt.Fprintln(l.out, "  no tracked coding-agent changes")
+		fmt.Fprintln(l.out, "  daemon not connected; working tree files are unchanged by this command")
+		return
+	}
+	var result chatCodingChangesResult
+	if err := l.client.Call("coding.changes", nil, &result); err != nil {
+		fmt.Fprintln(l.errw, friendlyError("✗ coding.changes: ", "", err))
+		return
+	}
+	if len(result.Changes) == 0 {
+		fmt.Fprintln(l.out, "  no tracked coding-agent changes")
+		return
+	}
+	fmt.Fprintln(l.out, "Recent coding-agent changes:")
+	for _, change := range result.Changes {
+		client := change.Client
+		if client == "" {
+			client = "agent"
+		}
+		op := change.Operation
+		if op == "" {
+			op = "change"
+		}
+		status := change.Status
+		if status == "" {
+			status = "recorded"
+		}
+		fmt.Fprintf(l.out, "  #%d %-10s %-8s %-8s", change.ID, client, op, status)
+		if len(change.Paths) > 0 {
+			fmt.Fprintf(l.out, " %s", strings.Join(change.Paths, ", "))
+		}
+		if change.Reason != "" {
+			fmt.Fprintf(l.out, " — %s", change.Reason)
+		}
+		fmt.Fprintln(l.out)
+	}
+}
+
+func (l *chatLoop) handleDiff(rest string) {
+	if l.client == nil {
+		fmt.Fprintln(l.out, "  no tracked coding-agent diff")
+		fmt.Fprintln(l.out, "  daemon not connected; working tree files are unchanged by this command")
+		return
+	}
+	params := map[string]any{}
+	if strings.TrimSpace(rest) != "" {
+		fields := splitFields(rest)
+		id, err := strconv.ParseInt(fields[0], 10, 64)
+		if err != nil || id <= 0 {
+			fmt.Fprintln(l.errw, "usage: /diff [change-id]")
+			return
+		}
+		params["id"] = id
+	}
+	var result chatCodingDiffResult
+	if err := l.client.Call("coding.diff", params, &result); err != nil {
+		fmt.Fprintln(l.errw, friendlyError("✗ coding.diff: ", "", err))
+		return
+	}
+	if strings.TrimSpace(result.Diff) == "" {
+		fmt.Fprintln(l.out, "  no tracked coding-agent diff")
+		return
+	}
+	if result.ID > 0 {
+		fmt.Fprintf(l.out, "Diff for coding change #%d:\n", result.ID)
+	}
+	fmt.Fprint(l.out, result.Diff)
+	if !strings.HasSuffix(result.Diff, "\n") {
+		fmt.Fprintln(l.out)
+	}
+}
+
+func (l *chatLoop) handleRedo() {
+	fmt.Fprintln(l.out, "  no redo available")
+	fmt.Fprintln(l.out, "  redo storage is not connected in this build; no prompt or file changes were replayed")
+}
+
 // handleUndo drops the last user+assistant turn pair from the log.
 func (l *chatLoop) handleUndo() {
 	l.turnMu.Lock()
@@ -3394,21 +3502,29 @@ func (l *chatLoop) printAgents() {
 		if l.sess != nil && l.sess.agentID == name {
 			current = "● "
 		}
-		fmt.Fprintf(l.out, "%s/%d  %-10s %s  %s\n", current, i+1, name, s.mark, s.model)
+		details := strings.TrimSpace(strings.Join(nonEmptyStrings(s.model, s.enforcement), "  "))
+		fmt.Fprintf(l.out, "%s/%d  %-10s %s  %s\n", current, i+1, name, s.mark, details)
 	}
 }
 
 // agentStatus is the per-runner row for the landing zone / /agents output.
 type agentStatus struct {
-	mark  string // ✓ / ✗ / ?
-	model string
+	mark        string // ✓ / ✗ / ?
+	model       string
+	enforcement string
+}
+
+type agentEnforcementInfo struct {
+	Level         string `json:"level,omitempty"`
+	ControlledEnv bool   `json:"controlled_env,omitempty"`
 }
 
 type agentListEntry struct {
-	ID         string `json:"id"`
-	Available  bool   `json:"available"`
-	AuthStatus string `json:"auth_status"`
-	Model      string `json:"model"`
+	ID          string               `json:"id"`
+	Available   bool                 `json:"available"`
+	AuthStatus  string               `json:"auth_status"`
+	Model       string               `json:"model"`
+	Enforcement agentEnforcementInfo `json:"enforcement"`
 }
 
 // fetchAgentStatuses queries agent.list and returns a map keyed by
@@ -3440,8 +3556,29 @@ func applyAgentStatuses(out map[string]agentStatus, agents []agentListEntry) {
 		case "unknown":
 			mark = "?"
 		}
-		out[a.ID] = agentStatus{mark: mark, model: a.Model}
+		out[a.ID] = agentStatus{mark: mark, model: a.Model, enforcement: formatAgentEnforcement(a.Enforcement)}
 	}
+}
+
+func formatAgentEnforcement(e agentEnforcementInfo) string {
+	level := strings.TrimSpace(e.Level)
+	if level == "" {
+		return ""
+	}
+	if e.ControlledEnv {
+		return level + "/env"
+	}
+	return level
+}
+
+func nonEmptyStrings(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // setTermTitle updates the terminal tab title and window title using OSC escape
@@ -3772,8 +3909,11 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /history [limit] [client]      show session and saved runner history")
 	fmt.Fprintln(l.out, "  /cost                         token usage per runner (last hour)")
 	fmt.Fprintln(l.out, "  /trace [limit]                show recent daemon/agent spans")
+	fmt.Fprintln(l.out, "  /changes                      show tracked coding-agent changes (no-op when storage is absent)")
+	fmt.Fprintln(l.out, "  /diff                         show tracked coding-agent diff (no-op when storage is absent)")
 	fmt.Fprintln(l.out, "  /retry                        re-send the last user prompt")
-	fmt.Fprintln(l.out, "  /undo                         drop the last user+assistant turn pair")
+	fmt.Fprintln(l.out, "  /redo                         replay a stored redo when available (no-op when storage is absent)")
+	fmt.Fprintln(l.out, "  /undo                         drop the last user+assistant turn pair from local context only; does not revert files")
 	fmt.Fprintln(l.out)
 
 	fmt.Fprintln(l.out, "Runner rotation:")

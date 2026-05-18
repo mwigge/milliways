@@ -136,6 +136,9 @@ func runOpenAICompatibleOnce(parent context.Context, cfg openAICompatibleRunnerC
 	if state == nil {
 		state = &openAICompatibleSessionState{}
 	}
+	if state.pendingApproval != nil && !planningApprovalGateEnabled() {
+		state.pendingApproval = nil
+	}
 	if state.pendingApproval != nil {
 		if approvalGateExpired(state.pendingApproval.Request, time.Now()) {
 			state.pendingApproval = nil
@@ -159,7 +162,7 @@ func runOpenAICompatibleOnce(parent context.Context, cfg openAICompatibleRunnerC
 				Request:        approvalGateNewRequest(cfg.AgentID, securityWorkspace, original, time.Now()),
 			}
 		}
-	} else if approvalGateNeedsPlan(text) {
+	} else if planningApprovalGateEnabled() && approvalGateNeedsPlan(text) {
 		state.pendingApproval = &approvalGatePending{
 			OriginalPrompt: text,
 			Request:        approvalGateNewRequest(cfg.AgentID, securityWorkspace, text, time.Now()),
@@ -210,6 +213,7 @@ func runOpenAICompatibleOnce(parent context.Context, cfg openAICompatibleRunnerC
 		Logger:                 slog.Default(),
 		StopOnUserInputRequest: true,
 		CommandFirewall:        commandFirewallForAgentWorkspace(cfg.AgentID, securityWorkspace),
+		ToolHooks:              toolHooksForAgentWorkspace(cfg.AgentID, securityWorkspace),
 	})
 	if err != nil {
 		observeError(metrics, cfg.AgentID)
