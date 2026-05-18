@@ -181,11 +181,6 @@ func parseTimeOrOffset(s string, now, fallback time.Time) (time.Time, error) {
 		rest = rest[1:]
 	}
 	// Find the unit suffix.
-	type unit struct {
-		suffix string
-		fn     func(int) time.Duration
-		mo, yr int // calendar offsets
-	}
 	units := []struct {
 		suffix string
 	}{

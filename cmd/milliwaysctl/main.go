@@ -330,9 +330,7 @@ func watchStatus(socket, stateDir string, debounceMs int) {
 				slog.Warn("watchStatus: write tmp", "err", err)
 				return
 			}
-			if err := f.Sync(); err != nil {
-				// best effort
-			}
+			_ = f.Sync()
 			if err := f.Close(); err != nil {
 				slog.Warn("watchStatus: close tmp", "err", err)
 				return
@@ -554,8 +552,6 @@ func runObserve(socket, stateDir string, debounceMs int) {
 
 	// writer goroutine with debounce.
 	go func() {
-		var mu sync.Mutex
-		var pending []byte
 		var lastWrite time.Time
 		writeNow := func(b []byte) {
 			f, err := os.Create(tmpPath)
@@ -590,13 +586,9 @@ func runObserve(socket, stateDir string, debounceMs int) {
 				if !ok {
 					return
 				}
-				mu.Lock()
-				pending = ev
 				if time.Since(lastWrite) >= interval {
-					writeNow(pending)
-					pending = nil
+					writeNow(ev)
 				}
-				mu.Unlock()
 			}
 		}
 	}()

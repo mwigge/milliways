@@ -117,14 +117,22 @@ func (c *Client) subscribeImpl(socket, method string, params any) (<-chan []byte
 	// 3. Send the STREAM preamble.
 	preamble := fmt.Sprintf("STREAM %d %d\n", resp.StreamID, resp.OutputOffset)
 	if _, err := side.Write([]byte(preamble)); err != nil {
-		side.Close()
+		if closeErr := side.Close(); closeErr != nil {
+			return nil, nil, fmt.Errorf("write preamble: %w; close sidecar: %w", err, closeErr)
+		}
 		return nil, nil, fmt.Errorf("write preamble: %w", err)
 	}
 	events := make(chan []byte, 16)
-	cancel := func() { side.Close() }
+	cancel := func() {
+		//nolint:errcheck // Best-effort cancellation; the reader goroutine observes the connection close.
+		side.Close()
+	}
 	go func() {
 		defer close(events)
-		defer side.Close()
+		defer func() {
+			//nolint:errcheck // Best-effort cleanup after the stream reader exits.
+			side.Close()
+		}()
 		scan := bufio.NewScanner(side)
 		scan.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 		for scan.Scan() {

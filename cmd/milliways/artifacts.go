@@ -67,13 +67,13 @@ func (s *artifactChState) discard() {
 // native /compact (those are passed through by handleSlash).
 func (l *chatLoop) handleCompact() {
 	if l.sess == nil {
-		fmt.Fprintln(l.errw, "✗ no runner active — pick one first")
+		_, _ = fmt.Fprintln(l.errw, "✗ no runner active — pick one first")
 		return
 	}
 	agentID := l.sess.agentID
 	turns := l.snapshotTurns()
 	if len(turns) == 0 {
-		fmt.Fprintln(l.out, "  (nothing to compact)")
+		_, _ = fmt.Fprintln(l.out, "  (nothing to compact)")
 		return
 	}
 	var sb strings.Builder
@@ -83,10 +83,10 @@ func (l *chatLoop) handleCompact() {
 	}
 	ch := make(chan string, 1)
 	l.artifact.set(ch)
-	fmt.Fprintln(l.out, "  compacting context…")
+	_, _ = fmt.Fprintln(l.out, "  compacting context…")
 	if err := l.sess.send(l.enrichWithPalace(context.Background(), sb.String())); err != nil {
 		l.artifact.set(nil)
-		fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
+		_, _ = fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 		return
 	}
 	go func() {
@@ -95,7 +95,7 @@ func (l *chatLoop) handleCompact() {
 		select {
 		case summary, ok = <-ch:
 		case <-time.After(10 * time.Minute):
-			fmt.Fprintln(l.errw, "✗ compact: artifact timed out waiting for stream completion")
+			_, _ = fmt.Fprintln(l.errw, "✗ compact: artifact timed out waiting for stream completion")
 			return
 		}
 		if !ok || summary == "" {
@@ -108,9 +108,9 @@ func (l *chatLoop) handleCompact() {
 		}
 		l.turnMu.Unlock()
 		if err := l.resetAgentSessionAfterCompact(agentID); err != nil {
-			fmt.Fprintln(l.errw, friendlyError("warn: compact reset: ", "", err))
+			_, _ = fmt.Fprintln(l.errw, friendlyError("warn: compact reset: ", "", err))
 		}
-		fmt.Fprintln(l.out, "  ✓ context compacted")
+		_, _ = fmt.Fprintln(l.out, "  ✓ context compacted")
 	}()
 }
 
@@ -189,8 +189,8 @@ func (l *chatLoop) handlePptx(topic string) {
 
 	color := agentColor(l.sess.agentID)
 	reset := "\033[0m"
-	fmt.Fprintf(l.out, "%s* pptx:%s generating %q with %s\n", color, reset, topic, l.sess.agentID)
-	fmt.Fprintf(l.out, "  output: %s\n\n", outPath)
+	_, _ = fmt.Fprintf(l.out, "%s* pptx:%s generating %q with %s\n", color, reset, topic, l.sess.agentID)
+	_, _ = fmt.Fprintf(l.out, "  output: %s\n\n", outPath)
 
 	ch := make(chan string, 1)
 	l.artifact.set(ch)
@@ -207,7 +207,7 @@ func (l *chatLoop) handlePptx(topic string) {
 		for {
 			select {
 			case <-t.C:
-				fmt.Fprintf(l.out, "  …still generating\n")
+				_, _ = fmt.Fprintf(l.out, "  …still generating\n")
 				l.rl.Refresh()
 			case <-tickDone:
 				return
@@ -232,29 +232,32 @@ func (l *chatLoop) handlePptx(topic string) {
 		}
 		script := extractLangBlock(raw, "python", "py")
 		if script == "" {
-			fmt.Fprintf(l.errw, "✗ pptx: no python code block in response — first 200 chars:\n  %s\n",
+			_, _ = fmt.Fprintf(l.errw, "✗ pptx: no python code block in response — first 200 chars:\n  %s\n",
 				truncate(raw, 200))
 			l.rl.Refresh()
 			return
 		}
 		if err := validatePythonScript(script); err != nil {
-			fmt.Fprintf(l.errw, "✗ pptx: script validation failed: %v\n  Refusing to execute.\n", err)
+			_, _ = fmt.Fprintf(l.errw, "✗ pptx: script validation failed: %v\n  Refusing to execute.\n", err)
 			l.rl.Refresh()
 			return
 		}
 		tmp, err := os.CreateTemp("", "milliways-pptx-*.py")
 		if err != nil {
-			fmt.Fprintf(l.errw, "✗ pptx: temp file: %v\n", err)
+			_, _ = fmt.Fprintf(l.errw, "✗ pptx: temp file: %v\n", err)
 			return
 		}
 		tmpPath := tmp.Name()
-		defer os.Remove(tmpPath)
+		defer func() { _ = os.Remove(tmpPath) }()
 		if _, err := tmp.WriteString(script); err != nil {
-			tmp.Close()
+			_ = tmp.Close()
 			fmt.Fprintf(l.errw, "✗ pptx: write script: %v\n", err)
 			return
 		}
-		tmp.Close()
+		if err := tmp.Close(); err != nil {
+			_, _ = fmt.Fprintf(l.errw, "✗ pptx: close script: %v\n", err)
+			return
+		}
 
 		fmt.Fprintf(l.out, "\n%s* pptx:%s running script…\n", color, reset)
 		runCtx, runCancel := context.WithTimeout(context.Background(), 30*time.Second)

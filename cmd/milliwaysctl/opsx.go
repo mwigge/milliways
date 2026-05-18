@@ -39,15 +39,6 @@ import (
 	"os/exec"
 )
 
-// opsxVerbs is the discoverable verb list for --help and the wezterm palette.
-var opsxVerbs = []string{
-	"list",
-	"status",
-	"show",
-	"archive",
-	"validate",
-}
-
 // runOpsx dispatches `milliwaysctl opsx <verb> [args...]` and returns the
 // process exit code.
 func runOpsx(args []string, stdout, stderr io.Writer) int {

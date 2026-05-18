@@ -442,9 +442,10 @@ func formatObserveSecurity(sec observeRenderSecurity) string {
 		posture = "ok"
 	}
 	label := "SEC OK"
-	if posture == "block" {
+	switch posture {
+	case "block":
 		label = fmt.Sprintf("SEC BLOCK %d", blocks)
-	} else if posture == "warn" {
+	case "warn":
 		label = fmt.Sprintf("SEC WARN %d", warnings)
 	}
 	modeHint := observeSecurityModeHint(mode, blocks)

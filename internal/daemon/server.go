@@ -368,16 +368,12 @@ func (s *Server) processLine(enc *json.Encoder, line []byte) {
 func (s *Server) handleSidecar(conn net.Conn, preamble []byte) {
 	var streamID, lastOffset int64
 	if _, err := fmt.Sscanf(string(preamble), "STREAM %d %d", &streamID, &lastOffset); err != nil {
-		conn.Write([]byte(fmt.Sprintf(
-			`{"t":"err","code":%d,"msg":"invalid stream attach line"}`+"\n",
-			ErrInvalidParams)))
+		_, _ = fmt.Fprintf(conn, `{"t":"err","code":%d,"msg":"invalid stream attach line"}`+"\n", ErrInvalidParams)
 		return
 	}
 	stream, ok := s.streams.Get(streamID)
 	if !ok {
-		conn.Write([]byte(fmt.Sprintf(
-			`{"t":"err","code":%d,"msg":"stream_not_found_or_attach_timeout"}`+"\n",
-			ErrStreamAttachTimeout)))
+		_, _ = fmt.Fprintf(conn, `{"t":"err","code":%d,"msg":"stream_not_found_or_attach_timeout"}`+"\n", ErrStreamAttachTimeout)
 		return
 	}
 	if err := stream.Attach(conn, lastOffset); err != nil {

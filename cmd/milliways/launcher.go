@@ -165,9 +165,10 @@ func probeDaemonForWelcome(budget time.Duration) daemonStatusReport {
 		var parts []string
 		for _, a := range agents.Agents {
 			mark := "✗"
-			if a.AuthStatus == "ok" {
+			switch a.AuthStatus {
+			case "ok":
 				mark = "✓"
-			} else if a.AuthStatus == "unknown" {
+			case "unknown":
 				mark = "?"
 			}
 			parts = append(parts, a.ID+" "+mark)

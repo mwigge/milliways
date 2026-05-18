@@ -19,7 +19,6 @@ import (
 	"testing"
 )
 
-
 // renderTemplateFuzz mirrors the logic in agent.go for isolated fuzz testing.
 func renderTemplateFuzz(template string, values map[string]string) (string, error) {
 	missing := make([]string, 0)
@@ -71,11 +70,6 @@ func FuzzRenderTemplate(f *testing.F) {
 
 		// Test that rendering completes without panic
 		result, err := renderTemplateFuzz(template, values)
-
-		// Either succeeds with non-nil result or returns meaningful error
-		if err == nil && result == "" && template != "" {
-			// This is acceptable - template with no variables
-		}
 
 		// Verify no remaining variable patterns if all values provided
 		missingCount := countTemplateVariables(template)

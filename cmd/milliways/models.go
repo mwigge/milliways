@@ -240,7 +240,7 @@ func (c *modelCache) fetchOpenAIAt(url, apiKey string) []string {
 		slog.Debug("models fetch failed", "provider", "openai", "err", err)
 		return nil
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close after model list response is consumed
 	if resp.StatusCode != http.StatusOK {
 		return nil
 	}
@@ -278,7 +278,7 @@ func (c *modelCache) fetchAnthropic(apiKey string) []string {
 		slog.Debug("models fetch failed", "provider", "anthropic", "err", err)
 		return nil
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close after model list response is consumed
 	if resp.StatusCode != http.StatusOK {
 		return nil
 	}
@@ -316,7 +316,7 @@ func (c *modelCache) fetchGemini(apiKey string) []string {
 		slog.Debug("models fetch failed", "provider", "gemini", "err", err)
 		return nil
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close after model list response is consumed
 	if resp.StatusCode != http.StatusOK {
 		return nil
 	}
@@ -353,7 +353,7 @@ func (c *modelCache) fetchMiniMax(apiKey string) []string {
 		slog.Debug("models fetch failed", "provider", "minimax", "err", err)
 		return nil
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close after model list response is consumed
 	if resp.StatusCode != http.StatusOK {
 		return nil
 	}
@@ -393,7 +393,7 @@ func (c *modelCache) fetchCopilot() []string {
 		slog.Debug("models fetch failed", "provider", "copilot", "err", err)
 		return nil
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close after model list response is consumed
 	if resp.StatusCode != http.StatusOK {
 		return nil
 	}

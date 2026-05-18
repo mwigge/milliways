@@ -15,6 +15,7 @@
 package adapter
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -95,7 +96,7 @@ func TestGeminiAdapter_Send(t *testing.T) {
 	t.Parallel()
 
 	a := NewGeminiAdapter(newTestKitchen("echo"), AdapterOpts{})
-	if err := a.Send(nil, "msg"); err != ErrNotInteractive {
+	if err := a.Send(context.Background(), "msg"); err != ErrNotInteractive {
 		t.Errorf("Send = %v, want ErrNotInteractive", err)
 	}
 }

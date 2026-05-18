@@ -76,7 +76,7 @@ func (p *CodesProvider) SupportsModel(m Model) bool {
 }
 
 // Send executes a streaming chat completion request.
-func (p *CodesProvider) Send(ctx context.Context, req Request) (Response, error) {
+func (p *CodesProvider) Send(ctx context.Context, req Request) (resp Response, err error) {
 	if p == nil {
 		return Response{}, errors.New("nil codes provider")
 	}
@@ -109,7 +109,7 @@ func (p *CodesProvider) Send(ctx context.Context, req Request) (Response, error)
 	if err != nil {
 		return Response{}, fmt.Errorf("send codes request: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer closeResponseBody(httpResp.Body, &err, "close codes response body")
 
 	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
 		message, readErr := readErrorBody(httpResp.Body)

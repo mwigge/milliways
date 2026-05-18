@@ -49,8 +49,6 @@ type templateFile struct {
 	content string
 }
 
-const placeholderMarker = "MILLIWAYS_CRA_PLACEHOLDER"
-
 // Scaffold creates missing CRA evidence files in a workspace. Existing files
 // are left untouched unless Force is set.
 func Scaffold(opts Options) (Result, error) {

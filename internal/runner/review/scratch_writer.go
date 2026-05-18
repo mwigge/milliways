@@ -59,22 +59,22 @@ func (sw *FileScratchWriter) Init(repoPath, model string, langs []Lang, groups [
 	sw.groups = groups
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# Review: %s\n", repoPath))
-	sb.WriteString(fmt.Sprintf("Started: %s\n", time.Now().UTC().Format(time.RFC3339)))
-	sb.WriteString(fmt.Sprintf("Model: %s\n", model))
+	fmt.Fprintf(&sb, "# Review: %s\n", repoPath)
+	fmt.Fprintf(&sb, "Started: %s\n", time.Now().UTC().Format(time.RFC3339))
+	fmt.Fprintf(&sb, "Model: %s\n", model)
 
 	langNames := make([]string, len(langs))
 	for i, l := range langs {
 		langNames[i] = l.Name
 	}
-	sb.WriteString(fmt.Sprintf("Stack: %s\n\n", strings.Join(langNames, ", ")))
+	fmt.Fprintf(&sb, "Stack: %s\n\n", strings.Join(langNames, ", "))
 
 	sb.WriteString("## Plan\n")
 	for _, g := range groups {
 		langName := g.Lang.Name
 		fileCount := len(g.Files)
-		sb.WriteString(fmt.Sprintf("- [ ] %s  (%s, %d files, impact: %.2f)\n",
-			g.Dir, langName, fileCount, g.ImpactScore))
+		fmt.Fprintf(&sb, "- [ ] %s  (%s, %d files, impact: %.2f)\n",
+			g.Dir, langName, fileCount, g.ImpactScore)
 	}
 	sb.WriteString("\n")
 
@@ -109,7 +109,7 @@ func (sw *FileScratchWriter) AppendGroup(group Group, findings []Finding) error 
 
 	var sb strings.Builder
 	sb.WriteString(updated)
-	sb.WriteString(fmt.Sprintf("## [%d/%d] %s (%s)\n", headingIdx, total, group.Dir, group.Lang.Name))
+	fmt.Fprintf(&sb, "## [%d/%d] %s (%s)\n", headingIdx, total, group.Dir, group.Lang.Name)
 
 	if len(findings) == 0 {
 		sb.WriteString("(no issues found)\n")
@@ -210,7 +210,7 @@ func (sw *FileScratchWriter) Compress(ctx context.Context, client GroupClient) e
 	sb.WriteString(header)
 	sb.WriteString("## Compressed\n")
 	for _, f := range findings {
-		sb.WriteString(fmt.Sprintf("- %s\n", f.Reason))
+		fmt.Fprintf(&sb, "- %s\n", f.Reason)
 	}
 	sb.WriteString("\n")
 

@@ -274,12 +274,14 @@ func TestLoadDispatchContextBundle_FileLimit(t *testing.T) {
 			n = contextSizeLimit + 1 - written
 		}
 		if _, err := f.Write(chunk[:n]); err != nil {
-			f.Close()
+			_ = f.Close()
 			t.Fatalf("Write: %v", err)
 		}
 		written += n
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	_, err = loadDispatchContextBundle(nil, false, "", bigFile)
 	if err == nil {
@@ -312,12 +314,14 @@ func TestLoadDispatchContextBundle_FileSizeAtLimit(t *testing.T) {
 			n = contextSizeLimit - written
 		}
 		if _, err := f.Write(chunk[:n]); err != nil {
-			f.Close()
+			_ = f.Close()
 			t.Fatalf("Write: %v", err)
 		}
 		written += n
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
 
 	_, err = loadDispatchContextBundle(nil, false, "", limitFile)
 	// Should NOT get a size-limit error (size == limit is OK).

@@ -453,15 +453,7 @@ func TestSessionWriter_AppendTurn_PassesEmptyReposAccessedAndProjectRefs(t *test
 		t.Fatalf("AppendTurn: %v", err)
 	}
 
-	call := mc.calls[0]
-	raArg := call.args["repos_accessed"]
-	prArg := call.args["project_refs"]
-	if raArg != nil && raArg != "null" && raArg != "[]" {
-		// Empty is acceptable
-	}
-	if prArg != nil && prArg != "null" && prArg != "[]" {
-		// nil/empty is acceptable
-	}
+	_ = mc.calls[0]
 }
 
 // TestSessionWriter_ImplementsWriter verifies the compile-time interface check.

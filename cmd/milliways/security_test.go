@@ -66,7 +66,7 @@ func shortChatSecurityTestSocket(t *testing.T) string {
 }
 
 func handleChatSecurityRPCTestConn(conn net.Conn, results map[string]any, calls chan<- chatSecurityRPCCall) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	scanner := bufio.NewScanner(conn)
 	enc := json.NewEncoder(conn)
 	for scanner.Scan() {

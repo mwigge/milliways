@@ -287,7 +287,7 @@ type openAICompatibleClient struct {
 	agentID string
 }
 
-func (c *openAICompatibleClient) Send(ctx context.Context, messages []Message, toolDefs []provider.ToolDef) (TurnResult, error) {
+func (c *openAICompatibleClient) Send(ctx context.Context, messages []Message, toolDefs []provider.ToolDef) (result TurnResult, err error) {
 	payload := buildOpenAIChatPayload(c.model, messages, toolDefs)
 	payload["stream_options"] = map[string]any{"include_usage": true}
 	body, err := json.Marshal(payload)
@@ -307,10 +307,17 @@ func (c *openAICompatibleClient) Send(ctx context.Context, messages []Message, t
 	if err != nil {
 		return TurnResult{}, fmt.Errorf("connect %s: %s", sanitizeProviderURL(c.url), scrubProviderSecrets(err.Error()))
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close %s response body: %w", sanitizeProviderURL(c.url), closeErr)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
-		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if readErr != nil {
+			return TurnResult{}, fmt.Errorf("API %d: read error body: %w", resp.StatusCode, readErr)
+		}
 		msg := sanitizeProviderErrorBody(errBody)
 		if resp.StatusCode == http.StatusTooManyRequests || minimaxBodyLooksQuota(msg) {
 			return TurnResult{}, fmt.Errorf("%w: API %d: %s", ErrMiniMaxQuota, resp.StatusCode, msg)

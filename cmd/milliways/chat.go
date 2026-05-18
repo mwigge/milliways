@@ -378,7 +378,7 @@ func runChat(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("dial milliwaysd: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	sc := &switchableCompleter{}
 	sc.set(buildCompleter(""))
@@ -394,7 +394,7 @@ func runChat(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("line reader init: %w", err)
 	}
-	defer rl.Close()
+	defer func() { _ = rl.Close() }()
 	stdout := &crlfWriter{w: os.Stdout}
 	stderr := &crlfWriter{w: os.Stderr}
 	rl.out = stdout
@@ -2311,7 +2311,7 @@ func checkLocalEndpoint(endpoint string, out, errw io.Writer) {
 		fmt.Fprintf(errw, "    run: /install-local-server  or  /local-endpoint <url>\n")
 		return
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close after local health response is consumed
 	if resp.StatusCode != http.StatusOK {
 		fmt.Fprintf(errw, "  ✗ local server at %s returned HTTP %d\n", endpoint, resp.StatusCode)
 		return
@@ -3264,7 +3264,7 @@ func (l *chatLoop) handleDiff(rest string) {
 	if result.ID > 0 {
 		fmt.Fprintf(l.out, "Diff for coding change #%d:\n", result.ID)
 	}
-	fmt.Fprint(l.out, result.Diff)
+	_, _ = fmt.Fprint(l.out, result.Diff)
 	if !strings.HasSuffix(result.Diff, "\n") {
 		fmt.Fprintln(l.out)
 	}

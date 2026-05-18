@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/mwigge/milliways/internal/provider"
@@ -531,7 +532,8 @@ func parseHermesToolCalls(content string) map[int]*openaiToolFrag {
 			}
 			f := &openaiToolFrag{}
 			f.name.WriteString(parsed.Name)
-			f.id.WriteString(fmt.Sprintf("call_%d", idx))
+			f.id.WriteString("call_")
+			f.id.WriteString(strconv.Itoa(idx))
 			f.args.Write(parsed.Arguments)
 			calls[idx] = f
 			idx++
@@ -585,7 +587,8 @@ func parseQwenXMLToolCalls(content string) map[int]*openaiToolFrag {
 			}
 			f := &openaiToolFrag{}
 			f.name.WriteString(parsed.Name)
-			f.id.WriteString(fmt.Sprintf("call_%d", idx))
+			f.id.WriteString("call_")
+			f.id.WriteString(strconv.Itoa(idx))
 			f.args.Write(parsed.Arguments)
 			calls[idx] = f
 			idx++
@@ -620,7 +623,8 @@ func parseQwenXMLToolCalls(content string) map[int]*openaiToolFrag {
 		}
 		f := &openaiToolFrag{}
 		f.name.WriteString(name)
-		f.id.WriteString(fmt.Sprintf("call_%d", idx))
+		f.id.WriteString("call_")
+		f.id.WriteString(strconv.Itoa(idx))
 		if args != "" {
 			f.args.WriteString(args)
 		} else {

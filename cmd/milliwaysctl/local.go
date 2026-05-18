@@ -55,26 +55,6 @@ import (
 // Overridden in tests to prevent writing to the real ~/.local/bin.
 var userHomeDirFn = os.UserHomeDir
 
-// localVerbs is the list of supported `local` verbs surfaced by --help and
-// by the wezterm slash dispatcher (which can read it via help output).
-var localVerbs = []string{
-	"install-server",
-	"install-gpu-server",
-	"install-swap",
-	"list-models",
-	"switch-server",
-	"download-model",
-	"setup-model",
-	"swap-mode",
-	"server-start",
-	"server-stop",
-	"server-status",
-	"server-port",
-	"server-uninstall",
-	"default-model",
-	"review-code",
-}
-
 // runLocal dispatches `milliwaysctl local <verb> [args...]` and returns the
 // process exit code.
 func runLocal(args []string, stdout, stderr io.Writer) int {
@@ -1878,14 +1858,6 @@ func linuxSwapServicePath() (string, error) {
 		return "", fmt.Errorf("home dir: %w", err)
 	}
 	return filepath.Join(home, ".config", "systemd", "user", "milliways-local-swap.service"), nil
-}
-
-func linuxDaemonServicePath() (string, error) {
-	home, err := userHomeDirFn()
-	if err != nil {
-		return "", fmt.Errorf("home dir: %w", err)
-	}
-	return filepath.Join(home, ".config", "systemd", "user", "milliwaysd.service"), nil
 }
 
 // parsePortFromEndpoint extracts the port number from a URL like

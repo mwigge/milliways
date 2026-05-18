@@ -78,7 +78,7 @@ func InitCodeGraph(repoRoot string) error {
 		return nil
 	}
 
-	return fmt.Errorf("CodeGraph not initialized at %s. Run codegraph init or wait for background indexing.", codegraphPath)
+	return fmt.Errorf("codegraph not initialized at %s: run codegraph init or wait for background indexing", codegraphPath)
 }
 
 // DetectPalace reports whether a MemPalace data directory exists at the repository root.
@@ -157,18 +157,18 @@ func ResolveProject(overrideRoot string) (*ProjectContext, error) {
 		info, err := os.Stat(repoRoot)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				return nil, fmt.Errorf("Project root does not exist: %s", repoRoot)
+				return nil, fmt.Errorf("project root does not exist: %s", repoRoot)
 			}
 			return nil, err
 		}
 		if !info.IsDir() {
-			return nil, fmt.Errorf("No git repository at %s", repoRoot)
+			return nil, fmt.Errorf("no git repository at %s", repoRoot)
 		}
 
 		gitDir := filepath.Join(repoRoot, ".git")
 		gitInfo, err := os.Stat(gitDir)
 		if err != nil || !gitInfo.IsDir() || !validGitRepoRoot(repoRoot) {
-			return nil, fmt.Errorf("No git repository at %s", repoRoot)
+			return nil, fmt.Errorf("no git repository at %s", repoRoot)
 		}
 
 		return newProjectContext(repoRoot), nil
@@ -182,7 +182,7 @@ func ResolveProject(overrideRoot string) (*ProjectContext, error) {
 	repoRoot, err := FindRepoRoot(workingDir)
 	if err != nil {
 		if errors.Is(err, ErrNoRepository) {
-			return nil, errors.New("No project repository found. Run from within a git repo or specify --project-root")
+			return nil, errors.New("no project repository found: run from within a git repo or specify --project-root")
 		}
 		return nil, err
 	}

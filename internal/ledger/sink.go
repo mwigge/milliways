@@ -15,6 +15,7 @@
 package ledger
 
 import (
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -70,7 +71,7 @@ func (s *LedgerSink) Emit(evt observability.Event) {
 	}
 
 	if _, err := s.db.Ledger().Insert(entry); err != nil {
-		// Best-effort — do not block the event stream
+		slog.Debug("ledger sink insert failed", "err", err)
 	}
 }
 

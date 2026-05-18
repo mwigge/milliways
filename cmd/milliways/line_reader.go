@@ -143,8 +143,8 @@ func (r *chatLineReader) Readline() (string, error) {
 		return "", err
 	}
 	defer func() { _ = term.Restore(int(r.in.Fd()), oldState) }()
-	fmt.Fprint(r.out, "\033[?2004h")
-	defer fmt.Fprint(r.out, "\033[?2004l")
+	_, _ = fmt.Fprint(r.out, "\033[?2004h")
+	defer func() { _, _ = fmt.Fprint(r.out, "\033[?2004l") }()
 
 	br := bufio.NewReaderSize(r.in, 1<<16)
 	for {
@@ -201,9 +201,9 @@ func (r *chatLineReader) Readline() (string, error) {
 			r.active = false
 			r.promptHidden = false
 			if r.interruptPrompt != "" {
-				fmt.Fprint(r.out, "\r\n"+r.interruptPrompt+"\r\n")
+				_, _ = fmt.Fprint(r.out, "\r\n"+r.interruptPrompt+"\r\n")
 			} else {
-				fmt.Fprint(r.out, "\r\n")
+				_, _ = fmt.Fprint(r.out, "\r\n")
 			}
 			r.mu.Unlock()
 			return "", errLineInterrupt

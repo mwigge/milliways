@@ -50,9 +50,7 @@ func AppendAgentHistory(stateDir, agentID string, payload any, maxLines int) err
 		f.Close()
 		return err
 	}
-	if err := f.Sync(); err != nil {
-		// non-fatal
-	}
+	_ = f.Sync() // best effort
 	f.Close()
 
 	// Trim to maxLines by rewinding and copying last maxLines lines.
@@ -127,9 +125,7 @@ func trimFileToLines(path string, maxLines int) error {
 			return err
 		}
 	}
-	if err := tf.Sync(); err != nil {
-		// best effort
-	}
+	_ = tf.Sync() // best effort
 	if err := tf.Close(); err != nil {
 		return err
 	}

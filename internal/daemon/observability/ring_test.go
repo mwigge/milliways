@@ -45,12 +45,12 @@ func TestNewRing_CapsCapacityToOne(t *testing.T) {
 func TestRing_Push_RecordsSpans(t *testing.T) {
 	r := NewRing(3)
 	span := Span{
-		TraceID:  "trace-123",
-		SpanID:   "span-456",
-		Name:     "test-span",
-		StartTS:  time.Now(),
+		TraceID:    "trace-123",
+		SpanID:     "span-456",
+		Name:       "test-span",
+		StartTS:    time.Now(),
 		DurationMS: 100,
-		Status:   "ok",
+		Status:     "ok",
 	}
 	r.Push(span)
 
@@ -215,7 +215,7 @@ func TestNewSpanID_ReturnsHexString(t *testing.T) {
 	}
 
 	for _, c := range id {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Errorf("invalid hex character: %c", c)
 		}
 	}
@@ -239,7 +239,7 @@ func TestNewTraceID_ReturnsHexString(t *testing.T) {
 	}
 
 	for _, c := range id {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Errorf("invalid hex character: %c", c)
 		}
 	}
@@ -505,8 +505,8 @@ func TestRing_Snapshot_ReturnsCopy(t *testing.T) {
 func TestSpan_JSONFieldNames(t *testing.T) {
 	span := Span{
 		TraceID: "trace",
-		SpanID: "span",
-		Name:   "name",
+		SpanID:  "span",
+		Name:    "name",
 	}
 	data, _ := json.Marshal(span)
 	var decoded map[string]any

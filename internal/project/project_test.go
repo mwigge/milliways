@@ -216,7 +216,7 @@ func TestInitCodeGraphMissing(t *testing.T) {
 		t.Fatal("expected init codegraph to fail")
 	}
 
-	want := "CodeGraph not initialized at " + filepath.Join(repoRoot, ".codegraph") + ". Run codegraph init or wait for background indexing."
+	want := "codegraph not initialized at " + filepath.Join(repoRoot, ".codegraph") + ": run codegraph init or wait for background indexing"
 	if err.Error() != want {
 		t.Fatalf("expected error %q, got %q", want, err.Error())
 	}
@@ -353,7 +353,7 @@ func TestResolveProjectWithMissingOverride(t *testing.T) {
 		t.Fatal("expected resolve project to fail")
 	}
 
-	want := "Project root does not exist: " + missingRoot
+	want := "project root does not exist: " + missingRoot
 	if err.Error() != want {
 		t.Fatalf("expected error %q, got %q", want, err.Error())
 	}
@@ -369,7 +369,7 @@ func TestResolveProjectWithNonRepositoryOverride(t *testing.T) {
 		t.Fatal("expected resolve project to fail")
 	}
 
-	want := "No git repository at " + repoRoot
+	want := "no git repository at " + repoRoot
 	if err.Error() != want {
 		t.Fatalf("expected error %q, got %q", want, err.Error())
 	}
@@ -436,7 +436,7 @@ func TestResolveProjectWithoutRepository(t *testing.T) {
 		t.Fatal("expected resolve project to fail")
 	}
 
-	want := "No project repository found. Run from within a git repo or specify --project-root"
+	want := "no project repository found: run from within a git repo or specify --project-root"
 	if err.Error() != want {
 		t.Fatalf("expected error %q, got %q", want, err.Error())
 	}

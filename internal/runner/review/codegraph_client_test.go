@@ -25,23 +25,6 @@ func cgStubErr(msg string) func(ctx context.Context, tool string, args map[strin
 	}
 }
 
-func cgStubDispatch(dispatch map[string]any) func(ctx context.Context, tool string, args map[string]any) (json.RawMessage, error) {
-	return func(_ context.Context, tool string, _ map[string]any) (json.RawMessage, error) {
-		v, ok := dispatch[tool]
-		if !ok {
-			return nil, errors.New("unexpected tool: " + tool)
-		}
-		if err, ok := v.(error); ok {
-			return nil, err
-		}
-		raw, err := json.Marshal(v)
-		if err != nil {
-			return nil, err
-		}
-		return raw, nil
-	}
-}
-
 // --- Files tests ---
 
 func TestMCPCodeGraphClient_Files_ReturnsParsedFiles(t *testing.T) {
