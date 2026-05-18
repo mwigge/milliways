@@ -104,6 +104,7 @@ func (s *Server) approvalRespond(enc *json.Encoder, req *Request) {
 			writeError(enc, req.ID, ErrInvalidParams, err.Error())
 			return
 		}
+		notifyToolApproval(numericID, p.Decision)
 		writeResult(enc, req.ID, approvalRespondResult{
 			OK:       true,
 			Accepted: true,

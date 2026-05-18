@@ -40,6 +40,7 @@ func codingToolHooks(store *pantry.CodingStore, agentID, workspace string) runne
 				"permission_reason":   perm.Reason,
 				"operation":           string(perm.Request.Operation),
 			}
+			var approvalID int64
 			if meta, ok, err := mwtools.ExtractMutationMetadata(req.ToolName, req.Args); err != nil {
 				return runners.ToolDecisionResult{
 					Decision: runners.ToolDecisionBlock,
@@ -49,11 +50,8 @@ func codingToolHooks(store *pantry.CodingStore, agentID, workspace string) runne
 			} else if ok {
 				metadata["mutation"] = meta
 				if store != nil {
-					decision := string(perm.Decision)
-					if perm.Decision == mwtools.PermissionAsk {
-						decision = "pending"
-					}
-					id, err := store.RecordToolApproval(pantry.ToolApproval{
+					var err error
+					approvalID, err = recordToolApproval(store, pantry.ToolApproval{
 						Workspace:  workspace,
 						SessionID:  req.SessionID,
 						Client:     agentID,
@@ -64,15 +62,33 @@ func codingToolHooks(store *pantry.CodingStore, agentID, workspace string) runne
 						BeforeHash: meta.BeforeHash,
 						Diff:       meta.Diff,
 						Preview:    meta.Preview,
-						Decision:   decision,
 						Reason:     perm.Reason,
 						CreatedAt:  time.Now().UTC(),
-					})
+					}, perm.Decision)
 					if err != nil {
 						return runners.ToolDecisionResult{}, err
 					}
-					metadata["approval_id"] = id
+					metadata["approval_id"] = approvalID
 				}
+			} else if perm.Decision == mwtools.PermissionAsk && store != nil {
+				var err error
+				approvalID, err = recordToolApproval(store, pantry.ToolApproval{
+					Workspace:  workspace,
+					SessionID:  req.SessionID,
+					Client:     agentID,
+					ToolCallID: req.Call.ID,
+					ToolName:   req.ToolName,
+					Operation:  string(perm.Request.Operation),
+					Path:       perm.Request.Path,
+					Preview:    sensitiveToolPreview(perm.Request),
+					Decision:   "pending",
+					Reason:     perm.Reason,
+					CreatedAt:  time.Now().UTC(),
+				}, perm.Decision)
+				if err != nil {
+					return runners.ToolDecisionResult{}, err
+				}
+				metadata["approval_id"] = approvalID
 			}
 
 			switch perm.Decision {
@@ -83,6 +99,25 @@ func codingToolHooks(store *pantry.CodingStore, agentID, workspace string) runne
 					Metadata: metadata,
 				}, nil
 			case mwtools.PermissionAsk:
+				if approvalID > 0 {
+					decision, err := waitForToolApproval(ctx, store, approvalID)
+					if err != nil {
+						return runners.ToolDecisionResult{
+							Decision: runners.ToolDecisionBlock,
+							Message:  "approval wait cancelled before tool execution: " + err.Error(),
+							Metadata: metadata,
+						}, nil
+					}
+					metadata["approval_decision"] = decision
+					if decision == "approve" {
+						return runners.ToolDecisionResult{Decision: runners.ToolDecisionAllow, Metadata: metadata}, nil
+					}
+					return runners.ToolDecisionResult{
+						Decision: runners.ToolDecisionBlock,
+						Message:  "tool execution denied by approval response",
+						Metadata: metadata,
+					}, nil
+				}
 				return runners.ToolDecisionResult{
 					Decision: runners.ToolDecisionNeedsApproval,
 					Message:  "approval required before tool execution: " + perm.Reason,
@@ -127,6 +162,24 @@ func codingToolHooks(store *pantry.CodingStore, agentID, workspace string) runne
 			return nil
 		},
 	}
+}
+
+func recordToolApproval(store *pantry.CodingStore, approval pantry.ToolApproval, decision mwtools.PermissionDecision) (int64, error) {
+	approval.Decision = string(decision)
+	if decision == mwtools.PermissionAsk {
+		approval.Decision = "pending"
+	}
+	return store.RecordToolApproval(approval)
+}
+
+func sensitiveToolPreview(req mwtools.ToolPermissionRequest) string {
+	if req.Command != "" {
+		return req.Command
+	}
+	if req.URL != "" {
+		return req.URL
+	}
+	return ""
 }
 
 func codingPermissionModeFromEnv() mwtools.PermissionMode {

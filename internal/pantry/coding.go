@@ -291,6 +291,27 @@ func (s *CodingStore) UpdateToolApprovalDecision(id int64, decision, reason stri
 	return nil
 }
 
+// GetToolApproval returns one approval record by ID.
+func (s *CodingStore) GetToolApproval(id int64) (ToolApproval, error) {
+	var a ToolApproval
+	var createdAt, updatedAt string
+	err := s.db.QueryRow(`
+		SELECT id, workspace, session_id, client, turn_id, tool_call_id, tool_name,
+		       operation, path, before_hash, after_hash, diff, preview, decision,
+		       reason, created_at, updated_at
+		FROM mw_tool_approvals
+		WHERE id = ?`, id).Scan(&a.ID, &a.Workspace, &a.SessionID, &a.Client,
+		&a.TurnID, &a.ToolCallID, &a.ToolName, &a.Operation, &a.Path,
+		&a.BeforeHash, &a.AfterHash, &a.Diff, &a.Preview, &a.Decision,
+		&a.Reason, &createdAt, &updatedAt)
+	if err != nil {
+		return ToolApproval{}, fmt.Errorf("get tool approval: %w", err)
+	}
+	a.CreatedAt = codingParseTime(createdAt)
+	a.UpdatedAt = codingParseTime(updatedAt)
+	return a, nil
+}
+
 // ListToolApprovals returns recent approval records, optionally scoped by
 // workspace and session. Results are newest first.
 func (s *CodingStore) ListToolApprovals(workspace, sessionID string, limit int) ([]ToolApproval, error) {

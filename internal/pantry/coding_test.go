@@ -156,4 +156,12 @@ func TestCodingStore_ToolApprovalLifecycle(t *testing.T) {
 	if got.UpdatedAt.Before(got.CreatedAt) {
 		t.Fatalf("UpdatedAt %s before CreatedAt %s", got.UpdatedAt, got.CreatedAt)
 	}
+
+	byID, err := store.GetToolApproval(approvalID)
+	if err != nil {
+		t.Fatalf("GetToolApproval: %v", err)
+	}
+	if byID.ID != approvalID || byID.Decision != "approved" || byID.Reason != "inside owned scope" {
+		t.Fatalf("GetToolApproval = %#v, want approved record %d", byID, approvalID)
+	}
 }

@@ -16,12 +16,14 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mwigge/milliways/internal/daemon/observability"
 	"github.com/mwigge/milliways/internal/daemon/runners"
@@ -354,6 +356,107 @@ func TestCodingRPCUsesPantryStorage(t *testing.T) {
 	}
 	if !strings.Contains(diffResp.Result.Diff, "-old") || !strings.Contains(diffResp.Result.Diff, "+new") {
 		t.Fatalf("coding.diff missing diff body:\n%s", diffResp.Result.Diff)
+	}
+}
+
+func TestApprovalRespondResumesWaitingToolDecision(t *testing.T) {
+	t.Setenv("MILLIWAYS_PERMISSION_MODE", "auto")
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	path := filepath.Join(workspace, "old.txt")
+	if err := os.WriteFile(path, []byte("delete me"), 0o600); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+	db, err := pantry.Open(filepath.Join(t.TempDir(), "milliways.db"))
+	if err != nil {
+		t.Fatalf("pantry.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	hooks := codingToolHooks(db.Coding(), "minimax", workspace)
+	if hooks.Decide == nil {
+		t.Fatal("codingToolHooks Decide is nil")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	resultCh := make(chan runners.ToolDecisionResult, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		result, err := hooks.Decide(ctx, runners.ToolDecisionRequest{
+			SessionID: "sess-approval",
+			Call: runners.ToolCall{
+				ID:   "call-delete",
+				Name: "Delete",
+				Args: `{"path":"` + filepath.ToSlash(path) + `"}`,
+			},
+			ToolName: "Delete",
+			Args: map[string]any{
+				"path": path,
+			},
+		})
+		resultCh <- result
+		errCh <- err
+	}()
+
+	var approvalID string
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		approvals, err := db.Coding().ListToolApprovals("", "", 10)
+		if err != nil {
+			t.Fatalf("ListToolApprovals: %v", err)
+		}
+		if len(approvals) > 0 {
+			approvalID = strconv.FormatInt(approvals[0].ID, 10)
+			if approvals[0].Decision != "pending" {
+				t.Fatalf("approval decision before response = %q, want pending", approvals[0].Decision)
+			}
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if approvalID == "" {
+		t.Fatal("waiting tool decision did not record a pending approval")
+	}
+
+	select {
+	case result := <-resultCh:
+		t.Fatalf("tool decision returned before approval: %+v", result)
+	default:
+	}
+
+	srv := &Server{spans: observability.NewRing(10), pantryDB: db}
+	var respondBuf bytes.Buffer
+	params := json.RawMessage(`{"id":"` + approvalID + `","decision":"approve","reason":"reviewed live"}`)
+	srv.dispatch(json.NewEncoder(&respondBuf), &Request{
+		JSONRPC: "2.0",
+		Method:  "approval.respond",
+		Params:  params,
+		ID:      json.RawMessage(`1`),
+	})
+	var respondResp Response
+	if err := json.Unmarshal(respondBuf.Bytes(), &respondResp); err != nil {
+		t.Fatalf("decode approval.respond response: %v", err)
+	}
+	if respondResp.Error != nil {
+		t.Fatalf("approval.respond error = %+v", respondResp.Error)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("tool decision error = %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("tool decision did not resume after approval.respond")
+	}
+	select {
+	case result := <-resultCh:
+		if result.Decision != runners.ToolDecisionAllow {
+			t.Fatalf("tool decision = %+v, want allow", result)
+		}
+	case <-ctx.Done():
+		t.Fatal("tool decision result missing after approval.respond")
 	}
 }
 

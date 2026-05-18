@@ -181,6 +181,81 @@ func TestRunAgenticLoop_PreToolDecisionHookBlocksBeforeExecution(t *testing.T) {
 	}
 }
 
+func TestRunAgenticLoop_PreToolDecisionHookCanResumeOriginalToolCall(t *testing.T) {
+	t.Parallel()
+
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "echo", Args: `{"text":"approved"}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	executed := make(chan string, 1)
+	registry.Register("echo", func(_ context.Context, args map[string]any) (string, error) {
+		text, _ := args["text"].(string)
+		executed <- text
+		return text, nil
+	}, provider.ToolDef{Name: "echo"})
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+	seenDecision := make(chan ToolDecisionRequest, 1)
+	approved := make(chan struct{})
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+			ToolHooks: ToolHooks{
+				Decide: func(ctx context.Context, req ToolDecisionRequest) (ToolDecisionResult, error) {
+					seenDecision <- req
+					select {
+					case <-approved:
+						return ToolDecisionResult{Decision: ToolDecisionAllow}, nil
+					case <-ctx.Done():
+						return ToolDecisionResult{}, ctx.Err()
+					}
+				},
+			},
+		})
+		done <- err
+	}()
+
+	select {
+	case req := <-seenDecision:
+		if req.Call.ID != "c1" || req.ToolName != "echo" || req.Args["text"] != "approved" {
+			t.Fatalf("decision request = %#v, want original parsed tool call", req)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("decision hook was not reached")
+	}
+	select {
+	case text := <-executed:
+		t.Fatalf("tool executed before approval with %q", text)
+	default:
+	}
+	close(approved)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunAgenticLoop err = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RunAgenticLoop did not resume after approval")
+	}
+	select {
+	case text := <-executed:
+		if text != "approved" {
+			t.Fatalf("executed text = %q, want approved", text)
+		}
+	default:
+		t.Fatal("tool did not execute after approval")
+	}
+	if len(messages) < 3 || messages[2].Role != RoleTool || messages[2].ToolCallID != "c1" || !strings.Contains(messages[2].Content, "approved") {
+		t.Fatalf("resumed tool result not folded into original call message: %+v", messages)
+	}
+}
+
 func TestRunAgenticLoop_PostToolHookReceivesFileChangesAndOutputMetadata(t *testing.T) {
 	t.Parallel()
 
