@@ -755,6 +755,78 @@ func TestToolApprovalWaiterCancellationCleansWaiter(t *testing.T) {
 	}
 }
 
+func TestToolApprovalWaiterPrefersApprovalOverConcurrentCancellation(t *testing.T) {
+	db, err := pantry.Open(filepath.Join(t.TempDir(), "milliways.db"))
+	if err != nil {
+		t.Fatalf("pantry.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	for attempt := 0; attempt < 100; attempt++ {
+		id, err := db.Coding().RecordToolApproval(pantry.ToolApproval{
+			Workspace: "/repo",
+			SessionID: "sess-concurrent-cancel",
+			Client:    "minimax",
+			ToolName:  "Delete",
+			Operation: "delete",
+			Path:      "/repo/old.txt",
+			Decision:  "pending",
+		})
+		if err != nil {
+			t.Fatalf("RecordToolApproval: %v", err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		resultCh := make(chan string, 1)
+		errCh := make(chan error, 1)
+		go func() {
+			decision, err := waitForToolApproval(ctx, db.Coding(), id)
+			resultCh <- decision
+			errCh <- err
+		}()
+
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			toolApprovalWaiters.Lock()
+			waiterCount := len(toolApprovalWaiters.chans[id])
+			toolApprovalWaiters.Unlock()
+			if waiterCount == 1 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		toolApprovalWaiters.Lock()
+		waiterCount := len(toolApprovalWaiters.chans[id])
+		toolApprovalWaiters.Unlock()
+		if waiterCount != 1 {
+			t.Fatalf("attempt %d: waiter count before response = %d, want 1", attempt, waiterCount)
+		}
+
+		if err := db.Coding().UpdateToolApprovalDecision(id, "approve", "reviewed"); err != nil {
+			t.Fatalf("UpdateToolApprovalDecision: %v", err)
+		}
+		cancel()
+		notifyToolApproval(id, "approve")
+
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("attempt %d: waitForToolApproval err = %v, want approval", attempt, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("attempt %d: waitForToolApproval did not return", attempt)
+		}
+		select {
+		case decision := <-resultCh:
+			if decision != "approve" {
+				t.Fatalf("attempt %d: decision = %q, want approve", attempt, decision)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("attempt %d: waitForToolApproval decision missing", attempt)
+		}
+	}
+}
+
 // TestHistoryRPC simulates appending history via history.append and reading
 // it back via history.get through the internal helpers. Uses a temp dir as
 // the server state dir to avoid touching the real runtime state.

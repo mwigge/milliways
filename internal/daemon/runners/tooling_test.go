@@ -198,7 +198,7 @@ func TestRunAgenticLoop_PreToolDecisionBlockEmitsAfterHookEvent(t *testing.T) {
 		return "should not run", nil
 	}, provider.ToolDef{Name: "echo"})
 	messages := []Message{{Role: RoleUser, Content: "go"}}
-	afterEvents := make(chan ToolExecutionEvent, 1)
+	var afterEvents []ToolExecutionEvent
 
 	_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
 		SessionID: "session-block",
@@ -214,7 +214,7 @@ func TestRunAgenticLoop_PreToolDecisionBlockEmitsAfterHookEvent(t *testing.T) {
 				}, nil
 			},
 			After: func(_ context.Context, ev ToolExecutionEvent) error {
-				afterEvents <- ev
+				afterEvents = append(afterEvents, ev)
 				return nil
 			},
 		},
@@ -226,22 +226,21 @@ func TestRunAgenticLoop_PreToolDecisionBlockEmitsAfterHookEvent(t *testing.T) {
 		t.Fatal("tool executed despite pre-tool block")
 	}
 
-	select {
-	case event := <-afterEvents:
-		if !event.Blocked {
-			t.Fatalf("after event Blocked = false, want true: %#v", event)
-		}
-		if event.SessionID != "session-block" || event.Call.ID != "c1" || event.ToolName != "echo" {
-			t.Fatalf("after event metadata = %#v, want blocked tool call metadata", event)
-		}
-		if !strings.Contains(event.Result, "approval denied") {
-			t.Fatalf("after event result = %q, want denial message", event.Result)
-		}
-		if event.Metadata["approval_decision"] != "deny" {
-			t.Fatalf("after event metadata = %+v, want approval_decision deny", event.Metadata)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("after hook was not called for pre-tool decision block")
+	if len(afterEvents) != 1 {
+		t.Fatalf("after hook calls = %d, want 1", len(afterEvents))
+	}
+	event := afterEvents[0]
+	if !event.Blocked {
+		t.Fatalf("after event Blocked = false, want true: %#v", event)
+	}
+	if event.SessionID != "session-block" || event.Call.ID != "c1" || event.ToolName != "echo" {
+		t.Fatalf("after event metadata = %#v, want blocked tool call metadata", event)
+	}
+	if !strings.Contains(event.Result, "approval denied") {
+		t.Fatalf("after event result = %q, want denial message", event.Result)
+	}
+	if event.Metadata["approval_decision"] != "deny" {
+		t.Fatalf("after event metadata = %+v, want approval_decision deny", event.Metadata)
 	}
 }
 

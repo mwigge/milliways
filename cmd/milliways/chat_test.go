@@ -52,7 +52,7 @@ func startFakeChatRPC(t *testing.T, handler func(fakeChatRPCRequest) any) (*rpc.
 		if err != nil {
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		scan := bufio.NewScanner(conn)
 		enc := json.NewEncoder(conn)
 		for scan.Scan() {
@@ -501,10 +501,6 @@ func TestFriendlyErrorRewritesDecodeInternals(t *testing.T) {
 		t.Fatalf("friendlyError missing response guidance in %q", got)
 	}
 }
-
-// chatLoopHelpsTest mirrors chatLoop but allows tests to inspect output
-// streams without spawning a real input reader / daemon connection.
-type chatLoopHelpsTest struct{ *chatLoop }
 
 // TestChatHelpEnumeratesKnownCommands asserts /help lists the user-facing
 // surface (numeric runners, named runners, local-bootstrap, opsx,

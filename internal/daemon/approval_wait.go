@@ -59,10 +59,14 @@ func waitForToolApproval(ctx context.Context, store *pantry.CodingStore, id int6
 		}
 		select {
 		case <-ctx.Done():
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if decision := finalToolApprovalDecision(store, id, ch); decision != "" {
+				return decision, nil
+			}
+			ctxErr := ctx.Err()
+			if errors.Is(ctxErr, context.DeadlineExceeded) {
 				return "", errToolApprovalWaitTimeout
 			}
-			return "", ctx.Err()
+			return "", ctxErr
 		case decision := <-ch:
 			decision = normalizeStoredApprovalDecision(decision)
 			if decision != "" {
@@ -71,6 +75,21 @@ func waitForToolApproval(ctx context.Context, store *pantry.CodingStore, id int6
 		case <-ticker.C:
 		}
 	}
+}
+
+func finalToolApprovalDecision(store *pantry.CodingStore, id int64, ch <-chan string) string {
+	select {
+	case decision := <-ch:
+		if decision = normalizeStoredApprovalDecision(decision); decision != "" {
+			return decision
+		}
+	default:
+	}
+	decision, err := currentToolApprovalDecision(store, id)
+	if err != nil {
+		return ""
+	}
+	return decision
 }
 
 func toolApprovalWaitTimeout() time.Duration {
