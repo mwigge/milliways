@@ -76,6 +76,41 @@ func TestBuildStatusIncludesClientEnforcement(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesGetReportsClientToolContracts(t *testing.T) {
+	runners.SetBrokerPathProvider(nil)
+	t.Cleanup(func() { runners.SetBrokerPathProvider(nil) })
+
+	srv := &Server{spans: observability.NewRing(10)}
+	var buf bytes.Buffer
+	srv.dispatch(json.NewEncoder(&buf), &Request{
+		JSONRPC: "2.0",
+		Method:  "capabilities.get",
+		ID:      json.RawMessage(`1`),
+	})
+
+	var resp struct {
+		Result struct {
+			Clients map[string]runners.EnforcementMetadata `json:"clients"`
+		} `json:"result"`
+		Error *Error `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("decode capabilities.get response: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("capabilities.get error = %+v", resp.Error)
+	}
+	if got := resp.Result.Clients["minimax"].Capabilities.Contract.Write; got != runners.CapabilityRunnerControlled {
+		t.Fatalf("minimax write capability = %q, want %q", got, runners.CapabilityRunnerControlled)
+	}
+	if got := resp.Result.Clients["codex"].Capabilities.Contract.Bash; got != runners.CapabilityExternal {
+		t.Fatalf("codex bash capability = %q, want %q without broker", got, runners.CapabilityExternal)
+	}
+	if got := resp.Result.Clients["codex"].Capabilities.Contract.Approvals; got != runners.CapabilityPreflightOnly {
+		t.Fatalf("codex approval capability = %q, want %q without broker", got, runners.CapabilityPreflightOnly)
+	}
+}
+
 func TestApprovalRPCStubsWireShape(t *testing.T) {
 	srv := &Server{spans: observability.NewRing(10)}
 

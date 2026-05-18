@@ -63,11 +63,28 @@ type ClientCapabilities struct {
 	Tools            CapabilitySupport `json:"tools"`
 	Permissions      CapabilitySupport `json:"permissions"`
 	FileChanges      CapabilitySupport `json:"file_changes"`
+	Contract         ToolContract      `json:"contract"`
 	LSP              CapabilitySupport `json:"lsp"`
 	MCP              CapabilitySupport `json:"mcp"`
 	Memory           CapabilitySupport `json:"memory"`
 	Observability    CapabilitySupport `json:"observability"`
 	EnforcementLevel EnforcementLevel  `json:"enforcement_level"`
+}
+
+// ToolContract reports the baseline agentic operations a client can perform
+// natively or through MilliWays brokerage.
+type ToolContract struct {
+	Read             CapabilitySupport `json:"read"`
+	Write            CapabilitySupport `json:"write"`
+	Edit             CapabilitySupport `json:"edit"`
+	Delete           CapabilitySupport `json:"delete"`
+	Bash             CapabilitySupport `json:"bash"`
+	Glob             CapabilitySupport `json:"glob"`
+	Grep             CapabilitySupport `json:"grep"`
+	ListTree         CapabilitySupport `json:"list_tree"`
+	Artifacts        CapabilitySupport `json:"artifacts"`
+	Approvals        CapabilitySupport `json:"approvals"`
+	StructuredErrors CapabilitySupport `json:"structured_errors"`
 }
 
 // CommandFirewallProvider returns the current command firewall for a runner.
@@ -168,6 +185,7 @@ func ClientCapabilitiesForAgent(agentID string) ClientCapabilities {
 			Tools:            CapabilityRunnerControlled,
 			Permissions:      CapabilityRunnerControlled,
 			FileChanges:      CapabilityRunnerControlled,
+			Contract:         toolContract(CapabilityRunnerControlled, CapabilityRunnerControlled),
 			LSP:              CapabilityUnsupported,
 			MCP:              CapabilityUnsupported,
 			Memory:           CapabilityRunnerControlled,
@@ -180,6 +198,7 @@ func ClientCapabilitiesForAgent(agentID string) ClientCapabilities {
 				Tools:            CapabilityBrokered,
 				Permissions:      CapabilityBrokered,
 				FileChanges:      CapabilityBrokered,
+				Contract:         toolContract(CapabilityBrokered, CapabilityBrokered),
 				LSP:              CapabilityUnsupported,
 				MCP:              CapabilityUnsupported,
 				Memory:           CapabilityRunnerControlled,
@@ -191,6 +210,7 @@ func ClientCapabilitiesForAgent(agentID string) ClientCapabilities {
 			Tools:            CapabilityExternal,
 			Permissions:      CapabilityPreflightOnly,
 			FileChanges:      CapabilityPreflightOnly,
+			Contract:         toolContract(CapabilityExternal, CapabilityPreflightOnly),
 			LSP:              CapabilityUnsupported,
 			MCP:              CapabilityUnsupported,
 			Memory:           CapabilityRunnerControlled,
@@ -202,12 +222,29 @@ func ClientCapabilitiesForAgent(agentID string) ClientCapabilities {
 			Tools:            CapabilityUnknown,
 			Permissions:      CapabilityUnknown,
 			FileChanges:      CapabilityUnknown,
+			Contract:         toolContract(CapabilityUnknown, CapabilityUnknown),
 			LSP:              CapabilityUnknown,
 			MCP:              CapabilityUnknown,
 			Memory:           CapabilityUnknown,
 			Observability:    CapabilityUnknown,
 			EnforcementLevel: EnforcementUnknown,
 		}
+	}
+}
+
+func toolContract(operations, approvals CapabilitySupport) ToolContract {
+	return ToolContract{
+		Read:             operations,
+		Write:            operations,
+		Edit:             operations,
+		Delete:           operations,
+		Bash:             operations,
+		Glob:             operations,
+		Grep:             operations,
+		ListTree:         operations,
+		Artifacts:        operations,
+		Approvals:        approvals,
+		StructuredErrors: operations,
 	}
 }
 

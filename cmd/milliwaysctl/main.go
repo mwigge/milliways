@@ -72,6 +72,9 @@ func main() {
 	if sub == "security" {
 		os.Exit(runSecurity(rest, os.Stdout, os.Stderr))
 	}
+	if sub == "capabilities" {
+		os.Exit(runCapabilities(rest, os.Stdout, os.Stderr))
+	}
 	if sub == "daemon" {
 		os.Exit(runDaemon(rest, os.Stdout, os.Stderr))
 	}
@@ -858,6 +861,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  parallel list                              — list recent parallel dispatch groups")
 	fmt.Fprintln(os.Stderr, "  parallel status <group-id>                 — show per-slot status for a group")
 	fmt.Fprintln(os.Stderr, "  parallel consensus <group-id>              — print the consensus aggregate summary")
+	fmt.Fprintln(os.Stderr, "  capabilities [--json]                      — show client agentic tool capability matrix")
 	fmt.Fprintln(os.Stderr, "  security status                            — show Secure MilliWays posture")
 	fmt.Fprintln(os.Stderr, "  security startup-scan [--strict]           — run startup posture scan")
 	fmt.Fprintln(os.Stderr, "  security cra | cra-scaffold | sbom         — CRA readiness and evidence")

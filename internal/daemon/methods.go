@@ -270,6 +270,10 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		})
 	case "status.get":
 		writeResult(enc, req.ID, s.buildStatus())
+	case "capabilities.get":
+		writeResult(enc, req.ID, map[string]any{
+			"clients": clientEnforcementSnapshot(),
+		})
 	case "status.subscribe":
 		stream := s.streams.Allocate()
 		s.registerStatusSubscriber(stream)
