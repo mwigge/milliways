@@ -274,6 +274,10 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		writeResult(enc, req.ID, map[string]any{
 			"clients": clientEnforcementSnapshot(),
 		})
+	case "workflow.list":
+		s.workflowList(enc, req)
+	case "workflow.get":
+		s.workflowGet(enc, req)
 	case "status.subscribe":
 		stream := s.streams.Allocate()
 		s.registerStatusSubscriber(stream)

@@ -192,11 +192,13 @@ func ReadyNodes(wf Workflow) ([]Node, error) {
 	}
 	nodes := make(map[string]Node, len(wf.Nodes))
 	for _, node := range wf.Nodes {
-		nodes[node.ID] = node
+		nodes[strings.TrimSpace(node.ID)] = node
 	}
 	blockers := make(map[string][]string, len(wf.Nodes))
 	for _, edge := range wf.Edges {
-		blockers[edge.To] = append(blockers[edge.To], edge.From)
+		to := strings.TrimSpace(edge.To)
+		from := strings.TrimSpace(edge.From)
+		blockers[to] = append(blockers[to], from)
 	}
 
 	ready := make([]Node, 0)
@@ -204,7 +206,7 @@ func ReadyNodes(wf Workflow) ([]Node, error) {
 		if node.Status != StatusQueued {
 			continue
 		}
-		if dependenciesCompleted(nodes, blockers[node.ID]) {
+		if dependenciesCompleted(nodes, blockers[strings.TrimSpace(node.ID)]) {
 			ready = append(ready, node)
 		}
 	}

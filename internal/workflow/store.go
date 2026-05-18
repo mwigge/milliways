@@ -69,9 +69,31 @@ func (s *FileStore) Save(ctx context.Context, wf Workflow) error {
 	if err != nil {
 		return fmt.Errorf("workflow marshal: %w", err)
 	}
-	if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
+	tmp, err := os.CreateTemp(s.root, cleanTempPrefix(wf.ID)+"-*.tmp")
+	if err != nil {
+		return fmt.Errorf("workflow temp %s: %w", wf.ID, err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if _, err := tmp.Write(append(raw, '\n')); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("workflow temp write %s: %w", wf.ID, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("workflow temp close %s: %w", wf.ID, err)
+	}
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		return fmt.Errorf("workflow temp chmod %s: %w", wf.ID, err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("workflow write %s: %w", wf.ID, err)
 	}
+	cleanup = false
 	return nil
 }
 
@@ -138,8 +160,13 @@ func (s *FileStore) List(ctx context.Context) ([]Summary, error) {
 
 func (s *FileStore) pathForID(id string) (string, error) {
 	cleanID := strings.TrimSpace(id)
-	if cleanID == "" || strings.Contains(cleanID, "/") || strings.Contains(cleanID, `\`) || cleanID == "." || cleanID == ".." {
+	if cleanID == "" || cleanID != id || strings.Contains(cleanID, "/") || strings.Contains(cleanID, `\`) || cleanID == "." || cleanID == ".." {
 		return "", fmt.Errorf("%w: %q", ErrUnsafeWorkflowID, id)
 	}
 	return filepath.Join(s.root, cleanID+".json"), nil
+}
+
+func cleanTempPrefix(id string) string {
+	replacer := strings.NewReplacer("/", "_", `\`, "_", ".", "_")
+	return replacer.Replace(id)
 }

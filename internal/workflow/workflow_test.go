@@ -134,6 +134,27 @@ func TestReadyNodesReturnsQueuedNodesWithCompletedDependencies(t *testing.T) {
 	}
 }
 
+func TestReadyNodesUsesCanonicalTrimmedIDs(t *testing.T) {
+	t.Parallel()
+
+	wf := Workflow{
+		ID: "wf-1",
+		Nodes: []Node{
+			{ID: " context ", Status: StatusCompleted},
+			{ID: " edit ", Status: StatusQueued},
+		},
+		Edges: []Edge{{From: "context", To: "edit"}},
+	}
+
+	ready, err := ReadyNodes(wf)
+	if err != nil {
+		t.Fatalf("ReadyNodes returned error: %v", err)
+	}
+	if len(ready) != 1 || ready[0].ID != " edit " {
+		t.Fatalf("ready nodes = %#v, want queued edit node", ready)
+	}
+}
+
 func TestWorkflowJSONRoundTripPreservesContractFields(t *testing.T) {
 	t.Parallel()
 

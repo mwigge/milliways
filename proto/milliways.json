@@ -85,6 +85,13 @@
           "type": "integer",
           "minimum": 0,
           "description": "Count of error spans in the last 5 minutes."
+        },
+        "client_enforcement": {
+          "type": "object",
+          "description": "Per-client enforcement and capability metadata.",
+          "additionalProperties": {
+            "$ref": "#/$defs/EnforcementMetadata"
+          }
         }
       },
       "additionalProperties": false
@@ -133,6 +140,437 @@
         },
         "model": {
           "type": "string"
+        },
+        "enforcement": {
+          "$ref": "#/$defs/EnforcementMetadata"
+        }
+      },
+      "additionalProperties": false
+    },
+    "EnforcementLevel": {
+      "type": "string",
+      "enum": [
+        "full",
+        "brokered",
+        "preflight-only",
+        "unknown"
+      ]
+    },
+    "CapabilitySupport": {
+      "type": "string",
+      "enum": [
+        "runner-controlled",
+        "brokered",
+        "preflight-only",
+        "external",
+        "unsupported",
+        "unknown"
+      ]
+    },
+    "ToolContract": {
+      "type": "object",
+      "description": "Baseline agentic operations a client can perform natively or through MilliWays brokerage.",
+      "properties": {
+        "read": {
+          "$ref": "#/$defs/CapabilitySupport"
+        },
+        "write": {
+          "$ref": "#/$defs/CapabilitySupport"
+        },
+        "edit": {
+          "$ref": "#/$defs/CapabilitySupport"
+        },
+        "delete": {
+          "$ref": "#/$defs/CapabilitySupport"
+        },
+        "bash": {
+          "$ref": "#/$defs/CapabilitySupport"
+        },
+        "glob": {
+          "$ref": "#/$defs/CapabilitySupport"
+        },
+        "grep": {
+          "$ref": "#/$defs/CapabilitySupport"
+        },
+        "list_tree": {
+          "$ref": "#/$defs/CapabilitySupport"
+        },
+        "artifacts": {
+          "$ref": "#/$defs/CapabilitySupport"
+        },
+        "approvals": {
+          "$ref": "#/$defs/CapabilitySupport"
+        },
+        "structured_errors": {
+          "$ref": "#/$defs/CapabilitySupport"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ClientCapabilities": {
+      "type": "object",
+      "description": "Coding-agent control surface available for a client.",
+      "properties": {
+        "tools": {
+          "$ref": "#/$defs/CapabilitySupport"
+        },
+        "permissions": {
+          "$ref": "#/$defs/CapabilitySupport"
+        },
+        "file_changes": {
+          "$ref": "#/$defs/CapabilitySupport"
+        },
+        "contract": {
+          "$ref": "#/$defs/ToolContract"
+        },
+        "lsp": {
+          "$ref": "#/$defs/CapabilitySupport"
+        },
+        "mcp": {
+          "$ref": "#/$defs/CapabilitySupport"
+        },
+        "memory": {
+          "$ref": "#/$defs/CapabilitySupport"
+        },
+        "observability": {
+          "$ref": "#/$defs/CapabilitySupport"
+        },
+        "enforcement_level": {
+          "$ref": "#/$defs/EnforcementLevel"
+        }
+      },
+      "additionalProperties": false
+    },
+    "EnforcementMetadata": {
+      "type": "object",
+      "description": "Client-facing security enforcement and capability metadata.",
+      "properties": {
+        "level": {
+          "$ref": "#/$defs/EnforcementLevel"
+        },
+        "controlled_env": {
+          "type": "boolean"
+        },
+        "broker_path": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/ClientCapabilities"
+        }
+      },
+      "additionalProperties": false
+    },
+    "CapabilitiesGetResult": {
+      "type": "object",
+      "description": "Response from capabilities.get.",
+      "required": [
+        "clients"
+      ],
+      "properties": {
+        "clients": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/EnforcementMetadata"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowStatus": {
+      "type": "string",
+      "enum": [
+        "queued",
+        "running",
+        "waiting_approval",
+        "resumed",
+        "verifying",
+        "completed",
+        "failed",
+        "canceled",
+        "skipped"
+      ]
+    },
+    "WorkflowNodeType": {
+      "type": "string",
+      "enum": [
+        "goal",
+        "context",
+        "agent",
+        "tool_call",
+        "approval",
+        "verification",
+        "commit",
+        "release",
+        "summary"
+      ]
+    },
+    "WorkflowApprovalMode": {
+      "type": "string",
+      "enum": [
+        "",
+        "not_required",
+        "required",
+        "approved",
+        "denied"
+      ]
+    },
+    "WorkflowArtifactKind": {
+      "type": "string",
+      "enum": [
+        "log",
+        "diff",
+        "test",
+        "lint",
+        "approval",
+        "commit",
+        "release"
+      ]
+    },
+    "WorkflowSecurityEnvelope": {
+      "type": "object",
+      "properties": {
+        "operation": {
+          "type": "string"
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "approval": {
+          "$ref": "#/$defs/WorkflowApprovalMode"
+        },
+        "risk": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowMemoryLink": {
+      "type": "object",
+      "properties": {
+        "reads": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "writes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowArtifact": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/WorkflowArtifactKind"
+        },
+        "path": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNode": {
+      "type": "object",
+      "required": [
+        "id",
+        "status"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/WorkflowNodeType"
+        },
+        "status": {
+          "$ref": "#/$defs/WorkflowStatus"
+        },
+        "client": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "outputs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "security": {
+          "$ref": "#/$defs/WorkflowSecurityEnvelope"
+        },
+        "memory": {
+          "$ref": "#/$defs/WorkflowMemoryLink"
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowArtifact"
+          }
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "ended_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowEdge": {
+      "type": "object",
+      "required": [
+        "from",
+        "to"
+      ],
+      "properties": {
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Workflow": {
+      "type": "object",
+      "description": "Durable graph for one agentic coding workflow.",
+      "required": [
+        "id",
+        "status",
+        "nodes"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "goal": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/WorkflowStatus"
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowNode"
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowEdge"
+          }
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowSummary": {
+      "type": "object",
+      "required": [
+        "id",
+        "status",
+        "nodes"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "goal": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/WorkflowStatus"
+        },
+        "nodes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowListResult": {
+      "type": "object",
+      "description": "Response from workflow.list.",
+      "required": [
+        "workflows"
+      ],
+      "properties": {
+        "workflows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowSummary"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowGetParams": {
+      "type": "object",
+      "description": "Params for workflow.get.",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowGetResult": {
+      "type": "object",
+      "description": "Response from workflow.get.",
+      "required": [
+        "workflow"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
         }
       },
       "additionalProperties": false
@@ -798,6 +1236,66 @@
     },
     "AgentInfo": {
       "$ref": "#/$defs/AgentInfo"
+    },
+    "EnforcementLevel": {
+      "$ref": "#/$defs/EnforcementLevel"
+    },
+    "CapabilitySupport": {
+      "$ref": "#/$defs/CapabilitySupport"
+    },
+    "ToolContract": {
+      "$ref": "#/$defs/ToolContract"
+    },
+    "ClientCapabilities": {
+      "$ref": "#/$defs/ClientCapabilities"
+    },
+    "EnforcementMetadata": {
+      "$ref": "#/$defs/EnforcementMetadata"
+    },
+    "CapabilitiesGetResult": {
+      "$ref": "#/$defs/CapabilitiesGetResult"
+    },
+    "WorkflowStatus": {
+      "$ref": "#/$defs/WorkflowStatus"
+    },
+    "WorkflowNodeType": {
+      "$ref": "#/$defs/WorkflowNodeType"
+    },
+    "WorkflowApprovalMode": {
+      "$ref": "#/$defs/WorkflowApprovalMode"
+    },
+    "WorkflowArtifactKind": {
+      "$ref": "#/$defs/WorkflowArtifactKind"
+    },
+    "WorkflowSecurityEnvelope": {
+      "$ref": "#/$defs/WorkflowSecurityEnvelope"
+    },
+    "WorkflowMemoryLink": {
+      "$ref": "#/$defs/WorkflowMemoryLink"
+    },
+    "WorkflowArtifact": {
+      "$ref": "#/$defs/WorkflowArtifact"
+    },
+    "WorkflowNode": {
+      "$ref": "#/$defs/WorkflowNode"
+    },
+    "WorkflowEdge": {
+      "$ref": "#/$defs/WorkflowEdge"
+    },
+    "Workflow": {
+      "$ref": "#/$defs/Workflow"
+    },
+    "WorkflowSummary": {
+      "$ref": "#/$defs/WorkflowSummary"
+    },
+    "WorkflowListResult": {
+      "$ref": "#/$defs/WorkflowListResult"
+    },
+    "WorkflowGetParams": {
+      "$ref": "#/$defs/WorkflowGetParams"
+    },
+    "WorkflowGetResult": {
+      "$ref": "#/$defs/WorkflowGetResult"
     },
     "ContextSnapshot": {
       "$ref": "#/$defs/ContextSnapshot"

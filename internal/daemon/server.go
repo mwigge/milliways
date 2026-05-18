@@ -39,6 +39,7 @@ import (
 	"github.com/mwigge/milliways/internal/security"
 	"github.com/mwigge/milliways/internal/security/firewall"
 	"github.com/mwigge/milliways/internal/security/shims"
+	"github.com/mwigge/milliways/internal/workflow"
 )
 
 // Protocol version exposed via ping. Bump major when breaking; minor for
@@ -101,6 +102,9 @@ type Server struct {
 	// pantryDB is the milliways SQLite store; owns parallel group and security persistence.
 	// nil if the open fails — features degrade gracefully.
 	pantryDB *pantry.DB
+
+	// workflowStore persists next-generation agent workflow graphs.
+	workflowStore *workflow.FileStore
 
 	// secRunner manages background OSV scanning. nil when pantryDB is nil.
 	secRunner *security.Runner
@@ -168,6 +172,7 @@ func NewServer(socket string) (*Server, error) {
 	slog.Info("runners probed", "n", len(s.agentsCache))
 
 	s.historyQuota = NewHistoryQuota()
+	s.workflowStore = workflow.NewFileStore(filepath.Join(filepath.Dir(socket), "workflows"))
 
 	pantryPath := filepath.Join(filepath.Dir(socket), "milliways.db")
 	pdb, pdbErr := pantry.Open(pantryPath)

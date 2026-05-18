@@ -54,18 +54,20 @@ func TestFileStoreRejectsUnsafeWorkflowIDs(t *testing.T) {
 	t.Parallel()
 
 	store := NewFileStore(t.TempDir())
-	err := store.Save(context.Background(), Workflow{
-		ID:     "../escape",
-		Status: StatusQueued,
-		Nodes:  []Node{{ID: "a", Status: StatusQueued}},
-	})
-	if !errors.Is(err, ErrUnsafeWorkflowID) {
-		t.Fatalf("Save error = %v, want %v", err, ErrUnsafeWorkflowID)
-	}
+	for _, id := range []string{"../escape", " wf ", "wf/child", `wf\child`} {
+		err := store.Save(context.Background(), Workflow{
+			ID:     id,
+			Status: StatusQueued,
+			Nodes:  []Node{{ID: "a", Status: StatusQueued}},
+		})
+		if !errors.Is(err, ErrUnsafeWorkflowID) {
+			t.Fatalf("Save(%q) error = %v, want %v", id, err, ErrUnsafeWorkflowID)
+		}
 
-	_, err = store.Load(context.Background(), "../escape")
-	if !errors.Is(err, ErrUnsafeWorkflowID) {
-		t.Fatalf("Load error = %v, want %v", err, ErrUnsafeWorkflowID)
+		_, err = store.Load(context.Background(), id)
+		if !errors.Is(err, ErrUnsafeWorkflowID) {
+			t.Fatalf("Load(%q) error = %v, want %v", id, err, ErrUnsafeWorkflowID)
+		}
 	}
 }
 
