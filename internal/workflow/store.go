@@ -1,0 +1,145 @@
+// Copyright 2024 The milliways Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package workflow
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+var (
+	// ErrUnsafeWorkflowID means a workflow ID cannot be mapped to local storage.
+	ErrUnsafeWorkflowID = errors.New("unsafe workflow id")
+	// ErrWorkflowNotFound means the requested workflow does not exist.
+	ErrWorkflowNotFound = errors.New("workflow not found")
+)
+
+// FileStore persists workflow graphs as JSON files under one directory.
+type FileStore struct {
+	root string
+}
+
+// Summary is the lightweight workflow list shape for status and queue views.
+type Summary struct {
+	ID     string `json:"id"`
+	Goal   string `json:"goal,omitempty"`
+	Status Status `json:"status"`
+	Nodes  int    `json:"nodes"`
+}
+
+// NewFileStore creates a file-backed workflow store rooted at dir.
+func NewFileStore(dir string) *FileStore {
+	return &FileStore{root: filepath.Clean(dir)}
+}
+
+// Save validates and writes a workflow graph.
+func (s *FileStore) Save(ctx context.Context, wf Workflow) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := Validate(wf); err != nil {
+		return err
+	}
+	path, err := s.pathForID(wf.ID)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(s.root, 0o755); err != nil {
+		return fmt.Errorf("workflow store mkdir: %w", err)
+	}
+	raw, err := json.MarshalIndent(wf, "", "  ")
+	if err != nil {
+		return fmt.Errorf("workflow marshal: %w", err)
+	}
+	if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
+		return fmt.Errorf("workflow write %s: %w", wf.ID, err)
+	}
+	return nil
+}
+
+// Load reads and validates one workflow graph.
+func (s *FileStore) Load(ctx context.Context, id string) (Workflow, error) {
+	if err := ctx.Err(); err != nil {
+		return Workflow{}, err
+	}
+	path, err := s.pathForID(id)
+	if err != nil {
+		return Workflow{}, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Workflow{}, fmt.Errorf("%w: %s", ErrWorkflowNotFound, id)
+		}
+		return Workflow{}, fmt.Errorf("workflow read %s: %w", id, err)
+	}
+	var wf Workflow
+	if err := json.Unmarshal(raw, &wf); err != nil {
+		return Workflow{}, fmt.Errorf("workflow decode %s: %w", id, err)
+	}
+	if err := Validate(wf); err != nil {
+		return Workflow{}, err
+	}
+	return wf, nil
+}
+
+// List returns sorted summaries for all persisted workflow graphs.
+func (s *FileStore) List(ctx context.Context) ([]Summary, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("workflow store list: %w", err)
+	}
+	summaries := make([]Summary, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		wf, err := s.Load(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, Summary{
+			ID:     wf.ID,
+			Goal:   wf.Goal,
+			Status: wf.Status,
+			Nodes:  len(wf.Nodes),
+		})
+	}
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].ID < summaries[j].ID
+	})
+	return summaries, nil
+}
+
+func (s *FileStore) pathForID(id string) (string, error) {
+	cleanID := strings.TrimSpace(id)
+	if cleanID == "" || strings.Contains(cleanID, "/") || strings.Contains(cleanID, `\`) || cleanID == "." || cleanID == ".." {
+		return "", fmt.Errorf("%w: %q", ErrUnsafeWorkflowID, id)
+	}
+	return filepath.Join(s.root, cleanID+".json"), nil
+}
