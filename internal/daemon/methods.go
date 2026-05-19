@@ -288,6 +288,8 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		s.workflowCancel(enc, req)
 	case "workflow.node.start":
 		s.workflowNodeStart(enc, req)
+	case "workflow.node.delegate":
+		s.workflowNodeDelegate(enc, req)
 	case "workflow.node.complete":
 		s.workflowNodeComplete(enc, req)
 	case "workflow.node.fail":

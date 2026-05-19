@@ -808,6 +808,49 @@
       },
       "additionalProperties": false
     },
+    "WorkflowNodeDelegateParams": {
+      "type": "object",
+      "description": "Params for workflow.node.delegate.",
+      "required": [
+        "id",
+        "node_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNodeDelegateResult": {
+      "type": "object",
+      "description": "Response from workflow.node.delegate.",
+      "required": [
+        "workflow",
+        "node"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        },
+        "node": {
+          "$ref": "#/$defs/WorkflowNode"
+        }
+      },
+      "additionalProperties": false
+    },
     "WorkflowNodeCompleteParams": {
       "type": "object",
       "description": "Params for workflow.node.complete.",
@@ -1801,6 +1844,12 @@
     },
     "WorkflowNodeStartResult": {
       "$ref": "#/$defs/WorkflowNodeStartResult"
+    },
+    "WorkflowNodeDelegateParams": {
+      "$ref": "#/$defs/WorkflowNodeDelegateParams"
+    },
+    "WorkflowNodeDelegateResult": {
+      "$ref": "#/$defs/WorkflowNodeDelegateResult"
     },
     "WorkflowNodeCompleteParams": {
       "$ref": "#/$defs/WorkflowNodeCompleteParams"

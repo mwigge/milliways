@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mwigge/milliways/internal/orchestrator"
 	"github.com/mwigge/milliways/internal/workflow"
 )
 
@@ -181,6 +182,114 @@ func (s *Server) workflowNodeStart(enc *json.Encoder, req *Request) {
 		return
 	}
 	writeResult(enc, req.ID, map[string]any{"workflow": updated, "node": node})
+}
+
+func (s *Server) workflowNodeDelegate(enc *json.Encoder, req *Request) {
+	var p struct {
+		ID     string `json:"id"`
+		NodeID string `json:"node_id"`
+		Agent  string `json:"agent,omitempty"`
+		Dir    string `json:"dir,omitempty"`
+		Prompt string `json:"prompt,omitempty"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+		return
+	}
+	p.ID = strings.TrimSpace(p.ID)
+	p.NodeID = strings.TrimSpace(p.NodeID)
+	p.Agent = strings.TrimSpace(p.Agent)
+	p.Dir = strings.TrimSpace(p.Dir)
+	p.Prompt = strings.TrimSpace(p.Prompt)
+	if p.ID == "" {
+		writeError(enc, req.ID, ErrInvalidParams, "workflow.node.delegate requires id")
+		return
+	}
+	if p.NodeID == "" {
+		writeError(enc, req.ID, ErrInvalidParams, "workflow.node.delegate requires node_id")
+		return
+	}
+
+	store := s.workflowStoreForRPC()
+	if store == nil {
+		writeError(enc, req.ID, ErrInvalidParams, "workflow store unavailable")
+		return
+	}
+	wf, err := store.Load(context.Background(), p.ID)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("workflow.node.delegate %s: %v", p.ID, err))
+		return
+	}
+	node := workflowNodeByID(wf, p.NodeID)
+	if node.ID == "" {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("workflow.node.delegate %s/%s: %v", p.ID, p.NodeID, workflow.ErrUnknownNode))
+		return
+	}
+	agent := firstWorkflowValue(p.Agent, node.Agent, node.Inputs["agent"])
+	dir := firstWorkflowValue(p.Dir, node.Inputs["dir"], ".")
+	prompt := firstWorkflowValue(p.Prompt, node.Inputs["prompt"], node.Inputs["task"], node.Inputs["goal"])
+	if strings.TrimSpace(agent) == "" {
+		writeError(enc, req.ID, ErrInvalidParams, "workflow.node.delegate requires agent")
+		return
+	}
+	if strings.TrimSpace(prompt) == "" {
+		writeError(enc, req.ID, ErrInvalidParams, "workflow.node.delegate requires prompt")
+		return
+	}
+
+	startedAt := time.Now().UTC()
+	updated, err := workflow.StartReadyNode(wf, p.NodeID, startedAt)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("workflow.node.delegate %s/%s: %v", p.ID, p.NodeID, err))
+		return
+	}
+	updated.Status = workflow.StatusRunning
+	updated.UpdatedAt = startedAt
+	startedNode := workflowNodeByID(updated, p.NodeID)
+	if err := store.Save(context.Background(), updated); err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("workflow.node.delegate save %s: %v", p.ID, err))
+		return
+	}
+
+	ctx := s.bgCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.bgWG.Add(1)
+	go func() {
+		defer s.bgWG.Done()
+		s.finishWorkflowDelegate(ctx, store, p.ID, p.NodeID, agent, dir, prompt)
+	}()
+	writeResult(enc, req.ID, map[string]any{"workflow": updated, "node": startedNode})
+}
+
+func (s *Server) finishWorkflowDelegate(ctx context.Context, store *workflow.FileStore, workflowID, nodeID, agent, dir, prompt string) {
+	runner := s.workflowDelegateRunner
+	if runner == nil {
+		runner = func(ctx context.Context, agent, dir, prompt string) (string, error) {
+			return orchestrator.TraceDelegate(ctx, nil, agent, dir, prompt)
+		}
+	}
+	output, runErr := runner(ctx, agent, dir, prompt)
+	endedAt := time.Now().UTC()
+	wf, err := store.Load(context.Background(), workflowID)
+	if err != nil {
+		return
+	}
+	var updated workflow.Workflow
+	if runErr != nil {
+		updated, err = workflow.FailRunningNode(wf, nodeID, endedAt, strings.TrimSpace(runErr.Error()))
+		if err == nil {
+			updated.Status = workflow.StatusFailed
+		}
+	} else {
+		updated, err = workflow.CompleteRunningNode(wf, nodeID, endedAt, map[string]string{"delegate_output": output}, nil)
+	}
+	if err != nil {
+		return
+	}
+	updated.UpdatedAt = endedAt
+	_ = store.Save(context.Background(), updated)
 }
 
 func (s *Server) workflowNodeComplete(enc *json.Encoder, req *Request) {
@@ -508,6 +617,15 @@ func workflowNodeByID(wf workflow.Workflow, nodeID string) workflow.Node {
 		}
 	}
 	return workflow.Node{}
+}
+
+func firstWorkflowValue(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (s *Server) workflowStoreForRPC() *workflow.FileStore {

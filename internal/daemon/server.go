@@ -105,6 +105,9 @@ type Server struct {
 
 	// workflowStore persists next-generation agent workflow graphs.
 	workflowStore *workflow.FileStore
+	// workflowDelegateRunner runs background delegate work for workflow nodes.
+	// nil uses the production orchestrator delegate script path.
+	workflowDelegateRunner func(context.Context, string, string, string) (string, error)
 
 	// secRunner manages background OSV scanning. nil when pantryDB is nil.
 	secRunner *security.Runner

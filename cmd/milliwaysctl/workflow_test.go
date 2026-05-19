@@ -376,6 +376,45 @@ func TestRunWorkflowStartJSONRendersRawShape(t *testing.T) {
 	}
 }
 
+func TestRunWorkflowDelegateCallsNodeDelegateAndRendersNode(t *testing.T) {
+	sock, calls := startSecurityRPCTestServer(t, map[string]any{
+		"workflow.node.delegate": map[string]any{
+			"node": map[string]any{"id": "implement", "type": "agent", "status": "running", "client": "codex"},
+		},
+	})
+
+	var stdout, stderr bytes.Buffer
+	if rc := runWorkflow([]string{"delegate", "wf-a", "implement", "--agent", "codex", "--dir", "/repo", "--prompt", "ship it"}, &stdout, &stderr, sock); rc != 0 {
+		t.Fatalf("runWorkflow delegate rc=%d stderr=%s", rc, stderr.String())
+	}
+	call := <-calls
+	if call.Method != "workflow.node.delegate" || call.Params["id"] != "wf-a" || call.Params["node_id"] != "implement" || call.Params["agent"] != "codex" || call.Params["dir"] != "/repo" || call.Params["prompt"] != "ship it" {
+		t.Fatalf("call = %#v, want workflow.node.delegate params", call)
+	}
+	want := "delegated implement status=running type=agent client=codex"
+	if !strings.Contains(stdout.String(), want) {
+		t.Fatalf("workflow delegate output missing %q:\n%s", want, stdout.String())
+	}
+}
+
+func TestRunWorkflowDelegateJSONRendersRawShape(t *testing.T) {
+	sock, _ := startSecurityRPCTestServer(t, map[string]any{
+		"workflow.node.delegate": map[string]any{
+			"node": map[string]any{"id": "implement", "type": "agent", "status": "running", "client": "codex"},
+		},
+	})
+
+	var stdout, stderr bytes.Buffer
+	if rc := runWorkflow([]string{"delegate", "wf-a", "implement", "--agent", "codex", "--prompt", "ship it", "--json"}, &stdout, &stderr, sock); rc != 0 {
+		t.Fatalf("runWorkflow delegate --json rc=%d stderr=%s", rc, stderr.String())
+	}
+	for _, want := range []string{`"node"`, `"id": "implement"`, `"status": "running"`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("workflow delegate json output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
 func TestRunWorkflowRetryCallsNodeRetryAndRendersNode(t *testing.T) {
 	sock, calls := startSecurityRPCTestServer(t, map[string]any{
 		"workflow.node.retry": map[string]any{

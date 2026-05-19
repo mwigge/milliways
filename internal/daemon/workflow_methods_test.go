@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -493,6 +494,160 @@ func TestWorkflowNodeStartRPCReportsTransitionErrorsAsInvalidParams(t *testing.T
 	}
 	if stored.Status != workflow.StatusQueued || stored.Nodes[1].Status != workflow.StatusQueued {
 		t.Fatalf("stored statuses = workflow %q node %q, want queued", stored.Status, stored.Nodes[1].Status)
+	}
+}
+
+func TestWorkflowNodeDelegateRPCStartsBackgroundDelegateAndCompletesNode(t *testing.T) {
+	store := workflow.NewFileStore(t.TempDir())
+	if err := store.Save(context.Background(), workflow.Workflow{
+		ID:     "wf-delegate",
+		Status: workflow.StatusQueued,
+		Nodes: []workflow.Node{{
+			ID:     "implement",
+			Type:   workflow.NodeAgent,
+			Status: workflow.StatusQueued,
+			Agent:  "codex",
+			Inputs: map[string]string{
+				"dir":    "/repo",
+				"prompt": "implement import/export",
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	gotArgs := make(chan []string, 1)
+	srv := &Server{
+		spans:         observability.NewRing(10),
+		workflowStore: store,
+		workflowDelegateRunner: func(_ context.Context, agent, dir, prompt string) (string, error) {
+			gotArgs <- []string{agent, dir, prompt}
+			return "delegate done", nil
+		},
+	}
+
+	var buf bytes.Buffer
+	srv.dispatch(json.NewEncoder(&buf), &Request{
+		JSONRPC: "2.0",
+		Method:  "workflow.node.delegate",
+		Params:  json.RawMessage(`{"id":"wf-delegate","node_id":"implement"}`),
+		ID:      json.RawMessage(`1`),
+	})
+
+	var resp struct {
+		Result struct {
+			Workflow workflow.Workflow `json:"workflow"`
+			Node     workflow.Node     `json:"node"`
+		} `json:"result"`
+		Error *Error `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("decode workflow.node.delegate response: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("workflow.node.delegate error = %+v", resp.Error)
+	}
+	if resp.Result.Node.Status != workflow.StatusRunning || resp.Result.Workflow.Status != workflow.StatusRunning {
+		t.Fatalf("response workflow/node = %#v/%#v, want running", resp.Result.Workflow, resp.Result.Node)
+	}
+	srv.bgWG.Wait()
+	args := <-gotArgs
+	if args[0] != "codex" || args[1] != "/repo" || args[2] != "implement import/export" {
+		t.Fatalf("delegate args = %#v", args)
+	}
+
+	stored, err := store.Load(context.Background(), "wf-delegate")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if stored.Status != workflow.StatusCompleted || stored.Nodes[0].Status != workflow.StatusCompleted {
+		t.Fatalf("stored workflow/node = %#v/%#v, want completed", stored, stored.Nodes[0])
+	}
+	if stored.Nodes[0].Outputs["delegate_output"] != "delegate done" {
+		t.Fatalf("delegate_output = %q, want delegate done", stored.Nodes[0].Outputs["delegate_output"])
+	}
+}
+
+func TestWorkflowNodeDelegateRPCPersistsDelegateFailure(t *testing.T) {
+	store := workflow.NewFileStore(t.TempDir())
+	if err := store.Save(context.Background(), workflow.Workflow{
+		ID:     "wf-delegate-fail",
+		Status: workflow.StatusQueued,
+		Nodes: []workflow.Node{{
+			ID:     "implement",
+			Type:   workflow.NodeAgent,
+			Status: workflow.StatusQueued,
+			Agent:  "codex",
+			Inputs: map[string]string{"prompt": "implement"},
+		}},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	srv := &Server{
+		spans:         observability.NewRing(10),
+		workflowStore: store,
+		workflowDelegateRunner: func(context.Context, string, string, string) (string, error) {
+			return "", errors.New("delegate failed")
+		},
+	}
+
+	var buf bytes.Buffer
+	srv.dispatch(json.NewEncoder(&buf), &Request{
+		JSONRPC: "2.0",
+		Method:  "workflow.node.delegate",
+		Params:  json.RawMessage(`{"id":"wf-delegate-fail","node_id":"implement"}`),
+		ID:      json.RawMessage(`1`),
+	})
+
+	var resp struct {
+		Error *Error `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("decode workflow.node.delegate response: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("workflow.node.delegate error = %+v", resp.Error)
+	}
+	srv.bgWG.Wait()
+
+	stored, err := store.Load(context.Background(), "wf-delegate-fail")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if stored.Status != workflow.StatusFailed || stored.Nodes[0].Status != workflow.StatusFailed {
+		t.Fatalf("stored workflow/node = %#v/%#v, want failed", stored, stored.Nodes[0])
+	}
+	if stored.Nodes[0].Error != "delegate failed" {
+		t.Fatalf("node error = %q, want delegate failed", stored.Nodes[0].Error)
+	}
+}
+
+func TestWorkflowNodeDelegateRPCRejectsMissingAgentOrPrompt(t *testing.T) {
+	store := workflow.NewFileStore(t.TempDir())
+	if err := store.Save(context.Background(), workflow.Workflow{
+		ID:     "wf-delegate-invalid",
+		Status: workflow.StatusQueued,
+		Nodes:  []workflow.Node{{ID: "implement", Status: workflow.StatusQueued}},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	srv := &Server{spans: observability.NewRing(10), workflowStore: store}
+
+	var buf bytes.Buffer
+	srv.dispatch(json.NewEncoder(&buf), &Request{
+		JSONRPC: "2.0",
+		Method:  "workflow.node.delegate",
+		Params:  json.RawMessage(`{"id":"wf-delegate-invalid","node_id":"implement"}`),
+		ID:      json.RawMessage(`1`),
+	})
+
+	var resp struct {
+		Error *Error `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != ErrInvalidParams {
+		t.Fatalf("error = %+v, want invalid params", resp.Error)
 	}
 }
 

@@ -49,6 +49,8 @@ func runWorkflow(args []string, stdout, stderr io.Writer, socketOverride ...stri
 		return runWorkflowReady(rest, stdout, stderr, socketOverride...)
 	case "start":
 		return runWorkflowStart(rest, stdout, stderr, socketOverride...)
+	case "delegate":
+		return runWorkflowDelegate(rest, stdout, stderr, socketOverride...)
 	case "retry":
 		return runWorkflowRetry(rest, stdout, stderr, socketOverride...)
 	case "complete":
@@ -145,6 +147,52 @@ func runWorkflowStart(args []string, stdout, stderr io.Writer, socketOverride ..
 		return printWorkflowJSON(stdout, stderr, "workflow start", result)
 	}
 	renderWorkflowStart(stdout, result)
+	return 0
+}
+
+func runWorkflowDelegate(args []string, stdout, stderr io.Writer, socketOverride ...string) int {
+	fs := flag.NewFlagSet("workflow delegate", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw delegated-node result as JSON")
+	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
+	args, jsonAfterArgs := pluckWorkflowJSONFlag(args)
+	var agent, dir, prompt string
+	args, agent = pluckWorkflowFlagValue(args, "--agent")
+	args, dir = pluckWorkflowFlagValue(args, "--dir")
+	args, prompt = pluckWorkflowFlagValue(args, "--prompt")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if jsonAfterArgs {
+		*asJSON = true
+	}
+	if fs.NArg() != 2 || strings.TrimSpace(fs.Arg(0)) == "" || strings.TrimSpace(fs.Arg(1)) == "" {
+		fmt.Fprintln(stderr, "workflow delegate requires <workflow-id> <node-id>")
+		return 2
+	}
+	applyWorkflowSocket(socket, socketOverride)
+
+	params := map[string]any{
+		"id":      strings.TrimSpace(fs.Arg(0)),
+		"node_id": strings.TrimSpace(fs.Arg(1)),
+	}
+	if strings.TrimSpace(agent) != "" {
+		params["agent"] = strings.TrimSpace(agent)
+	}
+	if strings.TrimSpace(dir) != "" {
+		params["dir"] = strings.TrimSpace(dir)
+	}
+	if strings.TrimSpace(prompt) != "" {
+		params["prompt"] = strings.TrimSpace(prompt)
+	}
+	result, rc := callWorkflowRPC("workflow delegate", "workflow.node.delegate", params, stderr, *socket)
+	if rc != 0 {
+		return rc
+	}
+	if *asJSON {
+		return printWorkflowJSON(stdout, stderr, "workflow delegate", result)
+	}
+	renderWorkflowDelegate(stdout, result)
 	return 0
 }
 
@@ -590,6 +638,16 @@ func renderWorkflowStart(w io.Writer, result map[string]any) {
 	)
 }
 
+func renderWorkflowDelegate(w io.Writer, result map[string]any) {
+	node := mapField(result, "node")
+	fmt.Fprintf(w, "delegated %s status=%s type=%s client=%s\n",
+		firstString(node, "id"),
+		firstString(node, "status"),
+		firstString(node, "type"),
+		firstString(node, "client"),
+	)
+}
+
 func renderWorkflowRetry(w io.Writer, result map[string]any) {
 	node := mapField(result, "node")
 	fmt.Fprintf(w, "retried %s status=%s retry=%s\n",
@@ -780,13 +838,14 @@ func workflowStringList(value any) string {
 }
 
 func printWorkflowUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: milliwaysctl workflow <list|show|export|import|ready|start|retry|complete|fail|cancel|wait-approval|resume|deny> [--json]")
+	fmt.Fprintln(w, "usage: milliwaysctl workflow <list|show|export|import|ready|start|delegate|retry|complete|fail|cancel|wait-approval|resume|deny> [--json]")
 	fmt.Fprintln(w, "  list [--json]                           list stored workflow graphs")
 	fmt.Fprintln(w, "  show <id> [--json]                      show one stored workflow graph")
 	fmt.Fprintln(w, "  export <id> [--output <path>]           export one workflow graph as JSON")
 	fmt.Fprintln(w, "  import <path> [--json]                  import one workflow graph from JSON")
 	fmt.Fprintln(w, "  ready <id> [--json]                     show queued nodes with completed dependencies")
 	fmt.Fprintln(w, "  start <workflow-id> <node-id> [--json]  start a ready node")
+	fmt.Fprintln(w, "  delegate <workflow-id> <node-id> [--agent <id>] [--dir <path>] [--prompt <text>] [--json] start delegate node")
 	fmt.Fprintln(w, "  retry <workflow-id> <node-id> [--json]  retry a failed node")
 	fmt.Fprintln(w, "  complete <workflow-id> <node-id> [--json] complete a running node")
 	fmt.Fprintln(w, "  fail <workflow-id> <node-id> --error <message> [--json] fail a running node")
