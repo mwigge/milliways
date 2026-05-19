@@ -155,8 +155,21 @@ func writeGenericTestExecutable(t *testing.T, dir, name, content string) string 
 	t.Helper()
 
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(content), 0o700); err != nil {
-		t.Fatalf("WriteFile(%s): %v", name, err)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o700)
+	if err != nil {
+		t.Fatalf("OpenFile(%s): %v", name, err)
+	}
+	_, writeErr := f.WriteString(content)
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	if writeErr != nil {
+		t.Fatalf("WriteString(%s): %v", name, writeErr)
+	}
+	if syncErr != nil {
+		t.Fatalf("Sync(%s): %v", name, syncErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("Close(%s): %v", name, closeErr)
 	}
 	return path
 }

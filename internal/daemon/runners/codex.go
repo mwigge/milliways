@@ -240,8 +240,8 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	}
 	scanErr := scanner.Err()
 
-	waitErr := cmd.Wait()
 	stderrWg.Wait()
+	waitErr := cmd.Wait()
 	stderrMu.Lock()
 	lines := append([]string(nil), stderrLines...)
 	stderrMu.Unlock()

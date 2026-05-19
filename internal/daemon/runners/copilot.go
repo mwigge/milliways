@@ -160,8 +160,8 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 
 	streamCopilotStdout(stdout, stream)
 
-	waitErr := cmd.Wait()
 	stderrWg.Wait()
+	waitErr := cmd.Wait()
 
 	stderrMu.Lock()
 	lines := append([]string(nil), stderrLines...)

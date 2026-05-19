@@ -31,9 +31,25 @@ func withCodexTestBinary(t *testing.T, script string) string {
 	t.Helper()
 	codexBinaryTestMu.Lock()
 	path := filepath.Join(t.TempDir(), "codex-test")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o755)
+	if err != nil {
 		codexBinaryTestMu.Unlock()
-		t.Fatalf("write fake codex: %v", err)
+		t.Fatalf("open fake codex: %v", err)
+	}
+	_, writeErr := f.WriteString(script)
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	if writeErr != nil {
+		codexBinaryTestMu.Unlock()
+		t.Fatalf("write fake codex: %v", writeErr)
+	}
+	if syncErr != nil {
+		codexBinaryTestMu.Unlock()
+		t.Fatalf("sync fake codex: %v", syncErr)
+	}
+	if closeErr != nil {
+		codexBinaryTestMu.Unlock()
+		t.Fatalf("close fake codex: %v", closeErr)
 	}
 	if err := os.Chmod(path, 0o755); err != nil {
 		codexBinaryTestMu.Unlock()

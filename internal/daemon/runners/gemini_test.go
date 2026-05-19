@@ -17,6 +17,7 @@ package runners
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -218,7 +219,6 @@ func TestRunGemini_ControlledEnvUsesShimPath(t *testing.T) {
 
 func TestRunGemini_StderrLimitClassified(t *testing.T) {
 	prev := geminiBinary
-	geminiBinary = "/bin/sh"
 	defer func() { geminiBinary = prev }()
 	prevArgs := geminiArgsBuilder
 	defer func() { geminiArgsBuilder = prevArgs }()
@@ -235,8 +235,9 @@ func TestRunGemini_StderrLimitClassified(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			geminiBinary = writeGeminiStderrFixture(t, c.line)
 			geminiArgsBuilder = func(prompt string) []string {
-				return []string{"-c", "echo '" + c.line + "' >&2; exit 1"}
+				return nil
 			}
 
 			pusher := &fakePusher{}
@@ -260,6 +261,29 @@ func TestRunGemini_StderrLimitClassified(t *testing.T) {
 			}
 		})
 	}
+}
+
+func writeGeminiStderrFixture(t *testing.T, line string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "gemini-fixture")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o700)
+	if err != nil {
+		t.Fatalf("OpenFile(gemini-fixture): %v", err)
+	}
+	_, writeErr := fmt.Fprintf(f, "#!/bin/sh\nprintf '%%s\\n' %q >&2\nexit 1\n", line)
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	if writeErr != nil {
+		t.Fatalf("write gemini fixture: %v", writeErr)
+	}
+	if syncErr != nil {
+		t.Fatalf("sync gemini fixture: %v", syncErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("close gemini fixture: %v", closeErr)
+	}
+	return path
 }
 
 func TestRunGemini_ParentCancelWhileIdle(t *testing.T) {

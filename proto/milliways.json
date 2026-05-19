@@ -426,6 +426,10 @@
             "type": "string"
           }
         },
+        "retry_count": {
+          "type": "integer",
+          "minimum": 0
+        },
         "security": {
           "$ref": "#/$defs/WorkflowSecurityEnvelope"
         },
@@ -571,6 +575,222 @@
       "properties": {
         "workflow": {
           "$ref": "#/$defs/Workflow"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowCancelParams": {
+      "type": "object",
+      "description": "Params for workflow.cancel.",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowCancelResult": {
+      "type": "object",
+      "description": "Response from workflow.cancel.",
+      "required": [
+        "workflow"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowReadyParams": {
+      "type": "object",
+      "description": "Params for workflow.ready.",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowReadyResult": {
+      "type": "object",
+      "description": "Response from workflow.ready.",
+      "required": [
+        "nodes"
+      ],
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowNode"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNodeStartParams": {
+      "type": "object",
+      "description": "Params for workflow.node.start.",
+      "required": [
+        "id",
+        "node_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNodeStartResult": {
+      "type": "object",
+      "description": "Response from workflow.node.start.",
+      "required": [
+        "workflow",
+        "node"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        },
+        "node": {
+          "$ref": "#/$defs/WorkflowNode"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNodeCompleteParams": {
+      "type": "object",
+      "description": "Params for workflow.node.complete.",
+      "required": [
+        "id",
+        "node_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "outputs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowArtifact"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNodeCompleteResult": {
+      "type": "object",
+      "description": "Response from workflow.node.complete.",
+      "required": [
+        "workflow",
+        "node"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        },
+        "node": {
+          "$ref": "#/$defs/WorkflowNode"
+        },
+        "ready_nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowNode"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNodeFailParams": {
+      "type": "object",
+      "description": "Params for workflow.node.fail.",
+      "required": [
+        "id",
+        "node_id",
+        "error"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNodeFailResult": {
+      "type": "object",
+      "description": "Response from workflow.node.fail.",
+      "required": [
+        "workflow",
+        "node"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        },
+        "node": {
+          "$ref": "#/$defs/WorkflowNode"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNodeRetryParams": {
+      "type": "object",
+      "description": "Params for workflow.node.retry.",
+      "required": [
+        "id",
+        "node_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNodeRetryResult": {
+      "type": "object",
+      "description": "Response from workflow.node.retry.",
+      "required": [
+        "workflow",
+        "node"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        },
+        "node": {
+          "$ref": "#/$defs/WorkflowNode"
         }
       },
       "additionalProperties": false
@@ -1215,6 +1435,115 @@
         }
       },
       "additionalProperties": false
+    },
+    "WorkflowNodeWaitApprovalParams": {
+      "type": "object",
+      "description": "Params for workflow.node.wait_approval.",
+      "required": [
+        "id",
+        "node_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNodeWaitApprovalResult": {
+      "type": "object",
+      "description": "Response from workflow.node.wait_approval.",
+      "required": [
+        "workflow",
+        "node"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        },
+        "node": {
+          "$ref": "#/$defs/WorkflowNode"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNodeResumeParams": {
+      "type": "object",
+      "description": "Params for workflow.node.resume.",
+      "required": [
+        "id",
+        "node_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNodeResumeResult": {
+      "type": "object",
+      "description": "Response from workflow.node.resume.",
+      "required": [
+        "workflow",
+        "node"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        },
+        "node": {
+          "$ref": "#/$defs/WorkflowNode"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNodeDenyParams": {
+      "type": "object",
+      "description": "Params for workflow.node.deny.",
+      "required": [
+        "id",
+        "node_id",
+        "reason"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNodeDenyResult": {
+      "type": "object",
+      "description": "Response from workflow.node.deny.",
+      "required": [
+        "workflow",
+        "node"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        },
+        "node": {
+          "$ref": "#/$defs/WorkflowNode"
+        }
+      },
+      "additionalProperties": false
     }
   },
   "type": "object",
@@ -1296,6 +1625,42 @@
     },
     "WorkflowGetResult": {
       "$ref": "#/$defs/WorkflowGetResult"
+    },
+    "WorkflowCancelParams": {
+      "$ref": "#/$defs/WorkflowCancelParams"
+    },
+    "WorkflowCancelResult": {
+      "$ref": "#/$defs/WorkflowCancelResult"
+    },
+    "WorkflowReadyParams": {
+      "$ref": "#/$defs/WorkflowReadyParams"
+    },
+    "WorkflowReadyResult": {
+      "$ref": "#/$defs/WorkflowReadyResult"
+    },
+    "WorkflowNodeStartParams": {
+      "$ref": "#/$defs/WorkflowNodeStartParams"
+    },
+    "WorkflowNodeStartResult": {
+      "$ref": "#/$defs/WorkflowNodeStartResult"
+    },
+    "WorkflowNodeCompleteParams": {
+      "$ref": "#/$defs/WorkflowNodeCompleteParams"
+    },
+    "WorkflowNodeCompleteResult": {
+      "$ref": "#/$defs/WorkflowNodeCompleteResult"
+    },
+    "WorkflowNodeFailParams": {
+      "$ref": "#/$defs/WorkflowNodeFailParams"
+    },
+    "WorkflowNodeFailResult": {
+      "$ref": "#/$defs/WorkflowNodeFailResult"
+    },
+    "WorkflowNodeRetryParams": {
+      "$ref": "#/$defs/WorkflowNodeRetryParams"
+    },
+    "WorkflowNodeRetryResult": {
+      "$ref": "#/$defs/WorkflowNodeRetryResult"
     },
     "ContextSnapshot": {
       "$ref": "#/$defs/ContextSnapshot"

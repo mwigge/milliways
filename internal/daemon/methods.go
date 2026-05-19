@@ -278,6 +278,24 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		s.workflowList(enc, req)
 	case "workflow.get":
 		s.workflowGet(enc, req)
+	case "workflow.ready":
+		s.workflowReady(enc, req)
+	case "workflow.cancel":
+		s.workflowCancel(enc, req)
+	case "workflow.node.start":
+		s.workflowNodeStart(enc, req)
+	case "workflow.node.complete":
+		s.workflowNodeComplete(enc, req)
+	case "workflow.node.fail":
+		s.workflowNodeFail(enc, req)
+	case "workflow.node.retry":
+		s.workflowNodeRetry(enc, req)
+	case "workflow.node.wait_approval":
+		s.workflowNodeWaitApproval(enc, req)
+	case "workflow.node.resume":
+		s.workflowNodeResume(enc, req)
+	case "workflow.node.deny":
+		s.workflowNodeDeny(enc, req)
 	case "status.subscribe":
 		stream := s.streams.Allocate()
 		s.registerStatusSubscriber(stream)
