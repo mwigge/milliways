@@ -1119,6 +1119,22 @@ type MilliwaysJson struct {
 	// WorkflowGetResult corresponds to the JSON schema field "WorkflowGetResult".
 	WorkflowGetResult *WorkflowGetResult `json:"WorkflowGetResult,omitempty,omitzero" yaml:"WorkflowGetResult,omitempty" mapstructure:"WorkflowGetResult,omitempty"`
 
+	// WorkflowExportParams corresponds to the JSON schema field
+	// "WorkflowExportParams".
+	WorkflowExportParams *WorkflowExportParams `json:"WorkflowExportParams,omitempty,omitzero" yaml:"WorkflowExportParams,omitempty" mapstructure:"WorkflowExportParams,omitempty"`
+
+	// WorkflowExportResult corresponds to the JSON schema field
+	// "WorkflowExportResult".
+	WorkflowExportResult *WorkflowExportResult `json:"WorkflowExportResult,omitempty,omitzero" yaml:"WorkflowExportResult,omitempty" mapstructure:"WorkflowExportResult,omitempty"`
+
+	// WorkflowImportParams corresponds to the JSON schema field
+	// "WorkflowImportParams".
+	WorkflowImportParams *WorkflowImportParams `json:"WorkflowImportParams,omitempty,omitzero" yaml:"WorkflowImportParams,omitempty" mapstructure:"WorkflowImportParams,omitempty"`
+
+	// WorkflowImportResult corresponds to the JSON schema field
+	// "WorkflowImportResult".
+	WorkflowImportResult *WorkflowImportResult `json:"WorkflowImportResult,omitempty,omitzero" yaml:"WorkflowImportResult,omitempty" mapstructure:"WorkflowImportResult,omitempty"`
+
 	// WorkflowListResult corresponds to the JSON schema field "WorkflowListResult".
 	WorkflowListResult *WorkflowListResult `json:"WorkflowListResult,omitempty,omitzero" yaml:"WorkflowListResult,omitempty" mapstructure:"WorkflowListResult,omitempty"`
 
@@ -2055,6 +2071,102 @@ func (j *WorkflowGetResult) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	*j = WorkflowGetResult(plain)
+	return nil
+}
+
+// Params for workflow.export.
+type WorkflowExportParams struct {
+	// ID corresponds to the JSON schema field "id".
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowExportParams) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["id"]; raw != nil && !ok {
+		return fmt.Errorf("field id in WorkflowExportParams: required")
+	}
+	type Plain WorkflowExportParams
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowExportParams(plain)
+	return nil
+}
+
+// Response from workflow.export.
+type WorkflowExportResult struct {
+	// Workflow corresponds to the JSON schema field "workflow".
+	Workflow Workflow `json:"workflow" yaml:"workflow" mapstructure:"workflow"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowExportResult) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["workflow"]; raw != nil && !ok {
+		return fmt.Errorf("field workflow in WorkflowExportResult: required")
+	}
+	type Plain WorkflowExportResult
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowExportResult(plain)
+	return nil
+}
+
+// Params for workflow.import.
+type WorkflowImportParams struct {
+	// Workflow corresponds to the JSON schema field "workflow".
+	Workflow Workflow `json:"workflow" yaml:"workflow" mapstructure:"workflow"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowImportParams) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["workflow"]; raw != nil && !ok {
+		return fmt.Errorf("field workflow in WorkflowImportParams: required")
+	}
+	type Plain WorkflowImportParams
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowImportParams(plain)
+	return nil
+}
+
+// Response from workflow.import.
+type WorkflowImportResult struct {
+	// Workflow corresponds to the JSON schema field "workflow".
+	Workflow Workflow `json:"workflow" yaml:"workflow" mapstructure:"workflow"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowImportResult) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["workflow"]; raw != nil && !ok {
+		return fmt.Errorf("field workflow in WorkflowImportResult: required")
+	}
+	type Plain WorkflowImportResult
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowImportResult(plain)
 	return nil
 }
 

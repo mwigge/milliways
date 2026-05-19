@@ -16,6 +16,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -137,6 +139,134 @@ func TestRunWorkflowListJSONRendersRawShape(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"workflows"`) {
 		t.Fatalf("json output missing workflows:\n%s", stdout.String())
+	}
+}
+
+func TestRunWorkflowExportRendersWorkflowJSON(t *testing.T) {
+	sock, calls := startSecurityRPCTestServer(t, map[string]any{
+		"workflow.export": map[string]any{
+			"workflow": map[string]any{
+				"id":     "wf-export",
+				"goal":   "move graph",
+				"status": "queued",
+				"nodes":  []any{map[string]any{"id": "context", "status": "queued"}},
+			},
+		},
+	})
+
+	var stdout, stderr bytes.Buffer
+	if rc := runWorkflow([]string{"export", "wf-export"}, &stdout, &stderr, sock); rc != 0 {
+		t.Fatalf("runWorkflow export rc=%d stderr=%s", rc, stderr.String())
+	}
+	call := <-calls
+	if call.Method != "workflow.export" || call.Params["id"] != "wf-export" {
+		t.Fatalf("call = %#v, want workflow.export id wf-export", call)
+	}
+	for _, want := range []string{`"id": "wf-export"`, `"goal": "move graph"`, `"nodes"`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("workflow export output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestRunWorkflowExportWritesOutputFile(t *testing.T) {
+	sock, _ := startSecurityRPCTestServer(t, map[string]any{
+		"workflow.export": map[string]any{
+			"workflow": map[string]any{
+				"id":     "wf-file",
+				"status": "queued",
+				"nodes":  []any{map[string]any{"id": "context", "status": "queued"}},
+			},
+		},
+	})
+	outPath := filepath.Join(t.TempDir(), "workflow.json")
+
+	var stdout, stderr bytes.Buffer
+	if rc := runWorkflow([]string{"export", "wf-file", "--output", outPath}, &stdout, &stderr, sock); rc != 0 {
+		t.Fatalf("runWorkflow export --output rc=%d stderr=%s", rc, stderr.String())
+	}
+	raw, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(raw), `"id": "wf-file"`) {
+		t.Fatalf("exported file missing workflow id:\n%s", string(raw))
+	}
+	if !strings.Contains(stdout.String(), "exported wf-file to "+outPath) {
+		t.Fatalf("workflow export output missing confirmation:\n%s", stdout.String())
+	}
+}
+
+func TestRunWorkflowImportReadsFileAndRendersSummary(t *testing.T) {
+	sock, calls := startSecurityRPCTestServer(t, map[string]any{
+		"workflow.import": map[string]any{
+			"workflow": map[string]any{
+				"id":     "wf-import",
+				"status": "queued",
+				"nodes":  []any{map[string]any{"id": "context", "status": "queued"}},
+			},
+		},
+	})
+	inPath := filepath.Join(t.TempDir(), "workflow.json")
+	if err := os.WriteFile(inPath, []byte(`{"id":"wf-import","status":"queued","nodes":[{"id":"context","status":"queued"}]}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if rc := runWorkflow([]string{"import", inPath}, &stdout, &stderr, sock); rc != 0 {
+		t.Fatalf("runWorkflow import rc=%d stderr=%s", rc, stderr.String())
+	}
+	call := <-calls
+	if call.Method != "workflow.import" {
+		t.Fatalf("method = %q, want workflow.import", call.Method)
+	}
+	workflow, ok := call.Params["workflow"].(map[string]any)
+	if !ok || workflow["id"] != "wf-import" {
+		t.Fatalf("workflow import params = %#v, want workflow id wf-import", call.Params)
+	}
+	if !strings.Contains(stdout.String(), "imported wf-import status=queued nodes=1") {
+		t.Fatalf("workflow import output missing summary:\n%s", stdout.String())
+	}
+}
+
+func TestRunWorkflowImportJSONRendersRawShape(t *testing.T) {
+	sock, _ := startSecurityRPCTestServer(t, map[string]any{
+		"workflow.import": map[string]any{
+			"workflow": map[string]any{
+				"id":     "wf-import-json",
+				"status": "queued",
+				"nodes":  []any{map[string]any{"id": "context", "status": "queued"}},
+			},
+		},
+	})
+	inPath := filepath.Join(t.TempDir(), "workflow.json")
+	if err := os.WriteFile(inPath, []byte(`{"id":"wf-import-json","status":"queued","nodes":[{"id":"context","status":"queued"}]}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if rc := runWorkflow([]string{"import", inPath, "--json"}, &stdout, &stderr, sock); rc != 0 {
+		t.Fatalf("runWorkflow import --json rc=%d stderr=%s", rc, stderr.String())
+	}
+	for _, want := range []string{`"workflow"`, `"id": "wf-import-json"`, `"nodes"`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("workflow import json output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestRunWorkflowImportRejectsInvalidJSON(t *testing.T) {
+	inPath := filepath.Join(t.TempDir(), "workflow.json")
+	if err := os.WriteFile(inPath, []byte(`{not json`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if rc := runWorkflow([]string{"import", inPath}, &stdout, &stderr, "unused.sock"); rc != 1 {
+		t.Fatalf("runWorkflow import invalid json rc=%d stdout=%s stderr=%s", rc, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "decode") {
+		t.Fatalf("workflow import invalid json stderr missing decode error:\n%s", stderr.String())
 	}
 }
 

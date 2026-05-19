@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/mwigge/milliways/internal/rpc"
@@ -40,6 +41,10 @@ func runWorkflow(args []string, stdout, stderr io.Writer, socketOverride ...stri
 		return runWorkflowList(rest, stdout, stderr, socketOverride...)
 	case "show":
 		return runWorkflowShow(rest, stdout, stderr, socketOverride...)
+	case "export":
+		return runWorkflowExport(rest, stdout, stderr, socketOverride...)
+	case "import":
+		return runWorkflowImport(rest, stdout, stderr, socketOverride...)
 	case "ready":
 		return runWorkflowReady(rest, stdout, stderr, socketOverride...)
 	case "start":
@@ -415,6 +420,87 @@ func runWorkflowShow(args []string, stdout, stderr io.Writer, socketOverride ...
 	return 0
 }
 
+func runWorkflowExport(args []string, stdout, stderr io.Writer, socketOverride ...string) int {
+	fs := flag.NewFlagSet("workflow export", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	output := fs.String("output", "", "write workflow JSON to path instead of stdout")
+	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
+	var outputPath string
+	args, outputPath = pluckWorkflowFlagValue(args, "--output")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(outputPath) != "" {
+		*output = strings.TrimSpace(outputPath)
+	}
+	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+		fmt.Fprintln(stderr, "workflow export requires <id>")
+		return 2
+	}
+	applyWorkflowSocket(socket, socketOverride)
+
+	result, rc := callWorkflowRPC("workflow export", "workflow.export", map[string]any{"id": strings.TrimSpace(fs.Arg(0))}, stderr, *socket)
+	if rc != 0 {
+		return rc
+	}
+	out, err := json.MarshalIndent(mapField(result, "workflow"), "", "  ")
+	if err != nil {
+		fmt.Fprintf(stderr, "milliwaysctl workflow export: encode workflow: %v\n", err)
+		return 1
+	}
+	if strings.TrimSpace(*output) != "" {
+		if err := os.WriteFile(*output, append(out, '\n'), 0o600); err != nil {
+			fmt.Fprintf(stderr, "milliwaysctl workflow export: write %s: %v\n", *output, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "exported %s to %s\n", firstString(mapField(result, "workflow"), "id"), *output)
+		return 0
+	}
+	fmt.Fprintln(stdout, string(out))
+	return 0
+}
+
+func runWorkflowImport(args []string, stdout, stderr io.Writer, socketOverride ...string) int {
+	fs := flag.NewFlagSet("workflow import", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw imported workflow result as JSON")
+	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
+	args, jsonAfterArgs := pluckWorkflowJSONFlag(args)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if jsonAfterArgs {
+		*asJSON = true
+	}
+	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+		fmt.Fprintln(stderr, "workflow import requires <path>")
+		return 2
+	}
+	raw, err := os.ReadFile(strings.TrimSpace(fs.Arg(0)))
+	if err != nil {
+		fmt.Fprintf(stderr, "milliwaysctl workflow import: read %s: %v\n", strings.TrimSpace(fs.Arg(0)), err)
+		return 1
+	}
+	var workflow map[string]any
+	if err := json.Unmarshal(raw, &workflow); err != nil {
+		fmt.Fprintf(stderr, "milliwaysctl workflow import: decode %s: %v\n", strings.TrimSpace(fs.Arg(0)), err)
+		return 1
+	}
+	applyWorkflowSocket(socket, socketOverride)
+
+	result, rc := callWorkflowRPC("workflow import", "workflow.import", map[string]any{"workflow": workflow}, stderr, *socket)
+	if rc != 0 {
+		return rc
+	}
+	if *asJSON {
+		return printWorkflowJSON(stdout, stderr, "workflow import", result)
+	}
+	wf := mapField(result, "workflow")
+	nodes, _ := wf["nodes"].([]any)
+	fmt.Fprintf(stdout, "imported %s status=%s nodes=%d\n", firstString(wf, "id"), firstString(wf, "status"), len(nodes))
+	return 0
+}
+
 func callWorkflowRPC(label, method string, params map[string]any, stderr io.Writer, sock string) (map[string]any, int) {
 	c, err := rpc.Dial(sock)
 	if err != nil {
@@ -694,9 +780,11 @@ func workflowStringList(value any) string {
 }
 
 func printWorkflowUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: milliwaysctl workflow <list|show|ready|start|retry|complete|fail|cancel|wait-approval|resume|deny> [--json]")
+	fmt.Fprintln(w, "usage: milliwaysctl workflow <list|show|export|import|ready|start|retry|complete|fail|cancel|wait-approval|resume|deny> [--json]")
 	fmt.Fprintln(w, "  list [--json]                           list stored workflow graphs")
 	fmt.Fprintln(w, "  show <id> [--json]                      show one stored workflow graph")
+	fmt.Fprintln(w, "  export <id> [--output <path>]           export one workflow graph as JSON")
+	fmt.Fprintln(w, "  import <path> [--json]                  import one workflow graph from JSON")
 	fmt.Fprintln(w, "  ready <id> [--json]                     show queued nodes with completed dependencies")
 	fmt.Fprintln(w, "  start <workflow-id> <node-id> [--json]  start a ready node")
 	fmt.Fprintln(w, "  retry <workflow-id> <node-id> [--json]  retry a failed node")

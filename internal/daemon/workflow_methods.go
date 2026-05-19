@@ -47,6 +47,38 @@ func (s *Server) workflowGet(enc *json.Encoder, req *Request) {
 	writeResult(enc, req.ID, map[string]any{"workflow": wf})
 }
 
+func (s *Server) workflowExport(enc *json.Encoder, req *Request) {
+	wf, ok := s.loadWorkflowByID(enc, req, "workflow.export")
+	if !ok {
+		return
+	}
+	writeResult(enc, req.ID, map[string]any{"workflow": wf})
+}
+
+func (s *Server) workflowImport(enc *json.Encoder, req *Request) {
+	var p struct {
+		Workflow workflow.Workflow `json:"workflow"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+		return
+	}
+	if err := workflow.Validate(p.Workflow); err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("workflow.import validate: %v", err))
+		return
+	}
+	store := s.workflowStoreForRPC()
+	if store == nil {
+		writeError(enc, req.ID, ErrInvalidParams, "workflow store unavailable")
+		return
+	}
+	if err := store.Save(context.Background(), p.Workflow); err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("workflow.import save %s: %v", p.Workflow.ID, err))
+		return
+	}
+	writeResult(enc, req.ID, map[string]any{"workflow": p.Workflow})
+}
+
 func (s *Server) workflowReady(enc *json.Encoder, req *Request) {
 	wf, ok := s.loadWorkflowByID(enc, req, "workflow.ready")
 	if !ok {

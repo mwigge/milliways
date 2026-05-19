@@ -664,6 +664,58 @@
       },
       "additionalProperties": false
     },
+    "WorkflowExportParams": {
+      "type": "object",
+      "description": "Params for workflow.export.",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowExportResult": {
+      "type": "object",
+      "description": "Response from workflow.export.",
+      "required": [
+        "workflow"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowImportParams": {
+      "type": "object",
+      "description": "Params for workflow.import.",
+      "required": [
+        "workflow"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowImportResult": {
+      "type": "object",
+      "description": "Response from workflow.import.",
+      "required": [
+        "workflow"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        }
+      },
+      "additionalProperties": false
+    },
     "WorkflowCancelParams": {
       "type": "object",
       "description": "Params for workflow.cancel.",
@@ -1719,6 +1771,18 @@
     },
     "WorkflowGetResult": {
       "$ref": "#/$defs/WorkflowGetResult"
+    },
+    "WorkflowExportParams": {
+      "$ref": "#/$defs/WorkflowExportParams"
+    },
+    "WorkflowExportResult": {
+      "$ref": "#/$defs/WorkflowExportResult"
+    },
+    "WorkflowImportParams": {
+      "$ref": "#/$defs/WorkflowImportParams"
+    },
+    "WorkflowImportResult": {
+      "$ref": "#/$defs/WorkflowImportResult"
     },
     "WorkflowCancelParams": {
       "$ref": "#/$defs/WorkflowCancelParams"

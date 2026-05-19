@@ -278,6 +278,10 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		s.workflowList(enc, req)
 	case "workflow.get":
 		s.workflowGet(enc, req)
+	case "workflow.export":
+		s.workflowExport(enc, req)
+	case "workflow.import":
+		s.workflowImport(enc, req)
 	case "workflow.ready":
 		s.workflowReady(enc, req)
 	case "workflow.cancel":

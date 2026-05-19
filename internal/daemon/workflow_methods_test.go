@@ -158,6 +158,105 @@ func TestWorkflowGetRPCRejectsMissingID(t *testing.T) {
 	}
 }
 
+func TestWorkflowExportRPCReturnsStoredGraph(t *testing.T) {
+	store := workflow.NewFileStore(t.TempDir())
+	if err := store.Save(context.Background(), workflow.Workflow{
+		ID:     "wf-export",
+		Goal:   "move graph",
+		Status: workflow.StatusQueued,
+		Nodes:  []workflow.Node{{ID: "context", Status: workflow.StatusQueued}},
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	srv := &Server{spans: observability.NewRing(10), workflowStore: store}
+
+	var buf bytes.Buffer
+	srv.dispatch(json.NewEncoder(&buf), &Request{
+		JSONRPC: "2.0",
+		Method:  "workflow.export",
+		Params:  json.RawMessage(`{"id":"wf-export"}`),
+		ID:      json.RawMessage(`1`),
+	})
+
+	var resp struct {
+		Result struct {
+			Workflow workflow.Workflow `json:"workflow"`
+		} `json:"result"`
+		Error *Error `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("decode workflow.export response: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("workflow.export error = %+v", resp.Error)
+	}
+	if resp.Result.Workflow.ID != "wf-export" || resp.Result.Workflow.Goal != "move graph" {
+		t.Fatalf("workflow = %#v, want exported graph", resp.Result.Workflow)
+	}
+}
+
+func TestWorkflowImportRPCValidatesAndPersistsGraph(t *testing.T) {
+	store := workflow.NewFileStore(t.TempDir())
+	srv := &Server{spans: observability.NewRing(10), workflowStore: store}
+
+	var buf bytes.Buffer
+	srv.dispatch(json.NewEncoder(&buf), &Request{
+		JSONRPC: "2.0",
+		Method:  "workflow.import",
+		Params:  json.RawMessage(`{"workflow":{"id":"wf-import","goal":"resume elsewhere","status":"queued","nodes":[{"id":"context","status":"queued"}]}}`),
+		ID:      json.RawMessage(`1`),
+	})
+
+	var resp struct {
+		Result struct {
+			Workflow workflow.Workflow `json:"workflow"`
+		} `json:"result"`
+		Error *Error `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("decode workflow.import response: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("workflow.import error = %+v", resp.Error)
+	}
+	if resp.Result.Workflow.ID != "wf-import" || resp.Result.Workflow.Goal != "resume elsewhere" {
+		t.Fatalf("workflow = %#v, want imported graph", resp.Result.Workflow)
+	}
+	stored, err := store.Load(context.Background(), "wf-import")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if stored.ID != "wf-import" || len(stored.Nodes) != 1 {
+		t.Fatalf("stored workflow = %#v, want imported graph", stored)
+	}
+}
+
+func TestWorkflowImportRPCRejectsInvalidGraph(t *testing.T) {
+	store := workflow.NewFileStore(t.TempDir())
+	srv := &Server{spans: observability.NewRing(10), workflowStore: store}
+
+	var buf bytes.Buffer
+	srv.dispatch(json.NewEncoder(&buf), &Request{
+		JSONRPC: "2.0",
+		Method:  "workflow.import",
+		Params:  json.RawMessage(`{"workflow":{"id":"wf-bad","status":"queued","nodes":[{"id":"context","status":"queued"}],"edges":[{"from":"missing","to":"context"}]}}`),
+		ID:      json.RawMessage(`1`),
+	})
+
+	var resp struct {
+		Error *Error `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("decode workflow.import response: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != ErrInvalidParams {
+		t.Fatalf("workflow.import error = %+v, want invalid params", resp.Error)
+	}
+	if _, err := store.Load(context.Background(), "wf-bad"); err == nil {
+		t.Fatalf("Load wf-bad succeeded, want no persisted invalid graph")
+	}
+}
+
 func TestWorkflowReadyRPCReturnsQueuedNodesWithCompletedDependencies(t *testing.T) {
 	store := workflow.NewFileStore(t.TempDir())
 	if err := store.Save(context.Background(), workflow.Workflow{
