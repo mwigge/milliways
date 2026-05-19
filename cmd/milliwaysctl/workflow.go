@@ -664,6 +664,9 @@ func renderWorkflowNodeDetails(w io.Writer, node map[string]any, indent string) 
 	if retry := workflowRetryString(node); retry != "0" {
 		fmt.Fprintf(w, "%sretry: %s\n", indent, retry)
 	}
+	if priority := numberString(node["priority"]); priority != "0" {
+		fmt.Fprintf(w, "%spriority: %s\n", indent, priority)
+	}
 	if err := firstString(node, "error"); err != "unknown" {
 		fmt.Fprintf(w, "%serror: %s\n", indent, err)
 	}

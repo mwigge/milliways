@@ -89,6 +89,7 @@ func TestRunWorkflowShowRendersNextgenNodeDetails(t *testing.T) {
 						"status":      "waiting_approval",
 						"error":       "approve workspace write",
 						"retry_count": 2,
+						"priority":    7,
 						"security": map[string]any{
 							"operation": "write",
 							"approval":  "required",
@@ -117,6 +118,7 @@ func TestRunWorkflowShowRendersNextgenNodeDetails(t *testing.T) {
 	for _, want := range []string{
 		"workflow wf-next",
 		"retry: 2",
+		"priority: 7",
 		"error: approve workspace write",
 		"security: operation=write approval=required risk=workspace-write reason=touches source paths=cmd/milliwaysctl/workflow.go",
 		"memory: reads=nextgen.md writes=workflow:edit",

@@ -2319,6 +2319,9 @@ type WorkflowNode struct {
 	// Outputs corresponds to the JSON schema field "outputs".
 	Outputs WorkflowNodeOutputs `json:"outputs,omitempty,omitzero" yaml:"outputs,omitempty" mapstructure:"outputs,omitempty"`
 
+	// Priority corresponds to the JSON schema field "priority".
+	Priority *int `json:"priority,omitempty,omitzero" yaml:"priority,omitempty" mapstructure:"priority,omitempty"`
+
 	// RetryCount corresponds to the JSON schema field "retry_count".
 	RetryCount *int `json:"retry_count,omitempty,omitzero" yaml:"retry_count,omitempty" mapstructure:"retry_count,omitempty"`
 

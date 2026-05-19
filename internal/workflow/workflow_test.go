@@ -157,6 +157,30 @@ func TestReadyNodesUsesCanonicalTrimmedIDs(t *testing.T) {
 	}
 }
 
+func TestReadyNodesSortsByPriorityThenID(t *testing.T) {
+	t.Parallel()
+
+	wf := Workflow{
+		ID: "wf-priority",
+		Nodes: []Node{
+			{ID: "test", Status: StatusQueued, Priority: 5},
+			{ID: "release", Status: StatusQueued, Priority: 10},
+			{ID: "docs", Status: StatusQueued, Priority: 5},
+			{ID: "context", Status: StatusCompleted, Priority: 100},
+		},
+	}
+
+	ready, err := ReadyNodes(wf)
+	if err != nil {
+		t.Fatalf("ReadyNodes returned error: %v", err)
+	}
+	got := []string{ready[0].ID, ready[1].ID, ready[2].ID}
+	want := []string{"release", "docs", "test"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ready order = %#v, want %#v", got, want)
+	}
+}
+
 func TestStartReadyNodeMovesQueuedReadyNodeToRunning(t *testing.T) {
 	t.Parallel()
 
@@ -779,6 +803,7 @@ func TestWorkflowJSONRoundTripPreservesContractFields(t *testing.T) {
 			Logs:       []LogRecord{{Time: loggedAt, Level: "info", Message: "waiting for approval"}},
 			Mutations:  []FileMutation{{Op: "write", Path: "internal/workflow/workflow.go", Lines: 12}},
 			RetryCount: 2,
+			Priority:   7,
 		}},
 	}
 
@@ -810,6 +835,9 @@ func TestWorkflowJSONRoundTripPreservesContractFields(t *testing.T) {
 	}
 	if got.Nodes[0].RetryCount != 2 {
 		t.Fatalf("retry_count = %d, want 2", got.Nodes[0].RetryCount)
+	}
+	if got.Nodes[0].Priority != 7 {
+		t.Fatalf("priority = %d, want 7", got.Nodes[0].Priority)
 	}
 }
 

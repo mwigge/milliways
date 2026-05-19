@@ -17,6 +17,7 @@ package workflow
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -130,6 +131,7 @@ type Node struct {
 	EndedAt    time.Time         `json:"ended_at,omitempty"`
 	Error      string            `json:"error,omitempty"`
 	RetryCount int               `json:"retry_count,omitempty"`
+	Priority   int               `json:"priority,omitempty"`
 }
 
 // Edge declares that To depends on From completing successfully.
@@ -249,6 +251,12 @@ func ReadyNodes(wf Workflow) ([]Node, error) {
 			ready = append(ready, node)
 		}
 	}
+	sort.SliceStable(ready, func(i, j int) bool {
+		if ready[i].Priority != ready[j].Priority {
+			return ready[i].Priority > ready[j].Priority
+		}
+		return strings.TrimSpace(ready[i].ID) < strings.TrimSpace(ready[j].ID)
+	})
 	return ready, nil
 }
 
