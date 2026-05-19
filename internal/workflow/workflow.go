@@ -607,6 +607,32 @@ func CancelWorkflow(wf Workflow, canceledAt time.Time, reason string) (Workflow,
 	return updated, nil
 }
 
+// RecoverInterrupted marks in-flight execution states as failed after daemon
+// restart. Waiting approvals remain suspended so the user can still resume or
+// deny them explicitly.
+func RecoverInterrupted(wf Workflow, recoveredAt time.Time, reason string) (Workflow, bool, error) {
+	if err := Validate(wf); err != nil {
+		return Workflow{}, false, err
+	}
+	updated := wf
+	updated.Nodes = append([]Node(nil), wf.Nodes...)
+	changed := false
+	for i, node := range updated.Nodes {
+		switch node.Status {
+		case StatusRunning, StatusResumed, StatusVerifying:
+			updated.Nodes[i].Status = StatusFailed
+			updated.Nodes[i].EndedAt = recoveredAt
+			updated.Nodes[i].Error = reason
+			changed = true
+		}
+	}
+	if changed {
+		updated.Status = StatusFailed
+		updated.UpdatedAt = recoveredAt
+	}
+	return updated, changed, nil
+}
+
 func finishRunningNode(wf Workflow, nodeID string, status Status, endedAt time.Time, message string, outputs map[string]string, artifacts []Artifact) (Workflow, error) {
 	if err := Validate(wf); err != nil {
 		return Workflow{}, err

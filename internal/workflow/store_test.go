@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestFileStoreSaveLoadRoundTrip(t *testing.T) {
@@ -96,5 +97,48 @@ func TestFileStoreListReturnsSortedSummaries(t *testing.T) {
 	}
 	if got[0].Goal != "first" || got[1].Status != StatusCompleted {
 		t.Fatalf("summaries = %#v, want goal/status preserved", got)
+	}
+}
+
+func TestFileStoreRecoverInterruptedUpdatesPersistedWorkflows(t *testing.T) {
+	t.Parallel()
+
+	store := NewFileStore(t.TempDir())
+	if err := store.Save(context.Background(), Workflow{
+		ID:     "wf-running",
+		Status: StatusRunning,
+		Nodes:  []Node{{ID: "delegate", Status: StatusRunning}},
+	}); err != nil {
+		t.Fatalf("Save running: %v", err)
+	}
+	if err := store.Save(context.Background(), Workflow{
+		ID:     "wf-waiting",
+		Status: StatusRunning,
+		Nodes:  []Node{{ID: "approval", Status: StatusWaitingApproval}},
+	}); err != nil {
+		t.Fatalf("Save waiting: %v", err)
+	}
+
+	recoveredAt := time.Date(2026, 5, 19, 12, 15, 0, 0, time.UTC)
+	count, err := store.RecoverInterrupted(context.Background(), recoveredAt, "daemon restarted")
+	if err != nil {
+		t.Fatalf("RecoverInterrupted: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("recovered count = %d, want 1", count)
+	}
+	running, err := store.Load(context.Background(), "wf-running")
+	if err != nil {
+		t.Fatalf("Load running: %v", err)
+	}
+	if running.Status != StatusFailed || running.Nodes[0].Status != StatusFailed || running.Nodes[0].Error != "daemon restarted" {
+		t.Fatalf("running workflow = %#v, want failed recovery marker", running)
+	}
+	waiting, err := store.Load(context.Background(), "wf-waiting")
+	if err != nil {
+		t.Fatalf("Load waiting: %v", err)
+	}
+	if waiting.Nodes[0].Status != StatusWaitingApproval {
+		t.Fatalf("waiting workflow = %#v, want approval left suspended", waiting)
 	}
 }

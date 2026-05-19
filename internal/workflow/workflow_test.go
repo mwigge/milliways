@@ -776,6 +776,46 @@ func TestCancelWorkflowRejectsInvalidWorkflow(t *testing.T) {
 	}
 }
 
+func TestRecoverInterruptedFailsInFlightNodesAndPreservesWaitingApprovals(t *testing.T) {
+	t.Parallel()
+
+	recoveredAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	wf := Workflow{
+		ID:     "wf-recover",
+		Status: StatusRunning,
+		Nodes: []Node{
+			{ID: "running", Status: StatusRunning},
+			{ID: "resumed", Status: StatusResumed},
+			{ID: "verifying", Status: StatusVerifying},
+			{ID: "approval", Status: StatusWaitingApproval},
+			{ID: "queued", Status: StatusQueued},
+		},
+	}
+
+	got, changed, err := RecoverInterrupted(wf, recoveredAt, "daemon restarted")
+	if err != nil {
+		t.Fatalf("RecoverInterrupted returned error: %v", err)
+	}
+	if !changed {
+		t.Fatal("RecoverInterrupted changed = false, want true")
+	}
+	if got.Status != StatusFailed || !got.UpdatedAt.Equal(recoveredAt) {
+		t.Fatalf("workflow status/updated_at = %q/%v, want failed/%v", got.Status, got.UpdatedAt, recoveredAt)
+	}
+	for _, id := range []string{"running", "resumed", "verifying"} {
+		node := nodeByIDForTest(got.Nodes, id)
+		if node.Status != StatusFailed || node.Error != "daemon restarted" || !node.EndedAt.Equal(recoveredAt) {
+			t.Fatalf("node %s = %#v, want failed recovery marker", id, node)
+		}
+	}
+	if node := nodeByIDForTest(got.Nodes, "approval"); node.Status != StatusWaitingApproval {
+		t.Fatalf("approval node status = %q, want waiting_approval", node.Status)
+	}
+	if wf.Nodes[0].Status != StatusRunning {
+		t.Fatalf("input workflow mutated: %#v", wf.Nodes[0])
+	}
+}
+
 func TestWorkflowJSONRoundTripPreservesContractFields(t *testing.T) {
 	t.Parallel()
 
@@ -839,6 +879,15 @@ func TestWorkflowJSONRoundTripPreservesContractFields(t *testing.T) {
 	if got.Nodes[0].Priority != 7 {
 		t.Fatalf("priority = %d, want 7", got.Nodes[0].Priority)
 	}
+}
+
+func nodeByIDForTest(nodes []Node, id string) Node {
+	for _, node := range nodes {
+		if node.ID == id {
+			return node
+		}
+	}
+	return Node{}
 }
 
 func TestAppendNodeRuntimeRecordsAppendWithoutMutatingInput(t *testing.T) {

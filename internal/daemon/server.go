@@ -176,6 +176,11 @@ func NewServer(socket string) (*Server, error) {
 
 	s.historyQuota = NewHistoryQuota()
 	s.workflowStore = workflow.NewFileStore(filepath.Join(filepath.Dir(socket), "workflows"))
+	if recovered, err := s.workflowStore.RecoverInterrupted(bgCtx, time.Now().UTC(), "daemon restarted before node completed"); err != nil {
+		slog.Warn("workflow: restart recovery failed", "err", err)
+	} else if recovered > 0 {
+		slog.Info("workflow: recovered interrupted nodes", "workflows", recovered)
+	}
 
 	pantryPath := filepath.Join(filepath.Dir(socket), "milliways.db")
 	pdb, pdbErr := pantry.Open(pantryPath)
