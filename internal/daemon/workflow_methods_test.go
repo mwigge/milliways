@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/mwigge/milliways/internal/daemon/observability"
 	"github.com/mwigge/milliways/internal/workflow"
@@ -65,6 +66,7 @@ func TestWorkflowListRPCReturnsStoredSummaries(t *testing.T) {
 
 func TestWorkflowGetRPCReturnsStoredGraph(t *testing.T) {
 	store := workflow.NewFileStore(t.TempDir())
+	loggedAt := time.Date(2026, 5, 19, 10, 30, 0, 0, time.UTC)
 	if err := store.Save(context.Background(), workflow.Workflow{
 		ID:     "wf-a",
 		Goal:   "approval graph",
@@ -78,6 +80,21 @@ func TestWorkflowGetRPCReturnsStoredGraph(t *testing.T) {
 				Approval:  workflow.ApprovalRequired,
 				Risk:      "workspace-write",
 			},
+			ToolCalls: []workflow.ToolCall{{
+				Tool:   "write_file",
+				Args:   map[string]string{"path": "nextgen.md"},
+				Result: "patched",
+			}},
+			Logs: []workflow.LogRecord{{
+				Time:    loggedAt,
+				Level:   "info",
+				Message: "waiting for write approval",
+			}},
+			Mutations: []workflow.FileMutation{{
+				Op:    "write",
+				Path:  "nextgen.md",
+				Lines: 12,
+			}},
 		}},
 	}); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -106,6 +123,16 @@ func TestWorkflowGetRPCReturnsStoredGraph(t *testing.T) {
 	}
 	if resp.Result.Workflow.ID != "wf-a" || resp.Result.Workflow.Nodes[0].Security.Approval != workflow.ApprovalRequired {
 		t.Fatalf("workflow = %#v, want stored graph", resp.Result.Workflow)
+	}
+	node := resp.Result.Workflow.Nodes[0]
+	if len(node.ToolCalls) != 1 || node.ToolCalls[0].Tool != "write_file" || node.ToolCalls[0].Args["path"] != "nextgen.md" || node.ToolCalls[0].Result != "patched" {
+		t.Fatalf("tool_calls = %#v, want stored write_file call", node.ToolCalls)
+	}
+	if len(node.Logs) != 1 || !node.Logs[0].Time.Equal(loggedAt) || node.Logs[0].Level != "info" || node.Logs[0].Message != "waiting for write approval" {
+		t.Fatalf("logs = %#v, want stored log record", node.Logs)
+	}
+	if len(node.Mutations) != 1 || node.Mutations[0].Op != "write" || node.Mutations[0].Path != "nextgen.md" || node.Mutations[0].Lines != 12 {
+		t.Fatalf("mutations = %#v, want stored file mutation", node.Mutations)
 	}
 }
 
@@ -372,11 +399,36 @@ func TestWorkflowNodeStartRPCReportsTransitionErrorsAsInvalidParams(t *testing.T
 
 func TestWorkflowNodeCompleteRPCCompletesAndPersistsNode(t *testing.T) {
 	store := workflow.NewFileStore(t.TempDir())
+	loggedAt := time.Date(2026, 5, 19, 11, 0, 0, 0, time.UTC)
 	if err := store.Save(context.Background(), workflow.Workflow{
 		ID:     "wf-complete",
 		Status: workflow.StatusRunning,
 		Nodes: []workflow.Node{
-			{ID: "edit", Type: workflow.NodeToolCall, Status: workflow.StatusRunning},
+			{
+				ID:      "edit",
+				Type:    workflow.NodeToolCall,
+				Status:  workflow.StatusRunning,
+				Outputs: map[string]string{"draft": "kept"},
+				Artifacts: []workflow.Artifact{{
+					Kind: workflow.ArtifactLog,
+					Path: "logs/edit.log",
+				}},
+				ToolCalls: []workflow.ToolCall{{
+					Tool:     "edit_file",
+					Args:     map[string]string{"path": "internal/daemon/workflow_methods_test.go"},
+					Duration: "120ms",
+				}},
+				Logs: []workflow.LogRecord{{
+					Time:    loggedAt,
+					Level:   "info",
+					Message: "applied patch",
+				}},
+				Mutations: []workflow.FileMutation{{
+					Op:    "edit",
+					Path:  "internal/daemon/workflow_methods_test.go",
+					Lines: 8,
+				}},
+			},
 			{ID: "verify", Type: workflow.NodeVerification, Status: workflow.StatusQueued},
 		},
 		Edges: []workflow.Edge{{From: "edit", To: "verify"}},
@@ -389,7 +441,7 @@ func TestWorkflowNodeCompleteRPCCompletesAndPersistsNode(t *testing.T) {
 	srv.dispatch(json.NewEncoder(&buf), &Request{
 		JSONRPC: "2.0",
 		Method:  "workflow.node.complete",
-		Params:  json.RawMessage(`{"id":"wf-complete","node_id":"edit","outputs":{"summary":"done"}}`),
+		Params:  json.RawMessage(`{"id":"wf-complete","node_id":"edit","outputs":{"summary":"done"},"artifacts":[{"kind":"diff","path":"internal/daemon/workflow_methods_test.go"}]}`),
 		ID:      json.RawMessage(`1`),
 	})
 
@@ -407,8 +459,20 @@ func TestWorkflowNodeCompleteRPCCompletesAndPersistsNode(t *testing.T) {
 	if resp.Error != nil {
 		t.Fatalf("workflow.node.complete error = %+v", resp.Error)
 	}
-	if resp.Result.Node.Status != workflow.StatusCompleted || resp.Result.Node.Outputs["summary"] != "done" {
-		t.Fatalf("node = %#v, want completed with summary output", resp.Result.Node)
+	if resp.Result.Node.Status != workflow.StatusCompleted || resp.Result.Node.Outputs["summary"] != "done" || resp.Result.Node.Outputs["draft"] != "kept" {
+		t.Fatalf("node = %#v, want completed with merged outputs", resp.Result.Node)
+	}
+	if len(resp.Result.Node.Artifacts) != 2 || resp.Result.Node.Artifacts[0].Path != "logs/edit.log" || resp.Result.Node.Artifacts[1].Kind != workflow.ArtifactDiff {
+		t.Fatalf("artifacts = %#v, want pre-existing log and appended diff", resp.Result.Node.Artifacts)
+	}
+	if len(resp.Result.Node.ToolCalls) != 1 || resp.Result.Node.ToolCalls[0].Tool != "edit_file" || resp.Result.Node.ToolCalls[0].Args["path"] != "internal/daemon/workflow_methods_test.go" {
+		t.Fatalf("tool_calls = %#v, want pre-existing tool call preserved", resp.Result.Node.ToolCalls)
+	}
+	if len(resp.Result.Node.Logs) != 1 || !resp.Result.Node.Logs[0].Time.Equal(loggedAt) || resp.Result.Node.Logs[0].Message != "applied patch" {
+		t.Fatalf("logs = %#v, want pre-existing log preserved", resp.Result.Node.Logs)
+	}
+	if len(resp.Result.Node.Mutations) != 1 || resp.Result.Node.Mutations[0].Path != "internal/daemon/workflow_methods_test.go" || resp.Result.Node.Mutations[0].Lines != 8 {
+		t.Fatalf("mutations = %#v, want pre-existing mutation preserved", resp.Result.Node.Mutations)
 	}
 	if len(resp.Result.ReadyNodes) != 1 || resp.Result.ReadyNodes[0].ID != "verify" {
 		t.Fatalf("ready_nodes = %#v, want verify unlocked in complete response", resp.Result.ReadyNodes)
@@ -418,8 +482,20 @@ func TestWorkflowNodeCompleteRPCCompletesAndPersistsNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if stored.Nodes[0].Status != workflow.StatusCompleted || stored.Nodes[0].Outputs["summary"] != "done" {
-		t.Fatalf("stored node = %#v, want completed with summary output", stored.Nodes[0])
+	if stored.Nodes[0].Status != workflow.StatusCompleted || stored.Nodes[0].Outputs["summary"] != "done" || stored.Nodes[0].Outputs["draft"] != "kept" {
+		t.Fatalf("stored node = %#v, want completed with merged outputs", stored.Nodes[0])
+	}
+	if len(stored.Nodes[0].Artifacts) != 2 || stored.Nodes[0].Artifacts[0].Path != "logs/edit.log" || stored.Nodes[0].Artifacts[1].Kind != workflow.ArtifactDiff {
+		t.Fatalf("stored artifacts = %#v, want pre-existing log and appended diff", stored.Nodes[0].Artifacts)
+	}
+	if len(stored.Nodes[0].ToolCalls) != 1 || stored.Nodes[0].ToolCalls[0].Tool != "edit_file" {
+		t.Fatalf("stored tool_calls = %#v, want pre-existing tool call preserved", stored.Nodes[0].ToolCalls)
+	}
+	if len(stored.Nodes[0].Logs) != 1 || !stored.Nodes[0].Logs[0].Time.Equal(loggedAt) {
+		t.Fatalf("stored logs = %#v, want pre-existing log preserved", stored.Nodes[0].Logs)
+	}
+	if len(stored.Nodes[0].Mutations) != 1 || stored.Nodes[0].Mutations[0].Path != "internal/daemon/workflow_methods_test.go" {
+		t.Fatalf("stored mutations = %#v, want pre-existing mutation preserved", stored.Nodes[0].Mutations)
 	}
 	ready, err := workflow.ReadyNodes(stored)
 	if err != nil {

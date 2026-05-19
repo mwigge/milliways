@@ -426,6 +426,61 @@ func VerifyRunningNode(wf Workflow, nodeID string) (Workflow, error) {
 	return updated, nil
 }
 
+// AppendNodeToolCall appends a tool call record to a node. It does not mutate
+// wf.
+func AppendNodeToolCall(wf Workflow, nodeID string, call ToolCall) (Workflow, error) {
+	if err := Validate(wf); err != nil {
+		return Workflow{}, err
+	}
+
+	targetIndex := findNodeIndex(wf.Nodes, nodeID)
+	if targetIndex == -1 {
+		return Workflow{}, fmt.Errorf("%w: %s", ErrUnknownNode, strings.TrimSpace(nodeID))
+	}
+
+	updated := wf
+	updated.Nodes = append([]Node(nil), wf.Nodes...)
+	updated.Nodes[targetIndex].ToolCalls = append(append([]ToolCall(nil), wf.Nodes[targetIndex].ToolCalls...), call)
+	return updated, nil
+}
+
+// AppendNodeLog appends a log record to a node and records the log time on the
+// workflow. It does not mutate wf.
+func AppendNodeLog(wf Workflow, nodeID string, record LogRecord) (Workflow, error) {
+	if err := Validate(wf); err != nil {
+		return Workflow{}, err
+	}
+
+	targetIndex := findNodeIndex(wf.Nodes, nodeID)
+	if targetIndex == -1 {
+		return Workflow{}, fmt.Errorf("%w: %s", ErrUnknownNode, strings.TrimSpace(nodeID))
+	}
+
+	updated := wf
+	updated.UpdatedAt = record.Time
+	updated.Nodes = append([]Node(nil), wf.Nodes...)
+	updated.Nodes[targetIndex].Logs = append(append([]LogRecord(nil), wf.Nodes[targetIndex].Logs...), record)
+	return updated, nil
+}
+
+// AppendNodeMutation appends a file mutation record to a node. It does not
+// mutate wf.
+func AppendNodeMutation(wf Workflow, nodeID string, mutation FileMutation) (Workflow, error) {
+	if err := Validate(wf); err != nil {
+		return Workflow{}, err
+	}
+
+	targetIndex := findNodeIndex(wf.Nodes, nodeID)
+	if targetIndex == -1 {
+		return Workflow{}, fmt.Errorf("%w: %s", ErrUnknownNode, strings.TrimSpace(nodeID))
+	}
+
+	updated := wf
+	updated.Nodes = append([]Node(nil), wf.Nodes...)
+	updated.Nodes[targetIndex].Mutations = append(append([]FileMutation(nil), wf.Nodes[targetIndex].Mutations...), mutation)
+	return updated, nil
+}
+
 // CompleteRunningNode moves a running node to completed, records when it ended,
 // and merges any supplied outputs and artifacts. It does not mutate wf.
 func CompleteRunningNode(wf Workflow, nodeID string, endedAt time.Time, outputs map[string]string, artifacts []Artifact) (Workflow, error) {
@@ -588,6 +643,16 @@ func finishRunningNode(wf Workflow, nodeID string, status Status, endedAt time.T
 		updated.Status = StatusCompleted
 	}
 	return updated, nil
+}
+
+func findNodeIndex(nodes []Node, nodeID string) int {
+	targetID := strings.TrimSpace(nodeID)
+	for i, node := range nodes {
+		if strings.TrimSpace(node.ID) == targetID {
+			return i
+		}
+	}
+	return -1
 }
 
 func isActiveStatus(status Status) bool {

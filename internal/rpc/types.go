@@ -1092,6 +1092,16 @@ type MilliwaysJson struct {
 	// "WorkflowArtifactKind".
 	WorkflowArtifactKind *WorkflowArtifactKind `json:"WorkflowArtifactKind,omitempty,omitzero" yaml:"WorkflowArtifactKind,omitempty" mapstructure:"WorkflowArtifactKind,omitempty"`
 
+	// WorkflowToolCall corresponds to the JSON schema field "WorkflowToolCall".
+	WorkflowToolCall *WorkflowToolCall `json:"WorkflowToolCall,omitempty,omitzero" yaml:"WorkflowToolCall,omitempty" mapstructure:"WorkflowToolCall,omitempty"`
+
+	// WorkflowLogRecord corresponds to the JSON schema field "WorkflowLogRecord".
+	WorkflowLogRecord *WorkflowLogRecord `json:"WorkflowLogRecord,omitempty,omitzero" yaml:"WorkflowLogRecord,omitempty" mapstructure:"WorkflowLogRecord,omitempty"`
+
+	// WorkflowFileMutation corresponds to the JSON schema field
+	// "WorkflowFileMutation".
+	WorkflowFileMutation *WorkflowFileMutation `json:"WorkflowFileMutation,omitempty,omitzero" yaml:"WorkflowFileMutation,omitempty" mapstructure:"WorkflowFileMutation,omitempty"`
+
 	// WorkflowEdge corresponds to the JSON schema field "WorkflowEdge".
 	WorkflowEdge *WorkflowEdge `json:"WorkflowEdge,omitempty,omitzero" yaml:"WorkflowEdge,omitempty" mapstructure:"WorkflowEdge,omitempty"`
 
@@ -1867,6 +1877,110 @@ func (j *WorkflowArtifact) UnmarshalJSON(value []byte) error {
 	return nil
 }
 
+type WorkflowToolCall struct {
+	// Args corresponds to the JSON schema field "args".
+	Args WorkflowToolCallArgs `json:"args,omitempty,omitzero" yaml:"args,omitempty" mapstructure:"args,omitempty"`
+
+	// Duration corresponds to the JSON schema field "duration".
+	Duration *string `json:"duration,omitempty,omitzero" yaml:"duration,omitempty" mapstructure:"duration,omitempty"`
+
+	// Error corresponds to the JSON schema field "error".
+	Error *string `json:"error,omitempty,omitzero" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Result corresponds to the JSON schema field "result".
+	Result *string `json:"result,omitempty,omitzero" yaml:"result,omitempty" mapstructure:"result,omitempty"`
+
+	// Tool corresponds to the JSON schema field "tool".
+	Tool string `json:"tool" yaml:"tool" mapstructure:"tool"`
+}
+
+type WorkflowToolCallArgs map[string]string
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowToolCall) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["tool"]; raw != nil && !ok {
+		return fmt.Errorf("field tool in WorkflowToolCall: required")
+	}
+	type Plain WorkflowToolCall
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowToolCall(plain)
+	return nil
+}
+
+type WorkflowLogRecord struct {
+	// Level corresponds to the JSON schema field "level".
+	Level *string `json:"level,omitempty,omitzero" yaml:"level,omitempty" mapstructure:"level,omitempty"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Time corresponds to the JSON schema field "time".
+	Time time.Time `json:"time" yaml:"time" mapstructure:"time"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowLogRecord) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["time"]; raw != nil && !ok {
+		return fmt.Errorf("field time in WorkflowLogRecord: required")
+	}
+	if _, ok := raw["message"]; raw != nil && !ok {
+		return fmt.Errorf("field message in WorkflowLogRecord: required")
+	}
+	type Plain WorkflowLogRecord
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowLogRecord(plain)
+	return nil
+}
+
+type WorkflowFileMutation struct {
+	// Lines corresponds to the JSON schema field "lines".
+	Lines *int `json:"lines,omitempty,omitzero" yaml:"lines,omitempty" mapstructure:"lines,omitempty"`
+
+	// Op corresponds to the JSON schema field "op".
+	Op string `json:"op" yaml:"op" mapstructure:"op"`
+
+	// Path corresponds to the JSON schema field "path".
+	Path string `json:"path" yaml:"path" mapstructure:"path"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowFileMutation) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["op"]; raw != nil && !ok {
+		return fmt.Errorf("field op in WorkflowFileMutation: required")
+	}
+	if _, ok := raw["path"]; raw != nil && !ok {
+		return fmt.Errorf("field path in WorkflowFileMutation: required")
+	}
+	type Plain WorkflowFileMutation
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	if plain.Lines != nil && 0 > *plain.Lines {
+		return fmt.Errorf("field %s: must be >= %v", "lines", 0)
+	}
+	*j = WorkflowFileMutation(plain)
+	return nil
+}
+
 type WorkflowEdge struct {
 	// From corresponds to the JSON schema field "from".
 	From string `json:"from" yaml:"from" mapstructure:"from"`
@@ -2073,8 +2187,14 @@ type WorkflowNode struct {
 	// Inputs corresponds to the JSON schema field "inputs".
 	Inputs WorkflowNodeInputs `json:"inputs,omitempty,omitzero" yaml:"inputs,omitempty" mapstructure:"inputs,omitempty"`
 
+	// Logs corresponds to the JSON schema field "logs".
+	Logs []WorkflowLogRecord `json:"logs,omitempty,omitzero" yaml:"logs,omitempty" mapstructure:"logs,omitempty"`
+
 	// Memory corresponds to the JSON schema field "memory".
 	Memory *WorkflowMemoryLink `json:"memory,omitempty,omitzero" yaml:"memory,omitempty" mapstructure:"memory,omitempty"`
+
+	// Mutations corresponds to the JSON schema field "mutations".
+	Mutations []WorkflowFileMutation `json:"mutations,omitempty,omitzero" yaml:"mutations,omitempty" mapstructure:"mutations,omitempty"`
 
 	// Outputs corresponds to the JSON schema field "outputs".
 	Outputs WorkflowNodeOutputs `json:"outputs,omitempty,omitzero" yaml:"outputs,omitempty" mapstructure:"outputs,omitempty"`
@@ -2090,6 +2210,9 @@ type WorkflowNode struct {
 
 	// Status corresponds to the JSON schema field "status".
 	Status WorkflowStatus `json:"status" yaml:"status" mapstructure:"status"`
+
+	// ToolCalls corresponds to the JSON schema field "tool_calls".
+	ToolCalls []WorkflowToolCall `json:"tool_calls,omitempty,omitzero" yaml:"tool_calls,omitempty" mapstructure:"tool_calls,omitempty"`
 
 	// Type corresponds to the JSON schema field "type".
 	Type *WorkflowNodeType `json:"type,omitempty,omitzero" yaml:"type,omitempty" mapstructure:"type,omitempty"`

@@ -471,6 +471,7 @@ func renderWorkflowShow(w io.Writer, result map[string]any) {
 	for _, item := range nodes {
 		node := mapValue(item)
 		fmt.Fprintf(w, "  %-16s %-16s %s\n", firstString(node, "id"), firstString(node, "type"), firstString(node, "status"))
+		renderWorkflowNodeDetails(w, node, "    ")
 	}
 }
 
@@ -489,6 +490,7 @@ func renderWorkflowReady(w io.Writer, result map[string]any) {
 			firstString(node, "status"),
 			firstString(node, "client"),
 		)
+		renderWorkflowNodeDetails(w, node, "  ")
 	}
 }
 
@@ -507,8 +509,50 @@ func renderWorkflowRetry(w io.Writer, result map[string]any) {
 	fmt.Fprintf(w, "retried %s status=%s retry=%s\n",
 		firstString(node, "id"),
 		firstString(node, "status"),
-		numberString(node["retry"]),
+		workflowRetryString(node),
 	)
+}
+
+func renderWorkflowNodeDetails(w io.Writer, node map[string]any, indent string) {
+	if node == nil {
+		return
+	}
+	if retry := workflowRetryString(node); retry != "0" {
+		fmt.Fprintf(w, "%sretry: %s\n", indent, retry)
+	}
+	if err := firstString(node, "error"); err != "unknown" {
+		fmt.Fprintf(w, "%serror: %s\n", indent, err)
+	}
+	if security := mapField(node, "security"); len(security) > 0 {
+		fmt.Fprintf(w, "%ssecurity: operation=%s approval=%s risk=%s reason=%s paths=%s\n",
+			indent,
+			firstString(security, "operation"),
+			firstString(security, "approval"),
+			firstString(security, "risk"),
+			firstString(security, "reason"),
+			workflowStringList(security["paths"]),
+		)
+	}
+	if memory := mapField(node, "memory"); len(memory) > 0 {
+		fmt.Fprintf(w, "%smemory: reads=%s writes=%s\n",
+			indent,
+			workflowStringList(memory["reads"]),
+			workflowStringList(memory["writes"]),
+		)
+	}
+	if artifacts, _ := node["artifacts"].([]any); len(artifacts) > 0 {
+		fmt.Fprintf(w, "%sartifacts:", indent)
+		for _, item := range artifacts {
+			artifact := mapValue(item)
+			fmt.Fprintf(w, " %s", firstString(artifact, "kind"))
+			if path := firstString(artifact, "path"); path != "unknown" {
+				fmt.Fprintf(w, ":%s", path)
+			} else if ref := firstString(artifact, "ref"); ref != "unknown" {
+				fmt.Fprintf(w, ":%s", ref)
+			}
+		}
+		fmt.Fprintln(w)
+	}
 }
 
 func renderWorkflowComplete(w io.Writer, result map[string]any) {
@@ -620,6 +664,33 @@ func numberString(value any) string {
 	default:
 		return "0"
 	}
+}
+
+func workflowRetryString(node map[string]any) string {
+	if node == nil {
+		return "0"
+	}
+	if _, ok := node["retry_count"]; ok {
+		return numberString(node["retry_count"])
+	}
+	return numberString(node["retry"])
+}
+
+func workflowStringList(value any) string {
+	items, ok := value.([]any)
+	if !ok || len(items) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+			parts = append(parts, s)
+		}
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ",")
 }
 
 func printWorkflowUsage(w io.Writer) {

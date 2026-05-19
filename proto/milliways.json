@@ -392,6 +392,73 @@
       },
       "additionalProperties": false
     },
+    "WorkflowToolCall": {
+      "type": "object",
+      "required": [
+        "tool"
+      ],
+      "properties": {
+        "tool": {
+          "type": "string"
+        },
+        "args": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "result": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "duration": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowLogRecord": {
+      "type": "object",
+      "required": [
+        "time",
+        "message"
+      ],
+      "properties": {
+        "time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "level": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowFileMutation": {
+      "type": "object",
+      "required": [
+        "op",
+        "path"
+      ],
+      "properties": {
+        "op": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "lines": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
     "WorkflowNode": {
       "type": "object",
       "required": [
@@ -440,6 +507,24 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/WorkflowArtifact"
+          }
+        },
+        "tool_calls": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowToolCall"
+          }
+        },
+        "logs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowLogRecord"
+          }
+        },
+        "mutations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowFileMutation"
           }
         },
         "started_at": {
@@ -1604,6 +1689,15 @@
     },
     "WorkflowArtifact": {
       "$ref": "#/$defs/WorkflowArtifact"
+    },
+    "WorkflowToolCall": {
+      "$ref": "#/$defs/WorkflowToolCall"
+    },
+    "WorkflowLogRecord": {
+      "$ref": "#/$defs/WorkflowLogRecord"
+    },
+    "WorkflowFileMutation": {
+      "$ref": "#/$defs/WorkflowFileMutation"
     },
     "WorkflowNode": {
       "$ref": "#/$defs/WorkflowNode"
