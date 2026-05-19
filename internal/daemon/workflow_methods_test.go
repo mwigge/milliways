@@ -65,6 +65,91 @@ func TestWorkflowListRPCReturnsStoredSummaries(t *testing.T) {
 	}
 }
 
+func TestWorkflowTemplatesRPCReturnsBuiltIns(t *testing.T) {
+	srv := &Server{spans: observability.NewRing(10), workflowStore: workflow.NewFileStore(t.TempDir())}
+
+	var buf bytes.Buffer
+	srv.dispatch(json.NewEncoder(&buf), &Request{
+		JSONRPC: "2.0",
+		Method:  "workflow.templates",
+		ID:      json.RawMessage(`1`),
+	})
+
+	var resp struct {
+		Result struct {
+			Templates []workflow.TemplateSummary `json:"templates"`
+		} `json:"result"`
+		Error *Error `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("decode workflow.templates response: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("workflow.templates error = %+v", resp.Error)
+	}
+	if len(resp.Result.Templates) == 0 || resp.Result.Templates[0].Name == "" {
+		t.Fatalf("templates = %#v, want built-ins", resp.Result.Templates)
+	}
+}
+
+func TestWorkflowCreateRPCCreatesAndPersistsTemplateGraph(t *testing.T) {
+	store := workflow.NewFileStore(t.TempDir())
+	srv := &Server{spans: observability.NewRing(10), workflowStore: store}
+
+	var buf bytes.Buffer
+	srv.dispatch(json.NewEncoder(&buf), &Request{
+		JSONRPC: "2.0",
+		Method:  "workflow.create",
+		Params:  json.RawMessage(`{"template":"tdd-bug-fix","id":"wf-created","goal":"fix bug"}`),
+		ID:      json.RawMessage(`1`),
+	})
+
+	var resp struct {
+		Result struct {
+			Workflow workflow.Workflow `json:"workflow"`
+		} `json:"result"`
+		Error *Error `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("decode workflow.create response: %v", err)
+	}
+	if resp.Error != nil {
+		t.Fatalf("workflow.create error = %+v", resp.Error)
+	}
+	if resp.Result.Workflow.ID != "wf-created" || resp.Result.Workflow.Goal != "fix bug" || len(resp.Result.Workflow.Nodes) == 0 {
+		t.Fatalf("workflow = %#v, want created graph", resp.Result.Workflow)
+	}
+	stored, err := store.Load(context.Background(), "wf-created")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if stored.Nodes[0].Inputs["template"] != "tdd-bug-fix" {
+		t.Fatalf("stored node inputs = %#v, want template marker", stored.Nodes[0].Inputs)
+	}
+}
+
+func TestWorkflowCreateRPCRejectsUnknownTemplate(t *testing.T) {
+	srv := &Server{spans: observability.NewRing(10), workflowStore: workflow.NewFileStore(t.TempDir())}
+
+	var buf bytes.Buffer
+	srv.dispatch(json.NewEncoder(&buf), &Request{
+		JSONRPC: "2.0",
+		Method:  "workflow.create",
+		Params:  json.RawMessage(`{"template":"unknown","id":"wf-created"}`),
+		ID:      json.RawMessage(`1`),
+	})
+
+	var resp struct {
+		Error *Error `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
+		t.Fatalf("decode workflow.create response: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != ErrInvalidParams {
+		t.Fatalf("workflow.create error = %+v, want invalid params", resp.Error)
+	}
+}
+
 func TestWorkflowGetRPCReturnsStoredGraph(t *testing.T) {
 	store := workflow.NewFileStore(t.TempDir())
 	loggedAt := time.Date(2026, 5, 19, 10, 30, 0, 0, time.UTC)

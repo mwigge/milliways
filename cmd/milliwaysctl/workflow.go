@@ -39,6 +39,10 @@ func runWorkflow(args []string, stdout, stderr io.Writer, socketOverride ...stri
 		return 0
 	case "list":
 		return runWorkflowList(rest, stdout, stderr, socketOverride...)
+	case "templates":
+		return runWorkflowTemplates(rest, stdout, stderr, socketOverride...)
+	case "create":
+		return runWorkflowCreate(rest, stdout, stderr, socketOverride...)
 	case "show":
 		return runWorkflowShow(rest, stdout, stderr, socketOverride...)
 	case "export":
@@ -90,6 +94,70 @@ func runWorkflowList(args []string, stdout, stderr io.Writer, socketOverride ...
 		return printWorkflowJSON(stdout, stderr, "workflow list", result)
 	}
 	renderWorkflowList(stdout, result)
+	return 0
+}
+
+func runWorkflowTemplates(args []string, stdout, stderr io.Writer, socketOverride ...string) int {
+	fs := flag.NewFlagSet("workflow templates", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw template list as JSON")
+	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	applyWorkflowSocket(socket, socketOverride)
+
+	result, rc := callWorkflowRPC("workflow templates", "workflow.templates", nil, stderr, *socket)
+	if rc != 0 {
+		return rc
+	}
+	if *asJSON {
+		return printWorkflowJSON(stdout, stderr, "workflow templates", result)
+	}
+	renderWorkflowTemplates(stdout, result)
+	return 0
+}
+
+func runWorkflowCreate(args []string, stdout, stderr io.Writer, socketOverride ...string) int {
+	fs := flag.NewFlagSet("workflow create", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw created workflow result as JSON")
+	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
+	args, jsonAfterArgs := pluckWorkflowJSONFlag(args)
+	var id, goal string
+	args, id = pluckWorkflowFlagValue(args, "--id")
+	args, goal = pluckWorkflowFlagValue(args, "--goal")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if jsonAfterArgs {
+		*asJSON = true
+	}
+	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+		fmt.Fprintln(stderr, "workflow create requires <template>")
+		return 2
+	}
+	if strings.TrimSpace(id) == "" {
+		fmt.Fprintln(stderr, "workflow create requires --id")
+		return 2
+	}
+	applyWorkflowSocket(socket, socketOverride)
+
+	params := map[string]any{
+		"template": strings.TrimSpace(fs.Arg(0)),
+		"id":       strings.TrimSpace(id),
+	}
+	if strings.TrimSpace(goal) != "" {
+		params["goal"] = strings.TrimSpace(goal)
+	}
+	result, rc := callWorkflowRPC("workflow create", "workflow.create", params, stderr, *socket)
+	if rc != 0 {
+		return rc
+	}
+	if *asJSON {
+		return printWorkflowJSON(stdout, stderr, "workflow create", result)
+	}
+	renderWorkflowCreate(stdout, result)
 	return 0
 }
 
@@ -593,6 +661,33 @@ func renderWorkflowList(w io.Writer, result map[string]any) {
 	}
 }
 
+func renderWorkflowTemplates(w io.Writer, result map[string]any) {
+	items, _ := result["templates"].([]any)
+	if len(items) == 0 {
+		fmt.Fprintln(w, "no workflow templates")
+		return
+	}
+	fmt.Fprintln(w, "TEMPLATE                    NODES  DESCRIPTION")
+	for _, item := range items {
+		row := mapValue(item)
+		fmt.Fprintf(w, "%-27s %-6s %s\n",
+			firstString(row, "name"),
+			numberString(row["nodes"]),
+			firstString(row, "description"),
+		)
+	}
+}
+
+func renderWorkflowCreate(w io.Writer, result map[string]any) {
+	wf := mapField(result, "workflow")
+	nodes, _ := wf["nodes"].([]any)
+	fmt.Fprintf(w, "created %s status=%s nodes=%d\n",
+		firstString(wf, "id"),
+		firstString(wf, "status"),
+		len(nodes),
+	)
+}
+
 func renderWorkflowShow(w io.Writer, result map[string]any) {
 	wf := mapField(result, "workflow")
 	nodes, _ := wf["nodes"].([]any)
@@ -841,8 +936,10 @@ func workflowStringList(value any) string {
 }
 
 func printWorkflowUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: milliwaysctl workflow <list|show|export|import|ready|start|delegate|retry|complete|fail|cancel|wait-approval|resume|deny> [--json]")
+	fmt.Fprintln(w, "usage: milliwaysctl workflow <list|templates|create|show|export|import|ready|start|delegate|retry|complete|fail|cancel|wait-approval|resume|deny> [--json]")
 	fmt.Fprintln(w, "  list [--json]                           list stored workflow graphs")
+	fmt.Fprintln(w, "  templates [--json]                      list built-in workflow templates")
+	fmt.Fprintln(w, "  create <template> --id <id> [--goal <text>] [--json] create workflow from template")
 	fmt.Fprintln(w, "  show <id> [--json]                      show one stored workflow graph")
 	fmt.Fprintln(w, "  export <id> [--output <path>]           export one workflow graph as JSON")
 	fmt.Fprintln(w, "  import <path> [--json]                  import one workflow graph from JSON")

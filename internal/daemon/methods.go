@@ -276,6 +276,10 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		})
 	case "workflow.list":
 		s.workflowList(enc, req)
+	case "workflow.templates":
+		s.workflowTemplates(enc, req)
+	case "workflow.create":
+		s.workflowCreate(enc, req)
 	case "workflow.get":
 		s.workflowGet(enc, req)
 	case "workflow.export":

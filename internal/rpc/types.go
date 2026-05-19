@@ -1138,6 +1138,22 @@ type MilliwaysJson struct {
 	// WorkflowListResult corresponds to the JSON schema field "WorkflowListResult".
 	WorkflowListResult *WorkflowListResult `json:"WorkflowListResult,omitempty,omitzero" yaml:"WorkflowListResult,omitempty" mapstructure:"WorkflowListResult,omitempty"`
 
+	// WorkflowTemplateSummary corresponds to the JSON schema field
+	// "WorkflowTemplateSummary".
+	WorkflowTemplateSummary *WorkflowTemplateSummary `json:"WorkflowTemplateSummary,omitempty,omitzero" yaml:"WorkflowTemplateSummary,omitempty" mapstructure:"WorkflowTemplateSummary,omitempty"`
+
+	// WorkflowTemplatesResult corresponds to the JSON schema field
+	// "WorkflowTemplatesResult".
+	WorkflowTemplatesResult *WorkflowTemplatesResult `json:"WorkflowTemplatesResult,omitempty,omitzero" yaml:"WorkflowTemplatesResult,omitempty" mapstructure:"WorkflowTemplatesResult,omitempty"`
+
+	// WorkflowCreateParams corresponds to the JSON schema field
+	// "WorkflowCreateParams".
+	WorkflowCreateParams *WorkflowCreateParams `json:"WorkflowCreateParams,omitempty,omitzero" yaml:"WorkflowCreateParams,omitempty" mapstructure:"WorkflowCreateParams,omitempty"`
+
+	// WorkflowCreateResult corresponds to the JSON schema field
+	// "WorkflowCreateResult".
+	WorkflowCreateResult *WorkflowCreateResult `json:"WorkflowCreateResult,omitempty,omitzero" yaml:"WorkflowCreateResult,omitempty" mapstructure:"WorkflowCreateResult,omitempty"`
+
 	// WorkflowMemoryLink corresponds to the JSON schema field "WorkflowMemoryLink".
 	WorkflowMemoryLink *WorkflowMemoryLink `json:"WorkflowMemoryLink,omitempty,omitzero" yaml:"WorkflowMemoryLink,omitempty" mapstructure:"WorkflowMemoryLink,omitempty"`
 
@@ -2079,6 +2095,122 @@ func (j *WorkflowGetResult) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	*j = WorkflowGetResult(plain)
+	return nil
+}
+
+// One built-in workflow template summary.
+type WorkflowTemplateSummary struct {
+	// Description corresponds to the JSON schema field "description".
+	Description string `json:"description" yaml:"description" mapstructure:"description"`
+
+	// Name corresponds to the JSON schema field "name".
+	Name string `json:"name" yaml:"name" mapstructure:"name"`
+
+	// Nodes corresponds to the JSON schema field "nodes".
+	Nodes int `json:"nodes" yaml:"nodes" mapstructure:"nodes"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowTemplateSummary) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	for _, field := range []string{"name", "description", "nodes"} {
+		if _, ok := raw[field]; raw != nil && !ok {
+			return fmt.Errorf("field %s in WorkflowTemplateSummary: required", field)
+		}
+	}
+	type Plain WorkflowTemplateSummary
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	if plain.Nodes < 0 {
+		return fmt.Errorf("field %s: must be >= %v", "nodes", 0)
+	}
+	*j = WorkflowTemplateSummary(plain)
+	return nil
+}
+
+// Response from workflow.templates.
+type WorkflowTemplatesResult struct {
+	// Templates corresponds to the JSON schema field "templates".
+	Templates []WorkflowTemplateSummary `json:"templates" yaml:"templates" mapstructure:"templates"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowTemplatesResult) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["templates"]; raw != nil && !ok {
+		return fmt.Errorf("field templates in WorkflowTemplatesResult: required")
+	}
+	type Plain WorkflowTemplatesResult
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowTemplatesResult(plain)
+	return nil
+}
+
+// Params for workflow.create.
+type WorkflowCreateParams struct {
+	// Goal corresponds to the JSON schema field "goal".
+	Goal *string `json:"goal,omitempty,omitzero" yaml:"goal,omitempty" mapstructure:"goal,omitempty"`
+
+	// ID corresponds to the JSON schema field "id".
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// Template corresponds to the JSON schema field "template".
+	Template string `json:"template" yaml:"template" mapstructure:"template"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowCreateParams) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["id"]; raw != nil && !ok {
+		return fmt.Errorf("field id in WorkflowCreateParams: required")
+	}
+	if _, ok := raw["template"]; raw != nil && !ok {
+		return fmt.Errorf("field template in WorkflowCreateParams: required")
+	}
+	type Plain WorkflowCreateParams
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowCreateParams(plain)
+	return nil
+}
+
+// Response from workflow.create.
+type WorkflowCreateResult struct {
+	// Workflow corresponds to the JSON schema field "workflow".
+	Workflow Workflow `json:"workflow" yaml:"workflow" mapstructure:"workflow"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowCreateResult) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["workflow"]; raw != nil && !ok {
+		return fmt.Errorf("field workflow in WorkflowCreateResult: required")
+	}
+	type Plain WorkflowCreateResult
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowCreateResult(plain)
 	return nil
 }
 

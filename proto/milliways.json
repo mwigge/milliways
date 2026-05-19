@@ -641,6 +641,77 @@
       },
       "additionalProperties": false
     },
+    "WorkflowTemplateSummary": {
+      "type": "object",
+      "description": "One built-in workflow template summary.",
+      "required": [
+        "name",
+        "description",
+        "nodes"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "nodes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowTemplatesResult": {
+      "type": "object",
+      "description": "Response from workflow.templates.",
+      "required": [
+        "templates"
+      ],
+      "properties": {
+        "templates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowTemplateSummary"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowCreateParams": {
+      "type": "object",
+      "description": "Params for workflow.create.",
+      "required": [
+        "id",
+        "template"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "template": {
+          "type": "string"
+        },
+        "goal": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowCreateResult": {
+      "type": "object",
+      "description": "Response from workflow.create.",
+      "required": [
+        "workflow"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        }
+      },
+      "additionalProperties": false
+    },
     "WorkflowGetParams": {
       "type": "object",
       "description": "Params for workflow.get.",
@@ -1811,6 +1882,18 @@
     },
     "WorkflowListResult": {
       "$ref": "#/$defs/WorkflowListResult"
+    },
+    "WorkflowTemplateSummary": {
+      "$ref": "#/$defs/WorkflowTemplateSummary"
+    },
+    "WorkflowTemplatesResult": {
+      "$ref": "#/$defs/WorkflowTemplatesResult"
+    },
+    "WorkflowCreateParams": {
+      "$ref": "#/$defs/WorkflowCreateParams"
+    },
+    "WorkflowCreateResult": {
+      "$ref": "#/$defs/WorkflowCreateResult"
     },
     "WorkflowGetParams": {
       "$ref": "#/$defs/WorkflowGetParams"

@@ -144,6 +144,64 @@ func TestRunWorkflowListJSONRendersRawShape(t *testing.T) {
 	}
 }
 
+func TestRunWorkflowTemplatesRendersBuiltIns(t *testing.T) {
+	sock, calls := startSecurityRPCTestServer(t, map[string]any{
+		"workflow.templates": map[string]any{
+			"templates": []any{
+				map[string]any{"name": "tdd-bug-fix", "description": "Reproduce and fix", "nodes": 5},
+			},
+		},
+	})
+
+	var stdout, stderr bytes.Buffer
+	if rc := runWorkflow([]string{"templates"}, &stdout, &stderr, sock); rc != 0 {
+		t.Fatalf("runWorkflow templates rc=%d stderr=%s", rc, stderr.String())
+	}
+	call := <-calls
+	if call.Method != "workflow.templates" {
+		t.Fatalf("method = %q, want workflow.templates", call.Method)
+	}
+	for _, want := range []string{"TEMPLATE", "tdd-bug-fix", "5", "Reproduce and fix"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("workflow templates output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestRunWorkflowCreateCallsRPCAndRendersSummary(t *testing.T) {
+	sock, calls := startSecurityRPCTestServer(t, map[string]any{
+		"workflow.create": map[string]any{
+			"workflow": map[string]any{
+				"id":     "wf-created",
+				"status": "queued",
+				"nodes":  []any{map[string]any{"id": "context", "status": "queued"}},
+			},
+		},
+	})
+
+	var stdout, stderr bytes.Buffer
+	if rc := runWorkflow([]string{"create", "tdd-bug-fix", "--id", "wf-created", "--goal", "fix bug"}, &stdout, &stderr, sock); rc != 0 {
+		t.Fatalf("runWorkflow create rc=%d stderr=%s", rc, stderr.String())
+	}
+	call := <-calls
+	if call.Method != "workflow.create" || call.Params["template"] != "tdd-bug-fix" || call.Params["id"] != "wf-created" || call.Params["goal"] != "fix bug" {
+		t.Fatalf("call = %#v, want workflow.create params", call)
+	}
+	if !strings.Contains(stdout.String(), "created wf-created status=queued nodes=1") {
+		t.Fatalf("workflow create output missing summary:\n%s", stdout.String())
+	}
+}
+
+func TestRunWorkflowCreateRequiresID(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if rc := runWorkflow([]string{"create", "tdd-bug-fix"}, &stdout, &stderr, "unused.sock"); rc != 2 {
+		t.Fatalf("runWorkflow create rc=%d stdout=%s stderr=%s", rc, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "requires --id") {
+		t.Fatalf("workflow create stderr missing --id error:\n%s", stderr.String())
+	}
+}
+
 func TestRunWorkflowExportRendersWorkflowJSON(t *testing.T) {
 	sock, calls := startSecurityRPCTestServer(t, map[string]any{
 		"workflow.export": map[string]any{

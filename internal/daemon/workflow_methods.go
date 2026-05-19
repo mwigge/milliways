@@ -40,6 +40,49 @@ func (s *Server) workflowList(enc *json.Encoder, req *Request) {
 	writeResult(enc, req.ID, map[string]any{"workflows": summaries})
 }
 
+func (s *Server) workflowTemplates(enc *json.Encoder, req *Request) {
+	writeResult(enc, req.ID, map[string]any{"templates": workflow.BuiltInTemplates()})
+}
+
+func (s *Server) workflowCreate(enc *json.Encoder, req *Request) {
+	var p struct {
+		ID       string `json:"id"`
+		Template string `json:"template"`
+		Goal     string `json:"goal,omitempty"`
+	}
+	if err := json.Unmarshal(req.Params, &p); err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+		return
+	}
+	p.ID = strings.TrimSpace(p.ID)
+	p.Template = strings.TrimSpace(p.Template)
+	p.Goal = strings.TrimSpace(p.Goal)
+	if p.ID == "" {
+		writeError(enc, req.ID, ErrInvalidParams, "workflow.create requires id")
+		return
+	}
+	if p.Template == "" {
+		writeError(enc, req.ID, ErrInvalidParams, "workflow.create requires template")
+		return
+	}
+	store := s.workflowStoreForRPC()
+	if store == nil {
+		writeError(enc, req.ID, ErrInvalidParams, "workflow store unavailable")
+		return
+	}
+	now := time.Now().UTC()
+	wf, err := workflow.InstantiateTemplate(p.Template, p.ID, p.Goal, now)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("workflow.create %s: %v", p.Template, err))
+		return
+	}
+	if err := store.Save(context.Background(), wf); err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("workflow.create save %s: %v", p.ID, err))
+		return
+	}
+	writeResult(enc, req.ID, map[string]any{"workflow": wf})
+}
+
 func (s *Server) workflowGet(enc *json.Encoder, req *Request) {
 	wf, ok := s.loadWorkflowByID(enc, req, "workflow.get")
 	if !ok {
