@@ -181,6 +181,182 @@ func TestReadyNodesSortsByPriorityThenID(t *testing.T) {
 	}
 }
 
+func TestReportWorkflowSummarizesRepresentativeGraph(t *testing.T) {
+	t.Parallel()
+
+	loggedAt := time.Date(2026, 5, 20, 9, 15, 0, 0, time.UTC)
+	wf := Workflow{
+		ID:     "wf-report",
+		Goal:   "summarize graph",
+		Status: StatusRunning,
+		Nodes: []Node{
+			{
+				ID:        "context",
+				Type:      NodeContext,
+				Status:    StatusCompleted,
+				Memory:    MemoryLink{Reads: []string{"repo"}, Writes: []string{"scan"}},
+				Artifacts: []Artifact{{Kind: ArtifactLog, Path: "logs/context.txt"}},
+				ToolCalls: []ToolCall{{Tool: "grep", Result: "ok"}},
+				Logs:      []LogRecord{{Time: loggedAt, Level: "info", Message: "context ready"}},
+			},
+			{
+				ID:     "approval",
+				Type:   NodeApproval,
+				Status: StatusWaitingApproval,
+				Security: SecurityEnvelope{
+					Operation: "write",
+					Paths:     []string{"internal/workflow/workflow.go"},
+					Approval:  ApprovalRequired,
+					Risk:      "workspace-write",
+				},
+				Error:      "needs file write approval",
+				RetryCount: 1,
+			},
+			{
+				ID:        "test",
+				Type:      NodeVerification,
+				Status:    StatusFailed,
+				Error:     "go test failed",
+				Artifacts: []Artifact{{Kind: ArtifactTest, Path: "test.log"}},
+				Mutations: []FileMutation{{Op: "edit", Path: "internal/workflow/workflow_test.go", Lines: 12}},
+			},
+			{
+				ID:       "summary",
+				Type:     NodeSummary,
+				Status:   StatusQueued,
+				Priority: 8,
+			},
+		},
+		Edges: []Edge{{From: "context", To: "summary"}},
+	}
+
+	got, err := ReportWorkflow(wf)
+	if err != nil {
+		t.Fatalf("ReportWorkflow returned error: %v", err)
+	}
+
+	if got.ID != "wf-report" || got.Goal != "summarize graph" || got.Status != StatusRunning {
+		t.Fatalf("report identity = %#v, want workflow identity", got)
+	}
+	wantCounts := map[Status]int{
+		StatusCompleted:       1,
+		StatusWaitingApproval: 1,
+		StatusFailed:          1,
+		StatusQueued:          1,
+	}
+	if !reflect.DeepEqual(got.NodeCounts, wantCounts) {
+		t.Fatalf("node counts = %#v, want %#v", got.NodeCounts, wantCounts)
+	}
+	if len(got.BlockedApprovals) != 1 || got.BlockedApprovals[0].ID != "approval" || got.BlockedApprovals[0].Operation != "write" || got.BlockedApprovals[0].Approval != ApprovalRequired {
+		t.Fatalf("blocked approvals = %#v, want approval write node", got.BlockedApprovals)
+	}
+	if len(got.FailedNodes) != 1 || got.FailedNodes[0].ID != "test" || got.FailedNodes[0].Error != "go test failed" {
+		t.Fatalf("failed nodes = %#v, want failed test node", got.FailedNodes)
+	}
+	if got.RuntimeCounts != (RuntimeCounts{ToolCalls: 1, Logs: 1, Mutations: 1}) {
+		t.Fatalf("runtime counts = %#v, want one of each", got.RuntimeCounts)
+	}
+	if got.RetryCountTotal != 1 {
+		t.Fatalf("retry total = %d, want 1", got.RetryCountTotal)
+	}
+	if len(got.Artifacts) != 2 || got.Artifacts[0].NodeID != "context" || got.Artifacts[1].NodeID != "test" {
+		t.Fatalf("artifacts = %#v, want context and test artifacts", got.Artifacts)
+	}
+	if len(got.MemoryLinks) != 1 || got.MemoryLinks[0].NodeID != "context" || got.MemoryLinks[0].Reads[0] != "repo" || got.MemoryLinks[0].Writes[0] != "scan" {
+		t.Fatalf("memory links = %#v, want context memory lineage", got.MemoryLinks)
+	}
+	if len(got.ReadyNodes) != 1 || got.ReadyNodes[0].ID != "summary" || got.ReadyNodes[0].Priority != 8 {
+		t.Fatalf("ready nodes = %#v, want summary", got.ReadyNodes)
+	}
+}
+
+func TestReportWorkflowRejectsInvalidWorkflow(t *testing.T) {
+	t.Parallel()
+
+	got, err := ReportWorkflow(Workflow{Nodes: []Node{{ID: "node", Status: StatusQueued}}})
+	if !errors.Is(err, ErrMissingWorkflowID) {
+		t.Fatalf("ReportWorkflow error = %v, want %v", err, ErrMissingWorkflowID)
+	}
+	if !reflect.DeepEqual(got, WorkflowReport{}) {
+		t.Fatalf("ReportWorkflow report = %#v, want zero value on error", got)
+	}
+}
+
+func TestWorkflowEventsReturnsReplayFriendlyEventList(t *testing.T) {
+	t.Parallel()
+
+	createdAt := time.Date(2026, 5, 20, 9, 0, 0, 0, time.UTC)
+	startedAt := time.Date(2026, 5, 20, 9, 5, 0, 0, time.UTC)
+	loggedAt := time.Date(2026, 5, 20, 9, 6, 0, 0, time.UTC)
+	endedAt := time.Date(2026, 5, 20, 9, 10, 0, 0, time.UTC)
+	wf := Workflow{
+		ID:        "wf-events",
+		Goal:      "export event stream",
+		Status:    StatusCompleted,
+		CreatedAt: createdAt,
+		UpdatedAt: endedAt,
+		Nodes: []Node{{
+			ID:        "edit",
+			Status:    StatusCompleted,
+			StartedAt: startedAt,
+			EndedAt:   endedAt,
+			Memory:    MemoryLink{Reads: []string{"repo"}},
+			ToolCalls: []ToolCall{{Tool: "edit", Result: "ok"}},
+			Logs:      []LogRecord{{Time: loggedAt, Message: "patched"}},
+			Mutations: []FileMutation{{Op: "edit", Path: "workflow.go", Lines: 3}},
+			Artifacts: []Artifact{{Kind: ArtifactDiff, Path: "workflow.patch"}},
+		}},
+	}
+
+	got, err := WorkflowEvents(wf)
+	if err != nil {
+		t.Fatalf("WorkflowEvents returned error: %v", err)
+	}
+	wantTypes := []string{
+		"workflow_status",
+		"node_started",
+		"node_status",
+		"memory",
+		"tool_call",
+		"log",
+		"mutation",
+		"artifact",
+		"workflow_updated",
+	}
+	if len(got) != len(wantTypes) {
+		t.Fatalf("events len = %d, want %d: %#v", len(got), len(wantTypes), got)
+	}
+	for i, wantType := range wantTypes {
+		if got[i].Seq != i+1 || got[i].WorkflowID != "wf-events" || got[i].Type != wantType {
+			t.Fatalf("event[%d] = %#v, want seq %d type %s workflow wf-events", i, got[i], i+1, wantType)
+		}
+	}
+	if got[4].ToolCall == nil || got[4].ToolCall.Tool != "edit" {
+		t.Fatalf("tool event = %#v, want edit tool call", got[4])
+	}
+	if got[5].Log == nil || got[5].Log.Message != "patched" || !got[5].Time.Equal(loggedAt) {
+		t.Fatalf("log event = %#v, want patched log with time", got[5])
+	}
+	if got[6].Mutation == nil || got[6].Mutation.Path != "workflow.go" {
+		t.Fatalf("mutation event = %#v, want workflow.go mutation", got[6])
+	}
+	if got[7].Artifact == nil || got[7].Artifact.Kind != ArtifactDiff {
+		t.Fatalf("artifact event = %#v, want diff artifact", got[7])
+	}
+}
+
+func TestWorkflowEventsRejectsInvalidWorkflow(t *testing.T) {
+	t.Parallel()
+
+	got, err := WorkflowEvents(Workflow{ID: "wf-invalid", Nodes: []Node{{ID: "a"}, {ID: "a"}}})
+	if !errors.Is(err, ErrDuplicateNode) {
+		t.Fatalf("WorkflowEvents error = %v, want %v", err, ErrDuplicateNode)
+	}
+	if got != nil {
+		t.Fatalf("WorkflowEvents events = %#v, want nil on error", got)
+	}
+}
+
 func TestStartReadyNodeMovesQueuedReadyNodeToRunning(t *testing.T) {
 	t.Parallel()
 

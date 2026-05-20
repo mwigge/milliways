@@ -49,6 +49,7 @@ type EnforcementMetadata struct {
 type CapabilitySupport string
 
 const (
+	CapabilityNative           CapabilitySupport = "native"
 	CapabilityRunnerControlled CapabilitySupport = "runner-controlled"
 	CapabilityBrokered         CapabilitySupport = "brokered"
 	CapabilityPreflightOnly    CapabilitySupport = "preflight-only"
@@ -185,7 +186,7 @@ func ClientCapabilitiesForAgent(agentID string) ClientCapabilities {
 			Tools:            CapabilityRunnerControlled,
 			Permissions:      CapabilityRunnerControlled,
 			FileChanges:      CapabilityRunnerControlled,
-			Contract:         toolContract(CapabilityRunnerControlled, CapabilityRunnerControlled),
+			Contract:         nativeToolContract(CapabilityRunnerControlled, CapabilityRunnerControlled),
 			LSP:              CapabilityUnsupported,
 			MCP:              CapabilityUnsupported,
 			Memory:           CapabilityRunnerControlled,
@@ -198,7 +199,7 @@ func ClientCapabilitiesForAgent(agentID string) ClientCapabilities {
 				Tools:            CapabilityBrokered,
 				Permissions:      CapabilityBrokered,
 				FileChanges:      CapabilityBrokered,
-				Contract:         toolContract(CapabilityBrokered, CapabilityBrokered),
+				Contract:         nativeToolContract(CapabilityBrokered, CapabilityBrokered),
 				LSP:              CapabilityUnsupported,
 				MCP:              CapabilityUnsupported,
 				Memory:           CapabilityRunnerControlled,
@@ -207,10 +208,10 @@ func ClientCapabilitiesForAgent(agentID string) ClientCapabilities {
 			}
 		}
 		return ClientCapabilities{
-			Tools:            CapabilityExternal,
+			Tools:            CapabilityNative,
 			Permissions:      CapabilityPreflightOnly,
 			FileChanges:      CapabilityPreflightOnly,
-			Contract:         toolContract(CapabilityExternal, CapabilityPreflightOnly),
+			Contract:         externalPreflightToolContract(),
 			LSP:              CapabilityUnsupported,
 			MCP:              CapabilityUnsupported,
 			Memory:           CapabilityRunnerControlled,
@@ -222,7 +223,7 @@ func ClientCapabilitiesForAgent(agentID string) ClientCapabilities {
 			Tools:            CapabilityUnknown,
 			Permissions:      CapabilityUnknown,
 			FileChanges:      CapabilityUnknown,
-			Contract:         toolContract(CapabilityUnknown, CapabilityUnknown),
+			Contract:         nativeToolContract(CapabilityUnknown, CapabilityUnknown),
 			LSP:              CapabilityUnknown,
 			MCP:              CapabilityUnknown,
 			Memory:           CapabilityUnknown,
@@ -232,7 +233,7 @@ func ClientCapabilitiesForAgent(agentID string) ClientCapabilities {
 	}
 }
 
-func toolContract(operations, approvals CapabilitySupport) ToolContract {
+func nativeToolContract(operations, approvals CapabilitySupport) ToolContract {
 	return ToolContract{
 		Read:             operations,
 		Write:            operations,
@@ -245,6 +246,22 @@ func toolContract(operations, approvals CapabilitySupport) ToolContract {
 		Artifacts:        operations,
 		Approvals:        approvals,
 		StructuredErrors: operations,
+	}
+}
+
+func externalPreflightToolContract() ToolContract {
+	return ToolContract{
+		Read:             CapabilityNative,
+		Write:            CapabilityPreflightOnly,
+		Edit:             CapabilityPreflightOnly,
+		Delete:           CapabilityPreflightOnly,
+		Bash:             CapabilityPreflightOnly,
+		Glob:             CapabilityNative,
+		Grep:             CapabilityNative,
+		ListTree:         CapabilityNative,
+		Artifacts:        CapabilityUnsupported,
+		Approvals:        CapabilityPreflightOnly,
+		StructuredErrors: CapabilityUnsupported,
 	}
 }
 

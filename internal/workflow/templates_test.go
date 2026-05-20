@@ -81,3 +81,110 @@ func TestInstantiateTemplateRejectsUnknownTemplate(t *testing.T) {
 		t.Fatalf("InstantiateTemplate error = %v, want unknown template", err)
 	}
 }
+
+func TestLoadLocalTemplatesReadsValidDefinitions(t *testing.T) {
+	t.Parallel()
+
+	defs, err := LoadLocalTemplates(strings.NewReader(`{
+		"templates": [
+			{
+				"name": "repo-review",
+				"description": "Review the current repository state",
+				"nodes": [
+					{"id": "context", "type": "context"},
+					{"id": "review", "type": "agent", "inputs": {"prompt": "inspect changes"}},
+					{"id": "summary", "type": "summary"}
+				],
+				"edges": [
+					{"from": "context", "to": "review"},
+					{"from": "review", "to": "summary"}
+				]
+			}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("LoadLocalTemplates returned error: %v", err)
+	}
+	if len(defs) != 1 {
+		t.Fatalf("definitions = %d, want 1", len(defs))
+	}
+	def := defs[0]
+	if def.Name != "repo-review" || def.Description != "Review the current repository state" {
+		t.Fatalf("definition = %#v, want name and description", def)
+	}
+	if len(def.Nodes) != 3 || def.Nodes[0].Status != StatusQueued {
+		t.Fatalf("nodes = %#v, want queued graph nodes", def.Nodes)
+	}
+
+	createdAt := time.Date(2026, 5, 20, 9, 0, 0, 0, time.UTC)
+	wf, err := InstantiateTemplateDefinition(def, "wf-local", "find gaps", createdAt)
+	if err != nil {
+		t.Fatalf("InstantiateTemplateDefinition returned error: %v", err)
+	}
+	if wf.ID != "wf-local" || wf.Goal != "find gaps" || wf.Nodes[1].Inputs["template"] != "repo-review" {
+		t.Fatalf("workflow = %#v, want local template workflow", wf)
+	}
+	if wf.Nodes[1].Inputs["prompt"] != "inspect changes" || wf.Nodes[1].Inputs["goal"] != "find gaps" {
+		t.Fatalf("node inputs = %#v, want template inputs preserved with goal", wf.Nodes[1].Inputs)
+	}
+	if def.Nodes[1].Inputs["template"] != "" || def.Nodes[1].Inputs["goal"] != "" {
+		t.Fatalf("definition inputs = %#v, want instantiation not to mutate definition", def.Nodes[1].Inputs)
+	}
+	if err := Validate(wf); err != nil {
+		t.Fatalf("Validate returned error: %v", err)
+	}
+}
+
+func TestLoadLocalTemplatesRejectsInvalidGraph(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadLocalTemplates(strings.NewReader(`{
+		"name": "bad-graph",
+		"nodes": [{"id": "context", "type": "context"}],
+		"edges": [{"from": "context", "to": "missing"}]
+	}`))
+	if !errors.Is(err, ErrUnknownNode) {
+		t.Fatalf("LoadLocalTemplates error = %v, want %v", err, ErrUnknownNode)
+	}
+}
+
+func TestLoadLocalTemplatesRejectsMissingName(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadLocalTemplates(strings.NewReader(`{
+		"description": "missing name",
+		"nodes": [{"id": "context", "type": "context"}]
+	}`))
+	if err == nil || !strings.Contains(err.Error(), "workflow template name is required") {
+		t.Fatalf("LoadLocalTemplates error = %v, want missing name", err)
+	}
+}
+
+func TestLoadLocalTemplatesRejectsMissingNodes(t *testing.T) {
+	t.Parallel()
+
+	_, err := LoadLocalTemplates(strings.NewReader(`{"name": "empty"}`))
+	if err == nil || !strings.Contains(err.Error(), "workflow template nodes are required") {
+		t.Fatalf("LoadLocalTemplates error = %v, want missing nodes", err)
+	}
+}
+
+func TestAvailableTemplatesCombinesBuiltInsWithLocalDefinitions(t *testing.T) {
+	t.Parallel()
+
+	local := []TemplateDefinition{
+		{
+			Name:        "repo-cleanup",
+			Description: "Clean up repository issues",
+			Nodes:       []Node{{ID: "cleanup", Type: NodeAgent, Status: StatusQueued}},
+		},
+	}
+	summaries := AvailableTemplates(local)
+	if len(summaries) != len(BuiltInTemplates())+1 {
+		t.Fatalf("summaries = %d, want built-ins plus one local", len(summaries))
+	}
+	got := summaries[len(summaries)-1]
+	if got.Name != "repo-cleanup" || got.Description != "Clean up repository issues" || got.Nodes != 1 {
+		t.Fatalf("local summary = %#v, want compatible local summary", got)
+	}
+}

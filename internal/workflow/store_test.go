@@ -100,6 +100,48 @@ func TestFileStoreListReturnsSortedSummaries(t *testing.T) {
 	}
 }
 
+func TestFileStoreReportAndEventsLoadPersistedWorkflow(t *testing.T) {
+	t.Parallel()
+
+	store := NewFileStore(t.TempDir())
+	wf := Workflow{
+		ID:     "wf-report",
+		Goal:   "persisted report",
+		Status: StatusRunning,
+		Nodes: []Node{
+			{
+				ID:        "context",
+				Status:    StatusCompleted,
+				Artifacts: []Artifact{{Kind: ArtifactLog, Path: "context.log"}},
+			},
+			{
+				ID:     "summary",
+				Status: StatusQueued,
+			},
+		},
+		Edges: []Edge{{From: "context", To: "summary"}},
+	}
+	if err := store.Save(context.Background(), wf); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	report, err := store.Report(context.Background(), "wf-report")
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	if report.ID != "wf-report" || len(report.ReadyNodes) != 1 || report.ReadyNodes[0].ID != "summary" {
+		t.Fatalf("report = %#v, want persisted workflow summary with ready node", report)
+	}
+
+	events, err := store.Events(context.Background(), "wf-report")
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) != 4 || events[0].Type != "workflow_status" || events[3].Type != "node_status" {
+		t.Fatalf("events = %#v, want workflow status and node status events", events)
+	}
+}
+
 func TestFileStoreRecoverInterruptedUpdatesPersistedWorkflows(t *testing.T) {
 	t.Parallel()
 

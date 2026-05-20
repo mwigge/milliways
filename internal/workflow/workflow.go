@@ -185,6 +185,79 @@ type FileMutation struct {
 	Lines int    `json:"lines,omitempty"`
 }
 
+// WorkflowReport is a compact inspection/export summary for one workflow.
+type WorkflowReport struct {
+	ID               string            `json:"id"`
+	Goal             string            `json:"goal,omitempty"`
+	Status           Status            `json:"status"`
+	NodeCounts       map[Status]int    `json:"node_counts,omitempty"`
+	BlockedApprovals []NodeReport      `json:"blocked_approvals,omitempty"`
+	FailedNodes      []NodeReport      `json:"failed_nodes,omitempty"`
+	Artifacts        []ArtifactReport  `json:"artifacts,omitempty"`
+	MemoryLinks      []MemoryReport    `json:"memory_links,omitempty"`
+	RuntimeCounts    RuntimeCounts     `json:"runtime_counts"`
+	RetryCountTotal  int               `json:"retry_count_total,omitempty"`
+	ReadyNodes       []ReadyNodeReport `json:"ready_nodes,omitempty"`
+}
+
+// NodeReport is the compact node shape used in workflow reports.
+type NodeReport struct {
+	ID        string           `json:"id"`
+	Type      NodeType         `json:"type,omitempty"`
+	Status    Status           `json:"status"`
+	Error     string           `json:"error,omitempty"`
+	Operation string           `json:"operation,omitempty"`
+	Approval  ApprovalMode     `json:"approval,omitempty"`
+	Risk      string           `json:"risk,omitempty"`
+	Paths     []string         `json:"paths,omitempty"`
+	Artifacts []ArtifactReport `json:"artifacts,omitempty"`
+}
+
+// ArtifactReport identifies an artifact and the node that produced it.
+type ArtifactReport struct {
+	NodeID string       `json:"node_id"`
+	Kind   ArtifactKind `json:"kind"`
+	Path   string       `json:"path,omitempty"`
+	Ref    string       `json:"ref,omitempty"`
+}
+
+// MemoryReport identifies memory lineage attached to one node.
+type MemoryReport struct {
+	NodeID string   `json:"node_id"`
+	Reads  []string `json:"reads,omitempty"`
+	Writes []string `json:"writes,omitempty"`
+}
+
+// RuntimeCounts summarizes runtime record volume for a workflow.
+type RuntimeCounts struct {
+	ToolCalls int `json:"tool_calls"`
+	Logs      int `json:"logs"`
+	Mutations int `json:"mutations"`
+}
+
+// ReadyNodeReport identifies a queued node that can start immediately.
+type ReadyNodeReport struct {
+	ID       string   `json:"id"`
+	Type     NodeType `json:"type,omitempty"`
+	Priority int      `json:"priority,omitempty"`
+}
+
+// WorkflowEvent is an export-friendly, deterministic event view of workflow
+// graph state and node runtime records.
+type WorkflowEvent struct {
+	Seq        int           `json:"seq"`
+	Type       string        `json:"type"`
+	WorkflowID string        `json:"workflow_id"`
+	NodeID     string        `json:"node_id,omitempty"`
+	Time       time.Time     `json:"time,omitempty"`
+	Status     Status        `json:"status,omitempty"`
+	Message    string        `json:"message,omitempty"`
+	ToolCall   *ToolCall     `json:"tool_call,omitempty"`
+	Log        *LogRecord    `json:"log,omitempty"`
+	Mutation   *FileMutation `json:"mutation,omitempty"`
+	Artifact   *Artifact     `json:"artifact,omitempty"`
+}
+
 // Validate verifies that a workflow has stable IDs and an acyclic graph.
 func Validate(wf Workflow) error {
 	if strings.TrimSpace(wf.ID) == "" {
@@ -223,6 +296,129 @@ func Validate(wf Workflow) error {
 		return ErrCycle
 	}
 	return nil
+}
+
+// ReportWorkflow builds a compact report for queue inspection, replay planning,
+// and export metadata. It validates wf and does not mutate it.
+func ReportWorkflow(wf Workflow) (WorkflowReport, error) {
+	if err := Validate(wf); err != nil {
+		return WorkflowReport{}, err
+	}
+	ready, err := ReadyNodes(wf)
+	if err != nil {
+		return WorkflowReport{}, err
+	}
+
+	report := WorkflowReport{
+		ID:         wf.ID,
+		Goal:       wf.Goal,
+		Status:     wf.Status,
+		NodeCounts: make(map[Status]int, len(wf.Nodes)),
+	}
+	for _, node := range wf.Nodes {
+		report.NodeCounts[node.Status]++
+		report.RuntimeCounts.ToolCalls += len(node.ToolCalls)
+		report.RuntimeCounts.Logs += len(node.Logs)
+		report.RuntimeCounts.Mutations += len(node.Mutations)
+		report.RetryCountTotal += node.RetryCount
+
+		nodeArtifacts := artifactReports(node.ID, node.Artifacts)
+		report.Artifacts = append(report.Artifacts, nodeArtifacts...)
+		if len(node.Memory.Reads) > 0 || len(node.Memory.Writes) > 0 {
+			report.MemoryLinks = append(report.MemoryLinks, MemoryReport{
+				NodeID: node.ID,
+				Reads:  append([]string(nil), node.Memory.Reads...),
+				Writes: append([]string(nil), node.Memory.Writes...),
+			})
+		}
+		switch node.Status {
+		case StatusWaitingApproval:
+			summary := reportNode(node)
+			summary.Artifacts = nodeArtifacts
+			report.BlockedApprovals = append(report.BlockedApprovals, summary)
+		case StatusFailed:
+			summary := reportNode(node)
+			summary.Artifacts = nodeArtifacts
+			report.FailedNodes = append(report.FailedNodes, summary)
+		}
+	}
+	for _, node := range ready {
+		report.ReadyNodes = append(report.ReadyNodes, ReadyNodeReport{
+			ID:       node.ID,
+			Type:     node.Type,
+			Priority: node.Priority,
+		})
+	}
+	return report, nil
+}
+
+// WorkflowEvents returns a deterministic event list suitable for replay/export
+// payloads. Events are emitted in workflow/node/runtime record order.
+func WorkflowEvents(wf Workflow) ([]WorkflowEvent, error) {
+	if err := Validate(wf); err != nil {
+		return nil, err
+	}
+
+	events := make([]WorkflowEvent, 0, 2+len(wf.Nodes))
+	appendEvent := func(event WorkflowEvent) {
+		event.Seq = len(events) + 1
+		event.WorkflowID = wf.ID
+		events = append(events, event)
+	}
+	appendEvent(WorkflowEvent{
+		Type:    "workflow_status",
+		Time:    wf.CreatedAt,
+		Status:  wf.Status,
+		Message: wf.Goal,
+	})
+	for _, node := range wf.Nodes {
+		if !node.StartedAt.IsZero() {
+			appendEvent(WorkflowEvent{
+				Type:   "node_started",
+				NodeID: node.ID,
+				Time:   node.StartedAt,
+				Status: StatusRunning,
+			})
+		}
+		appendEvent(WorkflowEvent{
+			Type:    "node_status",
+			NodeID:  node.ID,
+			Time:    node.EndedAt,
+			Status:  node.Status,
+			Message: node.Error,
+		})
+		if len(node.Memory.Reads) > 0 || len(node.Memory.Writes) > 0 {
+			appendEvent(WorkflowEvent{
+				Type:    "memory",
+				NodeID:  node.ID,
+				Message: strings.Join(append(append([]string(nil), node.Memory.Reads...), node.Memory.Writes...), "\n"),
+			})
+		}
+		for _, call := range node.ToolCalls {
+			call := call
+			appendEvent(WorkflowEvent{Type: "tool_call", NodeID: node.ID, ToolCall: &call})
+		}
+		for _, record := range node.Logs {
+			record := record
+			appendEvent(WorkflowEvent{Type: "log", NodeID: node.ID, Time: record.Time, Log: &record})
+		}
+		for _, mutation := range node.Mutations {
+			mutation := mutation
+			appendEvent(WorkflowEvent{Type: "mutation", NodeID: node.ID, Mutation: &mutation})
+		}
+		for _, artifact := range node.Artifacts {
+			artifact := artifact
+			appendEvent(WorkflowEvent{Type: "artifact", NodeID: node.ID, Artifact: &artifact})
+		}
+	}
+	if !wf.UpdatedAt.IsZero() {
+		appendEvent(WorkflowEvent{
+			Type:   "workflow_updated",
+			Time:   wf.UpdatedAt,
+			Status: wf.Status,
+		})
+	}
+	return events, nil
 }
 
 // ReadyNodes returns queued nodes whose dependency edges all point from
@@ -749,4 +945,30 @@ func hasCycle(graph map[string][]string, inDegree map[string]int) bool {
 		}
 	}
 	return visited != len(inDegree)
+}
+
+func reportNode(node Node) NodeReport {
+	return NodeReport{
+		ID:        node.ID,
+		Type:      node.Type,
+		Status:    node.Status,
+		Error:     node.Error,
+		Operation: node.Security.Operation,
+		Approval:  node.Security.Approval,
+		Risk:      node.Security.Risk,
+		Paths:     append([]string(nil), node.Security.Paths...),
+	}
+}
+
+func artifactReports(nodeID string, artifacts []Artifact) []ArtifactReport {
+	out := make([]ArtifactReport, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		out = append(out, ArtifactReport{
+			NodeID: nodeID,
+			Kind:   artifact.Kind,
+			Path:   artifact.Path,
+			Ref:    artifact.Ref,
+		})
+	}
+	return out
 }

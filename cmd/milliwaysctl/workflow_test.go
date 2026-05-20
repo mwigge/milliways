@@ -130,6 +130,147 @@ func TestRunWorkflowShowRendersNextgenNodeDetails(t *testing.T) {
 	}
 }
 
+func TestRunWorkflowReportCallsGetAndRendersCompactCounts(t *testing.T) {
+	sock, calls := startSecurityRPCTestServer(t, map[string]any{
+		"workflow.get": map[string]any{
+			"workflow": map[string]any{
+				"id":     "wf-report",
+				"goal":   "inspect graph",
+				"status": "waiting_approval",
+				"nodes": []any{
+					map[string]any{
+						"id":     "context",
+						"type":   "context",
+						"status": "completed",
+						"logs":   []any{map[string]any{"level": "info", "message": "done"}},
+					},
+					map[string]any{
+						"id":     "edit",
+						"type":   "tool_call",
+						"status": "waiting_approval",
+						"tool_calls": []any{
+							map[string]any{"tool": "write_file", "result": "blocked"},
+						},
+						"mutations": []any{
+							map[string]any{"op": "write", "path": "cmd/milliwaysctl/workflow.go", "lines": 12},
+						},
+						"artifacts": []any{
+							map[string]any{"kind": "diff", "path": "artifacts/edit.diff"},
+						},
+					},
+				},
+				"edges": []any{map[string]any{"from": "context", "to": "edit"}},
+			},
+		},
+	})
+
+	var stdout, stderr bytes.Buffer
+	if rc := runWorkflow([]string{"report", " wf-report "}, &stdout, &stderr, sock); rc != 0 {
+		t.Fatalf("runWorkflow report rc=%d stderr=%s", rc, stderr.String())
+	}
+	call := <-calls
+	if call.Method != "workflow.get" || call.Params["id"] != "wf-report" {
+		t.Fatalf("call = %#v, want workflow.get id wf-report", call)
+	}
+	for _, want := range []string{
+		"workflow wf-report report",
+		"status: waiting_approval",
+		"goal: inspect graph",
+		"graph: nodes=2 edges=1",
+		"nodes: queued=0 running=0 waiting_approval=1 resumed=0 verifying=0 completed=1 failed=0 canceled=0 skipped=0",
+		"records: tool_calls=1 logs=1 mutations=1 artifacts=1",
+		"waiting_approval: edit",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("workflow report output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestRunWorkflowReplayCallsGetAndRendersStoredGraph(t *testing.T) {
+	sock, calls := startSecurityRPCTestServer(t, map[string]any{
+		"workflow.get": map[string]any{
+			"workflow": map[string]any{
+				"id":     "wf-replay",
+				"status": "failed",
+				"nodes": []any{
+					map[string]any{
+						"id":      "context",
+						"type":    "context",
+						"status":  "completed",
+						"outputs": map[string]any{"summary": "ready"},
+					},
+					map[string]any{
+						"id":     "edit",
+						"type":   "tool_call",
+						"status": "failed",
+						"error":  "write denied",
+						"tool_calls": []any{
+							map[string]any{"tool": "write_file", "result": "denied"},
+						},
+						"mutations": []any{
+							map[string]any{"op": "write", "path": "nextgen.md", "lines": 4},
+						},
+						"logs": []any{
+							map[string]any{"level": "error", "message": "write denied"},
+						},
+						"artifacts": []any{
+							map[string]any{"kind": "log", "path": "logs/edit.log"},
+						},
+					},
+				},
+				"edges": []any{map[string]any{"from": "context", "to": "edit"}},
+			},
+		},
+	})
+
+	var stdout, stderr bytes.Buffer
+	if rc := runWorkflow([]string{"replay", "wf-replay"}, &stdout, &stderr, sock); rc != 0 {
+		t.Fatalf("runWorkflow replay rc=%d stderr=%s", rc, stderr.String())
+	}
+	call := <-calls
+	if call.Method != "workflow.get" || call.Params["id"] != "wf-replay" {
+		t.Fatalf("call = %#v, want workflow.get id wf-replay", call)
+	}
+	for _, want := range []string{
+		"workflow wf-replay replay",
+		"1. context type=context status=completed",
+		"outputs: summary=ready",
+		"2. edit type=tool_call status=failed after=context",
+		"error: write denied",
+		"tool_call: write_file result=denied",
+		"mutation: write nextgen.md lines=4",
+		"log: error write denied",
+		"artifacts: log:logs/edit.log",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("workflow replay output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestRunWorkflowReportJSONRendersRawGetShape(t *testing.T) {
+	sock, _ := startSecurityRPCTestServer(t, map[string]any{
+		"workflow.get": map[string]any{
+			"workflow": map[string]any{
+				"id":     "wf-report-json",
+				"status": "queued",
+				"nodes":  []any{},
+			},
+		},
+	})
+
+	var stdout, stderr bytes.Buffer
+	if rc := runWorkflow([]string{"report", "wf-report-json", "--json"}, &stdout, &stderr, sock); rc != 0 {
+		t.Fatalf("runWorkflow report --json rc=%d stderr=%s", rc, stderr.String())
+	}
+	for _, want := range []string{`"workflow"`, `"id": "wf-report-json"`, `"nodes"`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("workflow report json output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
 func TestRunWorkflowListJSONRendersRawShape(t *testing.T) {
 	sock, _ := startSecurityRPCTestServer(t, map[string]any{
 		"workflow.list": map[string]any{"workflows": []any{}},

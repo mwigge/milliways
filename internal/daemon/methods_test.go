@@ -103,11 +103,17 @@ func TestCapabilitiesGetReportsClientToolContracts(t *testing.T) {
 	if got := resp.Result.Clients["minimax"].Capabilities.Contract.Write; got != runners.CapabilityRunnerControlled {
 		t.Fatalf("minimax write capability = %q, want %q", got, runners.CapabilityRunnerControlled)
 	}
-	if got := resp.Result.Clients["codex"].Capabilities.Contract.Bash; got != runners.CapabilityExternal {
-		t.Fatalf("codex bash capability = %q, want %q without broker", got, runners.CapabilityExternal)
+	if got := resp.Result.Clients["codex"].Capabilities.Contract.Read; got != runners.CapabilityNative {
+		t.Fatalf("codex read capability = %q, want %q without broker", got, runners.CapabilityNative)
+	}
+	if got := resp.Result.Clients["codex"].Capabilities.Contract.Bash; got != runners.CapabilityPreflightOnly {
+		t.Fatalf("codex bash capability = %q, want %q without broker", got, runners.CapabilityPreflightOnly)
 	}
 	if got := resp.Result.Clients["codex"].Capabilities.Contract.Approvals; got != runners.CapabilityPreflightOnly {
 		t.Fatalf("codex approval capability = %q, want %q without broker", got, runners.CapabilityPreflightOnly)
+	}
+	if got := resp.Result.Clients["codex"].Capabilities.Contract.Artifacts; got != runners.CapabilityUnsupported {
+		t.Fatalf("codex artifact capability = %q, want %q without broker", got, runners.CapabilityUnsupported)
 	}
 }
 
