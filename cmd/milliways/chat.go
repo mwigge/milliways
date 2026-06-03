@@ -982,7 +982,12 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 							_, _ = io.WriteString(h.out, "\n")
 						}
 						appendThinkingFragment(&thinkingBuffer, msg)
+						slog.Debug("thinking event received",
+							"sess", sess.handle, "fragment_len", len(msg),
+							"buffer_len", thinkingBuffer.Len(),
+							"should_flush", shouldFlushThinkingFragment(thinkingBuffer.String()))
 						if shouldFlushThinkingFragment(thinkingBuffer.String()) {
+							slog.Debug("flushing thinking", "sess", sess.handle, "msg", thinkingBuffer.String())
 							flushThinking()
 						}
 					}
@@ -1017,6 +1022,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 				}
 			}
 		case "chunk_end":
+			slog.Debug("chunk_end received", "sess", sess.handle, "thinking_buffer_len", thinkingBuffer.Len())
 			flushThinking()
 			if h, ok := l.out.(*codeHighlighter); ok {
 				_ = h.Flush()
