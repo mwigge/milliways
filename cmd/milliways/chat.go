@@ -134,8 +134,8 @@ func friendlyError(prefix string, rawMsg string, err error) string {
 
 	// RPC errors
 	if strings.Contains(lowerRaw, "rpc error") || strings.Contains(lowerRaw, "call") {
-		msg = prefix + "daemon request failed"
-		msg += "\n  → Daemon may be restarting; try again in a moment"
+		msg = prefix + "request queued"
+		msg += "\n  → Waiting for current response to complete; your message will be processed next"
 		return msg
 	}
 

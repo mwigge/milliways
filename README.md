@@ -315,6 +315,7 @@ Some runners expose their own slash commands that milliways passes through direc
 /install copilot       # install copilot CLI
 /install gemini        # install gemini CLI
 /install local         # install local model server
+/install berget        # install berget CLI (berget.ai)
 ```
 
 ---
@@ -368,9 +369,10 @@ See `milliways --help` for the canonical authoritative flag/subcommand list. The
 
 | Runner | Color | Best At | Cost |
 |--------|-------|---------|------|
+| minimax | purple | Reasoning, image/music/lyrics generation | Cloud |
+| berget | orange | General purpose, fast responses (berget.ai) | Cloud |
 | claude | green | Thinking, planning, code review | Cloud |
 | codex | amber | Agentic coding, tool use | Cloud |
-| minimax | purple | Reasoning, image/music/lyrics generation | Cloud |
 | kimi | blue | Long-context coding and agent tasks | Cloud |
 | deepseek | green | Cost-efficient coding and reasoning | Cloud |
 | copilot | red | GitHub Copilot chat | Subscription |
@@ -671,15 +673,38 @@ The window title shows **cumulative session cost** rather than per-response cost
 
 MilliWays.app keeps the operational view visible in the lower-left pane while the right pane stays reserved for the prompt and streamed output. The cockpit is intentionally compact and refreshes in place:
 
-| Signal | Source |
-|---|---|
-| Latest span | `observability.subscribe` |
-| Tokens in/out | daemon status and quota snapshots |
-| Cost | persisted runner metrics |
-| Time to limit | quota burn rate when a quota cap is configured |
-| Latency | recent span durations |
+| Signal | Source | What it means |
+|---|---|---|
+| Latest span | `observability.subscribe` | Last operation performed (e.g., "claude › chat", "minimax › tool:Bash") |
+| Tokens in/out | daemon status and quota snapshots | Input and output token counts for the current session |
+| Cost | persisted runner metrics | Running cost total for the session |
+| Time to limit | quota burn rate when a quota cap is configured | Estimated time until you hit your daily/usage limit |
+| Latency | recent span durations | How long the last operation took |
 
 If no quota cap or burn rate exists yet, time-to-limit is shown as not available rather than guessed.
+
+### Where to find logs, metrics, and traces
+
+All session data is stored locally in `~/.local/state/milliways/`:
+
+| Data | Location | How to access |
+|---|---|---|
+| **Metrics** | `~/.local/state/milliways/metrics.db` | `milliwaysctl metrics`, `/metrics` in REPL |
+| **Traces (spans)** | stdout (JSON, when `MILLIWAYS_OTEL_ENDPOINT` unset) or your OTel collector | `milliways 2>&1 \| jq 'select(.Name)'` or configure an endpoint |
+| **Event history** | `~/.local/state/milliways/history/*.ndjson` | `/history` in REPL |
+| **Daemon logs** | stdout of the `milliwaysd` process | Check your terminal where daemon started |
+| **Security audit** | daemon policy decisions | `milliwaysctl security audit` or `/security audit` |
+| **Quotas** | daemon quota snapshots | `milliwaysctl quota` or `/quota` in REPL |
+
+To export traces to a collector (Jaeger, Tempo, Honeycomb, etc.):
+
+```bash
+export MILLIWAYS_OTEL_ENDPOINT=http://localhost:4318
+# or persist via:
+/login MILLIWAYS_OTEL_ENDPOINT http://localhost:4318
+```
+
+Without `MILLIWAYS_OTEL_ENDPOINT` set, spans are written to stdout in JSON format.
 
 ### Live metrics dashboard
 
