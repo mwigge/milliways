@@ -151,13 +151,14 @@ func friendlyError(prefix string, rawMsg string, err error) string {
 // dispatch table in internal/daemon/agents.go but ordered for the
 // landing-zone display (most-used first).
 var chatSwitchableAgents = []string{
-	"claude",  // /1
-	"codex",   // /2
-	"copilot", // /3
-	"minimax", // /4 — matches wezterm Leader+1..4 mapping
-	"gemini",  // /5
-	"local",   // /6
-	"pool",    // /7
+	"minimax", // /1
+	"berget",  // /2
+	"claude",  // /3
+	"codex",   // /4
+	"copilot", // /5
+	"gemini",  // /6
+	"local",   // /7
+	"pool",    // /8
 }
 
 // chatCtlAliases maps user-facing slash commands to the milliwaysctl
@@ -595,7 +596,7 @@ func chatPromptState(agentID, state string) string {
 		arrow = "▶"
 	}
 	if agentID == "" {
-		return "[select: /1 claude · /2 codex · /4 minimax · /help] " + arrow + " "
+		return "[select: /1 minimax · /2 berget · /3 claude · /help] " + arrow + " "
 	}
 	color := agentColor(agentID)
 	thinkColor := agentThinkingColor(agentID)
@@ -2941,7 +2942,7 @@ func (l *chatLoop) handleLocalHot(args string) {
 // the next runner.
 func (l *chatLoop) handlePrompt(prompt string) {
 	if l.sess == nil {
-		fmt.Fprintln(l.errw, "✗ no client picked yet — type /1 (claude), /2 (codex), /4 (minimax), /6 (local) etc, or /help for the full list")
+		fmt.Fprintln(l.errw, "✗ no client picked yet — type /1 (minimax), /3 (claude), /4 (codex), /5 (copilot), /help for the full list")
 		return
 	}
 	l.ringMu.Lock()
@@ -3325,7 +3326,7 @@ func (l *chatLoop) printHelp() {
 
 	fmt.Fprintln(l.out, "Session:")
 	fmt.Fprintln(l.out, "  /model                        list models for active runner + switch instructions")
-	fmt.Fprintln(l.out, "  /model <name>                 switch model live (minimax / local only)")
+	fmt.Fprintln(l.out, "  /model <name>                 switch model live (minimax / berget / local only)")
 	fmt.Fprintln(l.out, "  /agents                       list clients with live auth status")
 	fmt.Fprintln(l.out, "  /quota                        current quota snapshot")
 	fmt.Fprintln(l.out, "  /metrics                      live metrics dashboard (token usage, costs, ops)")
@@ -3358,7 +3359,7 @@ func (l *chatLoop) printHelp() {
 
 	fmt.Fprintln(l.out, "Runner rotation:")
 	fmt.Fprintln(l.out, "  /ring                         show the current rotation ring and exhausted runners")
-	fmt.Fprintln(l.out, "  /ring <r1,r2,...>             set the auto-rotation order (e.g. /ring claude,codex,minimax)")
+	fmt.Fprintln(l.out, "  /ring <r1,r2,...>             set the auto-rotation order (e.g. /ring minimax,berget,claude)")
 	fmt.Fprintln(l.out, "  /ring off                     disable auto-rotation")
 	fmt.Fprintln(l.out)
 
@@ -3396,6 +3397,21 @@ func runnerModelSpec(agentID string) modelSpec {
 			current:  cur,
 			endpoint: ep,
 			choices:  globalModelCache.Models("minimax"),
+		}
+	case "berget":
+		cur := os.Getenv("BERGET_MODEL")
+		if cur == "" {
+			cur = "moonshotai/Kimi-K2.6"
+		}
+		ep := os.Getenv("BERGET_API_URL")
+		if ep == "" {
+			ep = "https://api.berget.ai/v1/chat/completions"
+		}
+		return modelSpec{
+			envKey:   "BERGET_MODEL",
+			current:  cur,
+			endpoint: ep,
+			choices:  globalModelCache.Models("berget"),
 		}
 	case "local":
 		cur := os.Getenv("MILLIWAYS_LOCAL_MODEL")

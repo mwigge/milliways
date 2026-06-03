@@ -217,6 +217,18 @@ func defaultConfig() *Config {
 					Timeout:        300,
 				},
 			},
+			"berget": {
+				HTTPClient: &HTTPClientConfig{
+					BaseURL:        "https://api.berget.ai/v1",
+					AuthKey:        "BERGET_API_KEY",
+					AuthType:       "bearer",
+					Model:          "moonshotai/Kimi-K2.6",
+					Stations:       []string{"reason", "analyze", "write"},
+					Tier:           "cloud",
+					ResponseFormat: "minimax",
+					Timeout:        300,
+				},
+			},
 			"groq": {
 				HTTPClient: &HTTPClientConfig{
 					BaseURL:        "https://api.groq.com/openai/v1",
