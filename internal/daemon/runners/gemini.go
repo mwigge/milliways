@@ -31,30 +31,30 @@ import (
 var geminiBinary = "gemini"
 
 // geminiArgsBuilder constructs the argv passed to the gemini CLI for a given
-// prompt. Default builds the headless invocation `gemini -p <prompt> -y`.
+// prompt. Default builds the headless invocation `gemini -p <prompt>`.
 // Tests can swap it to rewrite the command (e.g. point at /bin/sh).
 var geminiArgsBuilder = func(prompt string) []string {
 	return geminiDefaultArgs(prompt)
 }
 
 // geminiDefaultArgs builds the argv for a normal gemini invocation.
-// The -y flag auto-approves all tool use (YOLO mode). Set
-// MILLIWAYS_GEMINI_YOLO=off (or =false) to omit it — useful when gemini
-// aggressively invokes tools for simple questions. Default is to include -y.
+// The -y flag auto-approves all tool use (YOLO mode). MilliWays does not
+// enable it by default; set MILLIWAYS_GEMINI_YOLO=on or =true only when you
+// explicitly want the external CLI to bypass its own confirmations.
 func geminiDefaultArgs(prompt string) []string {
 	yolo := os.Getenv("MILLIWAYS_GEMINI_YOLO")
-	yoloOff := strings.EqualFold(yolo, "off") || strings.EqualFold(yolo, "false")
-	if yoloOff {
-		return []string{"-p", prompt}
+	yoloOn := strings.EqualFold(yolo, "on") || strings.EqualFold(yolo, "true") || strings.EqualFold(yolo, "1")
+	if yoloOn {
+		return []string{"-p", prompt, "-y"}
 	}
-	return []string{"-p", prompt, "-y"}
+	return []string{"-p", prompt}
 }
 
 // geminiChunkSize is the raw stdout buffer size; each Read up to this size
 // becomes one {"t":"data","b64":...} event.
 const geminiChunkSize = 4 * 1024
 
-// RunGemini drains the input channel, spawning one `gemini -p <prompt> -y`
+// RunGemini drains the input channel, spawning one `gemini -p <prompt>`
 // subprocess per prompt. Stdout streams as {"t":"data","b64":...} events;
 // stderr is consumed in parallel and inspected for session-limit signals
 // (quota/rate-limit/context-window exhaustion). On subprocess exit, a
@@ -76,6 +76,11 @@ const geminiChunkSize = 4 * 1024
 //   - When `input` is closed, RunGemini pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
 func RunGemini(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
+	RunGeminiWithSecurityWorkspace(ctx, input, stream, metrics, "")
+}
+
+func RunGeminiWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
+	sessionID := newControlledRunnerSessionID(AgentIDGemini)
 	for {
 		select {
 		case <-ctx.Done():
@@ -93,12 +98,12 @@ func RunGemini(ctx context.Context, input <-chan []byte, stream Pusher, metrics 
 			if stream == nil {
 				continue
 			}
-			runGeminiOnce(ctx, prompt, stream, metrics)
+			runGeminiOnce(ctx, prompt, stream, metrics, securityWorkspace, sessionID)
 		}
 	}
 }
 
-func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
+func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace, sessionID string) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		stream.Push(geminiChunkEndEvent())
@@ -116,9 +121,13 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	}()
 	pushModel(stream, AgentIDGemini)
 
-	cwd, _ := os.Getwd()
-	cmd := exec.CommandContext(ctx, geminiBinary, geminiArgsBuilder(text)...)
-	cmd.Env = safeRunnerEnv()
+	cwd := runnerWorkspaceCWD(securityWorkspace)
+	if !runExternalCLIPreflight(ctx, AgentIDGemini, cwd, stream, metrics) {
+		spanErr = "security profile blocked handoff"
+		return
+	}
+	cmd := exec.CommandContext(ctx, resolveRunnerBinary(geminiBinary), geminiArgsBuilder(text)...)
+	cmd.Env = controlledExternalCLIEnv(AgentIDGemini, sessionID, cwd)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}

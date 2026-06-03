@@ -4,13 +4,13 @@
 
 ---
 
-## The problem with seven great tools
+## The problem with many great tools
 
-Claude reasons deeply. Codex grinds through code. Copilot knows your GitHub repos. Gemini is fast and cheap for search and summarisation. MiniMax runs without quotas. Pool indexes large codebases and holds architectural context across turns. Local llama.cpp runs completely offline on your hardware.
+Claude reasons deeply. Codex grinds through code. Copilot knows your GitHub repos. Gemini is fast and cheap for search and summarisation. MiniMax, Kimi, and DeepSeek cover OpenAI-compatible HTTP workflows. Pool indexes large codebases and holds architectural context across turns. Local rs-llmctl/llama.cpp runs completely offline on your hardware.
 
 Every one of these is excellent at something. The problem is that they live in separate terminals, separate sessions, and separate contexts. When you switch from Claude to Codex, you start over. When Claude hits its session limit mid-task, you lose the thread. When you want Gemini's speed for a quick lookup but Claude's reasoning for the follow-up, you're copying and pasting between windows.
 
-**Milliways solves this by making all seven runners operate from one controlled surface.**
+**Milliways solves this by making every first-class runner operate from one controlled surface.**
 
 ---
 
@@ -18,7 +18,7 @@ Every one of these is excellent at something. The problem is that they live in s
 
 The design is a local daemon that keeps runner state behind one Unix socket. Your terminal connects to the daemon, you switch runners with a slash command — `/claude`, `/codex`, `/gemini` — and the daemon routes your prompt to the right process. No new terminal. No repeated authentication ceremony. Context is carried through the active turn log, daemon history, and project memory when configured.
 
-![Milliways architecture — three client binaries, the daemon, seven runners, and MemPalace](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/architecture.png)
+![Milliways architecture — client binaries, the daemon, first-class runners, and MemPalace](https://raw.githubusercontent.com/mwigge/milliways/master/docs/images/architecture.png)
 
 The runners are their own CLIs — milliways wraps them rather than reimplementing them. Claude's tooling, Codex's sandbox, Copilot's GitHub awareness — all preserved exactly as the vendor ships them. Milliways adds the routing layer and the shared context layer on top, without touching what makes each runner good.
 
@@ -34,7 +34,7 @@ The runner doesn't know the memories came from elsewhere. It just sees context t
 
 **The practical effect is that every runner can start informed.** Switch from Claude to Codex mid-session and Codex can receive project structure, architectural decisions, and constraints already captured in project memory. You stop re-explaining the same background to every new tool.
 
-Beyond project memory, milliways maintains a rolling turn log inside the active REPL process. When you switch runners in that process, the recent log is compiled into a structured briefing injected as the new runner's first message. Daemon event history is persisted per runner; the active REPL turn log is currently in-memory unless compacted, handed off, or written through the daemon path.
+Beyond project memory, milliways maintains a rolling turn log inside the active REPL process. When you switch runners in that process, the recent log is compiled into a structured briefing and folded into the new runner's next user prompt. Daemon event history is persisted per runner; the active REPL turn log is currently in-memory unless compacted, handed off, or written through the daemon path.
 
 ---
 
@@ -60,7 +60,7 @@ No manual transcript copying. The user typed `/gemini`, then `/pool`. The active
 
 ## Local model behaviour steering
 
-Local models — llama.cpp, Ollama, vLLM, LMStudio — are first-class runners in milliways, not an afterthought. The local runner speaks the OpenAI-compatible `/v1/chat/completions` API, which means any backend that implements it works out of the box.
+Local models — rs-llmctl, llama-swap, llama.cpp, Ollama, vLLM, LMStudio — are first-class runners in milliways, not an afterthought. The local runner speaks the OpenAI-compatible `/v1/chat/completions` API, which means any backend that implements it works out of the box.
 
 ### Two deployment modes
 
@@ -68,7 +68,7 @@ Local models — llama.cpp, Ollama, vLLM, LMStudio — are first-class runners i
 
 There are two ways to run local models:
 
-**Single-server** (`/install-local-server`) — one `llama-server` instance, one model loaded, port 8765. Simple, low overhead. Switching models means restarting the server.
+**Single-server** (`/install-local-server`) — one `rs-llmctl` managed model endpoint on port 8765, with a generated local API key. Simple, low overhead. Switching models means updating the rs-llmctl config and restarting the service.
 
 **Swap** (`/install-local-swap`) — a `llama-swap` proxy sits at port 8765 and routes requests by model id to individual `llama-server` instances on different ports. Multiple models can be registered; the proxy loads and evicts them on demand. Switch models live with `/model local <name>` — no restart, no reconfiguration.
 
@@ -116,7 +116,7 @@ The window title uses `MilliWays:<current path>`, so the OS window switcher show
 
 ## What you get
 
-- **Seven runners** — claude, codex, copilot, gemini, pool, minimax, local — all in the same terminal session
+- **First-class runners** — claude, codex, copilot, minimax, kimi, deepseek, gemini, pool, local — all in the same terminal session
 - **Shared project memory** — MemPalace context injected before prompts when configured
 - **Automatic rotation ring** — session limits and quota exhaustion become explicit handoffs, not dead ends
 - **Runtime local model steering** — temperature, token limits, and endpoint switchable live without restarts

@@ -57,8 +57,9 @@ type codexJSONItem struct {
 var codexBinary = "codex"
 
 type codexSessionState struct {
-	sessionID string
-	model     string
+	sessionID           string
+	model               string
+	controlledSessionID string
 }
 
 // RunCodex is the daemon-side codex session loop. It reads prompts from
@@ -79,19 +80,23 @@ type codexSessionState struct {
 //   - When `input` is closed, RunCodex pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
 func RunCodex(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
-	state := &codexSessionState{}
+	RunCodexWithSecurityWorkspace(ctx, input, stream, metrics, "")
+}
+
+func RunCodexWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
+	state := &codexSessionState{controlledSessionID: newControlledRunnerSessionID(AgentIDCodex)}
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runCodexOnce(ctx, prompt, stream, metrics, state)
+		runCodexOnce(ctx, prompt, stream, metrics, state, securityWorkspace)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
-func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *codexSessionState) {
+func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *codexSessionState, securityWorkspace string) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		stream.Push(zeroUsageChunkEnd())
@@ -99,6 +104,9 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	}
 	if state == nil {
 		state = &codexSessionState{}
+	}
+	if state.controlledSessionID == "" {
+		state.controlledSessionID = newControlledRunnerSessionID(AgentIDCodex)
 	}
 
 	spanCtx, span := startDispatchSpan(parent, AgentIDCodex, "")
@@ -118,9 +126,18 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	state.model = model
 	pushModel(stream, AgentIDCodex)
 
-	cwd, _ := os.Getwd()
-	cmd := exec.CommandContext(ctx, codexBinary, buildCodexCmdArgsWithSession(text, cwd, codexModelExtraArgs(model), state.sessionID)...)
-	cmd.Env = safeRunnerEnv()
+	cwd := runnerWorkspaceCWD(securityWorkspace)
+	if !runExternalCLIPreflight(ctx, AgentIDCodex, cwd, stream, metrics) {
+		spanErr = "security profile blocked handoff"
+		return
+	}
+	cmd := exec.CommandContext(ctx, resolveRunnerBinary(codexBinary), buildCodexCmdArgsWithSession(text, cwd, codexModelExtraArgs(model), state.sessionID)...)
+	cmd.Env = controlledRunnerEnv(controlledRunnerEnvOptions{
+		ClientID:  AgentIDCodex,
+		SessionID: state.controlledSessionID,
+		Workspace: cwd,
+		ShimDir:   brokerShimDirForAgent(AgentIDCodex),
+	})
 	cmd.WaitDelay = 5 * time.Second
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -296,22 +313,23 @@ func buildCodexCmdArgs(prompt, cwd string, extra []string) []string {
 }
 
 // buildCodexCmdArgsWithSession assembles the codex CLI argv. Root-level
-// defaults (`--sandbox workspace-write --ask-for-approval never`) are placed
+// defaults (`--sandbox workspace-write --ask-for-approval on-request`) are placed
 // before `exec`, because recent Codex CLIs reject --ask-for-approval when it
 // appears after `codex exec`.
 //
 // -C sets the working root so codex sees the project directory regardless
 // of what directory the daemon was launched from.
 //
-// Without --sandbox/--ask-for-approval, recent codex CLI versions run in
-// read-only / on-request mode and silently refuse tool execution.
+// Without --sandbox/--ask-for-approval, recent codex CLI versions can vary by
+// installation. MilliWays pins a writable sandbox while preserving human
+// approval instead of silently enabling full auto-approval.
 func buildCodexCmdArgsWithSession(prompt, cwd string, extra []string, sessionID string) []string {
 	rootArgs, execExtra := codexSplitRootArgs(extra)
 	if !codexHasAnyFlag(extra, "--sandbox", "-s", "--full-auto", "--dangerously-bypass-approvals-and-sandbox") {
 		rootArgs = append(rootArgs, "--sandbox", "workspace-write")
 	}
 	if !codexHasAnyFlag(extra, "--ask-for-approval", "-a", "--full-auto", "--dangerously-bypass-approvals-and-sandbox") {
-		rootArgs = append(rootArgs, "--ask-for-approval", "never")
+		rootArgs = append(rootArgs, "--ask-for-approval", "on-request")
 	}
 
 	args := append([]string(nil), rootArgs...)

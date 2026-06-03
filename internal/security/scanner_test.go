@@ -58,6 +58,76 @@ func TestDiscoverLockfiles(t *testing.T) {
 	}
 }
 
+func TestDiscoverLockfilesRecursesAndIgnoresHeavyDirs(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.sum"))
+	writeFile(t, filepath.Join(dir, "service", "pnpm-lock.yaml"))
+	writeFile(t, filepath.Join(dir, "service", "vendor", "Cargo.lock"))
+	writeFile(t, filepath.Join(dir, "node_modules", "package-lock.json"))
+	writeFile(t, filepath.Join(dir, ".git", "package-lock.json"))
+
+	got := security.DiscoverLockfiles(dir)
+	gotSet := make(map[string]struct{}, len(got))
+	for _, path := range got {
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		gotSet[filepath.ToSlash(rel)] = struct{}{}
+	}
+
+	want := []string{"go.sum", "service/pnpm-lock.yaml"}
+	for _, rel := range want {
+		if _, ok := gotSet[rel]; !ok {
+			t.Fatalf("DiscoverLockfiles missing %q in %v", rel, gotSet)
+		}
+	}
+	for _, ignored := range []string{"service/vendor/Cargo.lock", "node_modules/package-lock.json", ".git/package-lock.json"} {
+		if _, ok := gotSet[ignored]; ok {
+			t.Fatalf("DiscoverLockfiles included ignored path %q in %v", ignored, gotSet)
+		}
+	}
+}
+
+func TestDiscoverLockfilesWithOptionsStopsAtMaxFiles(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a", "go.sum"))
+	writeFile(t, filepath.Join(dir, "b", "Cargo.lock"))
+	writeFile(t, filepath.Join(dir, "c", "pnpm-lock.yaml"))
+
+	got := security.DiscoverLockfilesWithOptions(dir, security.LockfileDiscoveryOptions{MaxFiles: 2})
+	if len(got) != 2 {
+		t.Fatalf("DiscoverLockfilesWithOptions returned %d paths, want 2; got %v", len(got), got)
+	}
+}
+
+func TestDiscoverLockfilesWithOptionsStopsAtMaxDepth(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "app", "go.sum"))
+	writeFile(t, filepath.Join(dir, "app", "nested", "Cargo.lock"))
+
+	got := security.DiscoverLockfilesWithOptions(dir, security.LockfileDiscoveryOptions{MaxDepth: 1, MaxFiles: -1})
+	if len(got) != 1 || filepath.Base(got[0]) != "go.sum" {
+		t.Fatalf("DiscoverLockfilesWithOptions returned %v, want only app/go.sum", got)
+	}
+}
+
+func writeFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("stub"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDiscoverLockfiles_Empty(t *testing.T) {
 	t.Parallel()
 

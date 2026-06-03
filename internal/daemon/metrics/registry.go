@@ -155,7 +155,7 @@ func (s *Store) flushPending() error {
 		_ = tx.Rollback()
 		return fmt.Errorf("prepare: %w", err)
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 
 	for k, b := range buckets {
 		var value, p50, p95, p99 float64

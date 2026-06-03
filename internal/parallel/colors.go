@@ -35,6 +35,10 @@ func ProviderColor(provider string) string {
 		return "\033[38;5;160m" // red
 	case "minimax":
 		return "\033[38;5;141m" // soft purple
+	case "kimi":
+		return "\033[38;5;111m" // sky blue
+	case "deepseek":
+		return "\033[38;5;42m" // green
 	case "pool":
 		return "\033[38;5;117m" // light blue
 	default:

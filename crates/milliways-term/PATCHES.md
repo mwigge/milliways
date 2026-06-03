@@ -43,7 +43,7 @@ affected submodule and update the row above.
 |------|---------------|------|-----------|
 | `crates/milliways-term/wezterm-gui/Cargo.toml` | +10 | TASK-2.2 + TASK-2.4 | (2.2) Added `[[bin]] name = "milliways-term"` block so the produced executable is named `milliways-term`. Crate name unchanged. (2.4) Added `milliways = { path = "../milliways" }` dependency. |
 | `crates/milliways-term/Cargo.toml` | +5 | TASK-2.3 | Added `"milliways"` to workspace `members` and a comment header. Lets the milliways/ subtree compile alongside wezterm crates without a separate workspace. |
-| `crates/milliways-term/wezterm-gui/src/main.rs` | +3 | TASK-2.4 | Inserted `milliways::init();` after wezterm's `notify_on_panic()` so milliways extensions (AgentDomain, Lua API, status helpers) register before `run()` starts. |
+| `crates/milliways-term/wezterm-gui/src/main.rs` | +3 | TASK-2.4 | Inserted `milliways::init();` after `Mux::set_mux(&mux)` so milliways extensions (AgentDomain, Lua API, status helpers) register once the mux exists. |
 | `crates/milliways-term/wezterm-gui/src/main.rs` | +10 | apache-notice | Detect `--notice` as the first CLI argument inside `fn main()` — call `milliways::print_notice()` and exit 0 before any wezterm initialisation. Required by Apache-2.0 §4(d) attribution (`wezterm-fork/spec.md`). |
 
 **Total patched lines on upstream files: 28.** Budget: <500 (per `wezterm-fork/spec.md` requirement "All milliways-specific code lives in `milliways/` subtree"). Headroom: 472.

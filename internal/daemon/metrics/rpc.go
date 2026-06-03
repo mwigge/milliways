@@ -89,7 +89,7 @@ func (s *Store) RollupGet(p RollupGetParams) (*RollupGetResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("query: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	buckets := make([]Bucket, 0, 64)
 	for rows.Next() {
@@ -181,11 +181,6 @@ func parseTimeOrOffset(s string, now, fallback time.Time) (time.Time, error) {
 		rest = rest[1:]
 	}
 	// Find the unit suffix.
-	type unit struct {
-		suffix string
-		fn     func(int) time.Duration
-		mo, yr int // calendar offsets
-	}
 	units := []struct {
 		suffix string
 	}{

@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,8 @@ import (
 )
 
 const (
+	defaultTraceMaxBytes = int64(100 * 1024 * 1024)
+
 	// AgentTraceThink records agent reasoning work.
 	AgentTraceThink = "agent.think"
 	// AgentTraceDelegate records delegation work.
@@ -174,14 +177,16 @@ func newTraceEmitter(sessionID, dir string, palace TracePalaceWriter) (*TraceEmi
 	if strings.TrimSpace(dir) == "" {
 		return nil, errors.New("trace dir is required")
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create trace dir: %w", err)
 	}
+	_ = os.Chmod(dir, 0o700)
 	path := filepath.Join(dir, sessionID+".jsonl")
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0o644)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open trace file: %w", err)
 	}
+	_ = os.Chmod(path, 0o600)
 	return &TraceEmitter{
 		sessionID:  sessionID,
 		dir:        dir,
@@ -267,7 +272,7 @@ func ListTraceSessions() ([]string, error) {
 		return nil, fmt.Errorf("read trace directory: %w", err)
 	}
 
-	sessions := make([]string, 0, len(entries))
+	seen := map[string]struct{}{}
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -276,7 +281,11 @@ func ListTraceSessions() ([]string, error) {
 		if !strings.HasSuffix(name, ".jsonl") {
 			continue
 		}
-		sessions = append(sessions, strings.TrimSuffix(name, ".jsonl"))
+		seen[baseTraceSessionName(name)] = struct{}{}
+	}
+	sessions := make([]string, 0, len(seen))
+	for session := range seen {
+		sessions = append(sessions, session)
 	}
 	sort.Strings(sessions)
 	return sessions, nil
@@ -288,7 +297,71 @@ func ReadTraceEvents(sessionID string) ([]AgentTraceEvent, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ReadTraceEventsFromPath(filepath.Join(traceDir, sessionID+".jsonl"))
+	paths, err := traceSessionPaths(traceDir, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if len(paths) == 0 {
+		return ReadTraceEventsFromPath(filepath.Join(traceDir, sessionID+".jsonl"))
+	}
+	var all []AgentTraceEvent
+	for _, path := range paths {
+		events, err := ReadTraceEventsFromPath(path)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, events...)
+	}
+	return all, nil
+}
+
+func baseTraceSessionName(name string) string {
+	name = strings.TrimSuffix(name, ".jsonl")
+	parts := strings.Split(name, ".")
+	for i := 1; i < len(parts); i++ {
+		if looksLikeTraceRotationStamp(strings.Join(parts[i:], ".")) {
+			return strings.Join(parts[:i], ".")
+		}
+	}
+	return name
+}
+
+func looksLikeTraceRotationStamp(value string) bool {
+	for _, layout := range []string{"20060102T150405Z", "20060102T150405.000000000Z", "20060102T150405.000000000Z.000"} {
+		if len(value) == len(layout) {
+			if _, err := time.Parse(layout, value); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func traceSessionPaths(traceDir, sessionID string) ([]string, error) {
+	entries, err := os.ReadDir(traceDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read trace directory: %w", err)
+	}
+	var rotated, current []string
+	currentName := sessionID + ".jsonl"
+	prefix := sessionID + "."
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		switch {
+		case name == currentName:
+			current = append(current, filepath.Join(traceDir, name))
+		case strings.HasPrefix(name, prefix) && strings.HasSuffix(name, ".jsonl") && baseTraceSessionName(name) == sessionID:
+			rotated = append(rotated, filepath.Join(traceDir, name))
+		}
+	}
+	sort.Strings(rotated)
+	return append(rotated, current...), nil
 }
 
 // ReadTraceEventsFromPath loads and normalizes all events from a trace JSONL file.
@@ -311,8 +384,8 @@ func ReadTraceEventsFromPath(path string) ([]AgentTraceEvent, error) {
 		if line == "" {
 			continue
 		}
-		var event AgentTraceEvent
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
+		event, err := parseTraceEventLine([]byte(line))
+		if err != nil {
 			return nil, fmt.Errorf("decode trace line %d: %w", lineNumber, err)
 		}
 		events = append(events, event)
@@ -413,6 +486,9 @@ func (t *TraceEmitter) flushLocked(ctx context.Context) error {
 	pending := append([]AgentTraceEvent(nil), t.buf...)
 	for _, event := range pending {
 		if t.file != nil {
+			if err := t.rotateTraceFileIfNeededLocked(); err != nil {
+				return err
+			}
 			if err := WriteTraceEvent(t.file, event); err != nil {
 				return fmt.Errorf("write trace file: %w", err)
 			}
@@ -430,6 +506,110 @@ func (t *TraceEmitter) flushLocked(ctx context.Context) error {
 	}
 	t.buf = t.buf[:0]
 	return nil
+}
+
+func (t *TraceEmitter) rotateTraceFileIfNeededLocked() error {
+	maxBytes := traceMaxBytes()
+	if maxBytes <= 0 || t.file == nil || t.filePath == "" {
+		return nil
+	}
+	info, err := os.Stat(t.filePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat trace file: %w", err)
+	}
+	if info.Size() < maxBytes {
+		return nil
+	}
+	if err := t.file.Close(); err != nil {
+		return fmt.Errorf("close trace file for rotation: %w", err)
+	}
+	rotated, err := t.nextRotatedTracePathLocked()
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(t.filePath, rotated); err != nil {
+		return fmt.Errorf("rotate trace file: %w", err)
+	}
+	_ = os.Chmod(rotated, 0o600)
+	if err := t.cleanupRotatedTraceFilesLocked(); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(t.filePath, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("reopen trace file after rotation: %w", err)
+	}
+	_ = os.Chmod(t.filePath, 0o600)
+	t.file = file
+	return nil
+}
+
+func (t *TraceEmitter) nextRotatedTracePathLocked() (string, error) {
+	stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
+	for i := 0; i < 1000; i++ {
+		name := fmt.Sprintf("%s.%s.%03d.jsonl", t.sessionID, stamp, i)
+		path := filepath.Join(t.dir, name)
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			return path, nil
+		} else if err != nil {
+			return "", fmt.Errorf("stat rotated trace candidate: %w", err)
+		}
+	}
+	return "", fmt.Errorf("rotate trace file: exhausted unique name attempts")
+}
+
+func (t *TraceEmitter) cleanupRotatedTraceFilesLocked() error {
+	maxFiles := traceMaxRotatedFiles()
+	if maxFiles <= 0 {
+		return nil
+	}
+	paths, err := traceSessionPaths(t.dir, t.sessionID)
+	if err != nil {
+		return err
+	}
+	var rotated []string
+	current := filepath.Clean(t.filePath)
+	for _, path := range paths {
+		if filepath.Clean(path) != current {
+			rotated = append(rotated, path)
+		}
+	}
+	if len(rotated) <= maxFiles {
+		return nil
+	}
+	sort.Strings(rotated)
+	for _, path := range rotated[:len(rotated)-maxFiles] {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove old trace rotation: %w", err)
+		}
+	}
+	return nil
+}
+
+func traceMaxBytes() int64 {
+	value := strings.TrimSpace(os.Getenv("MILLIWAYS_TRACE_MAX_BYTES"))
+	if value == "" {
+		return defaultTraceMaxBytes
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return defaultTraceMaxBytes
+	}
+	return n
+}
+
+func traceMaxRotatedFiles() int {
+	value := strings.TrimSpace(os.Getenv("MILLIWAYS_TRACE_MAX_FILES"))
+	if value == "" {
+		return 16
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return 16
+	}
+	return n
 }
 
 func (t *TraceEmitter) normalizeEvent(event AgentTraceEvent) AgentTraceEvent {

@@ -136,9 +136,14 @@ func TestContextGetAll_TotalsSumPerAgentFields(t *testing.T) {
 	t.Parallel()
 	s := newCtxTestServer(t)
 	// Simulate one open session for `claude` so ActiveAgents = 1.
-	if _, err := s.agents.Open("claude"); err != nil {
+	sess, err := s.agents.Open("claude")
+	if err != nil {
 		t.Fatalf("open claude session: %v", err)
 	}
+	sess.recordModel("claude-sonnet", "observed")
+	sess.recordPrompt("remember context accounting")
+	sess.recordChunkEnd(11, 7, 0.02)
+	sess.recordError("transient")
 
 	req := &Request{
 		Method: "context.get_all",
@@ -160,6 +165,23 @@ func TestContextGetAll_TotalsSumPerAgentFields(t *testing.T) {
 	}
 	if got, want := len(resp.Result.Agents), len(knownContextAgents); got != want {
 		t.Errorf("agents count = %d, want %d", got, want)
+	}
+	seen := map[string]bool{}
+	for _, agent := range resp.Result.Agents {
+		seen[agent.AgentID] = true
+		if agent.AgentID == "claude" {
+			if agent.Model != "claude-sonnet" {
+				t.Fatalf("claude model = %q, want observed model", agent.Model)
+			}
+			if agent.Tokens.Input != 11 || agent.Tokens.Output != 7 || agent.CostUSD != 0.02 || agent.Errors5m != 1 {
+				t.Fatalf("claude context snapshot did not reflect session counters: %#v", agent)
+			}
+		}
+	}
+	for _, want := range []string{"kimi", "deepseek", "local", "pool"} {
+		if !seen[want] {
+			t.Fatalf("context.get_all missing %q; agents=%#v", want, resp.Result.Agents)
+		}
 	}
 
 	// Totals MUST equal the per-agent column sum. With everything

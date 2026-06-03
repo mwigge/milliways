@@ -122,7 +122,7 @@ LINUX_BUNDLE_DIR := $(CURDIR)/bundle/linux
 LINUX_APPDIR     := $(DIST_DIR)/MilliWays-linux-amd64
 LINUX_TERM_SRC  ?= $(WEZTERM_SRC)
 
-bundle-macos: repl
+bundle-macos: daemon ctl repl
 	@echo "==> Assembling $(APP_NAME) ($(VERSION))"
 	@[ -d "$(WEZTERM_SRC)" ] || { \
 		echo "ERROR: wezterm binaries not found."; \
@@ -131,16 +131,23 @@ bundle-macos: repl
 		exit 1; \
 	}
 	rm -rf "$(APP_DIR)"
-	mkdir -p "$(APP_DIR)/Contents/MacOS" "$(APP_DIR)/Contents/Resources"
+	mkdir -p "$(APP_DIR)/Contents/MacOS" "$(APP_DIR)/Contents/Resources" "$(APP_DIR)/Contents/Resources/milliways"
 	# wezterm binaries
 	cp "$(WEZTERM_SRC)/wezterm-gui"        "$(APP_DIR)/Contents/MacOS/"
 	cp "$(WEZTERM_SRC)/wezterm-mux-server" "$(APP_DIR)/Contents/MacOS/"
-	chmod +x "$(APP_DIR)/Contents/MacOS/wezterm-gui" \
-	          "$(APP_DIR)/Contents/MacOS/wezterm-mux-server"
-	# milliways binary (built by `repl` target above)
+	# milliways binaries
 	cp "$(BIN)/milliways" "$(APP_DIR)/Contents/MacOS/"
+	cp "$(BIN)/milliwaysctl" "$(APP_DIR)/Contents/MacOS/"
+	cp "$(BIN)/milliwaysd" "$(APP_DIR)/Contents/MacOS/"
+	chmod +x "$(APP_DIR)/Contents/MacOS/wezterm-gui" \
+	          "$(APP_DIR)/Contents/MacOS/wezterm-mux-server" \
+	          "$(APP_DIR)/Contents/MacOS/milliways" \
+	          "$(APP_DIR)/Contents/MacOS/milliwaysctl" \
+	          "$(APP_DIR)/Contents/MacOS/milliwaysd"
 	# resources
 	cp "$(BUNDLE_DIR)/milliways.icns" "$(APP_DIR)/Contents/Resources/"
+	cp "$(CURDIR)/cmd/milliwaysctl/milliways.lua" \
+		"$(APP_DIR)/Contents/Resources/milliways/wezterm.lua"
 	sed "s/__VERSION__/$(VERSION)/g" "$(BUNDLE_DIR)/Info.plist" \
 		> "$(APP_DIR)/Contents/Info.plist"
 	# Strip ONLY quarantine (not all xattrs — `xattr -cr` would wipe the
@@ -169,7 +176,7 @@ bundle-macos: repl
 #   1. LINUX_TERM_SRC env var / make var
 #   2. WEZTERM_SRC env var / make var
 # ---------------------------------------------------------------------------
-bundle-linux: repl
+bundle-linux: daemon ctl repl
 	@echo "==> Assembling MilliWays Linux desktop app ($(VERSION))"
 	@[ -d "$(LINUX_TERM_SRC)" ] || { \
 		echo "ERROR: terminal binaries not found."; \
@@ -188,6 +195,8 @@ bundle-linux: repl
 	fi
 	cp "$(LINUX_TERM_SRC)/wezterm-mux-server" "$(LINUX_APPDIR)/bin/"
 	cp "$(BIN)/milliways" "$(LINUX_APPDIR)/bin/"
+	cp "$(BIN)/milliwaysctl" "$(LINUX_APPDIR)/bin/"
+	cp "$(BIN)/milliwaysd" "$(LINUX_APPDIR)/bin/"
 	cp "$(LINUX_BUNDLE_DIR)/dev.milliways.MilliWays.desktop" \
 	   "$(LINUX_APPDIR)/share/applications/"
 	cp "$(CURDIR)/assets/milliways.svg" \
@@ -196,7 +205,9 @@ bundle-linux: repl
 	   "$(LINUX_APPDIR)/share/milliways/wezterm.lua"
 	chmod +x "$(LINUX_APPDIR)/bin/milliways-term" \
 	         "$(LINUX_APPDIR)/bin/wezterm-mux-server" \
-	         "$(LINUX_APPDIR)/bin/milliways"
+	         "$(LINUX_APPDIR)/bin/milliways" \
+	         "$(LINUX_APPDIR)/bin/milliwaysctl" \
+	         "$(LINUX_APPDIR)/bin/milliwaysd"
 	cd "$(DIST_DIR)" && tar -czf "MilliWays-linux-amd64.tar.gz" "MilliWays-linux-amd64"
 	@echo "==> $(DIST_DIR)/MilliWays-linux-amd64.tar.gz"
 
@@ -204,7 +215,7 @@ install-linux-app: bundle-linux
 	@echo "==> Installing MilliWays desktop app to $(PREFIX)"
 	install -Dm755 "$(LINUX_APPDIR)/bin/milliways-term" "$(BIN)/milliways-term"
 	install -Dm755 "$(LINUX_APPDIR)/bin/wezterm-mux-server" "$(BIN)/wezterm-mux-server"
-	sed -e "s|^Exec=.*|Exec=$(BIN)/milliways-term|" \
+	sed -e "s|^Exec=.*|Exec=$(BIN)/milliways-term --config-file $(DATADIR)/milliways/wezterm.lua|" \
 	    -e "s|^TryExec=.*|TryExec=$(BIN)/milliways-term|" \
 	    "$(LINUX_APPDIR)/share/applications/dev.milliways.MilliWays.desktop" \
 	    > "$(LINUX_APPDIR)/share/applications/dev.milliways.MilliWays.local.desktop"

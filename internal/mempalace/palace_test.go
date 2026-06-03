@@ -101,13 +101,85 @@ func TestClientFromEnvAndOperations(t *testing.T) {
 	}
 }
 
+func TestClientKGQueryAddInvalidate(t *testing.T) {
+	fake := &fakeRPC{resultByTool: map[string]json.RawMessage{
+		"mempalace_kg_query": []byte(`{"content":[{"type":"text","text":"[{\"subject\":\"handoff:codex\",\"predicate\":\"takeover_briefing\",\"object\":\"continue here\",\"properties\":{\"from\":\"claude\",\"ts\":\"2026-05-17T12:00:00Z\"}}]"}]}`),
+	}}
+	oldStart := startMCP
+	startMCP = func(command string, args ...string) (rpcCaller, error) {
+		return fake, nil
+	}
+	t.Cleanup(func() { startMCP = oldStart })
+	t.Setenv("MEMPALACE_MCP_CMD", "mcp-server")
+
+	client, err := NewClientFromEnv()
+	if err != nil {
+		t.Fatalf("NewClientFromEnv() error = %v", err)
+	}
+	props := map[string]string{"from": "claude", "ts": "2026-05-17T12:00:00Z"}
+	if err := client.KGAdd(context.Background(), "handoff:codex", "takeover_briefing", "continue here", props); err != nil {
+		t.Fatalf("KGAdd() error = %v", err)
+	}
+	if got := fake.argsByTool["mempalace_kg_add"]["properties"]; !reflect.DeepEqual(got, props) {
+		t.Fatalf("kg_add properties = %#v, want %#v", got, props)
+	}
+	triples, err := client.KGQuery(context.Background(), "handoff:codex", "takeover_briefing", nil)
+	if err != nil {
+		t.Fatalf("KGQuery() error = %v", err)
+	}
+	if len(triples) != 1 || triples[0].Object != "continue here" || triples[0].Properties["from"] != "claude" {
+		t.Fatalf("KGQuery() = %#v", triples)
+	}
+	if err := client.KGInvalidate(context.Background(), "handoff:codex", "takeover_briefing", "continue here"); err != nil {
+		t.Fatalf("KGInvalidate() error = %v", err)
+	}
+	if got := fake.argsByTool["mempalace_kg_invalidate"]["object"]; got != "continue here" {
+		t.Fatalf("kg_invalidate object = %#v", got)
+	}
+}
+
 func TestNewClientFromEnvRequiresCommand(t *testing.T) {
 	t.Parallel()
 
-	os.Unsetenv("MEMPALACE_MCP_CMD")
+	if err := os.Unsetenv("MILLIWAYS_MEMPALACE_MCP_CMD"); err != nil {
+		t.Fatalf("Unsetenv MILLIWAYS_MEMPALACE_MCP_CMD: %v", err)
+	}
+	if err := os.Unsetenv("MEMPALACE_MCP_CMD"); err != nil {
+		t.Fatalf("Unsetenv MEMPALACE_MCP_CMD: %v", err)
+	}
 	_, err := NewClientFromEnv()
 	if err == nil {
 		t.Fatal("expected missing env error")
+	}
+}
+
+func TestNewClientFromEnvAcceptsMilliwaysPrefixedConfig(t *testing.T) {
+	fake := &fakeRPC{resultByTool: map[string]json.RawMessage{
+		"mempalace_search": []byte(`{"content":[{"type":"text","text":"[{\"wing\":\"private\",\"room\":\"notes\",\"content\":\"fact\",\"relevance\":0.9}]"}]}`),
+	}}
+	oldStart := startMCP
+	startMCP = func(command string, args ...string) (rpcCaller, error) {
+		if command != "prefixed-server" {
+			t.Fatalf("command = %q, want prefixed-server", command)
+		}
+		if !reflect.DeepEqual(args, []string{"serve", "--stdio"}) {
+			t.Fatalf("args = %v, want [serve --stdio]", args)
+		}
+		return fake, nil
+	}
+	t.Cleanup(func() { startMCP = oldStart })
+
+	t.Setenv("MEMPALACE_MCP_CMD", "")
+	t.Setenv("MEMPALACE_MCP_ARGS", "")
+	t.Setenv("MILLIWAYS_MEMPALACE_MCP_CMD", "prefixed-server")
+	t.Setenv("MILLIWAYS_MEMPALACE_MCP_ARGS", "serve --stdio")
+
+	client, err := NewClientFromEnv()
+	if err != nil {
+		t.Fatalf("NewClientFromEnv() error = %v", err)
+	}
+	if _, err := client.Search(context.Background(), "fact", 1); err != nil {
+		t.Fatalf("Search() error = %v", err)
 	}
 }
 

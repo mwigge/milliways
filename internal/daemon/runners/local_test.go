@@ -129,9 +129,12 @@ func TestRunLocal_PayloadIncludesSystemPromptAndToolsByDefault(t *testing.T) {
 		if last["role"] != "user" || last["content"] != "hi" {
 			t.Errorf("last message = %v, want {role:user content:hi}", last)
 		}
-		toolsAny, ok := body["tools"].([]any)
-		if !ok || len(toolsAny) == 0 {
-			t.Fatalf("tools missing or empty: %v", body["tools"])
+		content, _ := first["content"].(string)
+		if !strings.Contains(content, "Available tools:") || !strings.Contains(content, "<name>Bash</name>") {
+			t.Fatalf("XML system prompt missing tool definitions:\n%s", content)
+		}
+		if _, hasTools := body["tools"]; hasTools {
+			t.Fatalf("XML local model should not expose JSON tools: %v", body["tools"])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("server never received request")
@@ -168,6 +171,17 @@ func TestRunLocal_ToolsDisabledByEnv(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("server never received request")
+	}
+}
+
+func TestToolsDisabledByEnvAliases(t *testing.T) {
+	for _, value := range []string{"0", "off", "false", " OFF "} {
+		if !toolsDisabledByEnv(value) {
+			t.Fatalf("toolsDisabledByEnv(%q) = false, want true", value)
+		}
+	}
+	if toolsDisabledByEnv("1") {
+		t.Fatal("toolsDisabledByEnv(1) = true, want false")
 	}
 }
 
@@ -360,6 +374,85 @@ func TestRunLocal_AgenticToolLoop(t *testing.T) {
 	}
 	if got := turn.Load(); got != 2 {
 		t.Errorf("API turns = %d, want 2 (initial + post-tool)", got)
+	}
+}
+
+func TestRunLocal_ApprovalGatePlansBeforeTools(t *testing.T) {
+	t.Setenv("MILLIWAYS_PLAN_APPROVAL_GATE", "on")
+	var turn atomic.Int32
+	var firstBody atomic.Value
+	stubLocalTransport(t, func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		var parsed map[string]any
+		_ = json.Unmarshal(body, &parsed)
+		if turn.Add(1) == 1 {
+			firstBody.Store(parsed)
+		}
+		fakeSSE := strings.Join([]string{
+			`data: {"choices":[{"finish_reason":"stop","delta":{"content":"Plan: edit and test."}}]}`,
+			``,
+			`data: [DONE]`,
+			``,
+		}, "\n")
+		return localStubResponse(http.StatusOK, fakeSSE, http.Header{"Content-Type": {"text/event-stream"}}), nil
+	})
+
+	var echoRan atomic.Bool
+	reg := tools.NewRegistry()
+	reg.Register("echo", func(_ context.Context, _ map[string]any) (string, error) {
+		echoRan.Store(true)
+		return "should not run", nil
+	}, provider.ToolDef{Name: "echo"})
+	withLocalToolRegistry(t, reg)
+	t.Setenv("MILLIWAYS_LOCAL_ENDPOINT", "http://example.test/v1")
+
+	in := make(chan []byte, 1)
+	in <- []byte("implement the local feature")
+	close(in)
+	pusher := &fakePusher{}
+	done := make(chan struct{})
+	go func() {
+		RunLocal(context.Background(), in, pusher, &mockObserver{})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunLocal did not return")
+	}
+	if echoRan.Load() {
+		t.Fatal("tool ran during planning gate")
+	}
+	body, _ := firstBody.Load().(map[string]any)
+	if _, hasTools := body["tools"]; hasTools {
+		t.Fatalf("planning request exposed tools: %v", body)
+	}
+	messages, _ := body["messages"].([]any)
+	if len(messages) == 0 {
+		t.Fatalf("planning request missing messages: %v", body)
+	}
+	system, _ := messages[0].(map[string]any)
+	content, _ := system["content"].(string)
+	if !strings.Contains(content, "Available tools:") || !strings.Contains(content, "echo") {
+		t.Fatalf("XML planning prompt lost tool definitions:\n%s", content)
+	}
+	var sawPrompt, sawNeedsInput bool
+	for _, e := range pusher.snapshot() {
+		switch e["t"] {
+		case "data":
+			b64, _ := e["b64"].(string)
+			raw, _ := base64.StdEncoding.DecodeString(b64)
+			if strings.Contains(string(raw), "reply `y` to implement") {
+				sawPrompt = true
+			}
+		case "chunk_end":
+			if v, _ := e["needs_input"].(bool); v {
+				sawNeedsInput = true
+			}
+		}
+	}
+	if !sawPrompt || !sawNeedsInput {
+		t.Fatalf("approval gate did not clearly block for input; events=%v", pusher.snapshot())
 	}
 }
 

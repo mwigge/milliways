@@ -149,12 +149,18 @@ func (s *Stream) Attach(conn net.Conn, lastSeenOffset int64) error {
 				`{"t":"warn","code":%d,"msg":"replay_truncated","dropped_bytes":%d}`+"\n",
 				ErrReplayTruncated, truncatedBytes,
 			)
-			conn.Write([]byte(warn))
+			if _, err := conn.Write([]byte(warn)); err != nil {
+				s.conn = nil
+				return fmt.Errorf("write replay truncated warning: %w", err)
+			}
 			lastSeenOffset = dropped
 		}
 		start := int(lastSeenOffset - dropped)
 		if start < len(s.ring) {
-			conn.Write(s.ring[start:])
+			if _, err := conn.Write(s.ring[start:]); err != nil {
+				s.conn = nil
+				return fmt.Errorf("write replay: %w", err)
+			}
 		}
 	}
 	return nil
@@ -178,7 +184,9 @@ func (s *Stream) Push(event any) {
 	if s.conn != nil {
 		if _, err := s.conn.Write(line); err != nil {
 			slog.Debug("stream sidecar write err — dropping conn", "err", err, "id", s.ID)
-			s.conn.Close()
+			if closeErr := s.conn.Close(); closeErr != nil {
+				slog.Debug("stream sidecar close err", "err", closeErr, "id", s.ID)
+			}
 			s.conn = nil
 		}
 	}
@@ -202,7 +210,9 @@ func (s *Stream) Close() {
 	if !s.closed {
 		s.closed = true
 		if s.conn != nil {
-			s.conn.Close()
+			if err := s.conn.Close(); err != nil {
+				slog.Debug("stream close conn err", "err", err, "id", s.ID)
+			}
 			s.conn = nil
 		}
 	}
@@ -214,7 +224,9 @@ func (s *Stream) markClosed() {
 	s.mu.Lock()
 	s.closed = true
 	if s.conn != nil {
-		s.conn.Close()
+		if err := s.conn.Close(); err != nil {
+			slog.Debug("stream mark closed conn err", "err", err, "id", s.ID)
+		}
 		s.conn = nil
 	}
 	s.mu.Unlock()

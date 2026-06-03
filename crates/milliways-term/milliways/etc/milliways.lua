@@ -133,6 +133,36 @@ local function default_quota_pct(status)
   return nil
 end
 
+local function default_security_label(status)
+  if not status then return nil, nil end
+  local sec = status.security or status.sec or status
+  if type(sec) ~= 'table' then return nil, nil end
+  local mode = sec.mode or 'warn'
+  local posture = string.lower(sec.posture or sec.state or '')
+  local warnings = tonumber(sec.warnings or sec.warning_count or sec.warn_count or 0) or 0
+  local blocks = tonumber(sec.blocks or sec.block_count or sec.blocked_count or 0) or 0
+  local startup_stale = sec.startup_scan_stale == true
+  local startup_required = sec.startup_scan_required == true
+  if blocks > 0 then
+    posture = 'block'
+  elseif (startup_stale or startup_required) and (posture == '' or posture == 'ok') then
+    posture = 'warn'
+  elseif warnings > 0 and posture == '' then
+    posture = 'warn'
+  elseif posture == '' then
+    posture = 'ok'
+  end
+  if posture == 'block' then
+    return string.format('SEC BLOCK %d', blocks), M.theme.err
+  end
+  if posture == 'warn' then
+    local suffix = warnings > 0 and string.format(' %d', warnings) or ''
+    if startup_stale then suffix = suffix .. ' stale' end
+    return 'SEC WARN' .. suffix .. ' ' .. mode, M.theme.warn
+  end
+  return 'SEC OK ' .. mode, M.theme.ok
+end
+
 local function tokens_pair(status)
   local tin  = (status and status.tokens_in)  or 0
   local tout = (status and status.tokens_out) or 0
@@ -198,6 +228,10 @@ function M.status_format(status, opts)
   if errs and errs > 0 then
     table.insert(parts, { priority = 2, fg = theme.err,
       text = string.format('err:%d', errs) })
+  end
+  local sec_text, sec_fg = default_security_label(status)
+  if sec_text then
+    table.insert(parts, { priority = 1, fg = sec_fg, text = sec_text })
   end
 
   parts = elide(parts, budget)

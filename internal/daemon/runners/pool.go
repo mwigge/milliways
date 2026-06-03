@@ -34,8 +34,7 @@ var poolBinary = "pool"
 // `pool exec -p <prompt> --directory <dir>`. Tests can swap it.
 var poolArgsBuilder = func(prompt, dir string) []string {
 	// --output markdown: clean markdown output without indented thinking blocks.
-	// --unsafe-auto-allow: bypass interactive tool approval in headless mode.
-	args := []string{"exec", "--unsafe-auto-allow", "--output", "markdown", "-p", prompt}
+	args := []string{"exec", "--output", "markdown", "-p", prompt}
 	if dir != "" {
 		args = append(args, "--directory", dir)
 	}
@@ -69,6 +68,11 @@ const poolChunkSize = 4 * 1024
 //   - When `input` is closed, RunPool pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
 func RunPool(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
+	RunPoolWithSecurityWorkspace(ctx, input, stream, metrics, "")
+}
+
+func RunPoolWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
+	sessionID := newControlledRunnerSessionID(AgentIDPool)
 	for {
 		select {
 		case <-ctx.Done():
@@ -86,12 +90,12 @@ func RunPool(ctx context.Context, input <-chan []byte, stream Pusher, metrics Me
 			if stream == nil {
 				continue
 			}
-			runPoolOnce(ctx, prompt, stream, metrics)
+			runPoolOnce(ctx, prompt, stream, metrics, securityWorkspace, sessionID)
 		}
 	}
 }
 
-func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
+func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace, sessionID string) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		stream.Push(poolChunkEndEvent())
@@ -109,9 +113,16 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 	}()
 	pushModel(stream, AgentIDPool)
 
-	cwd, _ := os.Getwd()
-	cmd := exec.CommandContext(ctx, poolBinary, poolArgsBuilder(text, cwd)...)
-	cmd.Env = safeRunnerEnv()
+	cwd := runnerWorkspaceCWD(securityWorkspace)
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+	if !runExternalCLIPreflight(ctx, AgentIDPool, cwd, stream, metrics) {
+		spanErr = "security profile blocked handoff"
+		return
+	}
+	cmd := exec.CommandContext(ctx, resolveRunnerBinary(poolBinary), poolArgsBuilder(text, cwd)...)
+	cmd.Env = controlledExternalCLIEnv(AgentIDPool, sessionID, cwd)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}

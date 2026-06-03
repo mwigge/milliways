@@ -125,7 +125,7 @@ install_native_pkg() {
       tmp="$(mktemp -d)"
       info "Downloading $pkg..."
       if curl -sSfL "$url" -o "$tmp/$pkg"; then
-        if rpm -i "$tmp/$pkg" 2>/dev/null || sudo rpm -i "$tmp/$pkg"; then
+        if rpm -U --replacepkgs "$tmp/$pkg" 2>/dev/null || sudo rpm -U --replacepkgs "$tmp/$pkg"; then
           ok "Installed via rpm — binaries at /usr/bin"
           INSTALLED_NATIVE=1
           repair_shadowing_user_bins
@@ -203,6 +203,25 @@ install_remote() {
   done
 
   if [ -n "$missing" ]; then
+    # Before giving up on the release, check whether the GitHub release actually
+    # has any assets at all.  If it has zero assets the workflow is probably
+    # still running — tell the user to wait rather than attempting a source build
+    # that is very likely to fail for the same reason (no source assets either).
+    local asset_count=0
+    if command -v python3 >/dev/null 2>&1; then
+      asset_count="$(curl -sSf \
+        "https://api.github.com/repos/${REPO}/releases/tags/${VERSION}" \
+        2>/dev/null \
+        | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('assets',[])))" \
+        2>/dev/null || echo 0)"
+    fi
+    if [ "${asset_count:-0}" -eq 0 ]; then
+      warn "Release ${VERSION} has no assets yet — the build pipeline is probably still running."
+      warn "Please wait a few minutes and re-run the installer:"
+      warn "  curl -sSf https://raw.githubusercontent.com/${REPO}/master/install.sh | bash"
+      exit 1
+    fi
+
     # Tier 3: build from source — last resort, requires git + go + gcc.
     warn "Some binaries missing from release; falling back to source build for:$missing"
     install_from_source "$missing"
@@ -261,6 +280,12 @@ install_from_source() {
     pkg="cmd/${bin}"
     [ -d "${root}/${pkg}" ] || { warn "  $pkg not found, skipping"; continue; }
     info "  building $bin"
+    # A previous package-manager install may have left a symlink at $BIN_DIR/$bin
+    # pointing at /usr/bin/$bin (created by repair_shadowing_user_bins).  go build
+    # follows the symlink and tries to overwrite the root-owned target, which fails
+    # with "permission denied".  Remove the symlink first so go build writes a
+    # fresh file into $BIN_DIR directly.
+    [ -L "$BIN_DIR/$bin" ] && rm -f "$BIN_DIR/$bin"
     go build -C "$root" -ldflags "$ldflags" -o "$BIN_DIR/$bin" "./$pkg"
     ok "  installed $BIN_DIR/$bin"
   done
@@ -305,7 +330,7 @@ install_linux_desktop_app() {
     local root="$tmp/MilliWays-linux-amd64"
     install -Dm755 "$root/bin/milliways-term" "$BIN_DIR/milliways-term"
     install -Dm755 "$root/bin/wezterm-mux-server" "$BIN_DIR/wezterm-mux-server"
-    sed -e "s|^Exec=.*|Exec=$BIN_DIR/milliways-term|" \
+    sed -e "s|^Exec=.*|Exec=$BIN_DIR/milliways-term --config-file $SHARE_DIR/wezterm.lua|" \
         -e "s|^TryExec=.*|TryExec=$BIN_DIR/milliways-term|" \
         "$root/share/applications/dev.milliways.MilliWays.desktop" > "$tmp/dev.milliways.MilliWays.desktop"
     install -Dm644 "$tmp/dev.milliways.MilliWays.desktop" \
@@ -394,6 +419,83 @@ install_support_scripts() {
   done
 }
 
+# ── Linux: milliwaysd systemd user service ───────────────────────────────────
+install_milliwaysd_service() {
+  [ "$PLATFORM" = "linux" ] || return 0
+  [ "${SKIP_DAEMON_SERVICE:-0}" = "1" ] && return 0
+  command -v systemctl >/dev/null 2>&1 || {
+    warn "systemctl not found — start daemon manually with: milliwaysd &"
+    return 0
+  }
+
+  local daemon_bin
+  if [ -x "$BIN_DIR/milliwaysd" ]; then
+    daemon_bin="$BIN_DIR/milliwaysd"
+  else
+    daemon_bin="$(command -v milliwaysd 2>/dev/null || true)"
+  fi
+  [ -x "$daemon_bin" ] || {
+    warn "milliwaysd binary not found — service not installed"
+    return 0
+  }
+
+  local unit_dir="$HOME/.config/systemd/user"
+  local unit="$unit_dir/milliwaysd.service"
+  mkdir -p "$unit_dir"
+  cat > "$unit" <<EOF
+[Unit]
+Description=MilliWays daemon
+Documentation=https://github.com/${REPO}
+
+[Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=$daemon_bin
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+EOF
+  ok "Installed systemd user service → $unit"
+
+  systemctl --user daemon-reload >/dev/null 2>&1 || {
+    warn "Could not reload systemd user units — run: systemctl --user daemon-reload"
+    return 0
+  }
+
+  if ! systemctl --user is-active --quiet milliwaysd >/dev/null 2>&1; then
+    command -v milliwaysctl >/dev/null 2>&1 && milliwaysctl daemon stop >/dev/null 2>&1 || true
+  fi
+
+  systemctl --user reset-failed milliwaysd >/dev/null 2>&1 || true
+  if systemctl --user enable --now milliwaysd >/dev/null 2>&1 \
+     && systemctl --user restart milliwaysd >/dev/null 2>&1; then
+    ok "Enabled and restarted milliwaysd.service"
+  else
+    warn "Installed milliwaysd.service, but could not start it automatically"
+    warn "  Try: systemctl --user enable --now milliwaysd"
+  fi
+}
+
+restart_existing_local_services() {
+  [ "$PLATFORM" = "linux" ] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
+  for svc in milliways-local milliways-local-swap; do
+    if systemctl --user list-unit-files "${svc}.service" 2>/dev/null | grep -q "^${svc}.service"; then
+      systemctl --user reset-failed "$svc" >/dev/null 2>&1 || true
+      if systemctl --user is-enabled --quiet "$svc" >/dev/null 2>&1 \
+         || systemctl --user is-active --quiet "$svc" >/dev/null 2>&1; then
+        if systemctl --user restart "$svc" >/dev/null 2>&1; then
+          ok "Restarted ${svc}.service"
+        else
+          warn "Could not restart ${svc}.service — run: systemctl --user restart ${svc}"
+        fi
+      fi
+    fi
+  done
+}
+
 # ── PATH setup ────────────────────────────────────────────────────────────────
 add_to_path() {
   local profile="$1"
@@ -440,6 +542,9 @@ fi
 install_wezterm_lua
 install_support_scripts
 install_feature_dependencies
+
+install_milliwaysd_service
+restart_existing_local_services
 
 if [ "${SKIP_TERM:-0}" != "1" ]; then
   setup_wezterm_config
@@ -493,8 +598,10 @@ fi
 
 printf '\n'
 printf '  Get started:\n'
-printf '    milliwaysd &              # start the agent daemon\n'
-printf '    milliwaysctl status       # check runner availability\n'
+if [ "$PLATFORM" = "linux" ]; then
+  printf '    systemctl --user status milliwaysd   # check daemon service\n'
+fi
+printf '    milliwaysctl status                  # check runner availability\n'
 printf '    milliways                 # open the terminal\n'
 if [ "$PLATFORM" = "darwin" ]; then
   printf '    open /Applications/MilliWays.app   # native terminal\n'

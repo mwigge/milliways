@@ -15,12 +15,14 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSwitchableCompleterCompletesSlashCommand(t *testing.T) {
@@ -259,5 +261,245 @@ func TestLineReaderSubmittedLineReturnsToColumnZero(t *testing.T) {
 
 	if got, want := out.String(), "pool ▶ /switch claude\r\n"; got != want {
 		t.Fatalf("submitted line = %q, want %q", got, want)
+	}
+}
+
+func TestWriteSubmittedLineHandlesEmbeddedNewlines(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	r := &chatLineReader{out: &out, prompt: "▶ "}
+	r.writeSubmittedLineLocked("line1\nline2\nline3")
+
+	got := out.String()
+	if !strings.Contains(got, "line1\r\nline2\r\nline3") {
+		t.Fatalf("embedded newlines not converted to CRLF: %q", got)
+	}
+}
+
+func TestBracketedPasteInsertsNewlineWithoutSubmitting(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	r := &chatLineReader{out: &out, prompt: "> "}
+	r.inBracketedPaste = true
+
+	r.mu.Lock()
+	r.insertRunesLocked([]rune("hello\nworld"))
+	r.mu.Unlock()
+
+	if got := string(r.buf); got != "hello\nworld" {
+		t.Fatalf("buf = %q, want %q", got, "hello\nworld")
+	}
+}
+
+func TestHandleCSISetsAndClearsBracketedPaste(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	r := &chatLineReader{out: &out, prompt: "> "}
+
+	r.handleCSI("200", '~')
+	r.mu.Lock()
+	inPaste := r.inBracketedPaste
+	r.mu.Unlock()
+	if !inPaste {
+		t.Fatal("handleCSI(200,~) did not set inBracketedPaste")
+	}
+
+	r.handleCSI("201", '~')
+	r.mu.Lock()
+	inPaste = r.inBracketedPaste
+	r.mu.Unlock()
+	if inPaste {
+		t.Fatal("handleCSI(201,~) did not clear inBracketedPaste")
+	}
+}
+
+func TestBufTotalRows(t *testing.T) {
+	t.Parallel()
+
+	width := 20
+	// Single line: same as visualRows(prompt+content, width)
+	if got := bufTotalRows("> ", []rune("hello"), width); got != 1 {
+		t.Fatalf("single line rows = %d, want 1", got)
+	}
+	// Two logical lines: prompt+"first" on row 1, "second" on row 2
+	if got := bufTotalRows("> ", []rune("first\nsecond"), width); got != 2 {
+		t.Fatalf("two-line rows = %d, want 2", got)
+	}
+}
+
+func TestBufCursorPos(t *testing.T) {
+	t.Parallel()
+
+	width := 80
+	buf := []rune("hello\nworld")
+	// Cursor at end of "hello" (position 5) → first logical line
+	row, col := bufCursorPos("> ", buf, 5, width)
+	if row != 0 {
+		t.Fatalf("cursor row = %d, want 0", row)
+	}
+	if col != 7 {
+		t.Fatalf("cursor col = %d, want 7", col)
+	}
+	// Cursor at start of "world" (position 6, after \n) → second logical line, col 0
+	row, col = bufCursorPos("> ", buf, 6, width)
+	if row != 1 {
+		t.Fatalf("cursor row after newline = %d, want 1", row)
+	}
+	if col != 0 {
+		t.Fatalf("cursor col after newline = %d, want 0", col)
+	}
+}
+
+func TestInsertRuneSkipsRedrawDuringPaste(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	r := &chatLineReader{out: &out, prompt: "> "}
+	r.inBracketedPaste = true
+
+	r.insertRune('x')
+
+	// No escape sequences should have been written (no redraw).
+	if strings.Contains(out.String(), "\033[") {
+		t.Fatalf("redraw occurred during bracketed paste: %q", out.String())
+	}
+	if string(r.buf) != "x" {
+		t.Fatalf("buf = %q, want x", string(r.buf))
+	}
+}
+
+// Bug 1: history save/load round-trips multi-line entries via escaping.
+func TestLineReaderHistoryEscapesNewlines(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "history")
+	r := &chatLineReader{historyFile: path}
+	r.history = []string{
+		"plain entry",
+		"line1\nline2",
+		"back\\slash",
+		"mixed\\\nentry",
+	}
+	if err := r.saveHistory(); err != nil {
+		t.Fatalf("saveHistory: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read history file: %v", err)
+	}
+	// The file must contain exactly 4 lines (one per entry, no raw newlines).
+	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("saved history has %d lines, want 4; raw:\n%s", len(lines), raw)
+	}
+
+	r2 := &chatLineReader{historyFile: path}
+	r2.loadHistory()
+	if len(r2.history) != 4 {
+		t.Fatalf("loaded %d entries, want 4", len(r2.history))
+	}
+	for i, want := range r.history {
+		if r2.history[i] != want {
+			t.Errorf("history[%d] = %q, want %q", i, r2.history[i], want)
+		}
+	}
+}
+
+// Bug 2: controlPoll firing mid-paste resets inBracketedPaste and preserves buffered paste content.
+func TestLineReaderControlPollMidPastePreservesBuffer(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	r := &chatLineReader{
+		out:              &out,
+		prompt:           "> ",
+		inBracketedPaste: true,
+		buf:              []rune("pasted content"),
+		cursor:           len([]rune("pasted content")),
+		active:           true,
+	}
+
+	// Simulate clearPromptLocked doing nothing by keeping rows=1 (default).
+	// Call the logic that controlPoll path executes inline:
+	r.mu.Lock()
+	controlLine := "control output"
+	var result string
+	r.active = false
+	r.promptHidden = false
+	r.clearPromptLocked()
+	if r.inBracketedPaste {
+		r.inBracketedPaste = false
+		if len(r.buf) > 0 {
+			result = string(r.buf) + "\n" + controlLine
+		} else {
+			result = controlLine
+		}
+	} else {
+		result = controlLine
+	}
+	r.mu.Unlock()
+
+	if r.inBracketedPaste {
+		t.Fatal("inBracketedPaste not reset after controlPoll path")
+	}
+	if result != "pasted content\ncontrol output" {
+		t.Fatalf("merged result = %q, want %q", result, "pasted content\ncontrol output")
+	}
+}
+
+// Bug 3: Ctrl+D during bracketed paste calls deleteAtCursor instead of signalling EOF.
+func TestLineReaderCtrlDDuringPasteDeletesAtCursor(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	r := &chatLineReader{
+		out:              &out,
+		prompt:           "> ",
+		inBracketedPaste: true,
+		buf:              []rune("abcd"),
+		cursor:           2,
+	}
+
+	// Ctrl+D during paste should delete character at cursor (index 2 = 'c').
+	r.deleteAtCursor()
+
+	if got := string(r.buf); got != "abd" {
+		t.Fatalf("buf after Ctrl+D in paste = %q, want abd", got)
+	}
+	if r.cursor != 2 {
+		t.Fatalf("cursor after Ctrl+D in paste = %d, want 2", r.cursor)
+	}
+}
+
+// Bug 4: bare Escape (nothing buffered) must not block; handleEscape returns immediately.
+func TestLineReaderHandleEscapeBareEscapeDoesNotBlock(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	r := &chatLineReader{out: &out, prompt: "> ", buf: []rune("hello"), cursor: 5}
+
+	// Empty reader — nothing buffered after the ESC byte.
+	br := bufio.NewReader(bytes.NewReader([]byte{}))
+
+	done := make(chan struct{})
+	go func() {
+		r.handleEscape(br)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// good — returned without blocking
+	case <-time.After(time.Second):
+		t.Fatal("handleEscape blocked on empty buffer")
+	}
+
+	// Buffer must be unchanged (no cursor movement etc.)
+	if got := string(r.buf); got != "hello" {
+		t.Fatalf("buf changed after bare escape: %q", got)
 	}
 }

@@ -8,7 +8,7 @@
   <key>CFBundleDisplayName</key><string>MilliWays</string>
   <key>CFBundleVersion</key><string>__VERSION__</string>
   <key>CFBundleShortVersionString</key><string>__VERSION__</string>
-  <key>CFBundleIconFile</key><string>milliways</string>
+  <key>CFBundleIconFile</key><string>milliways.icns</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>

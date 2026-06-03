@@ -73,7 +73,7 @@ func TestRunInstall_PrereqMissing_ReturnsError(t *testing.T) {
 func TestRunInstall_ListEnumeratesAllClients(t *testing.T) {
 	var stdout bytes.Buffer
 	runInstall([]string{"list"}, &stdout, &bytes.Buffer{})
-	for _, want := range []string{"claude", "codex", "copilot", "gemini", "local", "minimax", "pool"} {
+	for _, want := range []string{"claude", "codex", "copilot", "gemini", "local", "minimax", "kimi", "deepseek", "pool"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("install list missing %q; got:\n%s", want, stdout.String())
 		}

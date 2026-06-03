@@ -19,6 +19,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -145,6 +146,53 @@ func TestRunMiniMax_ToolsDisabledByEnv(t *testing.T) {
 	}
 }
 
+func TestRunMiniMax_MutatingPromptExposesToolsByDefault(t *testing.T) {
+	captured := make(chan map[string]any, 1)
+	withMiniMaxDaemonTransport(t, func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		var parsed map[string]any
+		_ = json.Unmarshal(body, &parsed)
+		select {
+		case captured <- parsed:
+		default:
+		}
+		fakeSSE := strings.Join([]string{
+			`data: {"choices":[{"finish_reason":"stop","delta":{"content":"ok"}}]}`,
+			``,
+			`data: [DONE]`,
+			``,
+		}, "\n")
+		return minimaxDaemonResponse(http.StatusOK, fakeSSE, http.Header{"Content-Type": {"text/event-stream"}}), nil
+	})
+
+	t.Setenv("MINIMAX_API_KEY", "k")
+	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/chat/completions")
+	withMinimaxToolRegistry(t, tools.NewBuiltInRegistry())
+
+	in := make(chan []byte, 1)
+	in <- []byte("implement the feature and write the file")
+	close(in)
+	done := make(chan struct{})
+	go func() {
+		RunMiniMax(context.Background(), in, &fakePusher{}, &mockObserver{})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunMiniMax did not return")
+	}
+
+	select {
+	case body := <-captured:
+		if _, ok := body["tools"].([]any); !ok {
+			t.Fatalf("mutating prompt did not expose tools by default: %v", body["tools"])
+		}
+	default:
+		t.Fatalf("server never received request")
+	}
+}
+
 // TestRunMiniMax_AgenticToolLoop — when the model returns tool_calls the
 // daemon executes them via the registry, appends results to the conversation,
 // and re-requests until the model issues finish_reason: stop.
@@ -268,7 +316,146 @@ func TestRunMiniMax_AgenticToolLoop(t *testing.T) {
 	}
 }
 
+func TestRunMiniMax_ApprovalGatePlansBeforeTools(t *testing.T) {
+	t.Setenv("MILLIWAYS_PLAN_APPROVAL_GATE", "on")
+	var turn atomic.Int32
+	var firstBody atomic.Value
+	withMiniMaxDaemonTransport(t, func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		var parsed map[string]any
+		_ = json.Unmarshal(body, &parsed)
+		if turn.Add(1) == 1 {
+			firstBody.Store(parsed)
+		}
+		fakeSSE := strings.Join([]string{
+			`data: {"choices":[{"finish_reason":"stop","delta":{"content":"Plan: edit the target file and test it."}}],"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}`,
+			``,
+			`data: [DONE]`,
+			``,
+		}, "\n")
+		return minimaxDaemonResponse(http.StatusOK, fakeSSE, http.Header{"Content-Type": {"text/event-stream"}}), nil
+	})
+
+	var echoRan atomic.Bool
+	reg := tools.NewRegistry()
+	reg.Register("echo", func(_ context.Context, _ map[string]any) (string, error) {
+		echoRan.Store(true)
+		return "should not run", nil
+	}, provider.ToolDef{Name: "echo"})
+	withMinimaxToolRegistry(t, reg)
+	t.Setenv("MINIMAX_API_KEY", "k")
+	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/chat/completions")
+
+	in := make(chan []byte, 1)
+	in <- []byte("implement the feature")
+	close(in)
+	pusher := &fakePusher{}
+	done := make(chan struct{})
+	go func() {
+		RunMiniMax(context.Background(), in, pusher, &mockObserver{})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunMiniMax did not return")
+	}
+
+	if echoRan.Load() {
+		t.Fatal("tool ran during planning gate")
+	}
+	body, _ := firstBody.Load().(map[string]any)
+	if _, hasTools := body["tools"]; hasTools {
+		t.Fatalf("planning request exposed tools: %v", body)
+	}
+	var sawPrompt, sawNeedsInput bool
+	for _, e := range pusher.snapshot() {
+		switch e["t"] {
+		case "data":
+			b64, _ := e["b64"].(string)
+			raw, _ := base64.StdEncoding.DecodeString(b64)
+			if strings.Contains(string(raw), "reply `y` to implement") {
+				sawPrompt = true
+			}
+		case "chunk_end":
+			if v, _ := e["needs_input"].(bool); v {
+				sawNeedsInput = true
+			}
+		}
+	}
+	if !sawPrompt || !sawNeedsInput {
+		t.Fatalf("approval gate did not clearly block for input; events=%v", pusher.snapshot())
+	}
+}
+
+func TestRunMiniMax_ApprovalGateRequiresYesBeforeToolExecution(t *testing.T) {
+	t.Setenv("MILLIWAYS_PLAN_APPROVAL_GATE", "on")
+	var turn atomic.Int32
+	withMiniMaxDaemonTransport(t, func(r *http.Request) (*http.Response, error) {
+		switch turn.Add(1) {
+		case 1:
+			fakeSSE := strings.Join([]string{
+				`data: {"choices":[{"finish_reason":"stop","delta":{"content":"Plan: call echo after approval."}}]}`,
+				``,
+				`data: [DONE]`,
+				``,
+			}, "\n")
+			return minimaxDaemonResponse(http.StatusOK, fakeSSE, http.Header{"Content-Type": {"text/event-stream"}}), nil
+		case 2:
+			fakeSSE := strings.Join([]string{
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"echo","arguments":"{\"text\":\"approved\"}"}}]}}]}`,
+				``,
+				`data: {"choices":[{"finish_reason":"tool_calls","delta":{}}]}`,
+				``,
+				`data: [DONE]`,
+				``,
+			}, "\n")
+			return minimaxDaemonResponse(http.StatusOK, fakeSSE, http.Header{"Content-Type": {"text/event-stream"}}), nil
+		default:
+			fakeSSE := strings.Join([]string{
+				`data: {"choices":[{"finish_reason":"stop","delta":{"content":"done"}}]}`,
+				``,
+				`data: [DONE]`,
+				``,
+			}, "\n")
+			return minimaxDaemonResponse(http.StatusOK, fakeSSE, http.Header{"Content-Type": {"text/event-stream"}}), nil
+		}
+	})
+
+	var echoRan atomic.Bool
+	reg := tools.NewRegistry()
+	reg.Register("echo", func(_ context.Context, args map[string]any) (string, error) {
+		echoRan.Store(true)
+		return fmt.Sprint(args["text"]), nil
+	}, provider.ToolDef{Name: "echo", Description: "echo a string"})
+	withMinimaxToolRegistry(t, reg)
+	t.Setenv("MINIMAX_API_KEY", "k")
+	t.Setenv("MINIMAX_API_URL", "http://minimax.test/v1/chat/completions")
+
+	in := make(chan []byte, 2)
+	in <- []byte("implement the feature")
+	in <- []byte("y")
+	close(in)
+	done := make(chan struct{})
+	go func() {
+		RunMiniMax(context.Background(), in, &fakePusher{}, &mockObserver{})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunMiniMax did not return")
+	}
+	if !echoRan.Load() {
+		t.Fatal("tool did not run after explicit approval")
+	}
+	if got := turn.Load(); got != 3 {
+		t.Fatalf("API turns = %d, want planning + tool + final", got)
+	}
+}
+
 func TestRunMiniMax_AsksConfirmationStopsBeforeToolExecution(t *testing.T) {
+	t.Setenv("MILLIWAYS_PLAN_APPROVAL_GATE", "on")
 	var turn atomic.Int32
 
 	withMiniMaxDaemonTransport(t, func(r *http.Request) (*http.Response, error) {

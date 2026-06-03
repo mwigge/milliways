@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//nolint:errcheck // CLI help/status output writes are best-effort; subprocess errors are returned explicitly.
 package main
 
 // `milliwaysctl opsx <verb>` — thin in-app wrapper around the openspec CLI
@@ -38,15 +39,6 @@ import (
 	"os"
 	"os/exec"
 )
-
-// opsxVerbs is the discoverable verb list for --help and the wezterm palette.
-var opsxVerbs = []string{
-	"list",
-	"status",
-	"show",
-	"archive",
-	"validate",
-}
 
 // runOpsx dispatches `milliwaysctl opsx <verb> [args...]` and returns the
 // process exit code.

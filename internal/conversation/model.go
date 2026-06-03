@@ -19,6 +19,13 @@ import (
 	"time"
 )
 
+const (
+	// maxTranscriptTurns bounds canonical in-memory transcripts when no
+	// model-backed compactor is available at this layer.
+	maxTranscriptTurns = 1000
+	maxTranscriptChars = 1024 * 1024
+)
+
 // ProjectRef is a lightweight citation attached to a user turn.
 type ProjectRef struct {
 	PalaceID    string `json:"palace_id"`
@@ -164,6 +171,7 @@ func (c *Conversation) AppendTurn(role TurnRole, provider, text string) {
 		Text:     text,
 		At:       now,
 	})
+	c.trimTranscript()
 	c.UpdatedAt = now
 }
 
@@ -181,7 +189,34 @@ func (c *Conversation) AppendTurnWithContext(role TurnRole, provider, text strin
 		ProjectRefs:   projectRefs,
 		At:            now,
 	})
+	c.trimTranscript()
 	c.UpdatedAt = now
+}
+
+func (c *Conversation) trimTranscript() {
+	if c == nil || len(c.Transcript) == 0 {
+		return
+	}
+	for len(c.Transcript) > maxTranscriptTurns {
+		c.Transcript = c.Transcript[1:]
+	}
+	total := 0
+	for i := len(c.Transcript) - 1; i >= 0; i-- {
+		total += len(c.Transcript[i].Text)
+		if total <= maxTranscriptChars {
+			continue
+		}
+		if i == len(c.Transcript)-1 {
+			text := c.Transcript[i].Text
+			c.Transcript = c.Transcript[i:]
+			if len(text) > maxTranscriptChars {
+				c.Transcript[0].Text = text[len(text)-maxTranscriptChars:]
+			}
+			return
+		}
+		c.Transcript = c.Transcript[i+1:]
+		return
+	}
 }
 
 // StartSegment adds and activates a provider segment.

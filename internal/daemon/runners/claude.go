@@ -20,7 +20,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"log/slog"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -40,6 +39,9 @@ type claudeStreamEvent struct {
 	Type    string               `json:"type"`
 	Message *claudeStreamMessage `json:"message,omitempty"`
 
+	// stream_event fields
+	Event *claudeStreamEventPayload `json:"event,omitempty"`
+
 	// rate_limit_event fields
 	RateLimitInfo *claudeStreamRateLimit `json:"rate_limit_info,omitempty"`
 
@@ -47,6 +49,19 @@ type claudeStreamEvent struct {
 	TotalCostUSD float64            `json:"total_cost_usd,omitempty"`
 	IsError      bool               `json:"is_error,omitempty"`
 	Usage        *claudeStreamUsage `json:"usage,omitempty"`
+}
+
+// claudeStreamEventPayload mirrors the inner event of a stream_event.
+type claudeStreamEventPayload struct {
+	Type  string            `json:"type"`
+	Delta claudeStreamDelta `json:"delta,omitempty"`
+}
+
+// claudeStreamDelta carries content_block_delta event deltas.
+type claudeStreamDelta struct {
+	Type     string `json:"type"`
+	Thinking string `json:"thinking,omitempty"`
+	Text     string `json:"text,omitempty"`
 }
 
 // claudeStreamRateLimit carries the rate-limit status surfaced by claude
@@ -112,18 +127,23 @@ const claudeTimeout = 5 * time.Minute
 //   - When `input` is closed, RunClaude pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
 func RunClaude(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
+	RunClaudeWithSecurityWorkspace(ctx, input, stream, metrics, "")
+}
+
+func RunClaudeWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
+	sessionID := newControlledRunnerSessionID(AgentIDClaude)
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runClaudeOnce(ctx, prompt, stream, metrics)
+		runClaudeOnce(ctx, prompt, stream, metrics, securityWorkspace, sessionID)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
-func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver) {
+func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace, sessionID string) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		return
@@ -138,20 +158,28 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	defer func() { stream.Push(chunkEnd) }()
 	pushModel(stream, AgentIDClaude)
 
-	cwd, _ := os.Getwd()
+	cwd := runnerWorkspaceCWD(securityWorkspace)
+	if !runExternalCLIPreflight(ctx, AgentIDClaude, cwd, stream, metrics) {
+		endDispatchSpan(span, 0, 0, 0, "security profile blocked handoff")
+		return
+	}
 	args := []string{
 		"--print",
 		"--output-format", "stream-json",
 		"--verbose",
-		"--dangerously-skip-permissions",
 	}
 	if cwd != "" {
 		args = append(args, "--add-dir", cwd)
 	}
 	// "--" stops flag parsing so --add-dir (variadic) does not consume the prompt.
 	args = append(args, "--", text)
-	cmd := exec.CommandContext(ctx, claudeBinary, args...)
-	cmd.Env = safeRunnerEnv()
+	cmd := exec.CommandContext(ctx, resolveRunnerBinary(claudeBinary), args...)
+	cmd.Env = controlledRunnerEnv(controlledRunnerEnvOptions{
+		ClientID:  AgentIDClaude,
+		SessionID: sessionID,
+		Workspace: cwd,
+		ShimDir:   brokerShimDirForAgent(AgentIDClaude),
+	})
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
@@ -208,6 +236,10 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		}
 		if model := extractModelFromJSONLine(line); model != "" {
 			pushObservedModel(stream, model)
+		}
+		if think, ok := extractThinkingText(line); ok {
+			stream.Push(encodeThinking(think))
+			continue
 		}
 		if text, ok := extractAssistantText(line); ok {
 			stream.Push(encodeData(text))
@@ -281,6 +313,23 @@ func extractAssistantText(line string) (string, bool) {
 	}
 	out := strings.Join(parts, "")
 	return out, out != ""
+}
+
+// extractThinkingText returns the thinking content from a thinking_delta
+// content block, or false if the line is not such an event.
+func extractThinkingText(line string) (string, bool) {
+	var evt claudeStreamEvent
+	if err := json.Unmarshal([]byte(line), &evt); err != nil {
+		return "", false
+	}
+	if evt.Type != "stream_event" || evt.Event == nil || evt.Event.Type != "content_block_delta" {
+		return "", false
+	}
+	delta := evt.Event.Delta
+	if delta.Type != "thinking_delta" || delta.Thinking == "" {
+		return "", false
+	}
+	return delta.Thinking, true
 }
 
 // extractResult returns the per-response cost + token counts from a

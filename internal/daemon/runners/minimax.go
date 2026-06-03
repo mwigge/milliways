@@ -23,10 +23,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mwigge/milliways/internal/provider"
 	"github.com/mwigge/milliways/internal/tools"
@@ -65,12 +67,16 @@ import (
 // into `metrics` if non-nil; auth-missing, marshal/transport failures, and
 // non-2xx responses each push an error_count tick.
 func RunMiniMax(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
+	RunMiniMaxWithSecurityWorkspace(ctx, input, stream, metrics, "")
+}
+
+func RunMiniMaxWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
 	state := &minimaxSessionState{}
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runMiniMaxOnce(ctx, prompt, stream, metrics, state)
+		runMiniMaxOnce(ctx, prompt, stream, metrics, state, securityWorkspace)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
@@ -118,7 +124,8 @@ var (
 )
 
 type minimaxSessionState struct {
-	messages []Message
+	messages        []Message
+	pendingApproval *approvalGatePending
 }
 
 func minimaxRegistry() *tools.Registry {
@@ -140,7 +147,7 @@ func minimaxRegistry() *tools.Registry {
 //
 // chunk_end is always pushed (via defer) so clients waiting on a terminal
 // frame per dispatch never hang, even when an early-return path fires.
-func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *minimaxSessionState) {
+func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *minimaxSessionState, securityWorkspace string) {
 	apiKey := strings.TrimSpace(os.Getenv("MINIMAX_API_KEY"))
 	if apiKey == "" {
 		observeError(metrics, AgentIDMiniMax)
@@ -160,6 +167,39 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	}
 	if state == nil {
 		state = &minimaxSessionState{}
+	}
+	if state.pendingApproval != nil && !planningApprovalGateEnabled() {
+		state.pendingApproval = nil
+	}
+	if state.pendingApproval != nil {
+		if approvalGateExpired(state.pendingApproval.Request, time.Now()) {
+			state.pendingApproval = nil
+			approvalGateExpiredInput(stream)
+			return
+		}
+		approved, rejected := approvalGateDecision(text)
+		switch {
+		case approved:
+			text = approvalGateImplementPrompt(state.pendingApproval.OriginalPrompt, state.pendingApproval.Plan)
+			state.pendingApproval = nil
+		case rejected:
+			state.pendingApproval = nil
+			approvalGateCancelled(stream)
+			return
+		default:
+			original := state.pendingApproval.OriginalPrompt
+			text = approvalGatePlanPrompt(original + "\n\nUser feedback:\n" + text)
+			state.pendingApproval = &approvalGatePending{
+				OriginalPrompt: original,
+				Request:        approvalGateNewRequest(AgentIDMiniMax, securityWorkspace, original, time.Now()),
+			}
+		}
+	} else if planningApprovalGateEnabled() && approvalGateNeedsPlan(text) {
+		state.pendingApproval = &approvalGatePending{
+			OriginalPrompt: text,
+			Request:        approvalGateNewRequest(AgentIDMiniMax, securityWorkspace, text, time.Now()),
+		}
+		text = approvalGatePlanPrompt(text)
 	}
 
 	url := strings.TrimSpace(os.Getenv("MINIMAX_API_URL"))
@@ -181,7 +221,11 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		defer cancel()
 	}
 
+	planningOnly := state.pendingApproval != nil && state.pendingApproval.Plan == ""
 	registry := minimaxRegistry()
+	if planningOnly {
+		registry = nil
+	}
 	if len(state.messages) == 0 {
 		state.messages = []Message{{Role: RoleSystem, Content: minimaxSystemPrompt}}
 	}
@@ -199,6 +243,8 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		SessionID:              AgentIDMiniMax,
 		Logger:                 slog.Default(),
 		StopOnUserInputRequest: true,
+		CommandFirewall:        commandFirewallForAgentWorkspace(AgentIDMiniMax, securityWorkspace),
+		ToolHooks:              toolHooksForAgentWorkspace(AgentIDMiniMax, securityWorkspace),
 	})
 	if err != nil {
 		observeError(metrics, AgentIDMiniMax)
@@ -231,6 +277,13 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	}
 	if result.StoppedAt == StopReasonNeedsInput {
 		push["needs_input"] = true
+	}
+	if planningOnly {
+		if state.pendingApproval != nil {
+			state.pendingApproval.Plan = strings.TrimSpace(result.FinalContent)
+		}
+		approvalGateNeedsInput(stream, push, state.pendingApproval.Request)
+		return
 	}
 	stream.Push(push)
 }
@@ -265,13 +318,13 @@ func (c *minimaxClient) Send(ctx context.Context, messages []Message, toolDefs [
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return TurnResult{}, fmt.Errorf("do: %w", err)
+		return TurnResult{}, fmt.Errorf("connect %s: %s", sanitizeProviderURL(c.url), scrubProviderSecrets(err.Error()))
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close after streaming response is consumed
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		msg := scrubBearer(strings.TrimSpace(string(errBody)))
+		msg := sanitizeProviderErrorBody(errBody)
 		if resp.StatusCode == http.StatusTooManyRequests || minimaxBodyLooksQuota(msg) {
 			return TurnResult{}, fmt.Errorf("%w: API %d: %s", ErrMiniMaxQuota, resp.StatusCode, msg)
 		}
@@ -376,11 +429,11 @@ func exitMsg(binary string, waitErr error, stderrLines []string) string {
 	}
 	msg := binary + " exited (code " + code + ")"
 	// Walk from the end to find the last non-empty stderr line — the CLI
-	// typically writes the most relevant error there. scrubBearer strips
+	// typically writes the most relevant error there. scrubProviderSecrets strips
 	// any token values the CLI may have echoed in its own error output.
 	for i := len(stderrLines) - 1; i >= 0; i-- {
 		if line := strings.TrimSpace(stderrLines[i]); line != "" {
-			msg += " — " + scrubBearer(line)
+			msg += " — " + scrubProviderSecrets(line)
 			break
 		}
 	}
@@ -424,4 +477,137 @@ func scrubBearer(s string) string {
 		}
 		out = out[:idx+len("Bearer ")] + "[REDACTED]" + out[end:]
 	}
+}
+
+func scrubProviderSecrets(s string) string {
+	out := scrubBearer(s)
+	for _, marker := range []string{"api_key=", "apikey=", "token=", "access_token=", "secret="} {
+		var b strings.Builder
+		rest := out
+		for {
+			idx := strings.Index(strings.ToLower(rest), marker)
+			if idx < 0 {
+				break
+			}
+			b.WriteString(rest[:idx])
+			b.WriteString(rest[idx : idx+len(marker)])
+			b.WriteString("[REDACTED]")
+			end := idx + len(marker)
+			for end < len(rest) && rest[end] != ' ' && rest[end] != '\n' && rest[end] != '&' && rest[end] != '"' && rest[end] != '\'' {
+				end++
+			}
+			rest = rest[end:]
+		}
+		if b.Len() > 0 {
+			b.WriteString(rest)
+			out = b.String()
+		}
+	}
+	for _, marker := range []string{"Authorization: Basic ", "authorization: basic "} {
+		var b strings.Builder
+		rest := out
+		for {
+			idx := strings.Index(rest, marker)
+			if idx < 0 {
+				break
+			}
+			b.WriteString(rest[:idx])
+			b.WriteString(marker)
+			b.WriteString("[REDACTED]")
+			end := idx + len(marker)
+			for end < len(rest) && rest[end] != ' ' && rest[end] != '\n' && rest[end] != '"' && rest[end] != '\'' {
+				end++
+			}
+			rest = rest[end:]
+		}
+		if b.Len() > 0 {
+			b.WriteString(rest)
+			out = b.String()
+		}
+	}
+	return out
+}
+
+func sanitizeProviderErrorBody(body []byte) string {
+	text := strings.TrimSpace(string(body))
+	if text == "" {
+		return "empty error body"
+	}
+	var decoded any
+	if err := json.Unmarshal(body, &decoded); err == nil {
+		sanitized := sanitizeProviderErrorValue(decoded)
+		if encoded, err := json.Marshal(sanitized); err == nil {
+			text = string(encoded)
+		}
+	}
+	text = scrubProviderSecrets(text)
+	if len(text) > 512 {
+		text = text[:512] + "...[truncated]"
+	}
+	return text
+}
+
+func sanitizeProviderURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "[invalid-url]"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
+}
+
+func sanitizeProviderErrorValue(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for key, value := range x {
+			lower := strings.ToLower(key)
+			if providerErrorKeySensitive(lower) {
+				out[key] = "[REDACTED]"
+				continue
+			}
+			out[key] = sanitizeProviderErrorValue(value)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, value := range x {
+			out[i] = sanitizeProviderErrorValue(value)
+		}
+		return out
+	case string:
+		return scrubProviderSecrets(x)
+	default:
+		return v
+	}
+}
+
+func providerErrorKeySensitive(key string) bool {
+	for _, needle := range []string{
+		"authorization",
+		"api_key",
+		"apikey",
+		"token",
+		"secret",
+		"headers",
+		"prompt",
+		"messages",
+		"input",
+		"body",
+		"request",
+		"response",
+		"content",
+		"output",
+		"tool_output",
+		"tooloutput",
+		"tool_result",
+		"toolresult",
+	} {
+		if strings.Contains(key, needle) {
+			return true
+		}
+	}
+	return false
 }

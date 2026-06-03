@@ -147,7 +147,7 @@ upgrade_native_pkg() {
       tmp="$(mktemp -d)"
       info "Downloading ${pkg}..."
       if curl -sSfL "$url" -o "$tmp/$pkg"; then
-        if rpm -U "$tmp/$pkg" 2>/dev/null || sudo rpm -U "$tmp/$pkg"; then
+        if rpm -U --replacepkgs "$tmp/$pkg" 2>/dev/null || sudo rpm -U --replacepkgs "$tmp/$pkg"; then
           ok "Upgraded via rpm — binaries at /usr/bin"
           NATIVE_UPGRADED=1
           repair_shadowing_user_bins
@@ -264,7 +264,7 @@ upgrade_linux_desktop_app() {
     local root="$tmp/MilliWays-linux-amd64"
     install -Dm755 "$root/bin/milliways-term" "$BIN_DIR/milliways-term"
     install -Dm755 "$root/bin/wezterm-mux-server" "$BIN_DIR/wezterm-mux-server"
-    sed -e "s|^Exec=.*|Exec=$BIN_DIR/milliways-term|" \
+    sed -e "s|^Exec=.*|Exec=$BIN_DIR/milliways-term --config-file $SHARE_DIR/wezterm.lua|" \
         -e "s|^TryExec=.*|TryExec=$BIN_DIR/milliways-term|" \
         "$root/share/applications/dev.milliways.MilliWays.desktop" > "$tmp/dev.milliways.MilliWays.desktop"
     install -Dm644 "$tmp/dev.milliways.MilliWays.desktop" \
@@ -320,6 +320,75 @@ upgrade_support_scripts() {
   fi
 }
 
+ensure_milliwaysd_service() {
+  [ "$PLATFORM" = "linux" ] || return 0
+  [ "${SKIP_DAEMON_SERVICE:-0}" = "1" ] && return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+
+  local daemon_bin
+  if [ -x "$BIN_DIR/milliwaysd" ]; then
+    daemon_bin="$BIN_DIR/milliwaysd"
+  else
+    daemon_bin="$(command -v milliwaysd 2>/dev/null || true)"
+  fi
+  [ -x "$daemon_bin" ] || return 0
+
+  local unit_dir="$HOME/.config/systemd/user"
+  local unit="$unit_dir/milliwaysd.service"
+  mkdir -p "$unit_dir"
+  cat > "$unit" <<EOF
+[Unit]
+Description=MilliWays daemon
+Documentation=https://github.com/${REPO}
+
+[Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=$daemon_bin
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+EOF
+  ok "Installed systemd user service → $unit"
+
+  systemctl --user daemon-reload >/dev/null 2>&1 || {
+    warn "Could not reload systemd user units — run: systemctl --user daemon-reload"
+    return 0
+  }
+
+  if ! systemctl --user is-active --quiet milliwaysd >/dev/null 2>&1; then
+    command -v milliwaysctl >/dev/null 2>&1 && milliwaysctl daemon stop >/dev/null 2>&1 || true
+  fi
+
+  if systemctl --user restart milliwaysd >/dev/null 2>&1 \
+     || systemctl --user enable --now milliwaysd >/dev/null 2>&1; then
+    ok "milliwaysd.service running"
+  else
+    warn "Installed milliwaysd.service, but could not start it automatically"
+    warn "  Try: systemctl --user enable --now milliwaysd"
+  fi
+}
+
+restart_existing_local_services() {
+  [ "$PLATFORM" = "linux" ] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
+  for svc in milliways-local milliways-local-swap; do
+    if systemctl --user list-unit-files "${svc}.service" 2>/dev/null | grep -q "^${svc}.service"; then
+      systemctl --user reset-failed "$svc" >/dev/null 2>&1 || true
+      if systemctl --user is-enabled --quiet "$svc" >/dev/null 2>&1 \
+         || systemctl --user is-active --quiet "$svc" >/dev/null 2>&1; then
+        if systemctl --user restart "$svc" >/dev/null 2>&1; then
+          ok "Restarted ${svc}.service"
+        else
+          warn "Could not restart ${svc}.service — run: systemctl --user restart ${svc}"
+        fi
+      fi
+    fi
+  done
+}
+
 # ── Confirmation prompt ───────────────────────────────────────────────────────
 confirm() {
   [ "$YES" = "1" ] && return 0
@@ -360,9 +429,7 @@ if [ "$CHECK_ONLY" = "1" ]; then
 fi
 
 if [ "$cur_norm" = "$tgt_norm" ] && [ "$cur_norm" != "unknown" ]; then
-  ok "Already at latest (${TARGET_VERSION}) — nothing to do"
-  printf '\n'
-  exit 0
+  ok "Already at latest (${TARGET_VERSION}) — refreshing install"
 fi
 
 confirm "$CURRENT" "$TARGET_VERSION"
@@ -386,6 +453,8 @@ fi
 # macOS: always try to upgrade the app bundle regardless of install tier.
 upgrade_macos_app "$TARGET_VERSION"
 upgrade_linux_desktop_app "$TARGET_VERSION"
+ensure_milliwaysd_service
+restart_existing_local_services
 
 printf '\n'
 mw_bin="$(command -v milliways 2>/dev/null || echo "$BIN_DIR/milliways")"

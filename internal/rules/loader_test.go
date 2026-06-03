@@ -74,7 +74,7 @@ func TestRulesLoaderLoadAgentsAndBuildContext(t *testing.T) {
 	agentIndex := strings.Index(context, "# @coder-go")
 	skillIndex := strings.Index(context, "# Data Analyst Skill")
 	overrideIndex := strings.Index(context, "# Project Override")
-	if !(globalIndex < coreIndex && coreIndex < agentIndex && agentIndex < skillIndex && skillIndex < overrideIndex) {
+	if globalIndex >= coreIndex || coreIndex >= agentIndex || agentIndex >= skillIndex || skillIndex >= overrideIndex {
 		t.Fatalf("BuildContext() order incorrect:\n%s", context)
 	}
 }

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//nolint:errcheck // Interactive terminal control writes are best-effort; input errors are returned explicitly.
 package main
 
 import (
@@ -23,8 +24,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
 
@@ -41,6 +44,7 @@ type chatLineReaderConfig struct {
 	InterruptPrompt string
 	EOFPrompt       string
 	AutoComplete    completionProvider
+	ControlPoll     func() (string, bool)
 }
 
 type chatLineReader struct {
@@ -51,17 +55,19 @@ type chatLineReader struct {
 	interruptPrompt string
 	eofPrompt       string
 	completer       completionProvider
+	controlPoll     func() (string, bool)
 	pipeReader      *bufio.Reader
 
-	mu           sync.Mutex
-	closed       bool
-	active       bool
-	buf          []rune
-	cursor       int
-	rows         int
-	promptHidden bool
-	history      []string
-	histPos      int
+	mu               sync.Mutex
+	closed           bool
+	active           bool
+	buf              []rune
+	cursor           int
+	rows             int
+	promptHidden     bool
+	inBracketedPaste bool
+	history          []string
+	histPos          int
 }
 
 func newChatLineReader(cfg chatLineReaderConfig) (*chatLineReader, error) {
@@ -73,6 +79,7 @@ func newChatLineReader(cfg chatLineReaderConfig) (*chatLineReader, error) {
 		interruptPrompt: cfg.InterruptPrompt,
 		eofPrompt:       cfg.EOFPrompt,
 		completer:       cfg.AutoComplete,
+		controlPoll:     cfg.ControlPoll,
 	}
 	r.loadHistory()
 	r.histPos = len(r.history)
@@ -128,6 +135,7 @@ func (r *chatLineReader) Readline() (string, error) {
 	r.histPos = len(r.history)
 	r.active = true
 	r.promptHidden = false
+	r.inBracketedPaste = false
 	r.redrawLocked()
 	r.mu.Unlock()
 
@@ -136,9 +144,36 @@ func (r *chatLineReader) Readline() (string, error) {
 		return "", err
 	}
 	defer func() { _ = term.Restore(int(r.in.Fd()), oldState) }()
+	_, _ = fmt.Fprint(r.out, "\033[?2004h")
+	defer func() { _, _ = fmt.Fprint(r.out, "\033[?2004l") }()
 
-	br := bufio.NewReader(r.in)
+	br := bufio.NewReaderSize(r.in, 1<<16)
 	for {
+		if r.controlPoll != nil {
+			if line, ok := r.controlPoll(); ok {
+				r.mu.Lock()
+				r.active = false
+				r.promptHidden = false
+				r.clearPromptLocked()
+				if r.inBracketedPaste {
+					r.inBracketedPaste = false
+					if len(r.buf) > 0 {
+						line = string(r.buf) + "\n" + line
+					}
+				}
+				r.mu.Unlock()
+				return line, nil
+			}
+		}
+		if br.Buffered() == 0 {
+			ready, err := waitReadable(int(r.in.Fd()), 100*time.Millisecond)
+			if err != nil {
+				return "", err
+			}
+			if !ready {
+				continue
+			}
+		}
 		ch, _, err := br.ReadRune()
 		if err != nil {
 			return "", err
@@ -146,41 +181,53 @@ func (r *chatLineReader) Readline() (string, error) {
 		switch ch {
 		case '\r', '\n':
 			r.mu.Lock()
-			line := string(r.buf)
-			r.active = false
-			r.promptHidden = false
-			// Clear the wrapped input display and reprint as a single
-			// newline-terminated line so the full submitted text is always
-			// selectable as one logical string in the terminal scrollback.
-			r.clearPromptLocked()
-			r.writeSubmittedLineLocked(line)
-			r.mu.Unlock()
-			r.addHistory(line)
-			return line, nil
+			if r.inBracketedPaste {
+				r.insertRunesLocked([]rune{'\n'})
+				r.mu.Unlock()
+			} else {
+				line := string(r.buf)
+				r.active = false
+				r.promptHidden = false
+				// Clear the wrapped input display and reprint as a single
+				// newline-terminated line so the full submitted text is always
+				// selectable as one logical string in the terminal scrollback.
+				r.clearPromptLocked()
+				r.writeSubmittedLineLocked(line)
+				r.mu.Unlock()
+				r.addHistory(line)
+				return line, nil
+			}
 		case 3:
 			r.mu.Lock()
 			r.active = false
 			r.promptHidden = false
 			if r.interruptPrompt != "" {
-				fmt.Fprint(r.out, "\r\n"+r.interruptPrompt+"\r\n")
+				_, _ = fmt.Fprint(r.out, "\r\n"+r.interruptPrompt+"\r\n")
 			} else {
-				fmt.Fprint(r.out, "\r\n")
+				_, _ = fmt.Fprint(r.out, "\r\n")
 			}
 			r.mu.Unlock()
 			return "", errLineInterrupt
 		case 4:
 			r.mu.Lock()
+			inPaste := r.inBracketedPaste
 			empty := len(r.buf) == 0
-			if empty && r.eofPrompt != "" {
-				fmt.Fprint(r.out, "\r\n"+r.eofPrompt+"\r\n")
-			}
 			r.mu.Unlock()
-			if empty {
-				r.mu.Lock()
-				r.active = false
-				r.promptHidden = false
-				r.mu.Unlock()
-				return "", io.EOF
+			if inPaste {
+				r.deleteAtCursor()
+			} else {
+				if empty && r.eofPrompt != "" {
+					r.mu.Lock()
+					_, _ = fmt.Fprint(r.out, "\r\n"+r.eofPrompt+"\r\n") //nolint:errcheck // best-effort terminal prompt before EOF
+					r.mu.Unlock()
+				}
+				if empty {
+					r.mu.Lock()
+					r.active = false
+					r.promptHidden = false
+					r.mu.Unlock()
+					return "", io.EOF
+				}
 			}
 		case 9:
 			r.applyCompletion()
@@ -196,39 +243,78 @@ func (r *chatLineReader) Readline() (string, error) {
 	}
 }
 
+func waitReadable(fd int, timeout time.Duration) (bool, error) {
+	ms := int(timeout / time.Millisecond)
+	if ms < 0 {
+		ms = 0
+	}
+	fds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	n, err := unix.Poll(fds, ms)
+	if err != nil {
+		if err == unix.EINTR {
+			return false, nil
+		}
+		return false, err
+	}
+	return n > 0 && fds[0].Revents&unix.POLLIN != 0, nil
+}
+
 func (r *chatLineReader) writeSubmittedLineLocked(line string) {
 	// Readline runs while the terminal is in raw mode. In raw mode "\n" moves
 	// down but does not return to column 0, which makes the next status or
 	// streamed response start under the submitted prompt.
-	fmt.Fprintf(r.out, "%s%s\r\n", r.prompt, line)
+	display := strings.ReplaceAll(line, "\n", "\r\n")
+	fmt.Fprintf(r.out, "%s%s\r\n", r.prompt, display)
 }
 
 func (r *chatLineReader) handleEscape(br *bufio.Reader) {
+	if br.Buffered() == 0 {
+		return
+	}
 	next, _, err := br.ReadRune()
 	if err != nil || next != '[' {
 		return
 	}
-	key, _, err := br.ReadRune()
-	if err != nil {
-		return
-	}
-	switch key {
-	case 'A':
-		r.historyMove(-1)
-	case 'B':
-		r.historyMove(1)
-	case 'C':
-		r.moveCursor(1)
-	case 'D':
-		r.moveCursor(-1)
-	case 'H':
-		r.moveCursorTo(0)
-	case 'F':
-		r.moveCursorToEnd()
-	case '3':
-		if tilde, _, err := br.ReadRune(); err == nil && tilde == '~' {
-			r.deleteAtCursor()
+	// Read parameter bytes (0x30–0x3F) until the final byte (0x40–0x7E).
+	var param strings.Builder
+	for {
+		ch, _, err := br.ReadRune()
+		if err != nil {
+			return
 		}
+		if ch >= 0x40 && ch <= 0x7E {
+			r.handleCSI(param.String(), ch)
+			return
+		}
+		param.WriteRune(ch)
+	}
+}
+
+func (r *chatLineReader) handleCSI(param string, final rune) {
+	switch {
+	case final == '~' && param == "200":
+		r.mu.Lock()
+		r.inBracketedPaste = true
+		r.mu.Unlock()
+	case final == '~' && param == "201":
+		r.mu.Lock()
+		r.inBracketedPaste = false
+		r.redrawLocked()
+		r.mu.Unlock()
+	case final == 'A':
+		r.historyMove(-1)
+	case final == 'B':
+		r.historyMove(1)
+	case final == 'C':
+		r.moveCursor(1)
+	case final == 'D':
+		r.moveCursor(-1)
+	case final == 'H':
+		r.moveCursorTo(0)
+	case final == 'F':
+		r.moveCursorToEnd()
+	case final == '~' && param == "3":
+		r.deleteAtCursor()
 	}
 }
 
@@ -283,9 +369,9 @@ func (r *chatLineReader) applyCompletion() {
 		return
 	}
 	r.mu.Lock()
-	fmt.Fprint(r.out, "\r\n")
+	_, _ = fmt.Fprint(r.out, "\r\n") //nolint:errcheck // best-effort terminal redraw
 	for _, s := range suffixes {
-		fmt.Fprintln(r.out, s)
+		_, _ = fmt.Fprintln(r.out, s) //nolint:errcheck // best-effort terminal completion list
 	}
 	r.redrawLocked()
 	r.mu.Unlock()
@@ -315,7 +401,9 @@ func (r *chatLineReader) insertRune(ch rune) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.insertRunesLocked([]rune{ch})
-	r.redrawLocked()
+	if !r.inBracketedPaste {
+		r.redrawLocked()
+	}
 }
 
 func (r *chatLineReader) insertRunesLocked(values []rune) {
@@ -417,20 +505,19 @@ func (r *chatLineReader) redrawLocked() {
 		r.rows = 1
 	}
 	r.clearPromptLocked()
-	fmt.Fprint(r.out, r.prompt)
-	fmt.Fprint(r.out, string(r.buf))
+	_, _ = fmt.Fprint(r.out, r.prompt) //nolint:errcheck // best-effort terminal redraw
+	// In raw mode \n moves down without returning to column 0; use \r\n.
+	_, _ = fmt.Fprint(r.out, strings.ReplaceAll(string(r.buf), "\n", "\r\n")) //nolint:errcheck // best-effort terminal redraw
 
-	totalWidth := displayWidth(r.prompt) + displayWidth(string(r.buf))
-	r.rows = visualRows(totalWidth, width)
-	cursorWidth := displayWidth(r.prompt) + displayWidth(string(r.buf[:r.cursor]))
-	cursorRow, cursorCol := cursorPosition(cursorWidth, width)
+	r.rows = bufTotalRows(r.prompt, r.buf, width)
+	cursorRow, cursorCol := bufCursorPos(r.prompt, r.buf, r.cursor, width)
 	endRow := r.rows - 1
 	if endRow > cursorRow {
-		fmt.Fprintf(r.out, "\033[%dA", endRow-cursorRow)
+		_, _ = fmt.Fprintf(r.out, "\033[%dA", endRow-cursorRow) //nolint:errcheck // best-effort terminal cursor movement
 	}
-	fmt.Fprint(r.out, "\r")
+	_, _ = fmt.Fprint(r.out, "\r") //nolint:errcheck // best-effort terminal cursor movement
 	if cursorCol > 0 {
-		fmt.Fprintf(r.out, "\033[%dC", cursorCol)
+		_, _ = fmt.Fprintf(r.out, "\033[%dC", cursorCol) //nolint:errcheck // best-effort terminal cursor movement
 	}
 }
 
@@ -440,8 +527,7 @@ func (r *chatLineReader) clearPromptLocked() {
 	// the current content. r.rows may be stale (too small) when the buffer
 	// grew since the last redraw, but we also need the stored value when the
 	// buffer shrank so we clear the extra rows the previous draw occupied.
-	totalWidth := displayWidth(r.prompt) + displayWidth(string(r.buf))
-	currentRows := visualRows(totalWidth, width)
+	currentRows := bufTotalRows(r.prompt, r.buf, width)
 	rows := r.rows
 	if currentRows > rows {
 		rows = currentRows
@@ -449,22 +535,57 @@ func (r *chatLineReader) clearPromptLocked() {
 	if rows <= 0 {
 		rows = 1
 	}
-	cursorWidth := displayWidth(r.prompt) + displayWidth(string(r.buf[:r.cursor]))
-	cursorRow, _ := cursorPosition(cursorWidth, width)
-	fmt.Fprint(r.out, "\r")
+	cursorRow, _ := bufCursorPos(r.prompt, r.buf, r.cursor, width)
+	_, _ = fmt.Fprint(r.out, "\r") //nolint:errcheck // best-effort terminal cursor movement
 	if cursorRow > 0 {
-		fmt.Fprintf(r.out, "\033[%dA", cursorRow)
+		_, _ = fmt.Fprintf(r.out, "\033[%dA", cursorRow) //nolint:errcheck // best-effort terminal cursor movement
 	}
 	for i := 0; i < rows; i++ {
 		if i > 0 {
-			fmt.Fprint(r.out, "\033[1B")
+			_, _ = fmt.Fprint(r.out, "\033[1B") //nolint:errcheck // best-effort terminal cursor movement
 		}
-		fmt.Fprint(r.out, "\r\033[2K")
+		_, _ = fmt.Fprint(r.out, "\r\033[2K") //nolint:errcheck // best-effort terminal redraw
 	}
 	if rows > 1 {
-		fmt.Fprintf(r.out, "\033[%dA", rows-1)
+		_, _ = fmt.Fprintf(r.out, "\033[%dA", rows-1) //nolint:errcheck // best-effort terminal cursor movement
 	}
-	fmt.Fprint(r.out, "\r")
+	_, _ = fmt.Fprint(r.out, "\r") //nolint:errcheck // best-effort terminal cursor movement
+}
+
+// bufTotalRows returns the total visual rows occupied by prompt + buf at the given terminal width.
+// Embedded newlines in buf each start a fresh visual line.
+func bufTotalRows(prompt string, buf []rune, width int) int {
+	segments := strings.Split(string(buf), "\n")
+	total := 0
+	for i, seg := range segments {
+		w := displayWidth(seg)
+		if i == 0 {
+			w += displayWidth(prompt)
+		}
+		total += visualRows(w, width)
+	}
+	return total
+}
+
+// bufCursorPos returns the (row, col) of cursor within the rendered output.
+// Embedded newlines in buf[:cursor] each advance to a new visual line.
+func bufCursorPos(prompt string, buf []rune, cursor int, width int) (row, col int) {
+	before := string(buf[:cursor])
+	segments := strings.Split(before, "\n")
+	for i, seg := range segments {
+		w := displayWidth(seg)
+		if i == 0 {
+			w += displayWidth(prompt)
+		}
+		if i < len(segments)-1 {
+			row += visualRows(w, width)
+		} else {
+			r2, c2 := cursorPosition(w, width)
+			row += r2
+			col = c2
+		}
+	}
+	return row, col
 }
 
 func lineReaderWidth() int {
@@ -522,8 +643,11 @@ func (r *chatLineReader) loadHistory() {
 	}
 	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
 	for sc.Scan() {
 		if line := strings.TrimSpace(sc.Text()); line != "" {
+			line = strings.ReplaceAll(line, `\n`, "\n")
+			line = strings.ReplaceAll(line, `\\`, `\`)
 			r.history = append(r.history, line)
 		}
 	}
@@ -546,7 +670,9 @@ func (r *chatLineReader) saveHistory() error {
 		start = len(r.history) - 1000
 	}
 	for _, line := range r.history[start:] {
-		if _, err := fmt.Fprintln(f, line); err != nil {
+		escaped := strings.ReplaceAll(line, `\`, `\\`)
+		escaped = strings.ReplaceAll(escaped, "\n", `\n`)
+		if _, err := fmt.Fprintln(f, escaped); err != nil {
 			return err
 		}
 	}

@@ -1260,32 +1260,3 @@ func writeTerminalStatus(out io.Writer, line string) {
 	}
 	_, _ = io.WriteString(out, line+"\n")
 }
-
-// writeThinkingInPlace overwrites the current terminal line with a thinking
-// status fragment. It uses \r to return to column 0 and \033[2K to erase the
-// line, then writes the text without a trailing newline. This means the line
-// is never committed to the scrollback buffer, so subsequent overwrites and
-// clearThinkingInPlace leave no visible trail. No-op when ANSI is unavailable.
-func writeThinkingInPlace(out io.Writer, line string) {
-	if line == "" || !ansiEnabled() {
-		return
-	}
-	w := out
-	if h, ok := out.(*codeHighlighter); ok {
-		w = h.out
-	}
-	_, _ = io.WriteString(w, "\r\033[2K"+line)
-}
-
-// clearThinkingInPlace erases the current thinking status line, leaving the
-// cursor at column 0 ready for response output. No-op when ANSI is unavailable.
-func clearThinkingInPlace(out io.Writer) {
-	if !ansiEnabled() {
-		return
-	}
-	w := out
-	if h, ok := out.(*codeHighlighter); ok {
-		w = h.out
-	}
-	_, _ = io.WriteString(w, "\r\033[2K")
-}

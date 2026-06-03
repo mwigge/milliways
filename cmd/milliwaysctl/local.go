@@ -12,16 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//nolint:errcheck // CLI status/help output writes are best-effort; command failures are handled explicitly.
 package main
 
 // `milliwaysctl local <verb>` — in-app local-model bootstrap. Lets users
-// install llama-server / llama-swap, list available models, switch which
+// install rs-llmctl / llama-swap, list available models, switch which
 // backend the runner talks to, download GGUF weights from HuggingFace, and
 // register new models in the llama-swap config — all without leaving the
 // milliways terminal.
 //
 // Verbs:
-//   install-server         install llama.cpp via scripts/install_local.sh
+//   install-server         install rs-llmctl via scripts/install_local.sh
+//   install-gpu-server     install rs-llmctl + largest model that fits local GPU
 //   install-swap           install llama-swap via scripts/install_local_swap.sh
 //   list-models            GET $MILLIWAYS_LOCAL_ENDPOINT/models
 //   switch-server <kind>   write ~/.config/milliways/local.env for the kind
@@ -29,16 +31,20 @@ package main
 //   setup-model    <repo>  download + register in llama-swap.yaml + verify
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"bytes"
 	"fmt"
 	"io"
+	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -49,25 +55,6 @@ import (
 // userHomeDirFn is the function used to resolve the home directory.
 // Overridden in tests to prevent writing to the real ~/.local/bin.
 var userHomeDirFn = os.UserHomeDir
-
-// localVerbs is the list of supported `local` verbs surfaced by --help and
-// by the wezterm slash dispatcher (which can read it via help output).
-var localVerbs = []string{
-	"install-server",
-	"install-swap",
-	"list-models",
-	"switch-server",
-	"download-model",
-	"setup-model",
-	"swap-mode",
-	"server-start",
-	"server-stop",
-	"server-status",
-	"server-port",
-	"server-uninstall",
-	"default-model",
-	"review-code",
-}
 
 // runLocal dispatches `milliwaysctl local <verb> [args...]` and returns the
 // process exit code.
@@ -81,6 +68,8 @@ func runLocal(args []string, stdout, stderr io.Writer) int {
 	switch verb {
 	case "install-server":
 		return runLocalInstallServer(rest, stdout, stderr)
+	case "install-gpu-server":
+		return runLocalInstallGPUServer(rest, stdout, stderr)
 	case "install-swap":
 		return runLocalInstallSwap(rest, stdout, stderr)
 	case "list-models":
@@ -111,35 +100,37 @@ func runLocal(args []string, stdout, stderr io.Writer) int {
 		printLocalUsage(stdout)
 		return 0
 	default:
-		fmt.Fprintf(stderr, "milliwaysctl local: unknown verb %q\n", verb)
+		_, _ = fmt.Fprintf(stderr, "milliwaysctl local: unknown verb %q\n", verb)
 		printLocalUsage(stderr)
 		return 2
 	}
 }
 
 func printLocalUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: milliwaysctl local <verb> [args...]")
-	fmt.Fprintln(w, "verbs:")
-	fmt.Fprintln(w, "  install-server                     install llama.cpp + default model")
-	fmt.Fprintln(w, "  install-swap [--hot]               install llama-swap (hot-swap setup)")
-	fmt.Fprintln(w, "  list-models                        list models exposed by the configured backend")
-	fmt.Fprintln(w, "  switch-server <kind>               kind = llama-server | llama-swap | ollama | vllm | lmstudio")
-	fmt.Fprintln(w, "  download-model <repo> [--quant Q] [--alias A]   curl a GGUF from HuggingFace")
-	fmt.Fprintln(w, "  setup-model list                                list curated top-10 models")
-	fmt.Fprintln(w, "  setup-model refresh                             refresh list from HuggingFace API")
-	fmt.Fprintln(w, "  setup-model    <repo> [--quant Q] [--alias A]   download + register in llama-swap")
-	fmt.Fprintln(w, "  swap-mode hot|cold [--ttl N]                    set llama-swap to hot (always-loaded) or cold (unload after TTL seconds, default 600)")
-	fmt.Fprintln(w, "  server-start                                    start the local server (launchctl / systemd / direct)")
-	fmt.Fprintln(w, "  server-stop                                     stop the local server")
-	fmt.Fprintln(w, "  server-status                                   check server reachability and list loaded models")
-	fmt.Fprintln(w, "  server-port                                     print the port number from MILLIWAYS_LOCAL_ENDPOINT")
-	fmt.Fprintln(w, "  server-uninstall [--yes]                        stop server, remove service files and launcher")
-	fmt.Fprintln(w, "  default-model <alias>                           set the default model in the launcher and local.env")
-	fmt.Fprintln(w, "  review-code <path> [--model A] [--out F] [--resume] [--no-memory] [--git-commit] [--lint]")
-	fmt.Fprintln(w, "                                                  review a repository with the loaded local model")
-	fmt.Fprintln(w, "")
-	fmt.Fprintln(w, "Endpoint defaults to http://localhost:8765/v1; override with MILLIWAYS_LOCAL_ENDPOINT.")
-	fmt.Fprintln(w, "Models cache to $HOME/.local/share/milliways/models/; override with MODEL_DIR.")
+	_, _ = fmt.Fprintln(w, "usage: milliwaysctl local <verb> [args...]")
+	_, _ = fmt.Fprintln(w, "verbs:")
+	_, _ = fmt.Fprintln(w, "  install-server                     install rs-llmctl + default model")
+	_, _ = fmt.Fprintln(w, "  install-gpu-server [--dry-run] [--accel auto|vulkan|cuda|hip]")
+	_, _ = fmt.Fprintln(w, "                                      detect NVIDIA/AMD GPU and install the largest fitting model")
+	_, _ = fmt.Fprintln(w, "  install-swap [--hot]               install llama-swap (hot-swap setup)")
+	_, _ = fmt.Fprintln(w, "  list-models                        list models exposed by the configured backend")
+	_, _ = fmt.Fprintln(w, "  switch-server <kind>               kind = rs-llmctl | llama-server | llama-swap | ollama | vllm | lmstudio")
+	_, _ = fmt.Fprintln(w, "  download-model <repo> [--quant Q] [--alias A]   curl a GGUF from HuggingFace")
+	_, _ = fmt.Fprintln(w, "  setup-model list                                list curated top-10 models")
+	_, _ = fmt.Fprintln(w, "  setup-model refresh                             refresh list from HuggingFace API")
+	_, _ = fmt.Fprintln(w, "  setup-model    <repo> [--quant Q] [--alias A]   download + register in llama-swap")
+	_, _ = fmt.Fprintln(w, "  swap-mode hot|cold [--ttl N]                    set llama-swap to hot (always-loaded) or cold (unload after TTL seconds, default 600)")
+	_, _ = fmt.Fprintln(w, "  server-start                                    start the local server (launchctl / systemd / direct)")
+	_, _ = fmt.Fprintln(w, "  server-stop                                     stop the local server")
+	_, _ = fmt.Fprintln(w, "  server-status                                   check server reachability and list loaded models")
+	_, _ = fmt.Fprintln(w, "  server-port                                     print the port number from MILLIWAYS_LOCAL_ENDPOINT")
+	_, _ = fmt.Fprintln(w, "  server-uninstall [--yes]                        stop server, remove service files and launcher")
+	_, _ = fmt.Fprintln(w, "  default-model <alias>                           set default llama-swap model in launcher and local.env")
+	_, _ = fmt.Fprintln(w, "  review-code <path> [--model A] [--out F] [--resume] [--no-memory] [--git-commit] [--lint]")
+	_, _ = fmt.Fprintln(w, "                                                  review a repository with the loaded local model")
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "Endpoint defaults to rs-llmctl on http://localhost:8765/v1; override with MILLIWAYS_LOCAL_ENDPOINT.")
+	_, _ = fmt.Fprintln(w, "Models cache to $HOME/.local/share/milliways/models/; override with MODEL_DIR.")
 }
 
 // install-server / install-swap shell out to the existing install scripts so
@@ -149,17 +140,95 @@ func printLocalUsage(w io.Writer) {
 var execCommand = exec.Command
 
 func runLocalInstallServer(_ []string, stdout, stderr io.Writer) int {
-	return runInstallScript("scripts/install_local.sh", stdout, stderr)
+	if code := runInstallScript("scripts/install_local.sh", stdout, stderr); code != 0 {
+		return code
+	}
+	return activateLocalInstall(stdout, stderr)
+}
+
+func runLocalInstallGPUServer(args []string, stdout, stderr io.Writer) int {
+	dryRun := false
+	accelOverride := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--dry-run":
+			dryRun = true
+		case "--accel":
+			if i+1 >= len(args) {
+				_, _ = fmt.Fprintln(stderr, "local install-gpu-server: --accel requires auto|vulkan|cuda|hip")
+				return 2
+			}
+			accelOverride = strings.ToLower(args[i+1])
+			i++
+		default:
+			_, _ = fmt.Fprintf(stderr, "local install-gpu-server: unknown flag %q\n", args[i])
+			return 2
+		}
+	}
+
+	gpu, err := detectBestLocalGPU()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "local install-gpu-server: %v\n", err)
+		return 1
+	}
+	model, err := selectGPUCatalogModel(gpu.VRAMGB)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "local install-gpu-server: %v\n", err)
+		return 1
+	}
+	accel, err := gpu.LlamaAccel(accelOverride)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "local install-gpu-server: %v\n", err)
+		return 2
+	}
+	_, _ = fmt.Fprintf(stdout, "GPU: %s (%s, %.1fGB VRAM)\n", gpu.Name, gpu.Vendor, gpu.VRAMGB)
+	fmt.Fprintf(stdout, "Model: %s (%s %s, %.1fGB)\n", model.Name, model.Repo, model.Quant, model.sizeGB())
+	fmt.Fprintf(stdout, "Accel: %s\n", accel)
+	if os.Getenv("CTX_SIZE") == "" {
+		_, _ = fmt.Fprintln(stdout, "Context: 8192 tokens")
+	}
+	if dryRun {
+		return 0
+	}
+
+	env := map[string]string{
+		"MILLIWAYS_LOCAL_GPU":   "1",
+		"LLAMA_CPP_ACCEL":       accel,
+		"MODEL_REPO":            model.Repo,
+		"MODEL_QUANT":           model.Quant,
+		"MODEL_ALIAS":           strings.ToLower(model.Name),
+		"MILLIWAYS_GPU_VENDOR":  gpu.Vendor,
+		"MILLIWAYS_GPU_NAME":    gpu.Name,
+		"MILLIWAYS_GPU_VRAM_GB": fmt.Sprintf("%.1f", gpu.VRAMGB),
+	}
+	if os.Getenv("CTX_SIZE") == "" {
+		env["CTX_SIZE"] = "8192"
+	}
+	if code := runInstallScriptWithEnv("scripts/install_local.sh", env, stdout, stderr); code != 0 {
+		return code
+	}
+	return activateLocalInstall(stdout, stderr)
 }
 
 func runLocalInstallSwap(args []string, stdout, stderr io.Writer) int {
 	if hasFlag(args, "--hot") {
 		_ = os.Setenv("HOT_MODE", "1")
 	}
-	return runInstallScript("scripts/install_local_swap.sh", stdout, stderr)
+	// The swap script performs its own smoke test on the configured port. Stop
+	// the single-model service first so an existing rs-llmctl/llama-server
+	// process cannot occupy the port and make a valid swap install look broken.
+	_ = runLocalServerStop(nil, stdout, stderr)
+	if code := runInstallScript("scripts/install_local_swap.sh", stdout, stderr); code != 0 {
+		return code
+	}
+	return activateLocalSwapInstall(stdout, stderr)
 }
 
 func runInstallScript(relPath string, stdout, stderr io.Writer) int {
+	return runInstallScriptWithEnv(relPath, nil, stdout, stderr)
+}
+
+func runInstallScriptWithEnv(relPath string, envOverride map[string]string, stdout, stderr io.Writer) int {
 	wd, err := os.Getwd()
 	if err != nil {
 		fmt.Fprintf(stderr, "local: cannot determine working dir: %v\n", err)
@@ -181,11 +250,11 @@ func runInstallScript(relPath string, stdout, stderr io.Writer) int {
 	}
 
 	candidates := []string{
-		filepath.Join(wd, relPath),                                           // checkout: ./scripts/install_local.sh
-		filepath.Join(exeShare, relPath),                                     // pkg new: /usr/share/milliways/scripts/install_local.sh
-		filepath.Join(exeShare, scriptName),                                  // pkg old: /usr/share/milliways/install_local.sh
+		filepath.Join(wd, relPath),                                                 // checkout: ./scripts/install_local.sh
+		filepath.Join(exeShare, relPath),                                           // pkg new: /usr/share/milliways/scripts/install_local.sh
+		filepath.Join(exeShare, scriptName),                                        // pkg old: /usr/share/milliways/install_local.sh
 		filepath.Join(home, ".local", "share", "milliways", "scripts", scriptName), // binary install
-		filepath.Join(home, ".local", "share", "milliways", scriptName),      // legacy
+		filepath.Join(home, ".local", "share", "milliways", scriptName),            // legacy
 	}
 
 	candidate := ""
@@ -213,7 +282,7 @@ func runInstallScript(relPath string, stdout, stderr io.Writer) int {
 	cmd.Stdin = os.Stdin
 	// Augment PATH so install scripts find tools installed by Homebrew, MacPorts,
 	// nvm, and ~/.local/bin even when launched from a GUI app without a full shell.
-	cmd.Env = enrichedEnvForScripts()
+	cmd.Env = withEnvOverrides(enrichedEnvForScripts(), envOverride)
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
@@ -223,6 +292,31 @@ func runInstallScript(relPath string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func withEnvOverrides(env []string, overrides map[string]string) []string {
+	if len(overrides) == 0 {
+		return env
+	}
+	out := make([]string, 0, len(env)+len(overrides))
+	seen := make(map[string]bool, len(overrides))
+	for _, item := range env {
+		key, _, ok := strings.Cut(item, "=")
+		if ok {
+			if value, exists := overrides[key]; exists {
+				out = append(out, key+"="+value)
+				seen[key] = true
+				continue
+			}
+		}
+		out = append(out, item)
+	}
+	for key, value := range overrides {
+		if !seen[key] {
+			out = append(out, key+"="+value)
+		}
+	}
+	return out
 }
 
 func hasFlag(args []string, flag string) bool {
@@ -267,12 +361,13 @@ func runLocalListModels(_ []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "local: build request: %v\n", err)
 		return 1
 	}
+	addLocalAuth(req)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		fmt.Fprintf(stderr, "local: GET %s: %v (is the backend running? `milliwaysctl local install-server` to bootstrap)\n", url, err)
 		return 1
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort close after response body is consumed
 	if resp.StatusCode != http.StatusOK {
 		fmt.Fprintf(stderr, "local: backend HTTP %d at %s\n", resp.StatusCode, url)
 		return 1
@@ -288,16 +383,128 @@ func runLocalListModels(_ []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	for _, m := range models {
-		fmt.Fprintln(stdout, m)
+		_, _ = fmt.Fprintln(stdout, m)
 	}
 	return 0
 }
 
 func localEndpoint() string {
-	if v := os.Getenv("MILLIWAYS_LOCAL_ENDPOINT"); v != "" {
+	if v := localEnvValue("MILLIWAYS_LOCAL_ENDPOINT"); v != "" {
 		return v
 	}
 	return "http://localhost:8765/v1"
+}
+
+func localAPIKey() string {
+	return localEnvValue("MILLIWAYS_LOCAL_API_KEY")
+}
+
+func addLocalAuth(req *http.Request) {
+	if key := localAPIKey(); key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+}
+
+func localEnvValue(key string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	envPath, err := configPath("local.env")
+	if err != nil {
+		return ""
+	}
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		return ""
+	}
+	prefix := key + "="
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.Trim(strings.TrimPrefix(line, prefix), `"'`))
+		}
+	}
+	return ""
+}
+
+func updateLocalEnvFile(path string, updates map[string]string, removals []string) error {
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+
+	remove := make(map[string]bool, len(removals)+len(updates))
+	for _, key := range removals {
+		remove[key] = true
+	}
+	for key := range updates {
+		remove[key] = true
+	}
+
+	var lines []string
+	if data, err := os.ReadFile(path); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if line == "" {
+				continue
+			}
+			key, _, ok := strings.Cut(line, "=")
+			if ok && remove[strings.TrimSpace(key)] {
+				continue
+			}
+			lines = append(lines, line)
+		}
+	}
+
+	keys := make([]string, 0, len(updates))
+	for key := range updates {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if updates[key] != "" {
+			lines = append(lines, key+"="+updates[key])
+		}
+	}
+	data := []byte(strings.Join(lines, "\n") + "\n")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".local.env-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return err
+	}
+	return syncLocalEnvDir(filepath.Dir(path))
+}
+
+func syncLocalEnvDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = dir.Close() }() //nolint:errcheck // directory fd is synced below; close failure is not actionable
+	return dir.Sync()
 }
 
 // switch-server resolves a backend kind to its default endpoint and writes
@@ -306,7 +513,7 @@ func localEndpoint() string {
 
 func localEndpointForKind(kind string) (string, error) {
 	switch kind {
-	case "llama-server", "llama-swap":
+	case "rs-llmctl", "llama-server", "llama-swap":
 		return "http://127.0.0.1:8765/v1", nil
 	case "ollama":
 		return "http://127.0.0.1:11434/v1", nil
@@ -315,13 +522,13 @@ func localEndpointForKind(kind string) (string, error) {
 	case "lmstudio":
 		return "http://127.0.0.1:1234/v1", nil
 	default:
-		return "", fmt.Errorf("unknown backend kind %q (supported: llama-server, llama-swap, ollama, vllm, lmstudio)", kind)
+		return "", fmt.Errorf("unknown backend kind %q (supported: rs-llmctl, llama-server, llama-swap, ollama, vllm, lmstudio)", kind)
 	}
 }
 
 func runLocalSwitchServer(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
-		fmt.Fprintln(stderr, "local switch-server: kind required (llama-server | llama-swap | ollama | vllm | lmstudio)")
+		_, _ = fmt.Fprintln(stderr, "local switch-server: kind required (rs-llmctl | llama-server | llama-swap | ollama | vllm | lmstudio)")
 		return 2
 	}
 	kind := args[0]
@@ -331,22 +538,22 @@ func runLocalSwitchServer(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	envPath, err := configPath("local.env")
-	if err != nil {
-		fmt.Fprintf(stderr, "local switch-server: %v\n", err)
+	if err := writeLocalBackendSelection(kind); err != nil {
+		fmt.Fprintf(stderr, "local switch-server: write local.env: %v\n", err)
 		return 1
 	}
-	if err := os.MkdirAll(filepath.Dir(envPath), 0o755); err != nil {
-		fmt.Fprintf(stderr, "local switch-server: mkdir: %v\n", err)
-		return 1
-	}
-	body := fmt.Sprintf("# written by `milliwaysctl local switch-server %s`\nMILLIWAYS_LOCAL_ENDPOINT=%s\n", kind, endpoint)
-	if err := os.WriteFile(envPath, []byte(body), 0o644); err != nil {
-		fmt.Fprintf(stderr, "local switch-server: write %s: %v\n", envPath, err)
-		return 1
-	}
+	envPath, _ := configPath("local.env")
 	fmt.Fprintf(stdout, "%s -> %s (wrote %s)\n", kind, endpoint, envPath)
 	return 0
+}
+
+func localBackendUsesGeneratedAPIKey(kind string) bool {
+	switch kind {
+	case "rs-llmctl":
+		return true
+	default:
+		return false
+	}
 }
 
 // download-model curls a GGUF from HuggingFace and writes it into MODEL_DIR.
@@ -409,7 +616,7 @@ func runLocalDownloadModel(args []string, stdout, stderr io.Writer) int {
 		cmd.Stdout = stderr
 		cmd.Stderr = stderr
 		if err := cmd.Run(); err == nil {
-			fmt.Fprintln(stdout, dest)
+			_, _ = fmt.Fprintln(stdout, dest)
 			return 0
 		}
 	}
@@ -468,7 +675,7 @@ func resolveHFCDNURL(hfURL, token string) string {
 	if err != nil {
 		return ""
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close() //nolint:errcheck // HEAD-like redirect probe only needs response headers
 	if resp.StatusCode == http.StatusFound || resp.StatusCode == http.StatusTemporaryRedirect || resp.StatusCode == http.StatusMovedPermanently {
 		loc := resp.Header.Get("Location")
 		if strings.Contains(loc, "xethub.hf.co") || strings.Contains(loc, "cdn-lfs") {
@@ -480,7 +687,7 @@ func resolveHFCDNURL(hfURL, token string) string {
 
 func parseDownloadFlags(args []string, stderr io.Writer) (repo, quant, alias string, force bool, code int) {
 	if len(args) < 1 {
-		fmt.Fprintln(stderr, "local download-model: <repo> required (e.g. unsloth/Qwen2.5-Coder-7B-Instruct-GGUF)")
+		_, _ = fmt.Fprintln(stderr, "local download-model: <repo> required (e.g. unsloth/Qwen2.5-Coder-7B-Instruct-GGUF)")
 		return "", "", "", false, 2
 	}
 	repo = args[0]
@@ -489,14 +696,14 @@ func parseDownloadFlags(args []string, stderr io.Writer) (repo, quant, alias str
 		switch args[i] {
 		case "--quant":
 			if i+1 >= len(args) {
-				fmt.Fprintln(stderr, "local download-model: --quant requires a value")
+				_, _ = fmt.Fprintln(stderr, "local download-model: --quant requires a value")
 				return "", "", "", false, 2
 			}
 			quant = args[i+1]
 			i++
 		case "--alias":
 			if i+1 >= len(args) {
-				fmt.Fprintln(stderr, "local download-model: --alias requires a value")
+				_, _ = fmt.Fprintln(stderr, "local download-model: --alias requires a value")
 				return "", "", "", false, 2
 			}
 			alias = args[i+1]
@@ -580,14 +787,16 @@ func runLocalSetupModel(args []string, stdout, stderr io.Writer) int {
 	// then restart (or start) the server so the model is immediately active.
 	if err := updateLocalServerLauncher(dest, alias, stderr); err != nil {
 		fmt.Fprintf(stderr, "local setup-model: launcher update: %v\n", err)
-		fmt.Fprintln(stderr, "  Server not restarted — run /install-local-server manually to activate the model.")
+		_, _ = fmt.Fprintln(stderr, "  Server not restarted — run /install-local-server manually to activate the model.")
 		return 0 // non-fatal: model is registered, just needs manual restart
 	}
 
 	// Step 4: restart server with new model.
-	fmt.Fprintln(stdout, "Restarting local server with new model...")
-	if code := runLocalInstallServer(nil, stdout, stderr); code != 0 {
-		fmt.Fprintln(stderr, "  Could not auto-restart — run /install-local-server to activate.")
+	_, _ = fmt.Fprintln(stdout, "Restarting local server with new model...")
+	if code := runLocalServerRestart(stdout, stderr); code != 0 {
+		_, _ = fmt.Fprintln(stderr, "  Could not auto-restart — run /local server-start to activate.")
+	} else if err := waitLocalServerReady(90 * time.Second); err != nil {
+		fmt.Fprintf(stderr, "  Server restart did not become ready: %v\n", err)
 	}
 	return 0
 }
@@ -647,6 +856,25 @@ func updateLocalServerLauncher(modelPath, alias string, stderr io.Writer) error 
 	// Read existing launcher to extract host/port/ctx-size.
 	data, _ := os.ReadFile(launcher)
 	content := string(data)
+	if strings.Contains(content, "llmctl") && strings.Contains(content, "--config") {
+		cfgPath := extractLauncherConfigPath(content)
+		if cfgPath == "" {
+			if p, err := configPath("rs-llmctl.toml"); err == nil {
+				cfgPath = p
+			}
+		}
+		if cfgPath == "" {
+			return errors.New("cannot locate rs-llmctl config path in launcher")
+		}
+		if err := updateRsLlmctlModelConfig(cfgPath, modelPath, alias); err != nil {
+			return err
+		}
+		if envFile, err := configPath("local.env"); err == nil {
+			_ = updateLocalEnvFile(envFile, map[string]string{"MILLIWAYS_LOCAL_MODEL": alias}, nil)
+		}
+		fmt.Fprintf(stderr, "  rs-llmctl config updated: %s → %s\n", alias, modelPath)
+		return nil
+	}
 
 	host := "127.0.0.1"
 	port := "8765"
@@ -681,6 +909,11 @@ func updateLocalServerLauncher(modelPath, alias string, stderr io.Writer) error 
 
 	md := modelServerDefaults(alias)
 	newLauncher := fmt.Sprintf(`#!/usr/bin/env bash
+export LD_LIBRARY_PATH="$HOME/.local/lib/milliways:/usr/local/lib/milliways:/usr/lib/milliways:${LD_LIBRARY_PATH:-}"
+export DYLD_LIBRARY_PATH="$HOME/.local/lib/milliways:/opt/homebrew/lib:/usr/local/lib:${DYLD_LIBRARY_PATH:-}"
+for dir in "$HOME/.local/lib/milliways" /usr/local/lib/milliways /usr/lib/milliways; do
+  [ -d "$dir" ] && cd "$dir" && break
+done
 exec %q \
   -m %q \
   --alias %q \
@@ -690,32 +923,134 @@ exec %q \
   --n-gpu-layers %d \
   --temp %.2f \
   --jinja \
-  -fa on
+  --flash-attn auto
 `, llamaBin, modelPath, alias, host, port, ctx, md.GPULayers, md.Temp)
 
 	if err := os.WriteFile(launcher, []byte(newLauncher), 0o755); err != nil {
 		return fmt.Errorf("write launcher: %w", err)
 	}
 
-	// Update MILLIWAYS_LOCAL_MODEL in local.env.
 	envFile, err := configPath("local.env")
 	if err != nil {
 		envFile = filepath.Join(home, ".config", "milliways", "local.env")
 	}
-	_ = os.MkdirAll(filepath.Dir(envFile), 0o700)
-	var lines []string
-	if existing, err := os.ReadFile(envFile); err == nil {
-		for _, l := range strings.Split(string(existing), "\n") {
-			if !strings.HasPrefix(l, "MILLIWAYS_LOCAL_MODEL=") {
-				lines = append(lines, l)
-			}
-		}
-	}
-	lines = append(lines, "MILLIWAYS_LOCAL_MODEL="+alias)
-	_ = os.WriteFile(envFile, []byte(strings.Join(lines, "\n")+"\n"), 0o600)
+	_ = updateLocalEnvFile(envFile, map[string]string{"MILLIWAYS_LOCAL_MODEL": alias}, nil)
 
 	fmt.Fprintf(stderr, "  launcher updated: %s → %s\n", alias, modelPath)
 	return nil
+}
+
+func extractLauncherConfigPath(content string) string {
+	const marker = "--config"
+	idx := strings.Index(content, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(content[idx+len(marker):])
+	if rest == "" {
+		return ""
+	}
+	if rest[0] == '"' {
+		end := strings.Index(rest[1:], `"`)
+		if end >= 0 {
+			return rest[1 : 1+end]
+		}
+	}
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.Trim(fields[0], `"`)
+}
+
+func updateRsLlmctlModelConfig(cfgPath, modelPath, alias string) error {
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return fmt.Errorf("read rs-llmctl config: %w", err)
+	}
+	var out []string
+	skipModel := false
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "[[models]]" {
+			skipModel = true
+			continue
+		}
+		if skipModel && strings.HasPrefix(trimmed, "[") {
+			skipModel = false
+		}
+		if skipModel {
+			continue
+		}
+		out = append(out, line)
+	}
+	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
+		out = out[:len(out)-1]
+	}
+	out = append(out,
+		"",
+		"[[models]]",
+		"alias = "+strconv.Quote(alias),
+		"path = "+strconv.Quote(modelPath),
+		`role = "chat"`,
+		"family = "+strconv.Quote(inferRsLlmctlFamily(alias, modelPath)),
+		"weight = 1",
+	)
+	return writeConfigFileAtomic(cfgPath, []byte(strings.Join(out, "\n")+"\n"), 0o600)
+}
+
+func writeConfigFileAtomic(path string, data []byte, mode fs.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		return err
+	}
+	return syncLocalEnvDir(filepath.Dir(path))
+}
+
+func inferRsLlmctlFamily(values ...string) string {
+	haystack := strings.ToLower(strings.Join(values, " "))
+	switch {
+	case strings.Contains(haystack, "qwen"):
+		return "qwen3"
+	case strings.Contains(haystack, "devstral"), strings.Contains(haystack, "mistral"):
+		return "mistral"
+	case strings.Contains(haystack, "gemma"):
+		return "gemma4"
+	case strings.Contains(haystack, "deepseek"):
+		return "deepseek"
+	case strings.Contains(haystack, "kimi"):
+		return "kimi"
+	case strings.Contains(haystack, "minimax"), strings.Contains(haystack, "mini-max"):
+		return "minimax"
+	default:
+		return "qwen3"
+	}
 }
 
 // enrichedEnvForScripts returns the current environment with PATH augmented to
@@ -724,11 +1059,11 @@ exec %q \
 func enrichedEnvForScripts() []string {
 	home, _ := userHomeDirFn()
 	extra := []string{
-		"/opt/homebrew/bin",         // Apple Silicon Homebrew
-		"/usr/local/bin",            // Intel Homebrew + manual installs
-		"/opt/pkg/bin",              // MacPorts
-		home + "/.local/bin",        // user installs (milliways itself)
-		home + "/.cargo/bin",        // Rust toolchain
+		"/opt/homebrew/bin",  // Apple Silicon Homebrew
+		"/usr/local/bin",     // Intel Homebrew + manual installs
+		"/opt/pkg/bin",       // MacPorts
+		home + "/.local/bin", // user installs (milliways itself)
+		home + "/.cargo/bin", // Rust toolchain
 		"/usr/bin", "/bin", "/usr/sbin", "/sbin",
 	}
 	// Prepend extras to current PATH, deduplicating.
@@ -759,7 +1094,7 @@ func enrichedEnvForScripts() []string {
 // In the REPL: /swap hot  or  /swap cold
 func runLocalSwapMode(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: milliwaysctl local swap-mode hot|cold [--ttl N]")
+		_, _ = fmt.Fprintln(stderr, "usage: milliwaysctl local swap-mode hot|cold [--ttl N]")
 		return 2
 	}
 	mode := args[0]
@@ -772,12 +1107,19 @@ func runLocalSwapMode(args []string, stdout, stderr io.Writer) int {
 	if mode == "hot" {
 		ttl = 0
 	}
-	for i := 1; i < len(args)-1; i++ {
+	for i := 1; i < len(args); i++ {
 		if args[i] == "--ttl" {
-			if n, err := strconv.Atoi(args[i+1]); err == nil {
-				ttl = n
-				i++
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "swap-mode: --ttl requires a numeric value")
+				return 2
 			}
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil {
+				fmt.Fprintf(stderr, "swap-mode: --ttl value %q is not a number\n", args[i+1])
+				return 2
+			}
+			ttl = n
+			i++
 		}
 	}
 
@@ -865,14 +1207,393 @@ func expandCatalogEntry(e catalogEntry, extra []string) []string {
 // ── Model catalog ─────────────────────────────────────────────────────────────
 
 type catalogEntry struct {
-	Name    string `json:"name"`
-	Repo    string `json:"repo"`
-	Quant   string `json:"quant"`
-	SizeGB  string `json:"size_gb"`
-	MinRAM  string `json:"min_ram_gb"`
-	Tools   bool   `json:"tool_use"`
-	Think   bool   `json:"reasoning"`
-	Note    string `json:"note"`
+	Name   string `json:"name"`
+	Repo   string `json:"repo"`
+	Quant  string `json:"quant"`
+	SizeGB string `json:"size_gb"`
+	MinRAM string `json:"min_ram_gb"`
+	Tools  bool   `json:"tool_use"`
+	Think  bool   `json:"reasoning"`
+	Note   string `json:"note"`
+}
+
+func (e catalogEntry) sizeGB() float64 {
+	size, _ := strconv.ParseFloat(strings.TrimSpace(e.SizeGB), 64)
+	return size
+}
+
+type localGPUInfo struct {
+	Vendor string
+	Name   string
+	VRAMGB float64
+}
+
+func (g localGPUInfo) LlamaAccel(override string) (string, error) {
+	if override != "" && override != "auto" {
+		switch override {
+		case "vulkan", "cuda", "hip", "rocm":
+			if override == "rocm" {
+				return "hip", nil
+			}
+			return override, nil
+		default:
+			return "", fmt.Errorf("unsupported --accel %q (supported: auto, vulkan, cuda, hip)", override)
+		}
+	}
+	switch strings.ToLower(g.Vendor) {
+	case "nvidia":
+		if hasCUDAToolchain() {
+			return "cuda", nil
+		}
+		return "vulkan", nil
+	case "amd":
+		if hasHIPToolchain() {
+			return "hip", nil
+		}
+		return "vulkan", nil
+	case "apple":
+		return "metal", nil
+	default:
+		return "vulkan", nil
+	}
+}
+
+func hasCUDAToolchain() bool {
+	if _, err := exec.LookPath("nvcc"); err == nil {
+		return true
+	}
+	for _, root := range []string{os.Getenv("CUDA_PATH"), "/opt/cuda", "/usr/local/cuda"} {
+		if root == "" {
+			continue
+		}
+		if info, err := os.Stat(filepath.Join(root, "bin", "nvcc")); err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+func hasHIPToolchain() bool {
+	if _, err := exec.LookPath("hipcc"); err == nil {
+		return true
+	}
+	if _, err := exec.LookPath("amdclang++"); err == nil {
+		return true
+	}
+	for _, root := range []string{os.Getenv("ROCM_PATH"), "/opt/rocm"} {
+		if root == "" {
+			continue
+		}
+		if info, err := os.Stat(filepath.Join(root, "bin", "hipcc")); err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+func selectGPUCatalogModel(vramGB float64) (catalogEntry, error) {
+	if vramGB <= 0 {
+		return catalogEntry{}, fmt.Errorf("GPU VRAM is unknown; install rocm-smi or nvidia-smi, or use /setup-model manually")
+	}
+	// Leave room for KV cache, driver allocations, desktop compositor, and
+	// llama.cpp graph buffers. GGUF file size is not a full residency estimate,
+	// especially with Vulkan and large contexts, so keep the automatic pick
+	// conservative. Users can still install a bigger model explicitly with
+	// /setup-model when they know their box can hold it.
+	budget := vramGB * 0.45
+	var best catalogEntry
+	for _, entry := range builtinCatalog {
+		size := entry.sizeGB()
+		if size <= 0 || size > budget {
+			continue
+		}
+		if best.Name == "" || size > best.sizeGB() {
+			best = entry
+		}
+	}
+	if best.Name == "" {
+		return catalogEntry{}, fmt.Errorf("no curated GGUF model fits %.1fGB VRAM with safety headroom; try /setup-model Phi-3.5-mini", vramGB)
+	}
+	return best, nil
+}
+
+func detectBestLocalGPU() (localGPUInfo, error) {
+	var candidates []localGPUInfo
+	if gpu, ok := detectNVIDIAGPU(); ok {
+		candidates = append(candidates, gpu)
+	}
+	if gpu, ok := detectAMDGPU(); ok {
+		candidates = append(candidates, gpu)
+	}
+	if gpu, ok := detectDarwinGPU(); ok {
+		candidates = append(candidates, gpu)
+	}
+	if len(candidates) == 0 {
+		return localGPUInfo{}, fmt.Errorf("no NVIDIA or AMD GPU with VRAM detected")
+	}
+	best := candidates[0]
+	for _, gpu := range candidates[1:] {
+		if gpu.VRAMGB > best.VRAMGB {
+			best = gpu
+		}
+	}
+	return best, nil
+}
+
+func detectNVIDIAGPU() (localGPUInfo, bool) {
+	out, err := execCommand("nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits").Output()
+	if err != nil {
+		return localGPUInfo{}, false
+	}
+	var best localGPUInfo
+	for _, line := range strings.Split(string(out), "\n") {
+		name, mem, ok := strings.Cut(strings.TrimSpace(line), ",")
+		if !ok {
+			continue
+		}
+		mb, err := strconv.ParseFloat(strings.TrimSpace(mem), 64)
+		if err != nil || mb <= 0 {
+			continue
+		}
+		gpu := localGPUInfo{Vendor: "nvidia", Name: strings.TrimSpace(name), VRAMGB: mb / 1024}
+		if best.Name == "" || gpu.VRAMGB > best.VRAMGB {
+			best = gpu
+		}
+	}
+	return best, best.Name != ""
+}
+
+func detectAMDGPU() (localGPUInfo, bool) {
+	if gpu, ok := detectAMDGPUFromSysfs(); ok {
+		return gpu, true
+	}
+	out, err := execCommand("rocm-smi", "--showproductname", "--showmeminfo", "vram").CombinedOutput()
+	if err != nil {
+		return localGPUInfo{}, false
+	}
+	return parseROCMSMIOutput(string(out))
+}
+
+func detectAMDGPUFromSysfs() (localGPUInfo, bool) {
+	entries, err := os.ReadDir("/sys/class/drm")
+	if err != nil {
+		return localGPUInfo{}, false
+	}
+	var best localGPUInfo
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), "card") || strings.Contains(entry.Name(), "-") {
+			continue
+		}
+		deviceDir := filepath.Join("/sys/class/drm", entry.Name(), "device")
+		vendorBytes, err := os.ReadFile(filepath.Join(deviceDir, "vendor"))
+		if err != nil || strings.TrimSpace(string(vendorBytes)) != "0x1002" {
+			continue
+		}
+		vramBytes, err := os.ReadFile(filepath.Join(deviceDir, "mem_info_vram_total"))
+		if err != nil {
+			continue
+		}
+		vram, err := strconv.ParseFloat(strings.TrimSpace(string(vramBytes)), 64)
+		if err != nil || vram <= 0 {
+			continue
+		}
+		// Read the device ID from sysfs so we can look up this specific card,
+		// rather than always returning the first AMD entry from lspci.
+		deviceIDBytes, _ := os.ReadFile(filepath.Join(deviceDir, "device"))
+		deviceID := strings.TrimSpace(string(deviceIDBytes))
+		name := amdGPUNameFromLSPCI(strings.TrimSpace(string(vendorBytes)), deviceID)
+		if name == "" {
+			name = entry.Name()
+		}
+		gpu := localGPUInfo{Vendor: "amd", Name: name, VRAMGB: vram / (1024 * 1024 * 1024)}
+		if best.Name == "" || gpu.VRAMGB > best.VRAMGB {
+			best = gpu
+		}
+	}
+	return best, best.Name != ""
+}
+
+// amdGPUNameFromLSPCI looks up the device name for a specific PCI vendor:device
+// ID pair using `lspci -d vendor:device -mm`. When vendorID or deviceID is
+// empty it falls back to returning the first AMD/Radeon display entry, which
+// is wrong on multi-GPU systems but better than nothing.
+func amdGPUNameFromLSPCI(vendorID, deviceID string) string {
+	if vendorID != "" && deviceID != "" {
+		// Normalise: sysfs gives "0x1002" / "0x687f" — lspci -d wants "1002:687f".
+		v := strings.TrimPrefix(vendorID, "0x")
+		d := strings.TrimPrefix(deviceID, "0x")
+		out, err := execCommand("lspci", "-d", v+":"+d, "-mm").Output()
+		if err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				// lspci -mm output: slot "class" "vendor" "device" ...
+				// Split on quoted fields to get the device name (4th field).
+				parts := splitLSPCIMMLine(line)
+				if len(parts) >= 4 {
+					return parts[3]
+				}
+			}
+		}
+	}
+	// Fallback: scan lspci for any AMD/Radeon display entry.
+	out, err := execCommand("lspci").Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		lower := strings.ToLower(line)
+		if (strings.Contains(lower, "vga") || strings.Contains(lower, "display") || strings.Contains(lower, "3d")) &&
+			(strings.Contains(lower, "amd/ati") || strings.Contains(lower, "radeon")) {
+			if idx := strings.Index(line, ": "); idx >= 0 {
+				return strings.TrimSpace(line[idx+2:])
+			}
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
+}
+
+// splitLSPCIMMLine splits a lspci -mm output line into its quoted fields.
+func splitLSPCIMMLine(line string) []string {
+	var parts []string
+	inQuote := false
+	var cur strings.Builder
+	for _, c := range line {
+		switch {
+		case c == '"':
+			if inQuote {
+				parts = append(parts, cur.String())
+				cur.Reset()
+			}
+			inQuote = !inQuote
+		case inQuote:
+			cur.WriteRune(c)
+		}
+	}
+	return parts
+}
+
+func parseROCMSMIOutput(out string) (localGPUInfo, bool) {
+	var name string
+	var best float64
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if strings.Contains(lower, "card series") || strings.Contains(lower, "product name") {
+			if _, value, ok := strings.Cut(trimmed, ":"); ok {
+				name = strings.TrimSpace(value)
+				if _, value, ok := strings.Cut(name, ":"); ok {
+					name = strings.TrimSpace(value)
+				}
+			}
+		}
+		if strings.Contains(lower, "vram") && (strings.Contains(lower, "total") || strings.Contains(lower, "memory")) {
+			if gb := firstMemoryGB(trimmed); gb > best {
+				best = gb
+			}
+		}
+	}
+	if name == "" {
+		name = "AMD GPU"
+	}
+	if best <= 0 {
+		return localGPUInfo{}, false
+	}
+	return localGPUInfo{Vendor: "amd", Name: name, VRAMGB: best}, true
+}
+
+func detectDarwinGPU() (localGPUInfo, bool) {
+	if runtime.GOOS != "darwin" {
+		return localGPUInfo{}, false
+	}
+
+	// Apple Silicon (M1/M2/M3/M4): unified memory shared with CPU.
+	// Detect by architecture first — arm64 on darwin is always Apple Silicon.
+	if runtime.GOARCH == "arm64" {
+		name := "Apple Silicon GPU"
+		// Read the chipset model name from system_profiler if available.
+		if spOut, err := execCommand("system_profiler", "SPDisplaysDataType").Output(); err == nil {
+			for _, line := range strings.Split(string(spOut), "\n") {
+				if strings.Contains(strings.ToLower(line), "chipset model:") {
+					_, value, _ := strings.Cut(line, ":")
+					name = strings.TrimSpace(value)
+					break
+				}
+			}
+		}
+		// VRAM = unified memory minus a 4 GB OS reserve.
+		vram := float64(0)
+		if memOut, err := execCommand("sysctl", "-n", "hw.memsize").Output(); err == nil {
+			if bytes, err2 := strconv.ParseFloat(strings.TrimSpace(string(memOut)), 64); err2 == nil {
+				vram = bytes/(1024*1024*1024) - 4.0
+				if vram < 1 {
+					vram = 1
+				}
+			}
+		}
+		if vram <= 0 {
+			return localGPUInfo{}, false
+		}
+		return localGPUInfo{Vendor: "apple", Name: name, VRAMGB: vram}, true
+	}
+
+	// Intel Mac with discrete AMD/NVIDIA GPU.
+	out, err := execCommand("system_profiler", "SPDisplaysDataType").Output()
+	if err != nil {
+		return localGPUInfo{}, false
+	}
+	text := string(out)
+	lower := strings.ToLower(text)
+	if !strings.Contains(lower, "amd") && !strings.Contains(lower, "radeon") &&
+		!strings.Contains(lower, "nvidia") {
+		return localGPUInfo{}, false
+	}
+	vram := firstMemoryGB(text)
+	if vram <= 0 {
+		return localGPUInfo{}, false
+	}
+	vendor := "amd"
+	if strings.Contains(lower, "nvidia") && !strings.Contains(lower, "amd") && !strings.Contains(lower, "radeon") {
+		vendor = "nvidia"
+	}
+	name := strings.ToUpper(vendor) + " GPU"
+	for _, line := range strings.Split(text, "\n") {
+		if strings.Contains(strings.ToLower(line), "chipset model:") {
+			_, value, _ := strings.Cut(line, ":")
+			name = strings.TrimSpace(value)
+			break
+		}
+	}
+	return localGPUInfo{Vendor: vendor, Name: name, VRAMGB: vram}, true
+}
+
+func firstMemoryGB(s string) float64 {
+	fields := strings.Fields(strings.NewReplacer(":", " ", ",", " ", "(", " ", ")", " ").Replace(s))
+	for i, field := range fields {
+		value, err := strconv.ParseFloat(field, 64)
+		if err != nil {
+			continue
+		}
+		if value > 1024*1024*1024 {
+			return value / (1024 * 1024 * 1024)
+		}
+		if i+1 >= len(fields) {
+			continue
+		}
+		unit := strings.ToLower(fields[i+1])
+		switch {
+		case strings.HasPrefix(unit, "gib"), strings.HasPrefix(unit, "gb"):
+			return value
+		case strings.HasPrefix(unit, "mib"), strings.HasPrefix(unit, "mb"):
+			return value / 1024
+		case strings.HasPrefix(unit, "bytes"):
+			return value / (1024 * 1024 * 1024)
+		}
+	}
+	return 0
 }
 
 // builtinCatalog is the hardcoded curated list of top developer-laptop models.
@@ -918,11 +1639,6 @@ var builtinCatalog = []catalogEntry{
 		Name: "DeepSeek-Coder-V2-Lite", Repo: "unsloth/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
 		Quant: "Q4_K_M", SizeGB: "9.0", MinRAM: "12",
 		Tools: true, Note: "Excellent for complex code refactors. MoE architecture.",
-	},
-	{
-		Name: "Llama-3.1-8B", Repo: "unsloth/Meta-Llama-3.1-8B-Instruct-GGUF",
-		Quant: "Q4_K_M", SizeGB: "4.9", MinRAM: "8",
-		Tools: true, Note: "Good general-purpose. Solid tool use. Well-tested.",
 	},
 	{
 		Name: "Mistral-7B-v0.3", Repo: "unsloth/mistral-7b-instruct-v0.3-GGUF",
@@ -1000,7 +1716,7 @@ func runModelCatalogRefresh(stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "  Showing built-in catalog instead (may be behind a proxy).\n")
 		return runModelCatalogList(stdout)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort close after HuggingFace catalog response
 	if resp.StatusCode != 200 {
 		fmt.Fprintf(stderr, "refresh: HuggingFace API returned HTTP %d\n", resp.StatusCode)
 		fmt.Fprintf(stderr, "  Showing built-in catalog instead.\n")
@@ -1126,7 +1842,23 @@ func linuxServicePath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("home dir: %w", err)
 	}
-	return filepath.Join(home, ".config", "systemd", "user", "dev.milliways.local.service"), nil
+	return filepath.Join(home, ".config", "systemd", "user", "milliways-local.service"), nil
+}
+
+func macosSwapPlistPath() (string, error) {
+	home, err := userHomeDirFn()
+	if err != nil {
+		return "", fmt.Errorf("home dir: %w", err)
+	}
+	return filepath.Join(home, "Library", "LaunchAgents", "dev.milliways.local-swap.plist"), nil
+}
+
+func linuxSwapServicePath() (string, error) {
+	home, err := userHomeDirFn()
+	if err != nil {
+		return "", fmt.Errorf("home dir: %w", err)
+	}
+	return filepath.Join(home, ".config", "systemd", "user", "milliways-local-swap.service"), nil
 }
 
 // parsePortFromEndpoint extracts the port number from a URL like
@@ -1151,6 +1883,244 @@ func parsePortFromEndpoint(endpoint string) string {
 	return ""
 }
 
+func activateLocalInstall(stdout, stderr io.Writer) int {
+	fmt.Fprintln(stdout, "==> Activating local services...")
+	if code := runLocalServerRestart(stdout, stderr); code != 0 {
+		return code
+	}
+	if err := waitLocalServerReady(90 * time.Second); err != nil {
+		fmt.Fprintf(stderr, "local install: server did not become ready: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "[ok] local server ready at %s\n", localEndpoint())
+	if err := restartMilliwaysDaemon(stdout, stderr); err != nil {
+		fmt.Fprintf(stderr, "local install: milliwaysd did not become ready: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "[ok] /local is ready")
+	return 0
+}
+
+func activateLocalSwapInstall(stdout, stderr io.Writer) int {
+	fmt.Fprintln(stdout, "==> Activating local swap service...")
+	if err := writeLocalBackendSelection("llama-swap"); err != nil {
+		fmt.Fprintf(stderr, "local install-swap: write local.env: %v\n", err)
+		return 1
+	}
+	if code := runLocalSwapRestart(stdout, stderr); code != 0 {
+		return code
+	}
+	if err := waitLocalServerReady(90 * time.Second); err != nil {
+		fmt.Fprintf(stderr, "local install-swap: server did not become ready: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "[ok] local swap ready at %s\n", localEndpoint())
+	if err := restartMilliwaysDaemon(stdout, stderr); err != nil {
+		fmt.Fprintf(stderr, "local install-swap: milliwaysd did not become ready: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "[ok] /local is ready")
+	return 0
+}
+
+func writeLocalBackendSelection(kind string) error {
+	endpoint, err := localEndpointForKind(kind)
+	if err != nil {
+		return err
+	}
+	envPath, err := configPath("local.env")
+	if err != nil {
+		return err
+	}
+	removals := []string(nil)
+	if !localBackendUsesGeneratedAPIKey(kind) {
+		removals = append(removals, "MILLIWAYS_LOCAL_API_KEY")
+	}
+	return updateLocalEnvFile(envPath, map[string]string{"MILLIWAYS_LOCAL_ENDPOINT": endpoint}, removals)
+}
+
+func runLocalServerRestart(stdout, stderr io.Writer) int {
+	endpoint := localEndpoint()
+
+	if plist, err := macosPlistPath(); err == nil {
+		if _, err2 := os.Stat(plist); err2 == nil {
+			_ = runCtlCommand(stdout, stderr, "launchctl", "unload", plist)
+			if err3 := runCtlCommand(stdout, stderr, "launchctl", "load", "-w", plist); err3 == nil {
+				fmt.Fprintf(stdout, "[ok] local server restarted on %s\n", endpoint)
+				return 0
+			}
+		}
+	}
+
+	if svc, err := linuxServicePath(); err == nil {
+		if _, err2 := os.Stat(svc); err2 == nil {
+			_ = runCtlCommand(stdout, stderr, "systemctl", "--user", "daemon-reload")
+			_ = runCtlCommand(stdout, stderr, "systemctl", "--user", "enable", "--now", "milliways-local")
+			if err3 := runCtlCommand(stdout, stderr, "systemctl", "--user", "restart", "milliways-local"); err3 == nil {
+				fmt.Fprintf(stdout, "[ok] local server restarted on %s\n", endpoint)
+				return 0
+			}
+		}
+	}
+
+	_ = runLocalServerStop(nil, stdout, stderr)
+	return runLocalServerStart(nil, stdout, stderr)
+}
+
+func runLocalSwapRestart(stdout, stderr io.Writer) int {
+	endpoint := localEndpoint()
+
+	if plist, err := macosSwapPlistPath(); err == nil {
+		if _, err2 := os.Stat(plist); err2 == nil {
+			_ = runCtlCommand(stdout, stderr, "launchctl", "unload", plist)
+			if err3 := runCtlCommand(stdout, stderr, "launchctl", "load", "-w", plist); err3 == nil {
+				fmt.Fprintf(stdout, "[ok] local swap restarted on %s\n", endpoint)
+				return 0
+			}
+		}
+	}
+
+	if svc, err := linuxSwapServicePath(); err == nil {
+		if _, err2 := os.Stat(svc); err2 == nil {
+			_ = runCtlCommand(stdout, stderr, "systemctl", "--user", "daemon-reload")
+			_ = runCtlCommand(stdout, stderr, "systemctl", "--user", "enable", "--now", "milliways-local-swap")
+			if err3 := runCtlCommand(stdout, stderr, "systemctl", "--user", "restart", "milliways-local-swap"); err3 == nil {
+				fmt.Fprintf(stdout, "[ok] local swap restarted on %s\n", endpoint)
+				return 0
+			}
+		}
+	}
+
+	home, err := userHomeDirFn()
+	if err != nil {
+		fmt.Fprintf(stderr, "install-swap: home dir: %v\n", err)
+		return 1
+	}
+	launcher := filepath.Join(home, ".local", "bin", "milliways-local-swap")
+	if _, err2 := os.Stat(launcher); err2 != nil {
+		fmt.Fprintf(stderr, "install-swap: launcher not found at %s; run `milliwaysctl local install-swap` again\n", launcher)
+		return 1
+	}
+	cmd := execCommand(launcher)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err3 := cmd.Start(); err3 != nil {
+		fmt.Fprintf(stderr, "install-swap: %v\n", err3)
+		return 1
+	}
+	if cmd.Process != nil {
+		_ = cmd.Process.Release()
+	}
+	fmt.Fprintf(stdout, "[ok] local swap started on %s\n", endpoint)
+	return 0
+}
+
+func runLocalSwapStop(stdout, stderr io.Writer) int {
+	stopped := false
+	if plist, err := macosSwapPlistPath(); err == nil {
+		if _, err2 := os.Stat(plist); err2 == nil {
+			if err3 := runCtlCommand(stdout, stderr, "launchctl", "unload", plist); err3 == nil {
+				stopped = true
+			}
+		}
+	}
+	if !stopped {
+		if svc, err := linuxSwapServicePath(); err == nil {
+			if _, err2 := os.Stat(svc); err2 == nil {
+				if err3 := runCtlCommand(stdout, stderr, "systemctl", "--user", "stop", "milliways-local-swap"); err3 == nil {
+					stopped = true
+				}
+			}
+		}
+	}
+	if !stopped {
+		cmd := execCommand("pkill", "-f", "milliways-local-swap")
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
+		_ = cmd.Run()
+	}
+	return 0
+}
+
+func runCtlCommand(stdout, stderr io.Writer, name string, args ...string) error {
+	cmd := execCommand(name, args...)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
+}
+
+func waitLocalServerReady(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	endpoint := strings.TrimRight(localEndpoint(), "/")
+	url := endpoint + "/models"
+	var lastErr error
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err == nil {
+			addLocalAuth(req)
+			resp, err := http.DefaultClient.Do(req)
+			if err == nil {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					cancel()
+					return nil
+				}
+				lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			} else {
+				lastErr = err
+			}
+		} else {
+			lastErr = err
+		}
+		cancel()
+		time.Sleep(1 * time.Second)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("timed out")
+	}
+	return lastErr
+}
+
+func restartMilliwaysDaemon(stdout, stderr io.Writer) error {
+	if runtime.GOOS == "linux" {
+		if _, err := exec.LookPath("systemctl"); err == nil {
+			_ = runCtlCommand(stdout, stderr, "systemctl", "--user", "reset-failed", "milliwaysd")
+			if err2 := runCtlCommand(stdout, stderr, "systemctl", "--user", "restart", "milliwaysd"); err2 == nil {
+				fmt.Fprintln(stdout, "==> Waiting for services to finish installation...")
+				if err := waitDaemonSocketReady(15 * time.Second); err != nil {
+					return err
+				}
+				fmt.Fprintln(stdout, "[ok] milliwaysd restarted")
+				return nil
+			}
+		}
+	}
+	// If the daemon is not service-managed, it will reload local.env itself.
+	fmt.Fprintln(stdout, "[ok] milliwaysd will pick up local.env automatically")
+	return nil
+}
+
+func waitDaemonSocketReady(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	socketPath := defaultSocket()
+	var lastErr error
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("unix", socketPath, 250*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		lastErr = err
+		time.Sleep(100 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = errors.New("timed out")
+	}
+	return fmt.Errorf("%s not reachable after %s: %w", socketPath, timeout, lastErr)
+}
+
 // runLocalServerStart starts the local inference server via launchctl (macOS),
 // systemctl --user (Linux), or by exec-ing the launcher directly as a fallback.
 func runLocalServerStart(_ []string, stdout, stderr io.Writer) int {
@@ -1172,7 +2142,7 @@ func runLocalServerStart(_ []string, stdout, stderr io.Writer) int {
 	// Linux: systemctl --user start
 	if svc, err := linuxServicePath(); err == nil {
 		if _, err2 := os.Stat(svc); err2 == nil {
-			cmd := execCommand("systemctl", "--user", "start", "dev.milliways.local")
+			cmd := execCommand("systemctl", "--user", "start", "milliways-local")
 			cmd.Stdout = stdout
 			cmd.Stderr = stderr
 			if err3 := cmd.Run(); err3 == nil {
@@ -1225,7 +2195,7 @@ func runLocalServerStop(_ []string, stdout, stderr io.Writer) int {
 	if !stopped {
 		if svc, err := linuxServicePath(); err == nil {
 			if _, err2 := os.Stat(svc); err2 == nil {
-				cmd := execCommand("systemctl", "--user", "stop", "dev.milliways.local")
+				cmd := execCommand("systemctl", "--user", "stop", "milliways-local")
 				cmd.Stdout = stdout
 				cmd.Stderr = stderr
 				if err3 := cmd.Run(); err3 == nil {
@@ -1242,6 +2212,12 @@ func runLocalServerStop(_ []string, stdout, stderr io.Writer) int {
 		cmd.Stderr = stderr
 		// pkill exits 1 when no processes were found — that's acceptable.
 		_ = cmd.Run()
+		if cfg, err := configPath("rs-llmctl.toml"); err == nil {
+			cmd = execCommand("pkill", "-f", "llmctl .*--config "+cfg)
+			cmd.Stdout = stdout
+			cmd.Stderr = stderr
+			_ = cmd.Run()
+		}
 	}
 
 	fmt.Fprintln(stdout, "[ok] local server stopped")
@@ -1261,6 +2237,7 @@ func runLocalServerStatus(_ []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "server-status: build request: %v\n", err)
 		return 1
 	}
+	addLocalAuth(req)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		fmt.Fprintf(stdout, "status:   not running\n")
@@ -1268,7 +2245,7 @@ func runLocalServerStatus(_ []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "reason:   unreachable (%v)\n", err)
 		return 1
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort close after server status probe
 
 	if resp.StatusCode != http.StatusOK {
 		fmt.Fprintf(stdout, "status:   not running\n")
@@ -1317,7 +2294,7 @@ func runLocalServerPort(_ []string, stdout, stderr io.Writer) int {
 }
 
 // runLocalServerUninstall stops the server, removes service/plist files, the
-// launcher binary, and the MILLIWAYS_LOCAL_ENDPOINT key from local.env.
+// launcher binary, and local server keys from local.env.
 func runLocalServerUninstall(args []string, stdout, stderr io.Writer) int {
 	yes := hasFlag(args, "--yes")
 	if !yes {
@@ -1328,6 +2305,7 @@ func runLocalServerUninstall(args []string, stdout, stderr io.Writer) int {
 
 	// Stop first (best-effort).
 	_ = runLocalServerStop(nil, stdout, stderr)
+	_ = runLocalSwapStop(stdout, stderr)
 
 	home, err := userHomeDirFn()
 	if err != nil {
@@ -1343,9 +2321,19 @@ func runLocalServerUninstall(args []string, stdout, stderr io.Writer) int {
 			removed = append(removed, plist)
 		}
 	}
+	if plist, err2 := macosSwapPlistPath(); err2 == nil {
+		if err3 := os.Remove(plist); err3 == nil {
+			removed = append(removed, plist)
+		}
+	}
 
 	// Linux systemd unit.
 	if svc, err2 := linuxServicePath(); err2 == nil {
+		if err3 := os.Remove(svc); err3 == nil {
+			removed = append(removed, svc)
+		}
+	}
+	if svc, err2 := linuxSwapServicePath(); err2 == nil {
 		if err3 := os.Remove(svc); err3 == nil {
 			removed = append(removed, svc)
 		}
@@ -1356,19 +2344,19 @@ func runLocalServerUninstall(args []string, stdout, stderr io.Writer) int {
 	if err2 := os.Remove(launcher); err2 == nil {
 		removed = append(removed, launcher)
 	}
+	swapLauncher := filepath.Join(home, ".local", "bin", "milliways-local-swap")
+	if err2 := os.Remove(swapLauncher); err2 == nil {
+		removed = append(removed, swapLauncher)
+	}
 
-	// Remove MILLIWAYS_LOCAL_ENDPOINT from local.env.
+	// Remove local server keys from local.env.
 	envPath, err := configPath("local.env")
 	if err == nil {
-		if data, err2 := os.ReadFile(envPath); err2 == nil {
-			var kept []string
-			for _, line := range strings.Split(string(data), "\n") {
-				if !strings.HasPrefix(line, "MILLIWAYS_LOCAL_ENDPOINT=") {
-					kept = append(kept, line)
-				}
-			}
-			_ = os.WriteFile(envPath, []byte(strings.Join(kept, "\n")), 0o644)
-		}
+		_ = updateLocalEnvFile(envPath, nil, []string{
+			"MILLIWAYS_LOCAL_ENDPOINT",
+			"MILLIWAYS_LOCAL_MODEL",
+			"MILLIWAYS_LOCAL_API_KEY",
+		})
 	}
 
 	for _, p := range removed {
@@ -1380,8 +2368,8 @@ func runLocalServerUninstall(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// runLocalDefaultModel updates the launcher script and local.env to use the
-// model matching alias in llama-swap.yaml, then prints confirmation.
+// runLocalDefaultModel updates the llama-swap launcher and local.env to use
+// the model matching alias in llama-swap.yaml, then prints confirmation.
 func runLocalDefaultModel(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
 		fmt.Fprintln(stderr, "local default-model: <alias> required")
@@ -1397,7 +2385,7 @@ func runLocalDefaultModel(args []string, stdout, stderr io.Writer) int {
 	}
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "default-model: read %s: %v\n  run `milliwaysctl local setup-model` to register models first\n", cfgPath, err)
+		fmt.Fprintf(stderr, "default-model: read %s: %v\n  this command manages llama-swap models; use `milliwaysctl local setup-model` to register swap models first\n", cfgPath, err)
 		return 1
 	}
 

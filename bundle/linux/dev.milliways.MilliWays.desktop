@@ -6,6 +6,6 @@ Keywords=ai;terminal;shell;prompt;command;agent;
 Icon=dev.milliways.MilliWays
 StartupWMClass=MilliWays
 TryExec=milliways-term
-Exec=milliways-term
+Exec=milliways-term --config-file /usr/share/milliways/wezterm.lua
 Categories=System;TerminalEmulator;Utility;Development;
 Terminal=false

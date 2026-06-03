@@ -18,8 +18,8 @@ package runners
 // $MILLIWAYS_LOCAL_ENDPOINT (default http://localhost:8765/v1). The
 // default endpoint matches what scripts/install_local.sh configures and
 // what `milliwaysctl local install-server` provisions. Compatible
-// backends include llama.cpp's `llama-server`, `llama-swap`, vLLM,
-// LMStudio, and Ollama via its OpenAI-compatible `/v1` shim.
+// backends include rs-llmctl, llama-swap, vLLM, LMStudio, and Ollama via
+// its OpenAI-compatible `/v1` shim.
 //
 // Tool execution is on by default. Local model runners drive the same
 // agentic tool loop (`RunAgenticLoop` + `tools.NewBuiltInRegistry()`) as
@@ -42,6 +42,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mwigge/milliways/internal/provider"
 	"github.com/mwigge/milliways/internal/tools"
@@ -49,7 +50,7 @@ import (
 
 const (
 	localDefaultEndpoint = "http://localhost:8765/v1"
-	localDefaultModel    = "devstral-small"
+	localDefaultModel    = "qwen2.5-7b"
 )
 
 // localSystemPrompt mirrors minimaxSystemPrompt — same guidance, different
@@ -112,11 +113,13 @@ const localXMLSystemPromptBase = "You are a senior software engineer and code re
 	"Read files, run commands, make changes. " +
 	"Work on the task until it is done or you explicitly need input from the user."
 
-// isXMLToolModel returns true for models that use XML tool calling
-// (Devstral / Mistral-family) instead of OpenAI tool_calls JSON.
+// isXMLToolModel returns true for models that use XML tool calling instead of
+// OpenAI tool_calls JSON.
 func isXMLToolModel(model string) bool {
 	lower := strings.ToLower(model)
-	return strings.Contains(lower, "devstral") || strings.Contains(lower, "mistral")
+	return strings.Contains(lower, "devstral") ||
+		strings.Contains(lower, "mistral") ||
+		strings.Contains(lower, "qwen")
 }
 
 // buildLocalXMLSystemPrompt builds the system prompt for XML tool models,
@@ -142,11 +145,12 @@ var (
 )
 
 type localSessionState struct {
-	messages []Message
+	messages        []Message
+	pendingApproval *approvalGatePending
 }
 
 func localRegistry() *tools.Registry {
-	if strings.EqualFold(os.Getenv("MILLIWAYS_LOCAL_TOOLS"), "off") {
+	if toolsDisabledByEnv(os.Getenv("MILLIWAYS_LOCAL_TOOLS")) {
 		return nil
 	}
 	localToolRegistryMu.RLock()
@@ -156,6 +160,15 @@ func localRegistry() *tools.Registry {
 		return r
 	}
 	return tools.NewBuiltInRegistry()
+}
+
+func toolsDisabledByEnv(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "0", "off", "false":
+		return true
+	default:
+		return false
+	}
 }
 
 // localHTTPClient is the per-runner HTTP client. Per-runner (not
@@ -175,19 +188,23 @@ var ErrLocalQuota = errors.New("local backend quota or rate limit")
 // chunk_end is always pushed (per dispatch, even on error paths) so
 // clients waiting on a terminal frame per agent.send do not hang.
 func RunLocal(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
+	RunLocalWithSecurityWorkspace(ctx, input, stream, metrics, "")
+}
+
+func RunLocalWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
 	state := &localSessionState{}
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runLocalOnce(ctx, prompt, stream, metrics, state)
+		runLocalOnce(ctx, prompt, stream, metrics, state, securityWorkspace)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
-func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *localSessionState) {
+func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *localSessionState, securityWorkspace string) {
 	endpoint := strings.TrimRight(os.Getenv("MILLIWAYS_LOCAL_ENDPOINT"), "/")
 	if endpoint == "" {
 		endpoint = localDefaultEndpoint
@@ -218,18 +235,56 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	if state == nil {
 		state = &localSessionState{}
 	}
+	if state.pendingApproval != nil && !planningApprovalGateEnabled() {
+		state.pendingApproval = nil
+	}
+	if state.pendingApproval != nil {
+		if approvalGateExpired(state.pendingApproval.Request, time.Now()) {
+			state.pendingApproval = nil
+			approvalGateExpiredInput(stream)
+			return
+		}
+		approved, rejected := approvalGateDecision(text)
+		switch {
+		case approved:
+			text = approvalGateImplementPrompt(state.pendingApproval.OriginalPrompt, state.pendingApproval.Plan)
+			state.pendingApproval = nil
+		case rejected:
+			state.pendingApproval = nil
+			approvalGateCancelled(stream)
+			return
+		default:
+			original := state.pendingApproval.OriginalPrompt
+			text = approvalGatePlanPrompt(original + "\n\nUser feedback:\n" + text)
+			state.pendingApproval = &approvalGatePending{
+				OriginalPrompt: original,
+				Request:        approvalGateNewRequest(AgentIDLocal, securityWorkspace, original, time.Now()),
+			}
+		}
+	} else if planningApprovalGateEnabled() && approvalGateNeedsPlan(text) {
+		state.pendingApproval = &approvalGatePending{
+			OriginalPrompt: text,
+			Request:        approvalGateNewRequest(AgentIDLocal, securityWorkspace, text, time.Now()),
+		}
+		text = approvalGatePlanPrompt(text)
+	}
 	timeout := runnerRequestTimeout("MILLIWAYS_LOCAL_TIMEOUT")
 
 	spanCtx, span := startDispatchSpan(parent, AgentIDLocal, model)
 	ctx, cancel := contextWithOptionalTimeout(spanCtx, timeout)
 	defer cancel()
 
-	registry := localRegistry()
+	planningOnly := state.pendingApproval != nil && state.pendingApproval.Plan == ""
+	promptRegistry := localRegistry()
+	executionRegistry := promptRegistry
+	if planningOnly {
+		executionRegistry = nil
+	}
 	xmlMode := isXMLToolModel(model)
 	if len(state.messages) == 0 {
 		var sysPrompt string
-		if xmlMode && registry != nil {
-			sysPrompt = buildLocalXMLSystemPrompt(registry.List())
+		if xmlMode && promptRegistry != nil {
+			sysPrompt = buildLocalXMLSystemPrompt(promptRegistry.List())
 		} else {
 			sysPrompt = localSystemPrompt
 		}
@@ -254,12 +309,14 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		}
 	}
 
-	result, err := RunAgenticLoop(ctx, client, registry, &messages, LoopOptions{
+	result, err := RunAgenticLoop(ctx, client, executionRegistry, &messages, LoopOptions{
 		SessionID:              AgentIDLocal,
 		Logger:                 slog.Default(),
 		XMLToolMode:            xmlMode,
 		Compaction:             CompactionOptions{CtxTokens: ctxTokens},
 		StopOnUserInputRequest: true,
+		CommandFirewall:        commandFirewallForAgentWorkspace(AgentIDLocal, securityWorkspace),
+		ToolHooks:              toolHooksForAgentWorkspace(AgentIDLocal, securityWorkspace),
 	})
 	if err != nil {
 		observeError(metrics, AgentIDLocal)
@@ -288,6 +345,13 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	}
 	if result.StoppedAt == StopReasonNeedsInput {
 		push["needs_input"] = true
+	}
+	if planningOnly {
+		if state.pendingApproval != nil {
+			state.pendingApproval.Plan = strings.TrimSpace(result.FinalContent)
+		}
+		approvalGateNeedsInput(stream, push, state.pendingApproval.Request)
+		return
 	}
 	stream.Push(push)
 }
@@ -346,13 +410,13 @@ func (c *localClient) Send(ctx context.Context, messages []Message, toolDefs []p
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return TurnResult{}, fmt.Errorf("connect %s: %w (is the backend running? `milliwaysctl local install-server` to bootstrap)", url, err)
+		return TurnResult{}, fmt.Errorf("connect %s: %s (is the backend running? `milliwaysctl local install-server` to bootstrap)", sanitizeProviderURL(url), scrubProviderSecrets(err.Error()))
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close after streaming response is consumed
 
 	if resp.StatusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		msg := scrubBearer(strings.TrimSpace(string(errBody)))
+		msg := sanitizeProviderErrorBody(errBody)
 		if resp.StatusCode == http.StatusTooManyRequests || localBodyLooksQuota(msg) {
 			return TurnResult{}, fmt.Errorf("%w: API %d: %s", ErrLocalQuota, resp.StatusCode, msg)
 		}

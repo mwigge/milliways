@@ -60,11 +60,12 @@ type observeRenderFrame struct {
 }
 
 type observeRenderStatus struct {
-	ActiveAgent *string `json:"active_agent"`
-	TokensIn    int     `json:"tokens_in"`
-	TokensOut   int     `json:"tokens_out"`
-	CostUSD     float64 `json:"cost_usd"`
-	QuotaPct    float64 `json:"quota_pct"`
+	ActiveAgent       *string                             `json:"active_agent"`
+	TokensIn          int                                 `json:"tokens_in"`
+	TokensOut         int                                 `json:"tokens_out"`
+	CostUSD           float64                             `json:"cost_usd"`
+	QuotaPct          float64                             `json:"quota_pct"`
+	ClientEnforcement map[string]observeRenderEnforcement `json:"client_enforcement"`
 }
 
 type observeRenderQuota struct {
@@ -76,57 +77,153 @@ type observeRenderQuota struct {
 }
 
 type observeRenderUsage struct {
-	Status observeRenderStatus
-	Quotas []observeRenderQuota
+	Status   observeRenderStatus
+	Quotas   []observeRenderQuota
+	Security observeRenderSecurity
+}
+
+type observeRenderSecurity struct {
+	Installed            bool                                `json:"installed"`
+	Enabled              bool                                `json:"enabled"`
+	Workspace            string                              `json:"workspace"`
+	SecurityWorkspace    string                              `json:"security_workspace"`
+	Mode                 string                              `json:"mode"`
+	Posture              string                              `json:"posture"`
+	Warnings             int                                 `json:"warnings"`
+	Blocks               int                                 `json:"blocks"`
+	WarningCount         int                                 `json:"warning_count"`
+	BlockCount           int                                 `json:"block_count"`
+	StartupScanCompleted bool                                `json:"startup_scan_completed"`
+	StartupScanRequired  bool                                `json:"startup_scan_required"`
+	StartupScanStale     bool                                `json:"startup_scan_stale"`
+	LastStartupScanAt    string                              `json:"last_startup_scan_at"`
+	LastDependencyScanAt string                              `json:"last_dependency_scan_at"`
+	LastStartupScan      string                              `json:"last_startup_scan"`
+	LastDependencyScan   string                              `json:"last_dependency_scan"`
+	Scanners             []observeRenderScanner              `json:"scanners"`
+	ActiveClient         string                              `json:"active_client"`
+	ClientEnforcement    map[string]observeRenderEnforcement `json:"client_enforcement"`
+	CRA                  observeRenderCRA                    `json:"cra"`
+}
+
+type observeRenderEnforcement struct {
+	Level         string `json:"level"`
+	ControlledEnv bool   `json:"controlled_env,omitempty"`
+	BrokerPath    string `json:"broker_path,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+}
+
+type observeRenderScanner struct {
+	Name      string `json:"name"`
+	Installed bool   `json:"installed"`
+}
+
+type observeRenderCRA struct {
+	EvidenceScore           int    `json:"evidence_score"`
+	ChecksTotal             int    `json:"checks_total"`
+	ChecksPresent           int    `json:"checks_present"`
+	ChecksPartial           int    `json:"checks_partial"`
+	ChecksMissing           int    `json:"checks_missing"`
+	ReportingReady          bool   `json:"reporting_ready"`
+	ReportingPresent        int    `json:"reporting_present"`
+	ReportingTotal          int    `json:"reporting_total"`
+	DesignEvidenceStatus    string `json:"design_evidence_status"`
+	DaysToReporting         int    `json:"days_to_reporting"`
+	ReportingDeadline       string `json:"reporting_deadline"`
+	ReportingDeadlineStatus string `json:"reporting_deadline_status"`
+	FullDeadline            string `json:"full_deadline"`
+	SecurityWarnings        int    `json:"security_warnings"`
+	SecurityBlocks          int    `json:"security_blocks"`
+	NextAction              string `json:"next_action"`
 }
 
 // observeRender opens an observability.subscribe stream and writes a
-// rendered frame to stdout for each event. Returns when the daemon
-// closes the stream or stdout fails (e.g. parent pane closed).
+// rendered frame immediately, then refreshes it once per second. Quiet
+// daemons may not emit spans for a while; the cockpit still needs to be
+// visible as soon as the pane is created. The Linux desktop app starts
+// milliwaysd and this pane in the same gui-startup hook, so startup races
+// must render a waiting frame and retry instead of exiting and making the
+// cockpit disappear.
 func observeRender(socket string) {
+	for {
+		if observeRenderOnce(socket) {
+			return
+		}
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func observeRenderOnce(socket string) bool {
 	c, err := rpc.Dial(socket)
 	if err != nil {
-		die("dial %s: %v", socket, err)
+		return renderObserveWaiting(socket, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	events, cancel, err := c.Subscribe("observability.subscribe", nil)
 	if err != nil {
-		die("observability.subscribe: %v", err)
+		return renderObserveWaiting(socket, fmt.Errorf("observability.subscribe: %w", err))
 	}
 	defer cancel()
 
-	// Throttle emission to 1 Hz even if the daemon ever emits faster —
-	// the cockpit's frame budget is 1 Hz steady-state.
-	const minInterval = 1 * time.Second
-	var lastEmit time.Time
-
-	for ev := range events {
-		var frame observeRenderFrame
-		if err := json.Unmarshal(ev, &frame); err != nil {
-			continue
-		}
-		if frame.T != "data" {
-			continue
-		}
+	var spans []observeRenderSpan
+	render := func() bool {
 		now := time.Now()
-		if !lastEmit.IsZero() && now.Sub(lastEmit) < minInterval {
-			continue
-		}
-		lastEmit = now
 		usage := fetchObserveRenderUsage(c)
-		out := formatObservabilityFrame(now.UTC(), frame.Spans, usage)
+		out := formatObservabilityFrame(now.UTC(), spans, usage)
 		// Clear scrollback + viewport and hide the cursor so the pane
 		// behaves like a dashboard, not an interactive prompt.
 		if _, err := fmt.Fprint(os.Stdout, "\x1b[?25l\x1b[3J\x1b[2J\x1b[H"+out); err != nil {
-			return
+			return false
+		}
+		return true
+	}
+	if !render() {
+		return true
+	}
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				return false
+			}
+			var frame observeRenderFrame
+			if err := json.Unmarshal(ev, &frame); err != nil || frame.T != "data" {
+				continue
+			}
+			spans = frame.Spans
+		case <-ticker.C:
+			if !render() {
+				return true
+			}
 		}
 	}
+}
+
+func renderObserveWaiting(socket string, err error) bool {
+	now := time.Now().UTC()
+	out := strings.Join([]string{
+		"milliways observability",
+		"waiting for daemon",
+		"",
+		"socket: " + socket,
+		"status: " + err.Error(),
+		"",
+		now.Format(time.RFC3339),
+	}, "\n")
+	if _, writeErr := fmt.Fprint(os.Stdout, "\x1b[?25l\x1b[3J\x1b[2J\x1b[H"+out); writeErr != nil {
+		return true
+	}
+	return false
 }
 
 func fetchObserveRenderUsage(c *rpc.Client) observeRenderUsage {
 	var usage observeRenderUsage
 	_ = c.Call("status.get", nil, &usage.Status)
 	_ = c.Call("quota.get", nil, &usage.Quotas)
+	_ = c.Call("security.status", nil, &usage.Security)
 	return usage
 }
 
@@ -280,6 +377,25 @@ func formatObservabilityFrame(now time.Time, spans []observeRenderSpan, usage ob
 		formatObserveTokenCount(usage.Status.TokensIn+usage.Status.TokensOut))
 	fmt.Fprintf(&b, "│   cost:          %s (last 5m)\n", formatObserveCost(usage.Status.CostUSD))
 	fmt.Fprintf(&b, "│   time to limit: %s\n", formatTimeToLimit(usage.Quotas))
+	fmt.Fprintf(&b, "│   security:      %s\n", formatObserveSecurity(usage.Security))
+	if detail := formatObserveSecurityDetail(usage.Security); detail != "" {
+		fmt.Fprintf(&b, "│   sec detail:    %s\n", detail)
+	}
+	if policy := formatObserveSecurityPolicy(usage.Security); policy != "" {
+		fmt.Fprintf(&b, "│   sec policy:    %s\n", policy)
+	}
+	if enforcement := formatObserveClientEnforcement(usage.Security.ClientEnforcement, usage.Status.ClientEnforcement); enforcement != "" {
+		fmt.Fprintf(&b, "│   sec clients:   %s\n", enforcement)
+	}
+	if workspace := observeSecurityWorkspace(usage.Security); workspace != "" {
+		fmt.Fprintf(&b, "│   sec workspace: %s\n", truncateObserveText(workspace, 84))
+	}
+	if cra := formatObserveCRA(usage.Security.CRA); cra != "" {
+		fmt.Fprintf(&b, "│   cra:           %s\n", cra)
+	}
+	if next := strings.TrimSpace(usage.Security.CRA.NextAction); next != "" {
+		fmt.Fprintf(&b, "│   cra next:      %s\n", truncateObserveText(next, 84))
+	}
 	bars := computeLatencyBars(spans, latencyTopN)
 	if len(bars) == 0 {
 		bars = []charts.Bar{
@@ -294,6 +410,201 @@ func formatObservabilityFrame(now time.Time, spans []observeRenderSpan, usage ob
 	fmt.Fprintf(&b, "│   %s\n", charts.KittyEscape(png, 0))
 	fmt.Fprintln(&b, "╰──")
 	return b.String()
+}
+
+func observeSecurityWorkspace(sec observeRenderSecurity) string {
+	if workspace := strings.TrimSpace(sec.SecurityWorkspace); workspace != "" {
+		return workspace
+	}
+	return strings.TrimSpace(sec.Workspace)
+}
+
+func formatObserveSecurity(sec observeRenderSecurity) string {
+	mode := strings.TrimSpace(sec.Mode)
+	if mode == "" {
+		mode = "warn"
+	}
+	posture := strings.ToLower(strings.TrimSpace(sec.Posture))
+	warnings := sec.Warnings
+	if warnings == 0 {
+		warnings = sec.WarningCount
+	}
+	blocks := sec.Blocks
+	if blocks == 0 {
+		blocks = sec.BlockCount
+	}
+	switch {
+	case blocks > 0:
+		posture = "block"
+	case warnings > 0 && posture == "":
+		posture = "warn"
+	case posture == "":
+		posture = "ok"
+	}
+	label := "SEC OK"
+	switch posture {
+	case "block":
+		label = fmt.Sprintf("SEC BLOCK %d", blocks)
+	case "warn":
+		label = fmt.Sprintf("SEC WARN %d", warnings)
+	}
+	modeHint := observeSecurityModeHint(mode, blocks)
+	if !sec.Installed {
+		if posture == "ok" || posture == "" {
+			label = "SEC WARN"
+		}
+		return fmt.Sprintf("%s (mode %s: %s, osv scanner missing)", label, mode, modeHint)
+	}
+	return fmt.Sprintf("%s (mode %s: %s)", label, mode, modeHint)
+}
+
+func observeSecurityModeHint(mode string, blocks int) string {
+	switch strings.TrimSpace(mode) {
+	case "off":
+		return "checks disabled"
+	case "observe":
+		return "record only"
+	case "strict":
+		return "block gates"
+	case "ci":
+		return "fail closed"
+	default:
+		if blocks > 0 {
+			return "audit/continue"
+		}
+		return "warn/audit"
+	}
+}
+
+func formatObserveSecurityDetail(sec observeRenderSecurity) string {
+	var parts []string
+	switch {
+	case sec.StartupScanStale:
+		parts = append(parts, "startup scan stale")
+	case sec.StartupScanRequired:
+		parts = append(parts, "startup scan required")
+	}
+	if missing := missingObserveScanners(sec.Scanners); len(missing) > 0 {
+		parts = append(parts, "missing local scanners "+strings.Join(missing, ", "))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func formatObserveSecurityPolicy(sec observeRenderSecurity) string {
+	var parts []string
+	if sec.ActiveClient != "" {
+		parts = append(parts, "active "+sec.ActiveClient)
+	}
+	if sec.StartupScanCompleted {
+		parts = append(parts, "startup complete")
+	}
+	if sec.LastStartupScanAt != "" {
+		parts = append(parts, "last startup "+shortObserveTimestamp(sec.LastStartupScanAt))
+	} else if sec.LastStartupScan != "" {
+		parts = append(parts, "last startup "+shortObserveTimestamp(sec.LastStartupScan))
+	}
+	if sec.LastDependencyScanAt != "" {
+		parts = append(parts, "last deps "+shortObserveTimestamp(sec.LastDependencyScanAt))
+	} else if sec.LastDependencyScan != "" {
+		parts = append(parts, "last deps "+shortObserveTimestamp(sec.LastDependencyScan))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func formatObserveClientEnforcement(security, status map[string]observeRenderEnforcement) string {
+	if len(security) == 0 {
+		security = status
+	}
+	if len(security) == 0 {
+		return ""
+	}
+	counts := make(map[string]int)
+	for _, enforcement := range security {
+		level := strings.TrimSpace(enforcement.Level)
+		if level == "" {
+			level = "unknown"
+		}
+		if level == "brokered" && (strings.TrimSpace(enforcement.BrokerPath) == "" || !enforcement.ControlledEnv) {
+			level = "preflight-only"
+		}
+		counts[level]++
+	}
+	order := []string{"full", "brokered", "preflight-only", "unknown"}
+	var parts []string
+	for _, level := range order {
+		if counts[level] > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", level, counts[level]))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ", ")
+}
+
+func shortObserveTimestamp(ts string) string {
+	ts = strings.TrimSpace(ts)
+	if ts == "" {
+		return ""
+	}
+	if parsed, err := time.Parse(time.RFC3339, ts); err == nil {
+		return parsed.UTC().Format("2006-01-02T15:04Z")
+	}
+	if len(ts) > len("2006-01-02T15:04Z") {
+		return ts[:len("2006-01-02T15:04Z")]
+	}
+	return ts
+}
+
+func missingObserveScanners(scanners []observeRenderScanner) []string {
+	var missing []string
+	for _, scanner := range scanners {
+		name := strings.TrimSpace(scanner.Name)
+		if name == "" || scanner.Installed {
+			continue
+		}
+		missing = append(missing, name)
+	}
+	sort.Strings(missing)
+	return missing
+}
+
+func formatObserveCRA(cra observeRenderCRA) string {
+	if cra.ChecksTotal == 0 && cra.ReportingTotal == 0 && cra.ReportingDeadline == "" {
+		return ""
+	}
+	score := cra.EvidenceScore
+	if score < 0 {
+		score = 0
+	}
+	if score > 100 {
+		score = 100
+	}
+	reporting := "--"
+	if cra.ReportingTotal > 0 {
+		reporting = fmt.Sprintf("%d/%d", cra.ReportingPresent, cra.ReportingTotal)
+	}
+	ready := "not ready"
+	if cra.ReportingReady {
+		ready = "ready"
+	}
+	design := strings.TrimSpace(cra.DesignEvidenceStatus)
+	if design == "" {
+		design = "missing"
+	}
+	return fmt.Sprintf("%d%% evidence, reporting %s %s, security %dw/%db, design %s",
+		score, reporting, ready, cra.SecurityWarnings, cra.SecurityBlocks, design)
+}
+
+func truncateObserveText(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return strings.TrimSpace(s[:max-3]) + "..."
 }
 
 func formatObserveTokenCount(n int) string {

@@ -275,5 +275,5 @@ func maxInt(a, b int) int {
 }
 
 func writeParallelComparison(w io.Writer, status rpc.GroupStatusResult, consensus string, width int) {
-	fmt.Fprint(w, renderParallelComparison(status, consensus, width))
+	_, _ = fmt.Fprint(w, renderParallelComparison(status, consensus, width))
 }

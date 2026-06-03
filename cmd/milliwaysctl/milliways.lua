@@ -99,6 +99,7 @@ config.mouse_bindings = {
 -- path when present so stale user-local binaries cannot shadow package upgrades.
 local local_bin = (os.getenv('HOME') or '') .. '/.local/bin'
 local path_env  = os.getenv('PATH') or '/usr/bin:/bin:/usr/sbin:/sbin'
+local app_bin   = wezterm.executable_dir
 
 local function file_exists(path)
   local f = io.open(path, 'r')
@@ -113,6 +114,9 @@ local function resolve_milliways_bin(name)
   local override = os.getenv('MILLIWAYS_BIN_DIR')
   if override and override ~= '' and file_exists(override .. '/' .. name) then
     return override .. '/' .. name
+  end
+  if app_bin and app_bin ~= '' and file_exists(app_bin .. '/' .. name) then
+    return app_bin .. '/' .. name
   end
   if file_exists('/usr/bin/' .. name) then
     return '/usr/bin/' .. name
@@ -129,6 +133,9 @@ local daemon_bin  = resolve_milliways_bin('milliwaysd')
 
 if not path_env:find('/usr/bin', 1, true) then
   path_env = '/usr/bin:' .. path_env
+end
+if app_bin and app_bin ~= '' and not path_env:find(app_bin, 1, true) then
+  path_env = app_bin .. ':' .. path_env
 end
 if not path_env:find(local_bin, 1, true) then
   path_env = path_env .. ':' .. local_bin
@@ -164,6 +171,8 @@ local abbrs = {
   codex   = 'X',
   copilot = 'Cp',
   minimax = 'M',
+  kimi    = 'K',
+  deepseek = 'Ds',
   gemini  = 'G',
   ['local'] = 'L',
   pool    = 'P',
@@ -180,6 +189,8 @@ local client_themes = {
   codex   = { accent='#ffb454', cursor='#ffb454', tab_bg='#2b1a00', tab_fg='#ffd08a', bar_bg='#180f00' },
   copilot = { accent='#5f8cff', cursor='#5f8cff', tab_bg='#071633', tab_fg='#a9c2ff', bar_bg='#040b1a' },
   minimax = { accent='#af87d7', cursor='#af87d7', tab_bg='#21132f', tab_fg='#d7b8ff', bar_bg='#130a1c' },
+  kimi    = { accent='#87afff', cursor='#87afff', tab_bg='#061733', tab_fg='#b8d2ff', bar_bg='#030b1a' },
+  deepseek = { accent='#00d75f', cursor='#00d75f', tab_bg='#052414', tab_fg='#8affb8', bar_bg='#021209' },
   gemini  = { accent='#ff8700', cursor='#ff8700', tab_bg='#2b1300', tab_fg='#ffbd66', bar_bg='#170a00' },
   ['local'] = { accent='#d70000', cursor='#d70000', tab_bg='#2a0000', tab_fg='#ff8a8a', bar_bg='#150000' },
   pool    = { accent='#87d7ff', cursor='#87d7ff', tab_bg='#061c2a', tab_fg='#b8e7ff', bar_bg='#031018' },
@@ -187,6 +198,7 @@ local client_themes = {
 local default_theme = { accent='#4db51f', cursor='#4db51f', tab_bg='#1d2021', tab_fg='#ebdbb2', bar_bg='#1d2021' }
 
 local last_client = ''
+local last_security_banner_key = ''
 
 local function abbrev_path(path)
   if home ~= '' and path:sub(1, #home) == home then
@@ -227,9 +239,77 @@ local function format_cost(n)
   return string.format('$%.1f', n)
 end
 
+local function security_badge(sec)
+  if type(sec) ~= 'table' then return nil end
+  local mode = sec.mode or 'warn'
+  local posture = string.lower(sec.posture or '')
+  local warnings = as_number(sec.warnings or sec.warning_count)
+  local blocks = as_number(sec.blocks or sec.block_count)
+  local startup_stale = sec.startup_scan_stale == true
+  local startup_required = sec.startup_scan_required == true
+  local enforcement = sec.client_enforcement or {}
+  local preflight = 0
+  if type(enforcement) == 'table' then
+    for _, meta in pairs(enforcement) do
+      if type(meta) == 'table' and (meta.level == 'preflight-only' or (meta.level == 'brokered' and (not meta.broker_path or meta.broker_path == '' or meta.controlled_env ~= true))) then
+        preflight = preflight + 1
+      end
+    end
+  end
+  if blocks > 0 then
+    posture = 'block'
+  elseif (startup_required or startup_stale) and posture == 'ok' then
+    posture = 'warn'
+  elseif warnings > 0 and posture == '' then
+    posture = 'warn'
+  elseif posture == '' then
+    posture = 'ok'
+  end
+  if sec.installed == false and posture == 'ok' then
+    posture = 'warn'
+  end
+
+  if posture == 'block' then
+    local detail = startup_stale and ' · startup stale' or ''
+    local mode_hint = (mode == 'warn' or mode == 'observe') and 'audit/continue' or 'gates may block'
+    return {
+      label = 'SEC BLOCK ' .. tostring(math.floor(blocks)),
+      color = '#fb4934',
+      key = 'block:' .. tostring(math.floor(blocks)) .. ':' .. tostring(math.floor(warnings)) .. ':' .. tostring(startup_stale),
+      banner = blocks > 0,
+      message = 'SEC BLOCK ' .. tostring(math.floor(blocks)) .. ' · mode ' .. mode .. ' (' .. mode_hint .. ')' .. detail,
+    }
+  end
+  if posture == 'warn' then
+    local suffix = warnings > 0 and (' ' .. tostring(math.floor(warnings))) or ''
+    if startup_stale then suffix = suffix .. ' stale' end
+    local detail = ''
+    if startup_stale then detail = detail .. ' · startup stale'
+    elseif startup_required then detail = detail .. ' · startup required' end
+    if preflight > 0 then detail = detail .. ' · preflight clients ' .. tostring(preflight) end
+    return {
+      label = 'SEC WARN' .. suffix,
+      color = '#fabd2f',
+      key = 'warn:' .. tostring(math.floor(warnings)) .. ':' .. tostring(math.floor(blocks)) .. ':' .. tostring(startup_stale) .. ':' .. tostring(startup_required) .. ':' .. tostring(preflight),
+      banner = warnings > 0 or startup_stale or startup_required,
+      message = 'SEC WARN' .. suffix .. ' · mode ' .. mode .. detail,
+    }
+  end
+  return {
+    label = 'SEC OK',
+    color = '#8ec07c',
+    key = 'ok',
+    banner = false,
+    message = 'SEC OK',
+  }
+end
+
 local function pane_path(pane)
   local uri = pane and pane.current_working_dir
   if uri and uri ~= '' then
+    if type(uri) ~= 'string' then
+      uri = tostring(uri)
+    end
     local path = uri:gsub('^file://', '')
     path = path:gsub('%%20', ' ')
     return abbrev_path(path)
@@ -261,6 +341,12 @@ wezterm.on('update-status', function(window, _pane)
   local tokens_out = as_number(data.tout or data.tokens_out)
   local cost = as_number(data.cost or data.cost_usd)
   local errors = as_number(data.errors or data.errors_5m)
+  local sec = security_badge(data.sec or data.security)
+
+  if sec and sec.banner and sec.key ~= last_security_banner_key then
+    last_security_banner_key = sec.key
+    window:toast_notification('MilliWays security', sec.message, nil, 6000)
+  end
 
   -- Apply per-client color theme when client changes.
   local theme = client_themes[current] or default_theme
@@ -333,6 +419,13 @@ wezterm.on('update-status', function(window, _pane)
     table.insert(cells, { Text = ' err:' .. tostring(math.floor(errors)) .. ' ' })
   end
 
+  if sec then
+    table.insert(cells, { Foreground = { Color = '#504945' } })
+    table.insert(cells, { Text = '│' })
+    table.insert(cells, { Foreground = { Color = sec.color } })
+    table.insert(cells, { Text = ' ' .. sec.label .. ' ' })
+  end
+
   table.insert(cells, { Foreground = { Color = '#504945' } })
   table.insert(cells, { Text = '│' })
 
@@ -386,14 +479,22 @@ config.keys = {
   },
   {
     key = '5', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'gemini' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'kimi' } },
   },
   {
     key = '6', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'local' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'deepseek' } },
   },
   {
     key = '7', mods = 'LEADER',
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'gemini' } },
+  },
+  {
+    key = '8', mods = 'LEADER',
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'local' } },
+  },
+  {
+    key = '9', mods = 'LEADER',
     action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'pool' } },
   },
   -- Leader + r  →  resume modal after sleep/wake
@@ -483,6 +584,12 @@ local ctl_choices = {
   { label = 'status                    fetch live cockpit state',                  id = 'status' },
   { label = 'routing                   peek recent sommelier decisions',           id = 'routing' },
   { label = 'spans                     recent OTel spans',                         id = 'spans' },
+  -- Secure MilliWays
+  { label = 'security status           show Secure MilliWays posture',             id = 'security status' },
+  { label = 'security startup-scan      run startup posture scan',                  id = 'security startup-scan ' },
+  { label = 'security cra              show CRA readiness',                        id = 'security cra' },
+  { label = 'security cra-scaffold     create CRA evidence placeholders',          id = 'security cra-scaffold ' },
+  { label = 'security client …         run client profile checks',                 id = 'security client ' },
   -- OpenSpec (opsx) — thin shell over the openspec CLI
   { label = '/opsx-list                list openspec changes',                     id = 'opsx list' },
   { label = '/opsx-status …            show change progress',                     id = 'opsx status ' },
@@ -491,11 +598,12 @@ local ctl_choices = {
   { label = '/opsx-validate …          validate a change',                        id = 'opsx validate ' },
   -- Local-model bootstrap (slash-command alias on the left, ctl invocation on the right)
   { label = '/list-local-models        show models served by the active backend',  id = 'local list-models' },
-  { label = '/install-local-server     install llama.cpp + default coder model',   id = 'local install-server' },
+  { label = '/install-local-server     install rs-llmctl + default coder model',   id = 'local install-server' },
+  { label = '/install-local-gpu-server detect GPU + install largest fitting model', id = 'local install-gpu-server ' },
   { label = '/install-local-swap       install llama-swap (hot model swap)',       id = 'local install-swap' },
-  { label = '/switch-local-server …    pick backend (llama-server | ollama | …)',  id = 'local switch-server ' },
+  { label = '/switch-local-server …    pick backend (rs-llmctl | llama-swap | …)', id = 'local switch-server ' },
   { label = '/download-local-model …   fetch a GGUF from HuggingFace',             id = 'local download-model ' },
-  { label = '/setup-local-model …      download + register in llama-swap.yaml',    id = 'local setup-model ' },
+  { label = '/setup-local-model …      download, register, activate when possible', id = 'local setup-model ' },
   -- Free-form escape hatch (kept last so casual fuzzy-typing finds curated entries first)
   { label = '… free-form milliwaysctl invocation …',                                id = '__free_form__' },
 }
@@ -598,7 +706,18 @@ end)
 
 -- ── Auto-start milliwaysd when wezterm opens ─────────────────────────────────
 -- Spawns the daemon once; subsequent windows reuse the existing socket.
--- Also maximizes the initial window so milliways fills the screen on launch.
+-- Also maximizes the initial window so milliways fills the screen on launch
+-- while keeping normal window manager controls available.
+
+local function apply_startup_window_state(window)
+  window:gui_window():maximize()
+end
+
+wezterm.on('user-var-changed', function(window, pane, name, value)
+  if name == 'milliways_exit' and value == 'app' then
+    window:perform_action(act.CloseCurrentTab { confirm = false }, pane)
+  end
+end)
 
 wezterm.on('gui-startup', function(cmd)
   local pane_env = {
@@ -624,7 +743,7 @@ wezterm.on('gui-startup', function(cmd)
     return
   end
 
-  window:gui_window():maximize()
+  apply_startup_window_state(window)
 
   local daemon_sock = state_dir .. '/sock'
   local f = io.open(daemon_sock, 'r')
@@ -638,14 +757,14 @@ wezterm.on('gui-startup', function(cmd)
   local main_pane_id = tostring(main_pane:pane_id())
   local deck_pane = main_pane:split {
     direction = 'Left',
-    size = 0.18,
+    size = 0.25,
     args = { mw_bin, 'attach', '--deck', '--right-pane', main_pane_id },
     set_environment_variables = pane_env,
   }
   if deck_pane then
     deck_pane:split {
       direction = 'Bottom',
-      size = 0.38,
+      size = 0.25,
       args = { mwctl_bin, 'observe-render' },
       set_environment_variables = pane_env,
     }

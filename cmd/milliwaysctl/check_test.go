@@ -106,11 +106,56 @@ func TestRunCheck_APIKeySet(t *testing.T) {
 // is reported as "reachable".
 func TestRunCheck_LocalServerReachable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("path = %q, want /models", r.URL.Path)
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 
 	t.Setenv("MILLIWAYS_LOCAL_ENDPOINT", srv.URL)
+
+	var stdout bytes.Buffer
+	runCheck(nil, &stdout, &bytes.Buffer{})
+	out := stdout.String()
+
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "Local server") {
+			if !strings.Contains(line, "reachable") {
+				t.Errorf("local server line should say 'reachable'; got: %q", line)
+			}
+			return
+		}
+	}
+	t.Errorf("Local server line not found in output:\n%s", out)
+}
+
+// TestRunCheck_LocalServerUsesLocalEnvAPIKey verifies that generated local
+// installs are checked through the authenticated OpenAI-compatible route.
+func TestRunCheck_LocalServerUsesLocalEnvAPIKey(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+	t.Setenv("MILLIWAYS_LOCAL_ENDPOINT", "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("path = %q, want /models", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer generated-key" {
+			t.Fatalf("Authorization = %q, want generated local key", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	envPath := filepath.Join(tmp, ".config", "milliways", "local.env")
+	if err := os.MkdirAll(filepath.Dir(envPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envPath, []byte("MILLIWAYS_LOCAL_ENDPOINT="+srv.URL+"\nMILLIWAYS_LOCAL_API_KEY=generated-key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	var stdout bytes.Buffer
 	runCheck(nil, &stdout, &bytes.Buffer{})
@@ -151,6 +196,9 @@ func TestRunCheck_LocalServerNotReachable(t *testing.T) {
 // TestRunCheck_LocalServerNotConfigured verifies that when
 // MILLIWAYS_LOCAL_ENDPOINT is unset the check reports "not configured".
 func TestRunCheck_LocalServerNotConfigured(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
 	t.Setenv("MILLIWAYS_LOCAL_ENDPOINT", "")
 
 	var stdout bytes.Buffer

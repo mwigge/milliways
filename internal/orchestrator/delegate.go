@@ -50,6 +50,7 @@ func traceDelegate(ctx context.Context, emitter *observability.TraceEmitter, run
 	reason := fmt.Sprintf("delegate to %s for repo work in %s", strings.TrimSpace(agent), strings.TrimSpace(dir))
 	thinkCtx, thinkSpan := observability.StartAgentThinkSpan(ctx, sessionID, reason)
 	if emitter != nil {
+		//nolint:errcheck // Trace emission is best effort; delegation should continue on sink errors.
 		emitter.Emit(thinkCtx, observability.AgentTraceEvent{
 			Type:        observability.AgentTraceThink,
 			Description: reason,
@@ -86,6 +87,7 @@ func traceDelegate(ctx context.Context, emitter *observability.TraceEmitter, run
 		if strings.TrimSpace(result) != "" {
 			data["result_hash"] = traceSHA256(result)
 		}
+		//nolint:errcheck // Trace emission is best effort; delegation result is already captured.
 		emitter.Emit(delegateCtx, observability.AgentTraceEvent{
 			Type:        observability.AgentTraceDelegate,
 			Description: fmt.Sprintf("delegate %s finished with %s", agent, outcome),
@@ -100,6 +102,7 @@ func traceDelegate(ctx context.Context, emitter *observability.TraceEmitter, run
 		decideCtx, decideSpan := observability.StartAgentDecideSpan(delegateCtx, sessionID, options, choice)
 		decideSpan.End()
 		if emitter != nil {
+			//nolint:errcheck // Trace emission is best effort; follow-up handling should not fail on sink errors.
 			emitter.Emit(decideCtx, observability.AgentTraceEvent{
 				Type:        observability.AgentTraceDecide,
 				Description: "delegate follow-up required",

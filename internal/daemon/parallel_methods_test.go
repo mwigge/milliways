@@ -36,17 +36,17 @@ func parallelTestHarness(t *testing.T) (srv *Server, send func(method string, pa
 
 	srv, err = NewServer(sock)
 	if err != nil {
-		os.RemoveAll(stateDir)
+		_ = os.RemoveAll(stateDir)
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
+	go func() { _ = srv.Serve() }()
 
 	time.Sleep(50 * time.Millisecond)
 
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
-		srv.Close()
-		os.RemoveAll(stateDir)
+		_ = srv.Close()
+		_ = os.RemoveAll(stateDir)
 		t.Fatalf("dial: %v", err)
 	}
 
@@ -83,9 +83,9 @@ func parallelTestHarness(t *testing.T) (srv *Server, send func(method string, pa
 	}
 
 	cleanup = func() {
-		conn.Close()
-		srv.Close()
-		os.RemoveAll(stateDir)
+		_ = conn.Close()
+		_ = srv.Close()
+		_ = os.RemoveAll(stateDir)
 	}
 	return
 }

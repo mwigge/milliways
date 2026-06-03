@@ -78,13 +78,21 @@ docker run --rm \
       llama_url="https://github.com/ggml-org/llama.cpp/releases/download/${llama_tag}/${llama_tar}"
       echo "fetching llama-server ${llama_tag} from ${llama_url}"
       if curl -sSfL "${llama_url}" -o "/tmp/${llama_tar}"; then
-        # List the tarball first, find the llama-server entry, then extract it.
+        # List the tarball first, find the llama-server entry, then extract it
+        # with its sibling shared libraries. Recent llama.cpp release binaries
+        # are dynamically linked and will not start if only llama-server is
+        # packaged.
         llama_entry="$(tar -tzf "/tmp/${llama_tar}" | grep "/llama-server$" | head -1 || true)"
         if [ -n "$llama_entry" ]; then
-          tar -xzf "/tmp/${llama_tar}" -C /tmp "$llama_entry"
+          tar -xzf "/tmp/${llama_tar}" -C /tmp
+          llama_dir="/tmp/${llama_entry%/*}"
           cp "/tmp/${llama_entry}" dist/llama-server_linux_amd64
           chmod +x dist/llama-server_linux_amd64
-          rm -f "/tmp/${llama_tar}" "/tmp/${llama_entry%/*}" 2>/dev/null || true
+          mkdir -p dist/llama-libs_linux_amd64
+          if compgen -G "${llama_dir}/*.so*" >/dev/null; then
+            cp -a "${llama_dir}"/*.so* dist/llama-libs_linux_amd64/
+          fi
+          rm -rf "/tmp/${llama_tar}" "$llama_dir" 2>/dev/null || true
           echo "llama-server bundled: $(file dist/llama-server_linux_amd64)"
         else
           echo "WARNING: llama-server not found in ${llama_tar} — skipping bundle"
@@ -102,9 +110,35 @@ docker run --rm \
     install -Dm755 dist/milliways_linux_amd64       "$pkg_root/usr/bin/milliways"
     install -Dm755 dist/milliwaysd_linux_amd64      "$pkg_root/usr/bin/milliwaysd"
     install -Dm755 dist/milliwaysctl_linux_amd64    "$pkg_root/usr/bin/milliwaysctl"
+    install -Dm644 /dev/stdin "$pkg_root/usr/lib/systemd/user/milliwaysd.service" <<'"'"'UNIT'"'"'
+[Unit]
+Description=MilliWays daemon
+Documentation=https://github.com/mwigge/milliways
+
+[Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/milliwaysd
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+UNIT
     # Bundle llama-server when available — removes the need for brew/cmake on first use.
     [ -f dist/llama-server_linux_amd64 ] && \
       install -Dm755 dist/llama-server_linux_amd64 "$pkg_root/usr/bin/llama-server"
+    if [ -d dist/llama-libs_linux_amd64 ]; then
+      while IFS= read -r lib; do
+        install -Dm755 "$lib" "$pkg_root/usr/lib/milliways/$(basename "$lib")"
+        lib_name="$(basename "$lib")"
+        if [[ "$lib_name" =~ ^(.*\.so)\.([0-9]+)\..* ]]; then
+          base="${BASH_REMATCH[1]}"
+          soname="${base}.${BASH_REMATCH[2]}"
+          ln -sfn "$lib_name" "$pkg_root/usr/lib/milliways/$soname"
+          ln -sfn "$soname" "$pkg_root/usr/lib/milliways/$base"
+        fi
+      done < <(find dist/llama-libs_linux_amd64 -maxdepth 1 -type f -name '*.so*' | sort)
+    fi
 
     # Linux desktop app: include patched terminal GUI when the release/build
     # environment provides it. The package remains CLI-capable if absent.
@@ -137,6 +171,8 @@ docker run --rm \
       mkdir -p "$app_dir/bin" "$app_dir/share/applications" \
         "$app_dir/share/icons/hicolor/scalable/apps" "$app_dir/share/milliways"
       cp "$pkg_root/usr/bin/milliways" "$app_dir/bin/"
+      cp "$pkg_root/usr/bin/milliwaysctl" "$app_dir/bin/"
+      cp "$pkg_root/usr/bin/milliwaysd" "$app_dir/bin/"
       cp "$pkg_root/usr/bin/milliways-term" "$app_dir/bin/"
       cp "$pkg_root/usr/bin/wezterm-mux-server" "$app_dir/bin/"
       cp "$pkg_root/usr/share/applications/dev.milliways.MilliWays.desktop" "$app_dir/share/applications/"
@@ -151,6 +187,7 @@ docker run --rm \
     install -Dm755 scripts/install_local.sh         "$pkg_root/usr/share/milliways/scripts/install_local.sh"
     install -Dm755 scripts/install_local_swap.sh    "$pkg_root/usr/share/milliways/scripts/install_local_swap.sh"
     install -Dm755 scripts/install_feature_deps.sh  "$pkg_root/usr/share/milliways/scripts/install_feature_deps.sh"
+    install -Dm755 scripts/upgrade.sh               "$pkg_root/usr/share/milliways/scripts/upgrade.sh"
     install -Dm644 cmd/milliwaysctl/milliways.lua   "$pkg_root/usr/share/milliways/wezterm.lua"
 
     # Agent toolkit bundle (if the sibling directory was mounted by the caller)

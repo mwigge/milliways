@@ -18,6 +18,7 @@ const defaultMaxFileLines = 150
 // tool_calls format is used.
 type XMLGroupClient struct {
 	Endpoint     string
+	APIKey       string
 	Model        string
 	HTTP         *http.Client
 	MaxFileLines int             // large file threshold; 0 uses defaultMaxFileLines
@@ -28,6 +29,7 @@ type XMLGroupClient struct {
 func NewXMLGroupClient(endpoint, model string) GroupClient {
 	return XMLGroupClient{
 		Endpoint:     endpoint,
+		APIKey:       "",
 		Model:        model,
 		HTTP:         &http.Client{},
 		MaxFileLines: defaultMaxFileLines,
@@ -39,6 +41,7 @@ func NewXMLGroupClient(endpoint, model string) GroupClient {
 func NewXMLGroupClientWithCG(endpoint, model string, cg CodeGraphClient) GroupClient {
 	return XMLGroupClient{
 		Endpoint:     endpoint,
+		APIKey:       "",
 		Model:        model,
 		HTTP:         &http.Client{},
 		MaxFileLines: defaultMaxFileLines,
@@ -75,7 +78,7 @@ func (c XMLGroupClient) ReviewGroup(ctx context.Context, group Group, prior Prio
 		httpClient = &http.Client{}
 	}
 
-	content, err := doChat(ctx, httpClient, c.Endpoint, payload)
+	content, err := doChat(ctx, httpClient, c.Endpoint, c.APIKey, payload)
 	if err != nil {
 		return nil, fmt.Errorf("chat completion: %w", err)
 	}

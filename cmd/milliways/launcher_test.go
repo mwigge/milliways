@@ -178,7 +178,131 @@ func TestCockpitHintPathUsesStateDir(t *testing.T) {
 func TestDeckNavigatorPanePercentIsThin(t *testing.T) {
 	t.Parallel()
 
-	if deckNavigatorPanePercent > 18 {
-		t.Fatalf("deckNavigatorPanePercent = %d, want <= 18", deckNavigatorPanePercent)
+	if deckNavigatorPanePercent != 25 {
+		t.Fatalf("deckNavigatorPanePercent = %d, want 25", deckNavigatorPanePercent)
+	}
+}
+
+func TestDeckObservePanePercentFitsUnderNavigator(t *testing.T) {
+	t.Parallel()
+
+	if deckObservePanePercent != 25 {
+		t.Fatalf("deckObservePanePercent = %d, want 25", deckObservePanePercent)
+	}
+}
+
+func TestParseWeztermSplitPaneID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		out  string
+		want string
+	}{
+		{name: "plain", out: "12\n", want: "12"},
+		{name: "labelled", out: "pane_id: 34\n", want: "34"},
+		{name: "last numeric line", out: "warning 2026\n56\n", want: "56"},
+		{name: "empty", out: "", want: ""},
+		{name: "none", out: "created pane\n", want: ""},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := parseWeztermSplitPaneID(tt.out); got != tt.want {
+				t.Fatalf("parseWeztermSplitPaneID(%q) = %q, want %q", tt.out, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDeckSplitArgsTargetExpectedPanes(t *testing.T) {
+	t.Parallel()
+
+	nav := strings.Join(deckNavSplitArgs("7", "/bin/milliways"), " ")
+	for _, want := range []string{
+		"split-pane --pane-id 7 --left --percent 25",
+		"/bin/milliways attach --deck --right-pane 7",
+	} {
+		if !strings.Contains(nav, want) {
+			t.Fatalf("nav split args missing %q: %s", want, nav)
+		}
+	}
+
+	observe := strings.Join(deckObserveSplitArgs("8", "/bin/milliwaysctl"), " ")
+	for _, want := range []string{
+		"split-pane --pane-id 8 --bottom --percent 25",
+		"/bin/milliwaysctl observe-render",
+	} {
+		if !strings.Contains(observe, want) {
+			t.Fatalf("observe split args missing %q: %s", want, observe)
+		}
+	}
+}
+
+func TestResolveMilliwaysCtlBinFromSibling(t *testing.T) {
+	dir := t.TempDir()
+	milliwaysBin := filepath.Join(dir, "milliways")
+	milliwaysCtlBin := filepath.Join(dir, "milliwaysctl")
+	if err := os.WriteFile(milliwaysBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(milliwaysCtlBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", "")
+
+	if got := resolveMilliwaysCtlBin(milliwaysBin); got != milliwaysCtlBin {
+		t.Fatalf("resolveMilliwaysCtlBin = %q, want %q", got, milliwaysCtlBin)
+	}
+}
+
+func TestResolveMilliwaysTermConfigFromSiblingShare(t *testing.T) {
+	root := t.TempDir()
+	termPath := filepath.Join(root, "bin", "milliways-term")
+	configPath := filepath.Join(root, "share", "milliways", "wezterm.lua")
+	if err := os.MkdirAll(filepath.Dir(termPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("-- test config\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := resolveMilliwaysTermConfig(termPath); got != configPath {
+		t.Fatalf("resolveMilliwaysTermConfig = %q, want %q", got, configPath)
+	}
+}
+
+func TestResolveMilliwaysTermConfigHonorsOverride(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "wezterm.lua")
+	if err := os.WriteFile(configPath, []byte("-- override config\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MILLIWAYS_WEZTERM_CONFIG", configPath)
+
+	if got := resolveMilliwaysTermConfig("/missing/bin/milliways-term"); got != configPath {
+		t.Fatalf("resolveMilliwaysTermConfig = %q, want override %q", got, configPath)
+	}
+}
+
+func TestMilliwaysTermExecArgsIncludesConfigWhenPresent(t *testing.T) {
+	root := t.TempDir()
+	termPath := filepath.Join(root, "bin", "milliways-term")
+	configPath := filepath.Join(root, "share", "milliways", "wezterm.lua")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("-- test config\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := strings.Join(milliwaysTermExecArgs(termPath), "\x00")
+	for _, want := range []string{termPath, "--config-file", configPath} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("exec args missing %q: %#v", want, milliwaysTermExecArgs(termPath))
+		}
 	}
 }

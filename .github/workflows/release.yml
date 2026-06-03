@@ -23,40 +23,49 @@ jobs:
         with:
           go-version: '1.26'
 
-      # ── Linux desktop terminal binaries (optional) ───────────────────────
-      - name: Download Linux terminal binaries
-        id: wezterm_linux
-        continue-on-error: true
-        env:
-          WEZTERM_RELEASE: milliways-wezterm
-          WEZTERM_REPO: mwigge/wezterm-milliways
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # ── Linux desktop terminal binaries ─────────────────────────────────
+      - name: Build Linux terminal binaries
         run: |
+          sudo apt-get update
+          xcbutil=libxcb-util-dev
+          apt-cache show libxcb-util-dev >/dev/null 2>&1 || xcbutil=libxcb-util0-dev
+          sudo apt-get install -y --no-install-recommends \
+            bsdutils \
+            cmake \
+            dpkg-dev \
+            fakeroot \
+            g++ \
+            gcc \
+            libegl1-mesa-dev \
+            libfontconfig1-dev \
+            libssl-dev \
+            libwayland-dev \
+            libx11-xcb-dev \
+            libxcb-ewmh-dev \
+            libxcb-icccm4-dev \
+            libxcb-image0-dev \
+            libxcb-keysyms1-dev \
+            libxcb-randr0-dev \
+            libxcb-render0-dev \
+            libxcb-xkb-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            "$xcbutil" \
+            lsb-release \
+            python3 \
+            xdg-utils \
+            xorg-dev
+
+          cargo build \
+            --manifest-path crates/milliways-term/Cargo.toml \
+            --release \
+            -p wezterm-gui \
+            -p wezterm-mux-server
+
           mkdir -p /tmp/wezterm-linux-bin
-          for pattern in \
-            milliways-term_linux_amd64 \
-            wezterm-gui_linux_amd64 \
-            wezterm-mux-server_linux_amd64
-          do
-            gh release download "$WEZTERM_RELEASE" \
-              --repo "$WEZTERM_REPO" \
-              --pattern "$pattern" \
-              --dir /tmp/wezterm-linux-bin \
-              --clobber || true
-          done
-
-          if [ -f /tmp/wezterm-linux-bin/milliways-term_linux_amd64 ]; then
-            mv /tmp/wezterm-linux-bin/milliways-term_linux_amd64 /tmp/wezterm-linux-bin/milliways-term
-          elif [ -f /tmp/wezterm-linux-bin/wezterm-gui_linux_amd64 ]; then
-            mv /tmp/wezterm-linux-bin/wezterm-gui_linux_amd64 /tmp/wezterm-linux-bin/wezterm-gui
-          fi
-          if [ -f /tmp/wezterm-linux-bin/wezterm-mux-server_linux_amd64 ]; then
-            mv /tmp/wezterm-linux-bin/wezterm-mux-server_linux_amd64 /tmp/wezterm-linux-bin/wezterm-mux-server
-          fi
-
-          chmod +x /tmp/wezterm-linux-bin/milliways-term /tmp/wezterm-linux-bin/wezterm-gui /tmp/wezterm-linux-bin/wezterm-mux-server 2>/dev/null || true
-          test \( -x /tmp/wezterm-linux-bin/milliways-term -o -x /tmp/wezterm-linux-bin/wezterm-gui \) \
-            -a -x /tmp/wezterm-linux-bin/wezterm-mux-server
+          cp crates/milliways-term/target/release/milliways-term /tmp/wezterm-linux-bin/
+          cp crates/milliways-term/target/release/wezterm-mux-server /tmp/wezterm-linux-bin/
+          chmod +x /tmp/wezterm-linux-bin/milliways-term /tmp/wezterm-linux-bin/wezterm-mux-server
 
       # ── Linux amd64 binaries + native packages (.deb / .rpm / .pkg.tar.zst)
       # Uses the Debian bookworm build image with fpm installed.
@@ -67,6 +76,30 @@ jobs:
           MILLIWAYS_TERM_SRC=/tmp/wezterm-linux-bin \
           OUT_DIR=$GITHUB_WORKSPACE/dist \
             bash scripts/build-linux-amd64.sh
+          test -f dist/MilliWays-linux-amd64.tar.gz
+
+      - name: Verify Linux desktop app parity invariants
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          tar -xzf dist/MilliWays-linux-amd64.tar.gz -C "$tmp"
+          root="$tmp/MilliWays-linux-amd64"
+          for bin in milliways milliwaysd milliwaysctl milliways-term wezterm-mux-server; do
+            test -x "$root/bin/$bin"
+          done
+          grep -q '^Exec=.*milliways-term --config-file ' "$root/share/applications/dev.milliways.MilliWays.desktop"
+          grep -q "direction = 'Left'" "$root/share/milliways/wezterm.lua"
+          grep -q "direction = 'Bottom'" "$root/share/milliways/wezterm.lua"
+          grep -q "size = 0.25" "$root/share/milliways/wezterm.lua"
+          grep -q "args = { mw_bin, 'attach', '--deck', '--right-pane', main_pane_id }" "$root/share/milliways/wezterm.lua"
+          grep -q "args = { mwctl_bin, 'observe-render' }" "$root/share/milliways/wezterm.lua"
+          ! grep -q "MILLIWAYS_WEZTERM_CLI" "$root/share/milliways/wezterm.lua"
+
+      - name: Run Secure MilliWays release smoke
+        run: |
+          GOCACHE=/tmp/mw-gocache GOMODCACHE=/tmp/mw-gomodcache go test ./cmd/milliways ./cmd/milliwaysctl ./internal/daemon ./internal/security/... -count=1
+          cargo test --test release_docs
+          GOCACHE=/tmp/mw-gocache GOMODCACHE=/tmp/mw-gomodcache bash tests/smoke/smoke_security_release.sh
 
       # ── Package agent toolkit bundle (if sibling repo is present) ────────
       - name: Package agent toolkit bundle
@@ -115,7 +148,7 @@ jobs:
           else
             gh release create "$TAG" \
               --title "milliways $TAG" \
-              --generate-notes \
+              --notes "Secure MilliWays release $TAG." \
               "${ASSETS[@]}"
           fi
 
@@ -144,29 +177,31 @@ jobs:
             done
           done
 
-      # ── macOS app bundle (optional — needs wezterm-milliways fork) ────────
-      - name: Download wezterm binaries
-        id: wezterm
-        continue-on-error: true
-        env:
-          WEZTERM_RELEASE: milliways-wezterm
-          WEZTERM_REPO: mwigge/wezterm-milliways
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # ── macOS app bundle ─────────────────────────────────────────────────
+      - name: Build macOS terminal binaries
         run: |
           mkdir -p /tmp/wezterm-bin
-          gh release download "$WEZTERM_RELEASE" \
-            --repo "$WEZTERM_REPO" \
-            --pattern "wezterm-gui" \
-            --pattern "wezterm-mux-server" \
-            --dir /tmp/wezterm-bin \
-            --clobber
+
+          cargo build \
+            --manifest-path crates/milliways-term/Cargo.toml \
+            --release \
+            -p wezterm-gui \
+            -p wezterm-mux-server
+
+          cp crates/milliways-term/target/release/milliways-term /tmp/wezterm-bin/wezterm-gui
+          cp crates/milliways-term/target/release/wezterm-mux-server /tmp/wezterm-bin/
           chmod +x /tmp/wezterm-bin/wezterm-gui /tmp/wezterm-bin/wezterm-mux-server
 
       - name: Build and bundle macOS app
-        if: steps.wezterm.outcome == 'success'
         run: make bundle-macos WEZTERM_SRC=/tmp/wezterm-bin
         env:
           PREFIX: /tmp/milliways-install
+
+      - name: Verify macOS app Secure MilliWays config
+        run: |
+          test -f dist/MilliWays.app/Contents/Resources/milliways/wezterm.lua
+          grep -q "local function security_badge(sec)" dist/MilliWays.app/Contents/Resources/milliways/wezterm.lua
+          grep -q "args = { mwctl_bin, 'observe-render' }" dist/MilliWays.app/Contents/Resources/milliways/wezterm.lua
 
       # ── Upload macOS assets to the release ────────────────────────────────
       - name: Upload macOS release assets
@@ -195,6 +230,6 @@ jobs:
           else
             gh release create "$TAG" \
               --title "milliways $TAG" \
-              --generate-notes \
+              --notes "Secure MilliWays release $TAG." \
               "${ASSETS[@]}"
           fi

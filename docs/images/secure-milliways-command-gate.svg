@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="520" viewBox="0 0 1120 520">
+  <rect width="1120" height="520" fill="#111827"/>
+  <style>
+    .title { font: 700 20px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #f9fafb; }
+    .label { font: 600 14px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #e5e7eb; }
+    .text { font: 13px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #cbd5e1; }
+    .mono { font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; fill: #d1d5db; }
+    .muted { fill: #94a3b8; }
+    .ok { fill: #34d399; }
+    .warn { fill: #fbbf24; }
+    .accent { fill: #8b5cf6; }
+    .cyan { fill: #38bdf8; }
+    .pearl { fill: #f5f5f4; }
+    .box { fill: #1f2937; stroke: #475569; stroke-width: 1.4; rx: 10; }
+    .box2 { fill: #172033; stroke: #64748b; stroke-width: 1.4; rx: 10; }
+    .store { fill: #0f172a; stroke: #38bdf8; stroke-width: 1.4; rx: 10; }
+    .line { stroke: #94a3b8; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+    .line2 { stroke: #8b5cf6; stroke-width: 2; fill: none; marker-end: url(#arrow2); }
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L7,3 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrow2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L7,3 z" fill="#8b5cf6"/>
+    </marker>
+  </defs>
+<text x="40" y="52" class="title">Command and output gates</text>
+<rect x="40" y="105" width="220" height="120" class="box"/>
+<text x="58" y="133" class="label">Agent asks</text>
+<text x="58" y="159" class="text">npm install ...</text>
+<text x="58" y="181" class="text">curl | sh</text>
+<text x="58" y="203" class="text">write generated code</text>
+<rect x="320" y="90" width="240" height="150" class="box2"/>
+<text x="338" y="118" class="label">Command firewall</text>
+<text x="338" y="144" class="text">parse and classify</text>
+<text x="338" y="166" class="text">package / network / secret</text>
+<text x="338" y="188" class="text">mode decides warn or block</text>
+<rect x="640" y="70" width="210" height="120" class="store"/>
+<text x="658" y="98" class="label">Allow / warn</text>
+<text x="658" y="124" class="text">execute command</text>
+<text x="658" y="146" class="text">record warning</text>
+<text x="658" y="168" class="text">show in cockpit</text>
+<rect x="640" y="245" width="210" height="120" class="box"/>
+<text x="658" y="273" class="label">Block</text>
+<text x="658" y="299" class="text">stop tool flow</text>
+<text x="658" y="321" class="text">persist finding</text>
+<text x="658" y="343" class="text">return deterministic error</text>
+<rect x="910" y="150" width="170" height="140" class="box"/>
+<text x="928" y="178" class="label">Output gate</text>
+<text x="928" y="204" class="text">track changed files</text>
+<text x="928" y="226" class="text">secret/SAST plan</text>
+<text x="928" y="248" class="text">dependency follow-up</text>
+<path d="M260,165 C290,165 290,165 320,165" class="line"/>
+<path d="M560,140 C600,140 600,130 640,130" class="line2"/>
+<path d="M560,190 C600,190 600,305 640,305" class="line"/>
+<path d="M850,130 C880,130 880,195 910,195" class="line"/>
+<path d="M850,305 C880,305 880,230 910,230" class="line"/>
+<text x="70" y="425" class="text muted">The model does not decide whether its command is safe. Milliways classifies before execution and scans generated changes after.</text>
+</svg>

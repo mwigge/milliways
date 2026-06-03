@@ -32,6 +32,7 @@ jobs:
           sudo apt-get install -y libgl-dev libxcursor-dev libxinerama-dev libxi-dev libxrandr-dev libssl-dev pkg-config libfontconfig-dev libwayland-dev
       - run: cargo check --manifest-path crates/milliways-term/Cargo.toml -p milliways
       - run: cargo test --manifest-path crates/milliways-term/Cargo.toml -p milliways --lib
+      - run: cargo test --test release_docs
 
   codegen-drift:
     runs-on: ubuntu-latest
@@ -52,6 +53,7 @@ jobs:
         with: { go-version: '1.26' }
       - run: go build -o /tmp/milliways ./cmd/milliways
       - run: MILLIWAYS_BIN=/tmp/milliways bash scripts/smoke.sh
+      - run: bash tests/smoke/smoke_security_release.sh
 
   integration-smoke-linux:
     runs-on: ubuntu-latest

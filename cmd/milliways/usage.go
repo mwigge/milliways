@@ -38,10 +38,6 @@ func (u usageStats) hasCost() bool {
 	return u.CostUSD > 0
 }
 
-func (u usageStats) isZero() bool {
-	return !u.hasTokens() && !u.hasCost()
-}
-
 // formatCost renders a USD cost with appropriate precision.
 func formatCost(usd float64) string {
 	switch {

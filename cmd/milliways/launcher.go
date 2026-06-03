@@ -13,19 +13,13 @@
 // limitations under the License.
 
 // launcher.go implements the `milliways` (no-flags) launcher: it resolves
-// the daemon UDS, starts `milliwaysd` detached if not reachable, then
-// drops into the chat REPL in the current TTY.
+// the daemon UDS, starts `milliwaysd` detached if not reachable, then opens
+// the full terminal cockpit when possible. Existing WezTerm sessions get
+// split in place; graphical non-WezTerm shells exec the bundled milliways-term
+// with the installed MilliWays config; headless shells fall back to chat in the
+// current TTY.
 //
-// History: pre-v0.7.1 this exec(2)'d `milliways-term` (the wezterm fork)
-// when invoked from a non-wezterm shell. That binary panics during
-// `mux::Mux::get` when not launched as a bundled .app, and the panic
-// hook then aborts on UNUserNotificationCenter for non-bundled binaries
-// — so any `milliways` invocation from kitty/iTerm/ssh crashed.
-//
-// The .app bundle's CFBundleExecutable is `wezterm-gui` directly, so
-// the bundle path never needs `milliways` to exec milliways-term. We
-// removed the exec-milliways-term path and just run chat in the
-// current TTY for every invocation.
+//nolint:errcheck // Launcher terminal output is best-effort; startup errors are returned explicitly.
 package main
 
 import (
@@ -45,6 +39,8 @@ import (
 	"github.com/mwigge/milliways/internal/rpc"
 )
 
+var execProcess = syscall.Exec
+
 // launcherMode classifies what the binary should do based on its argv.
 type launcherMode int
 
@@ -57,14 +53,6 @@ const (
 	// works the same way inside milliways-term, kitty, iTerm, ssh, or
 	// any other terminal.
 	modeChat
-)
-
-// modeCockpit, modeWelcome are deprecated aliases retained so external
-// code/tests that still reference them keep building. New code should
-// use modeChat.
-const (
-	modeCockpit = modeChat
-	modeWelcome = modeChat
 )
 
 // parseLauncherMode decides how to dispatch an invocation of `milliways`
@@ -116,7 +104,7 @@ Inside chat:
   /agents                        auth and model status
   /parallel --watch <prompt>     live grouped provider comparison
 `
-	fmt.Fprint(out, body)
+	_, _ = fmt.Fprint(out, body) //nolint:errcheck // best-effort terminal welcome text
 }
 
 // welcomeVersion returns the binary version string for the banner header.
@@ -160,7 +148,7 @@ func probeDaemonForWelcome(budget time.Duration) daemonStatusReport {
 			daemonLine: "✗ not reachable: " + err.Error(),
 		}
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }() //nolint:errcheck // best-effort RPC cleanup after welcome probe
 
 	// Two parallel reads with a tight deadline. agent.list is the cheapest
 	// signal of "daemon is responsive AND knows about runners".
@@ -179,9 +167,10 @@ func probeDaemonForWelcome(budget time.Duration) daemonStatusReport {
 		var parts []string
 		for _, a := range agents.Agents {
 			mark := "✗"
-			if a.AuthStatus == "ok" {
+			switch a.AuthStatus {
+			case "ok":
 				mark = "✓"
-			} else if a.AuthStatus == "unknown" {
+			case "unknown":
 				mark = "?"
 			}
 			parts = append(parts, a.ID+" "+mark)
@@ -260,7 +249,7 @@ func runCockpit(ctx context.Context, _ []string) error {
 	socketPath := daemonSocket()
 	if !socketReachable(socketPath, 200*time.Millisecond) {
 		if err := startDaemonDetached(state); err != nil {
-			return fmt.Errorf("starting milliwaysd: %w\n\nCheck %s for daemon logs.", err, daemonLogPath())
+			return fmt.Errorf("starting milliwaysd: %w\n\nCheck %s for daemon logs", err, daemonLogPath())
 		}
 		if err := waitForSocket(ctx, socketPath, 5*time.Second); err != nil {
 			tail := tailFile(daemonLogPath(), 4096)
@@ -295,7 +284,52 @@ func runCockpit(ctx context.Context, _ []string) error {
 		}
 	}
 
+	if !deckDisabled && hasGraphicalSession() {
+		if termPath, err := exec.LookPath("milliways-term"); err == nil {
+			return execProcess(termPath, milliwaysTermExecArgs(termPath), os.Environ())
+		}
+	}
+
 	return runChat(ctx)
+}
+
+func milliwaysTermExecArgs(termPath string) []string {
+	args := []string{termPath}
+	if config := resolveMilliwaysTermConfig(termPath); config != "" {
+		args = append(args, "--config-file", config)
+	}
+	return args
+}
+
+func resolveMilliwaysTermConfig(termPath string) string {
+	var candidates []string
+	if override := strings.TrimSpace(os.Getenv("MILLIWAYS_WEZTERM_CONFIG")); override != "" {
+		candidates = append(candidates, override)
+	}
+	if termPath != "" {
+		prefix := filepath.Dir(filepath.Dir(termPath))
+		candidates = append(candidates, filepath.Join(prefix, "share", "milliways", "wezterm.lua"))
+	}
+	candidates = append(candidates, "/usr/share/milliways/wezterm.lua")
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates = append(candidates,
+			filepath.Join(home, ".local", "share", "milliways", "wezterm.lua"),
+			filepath.Join(home, ".config", "wezterm", "wezterm.lua"),
+		)
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func hasGraphicalSession() bool {
+	return os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
 }
 
 // detectWeztermCurrentPaneID finds the pane ID of the terminal running this
@@ -357,7 +391,10 @@ func detectWeztermCurrentPaneIDWith(
 	return "", fmt.Sprintf("myTTY=%q not in panes %v", myTTY, ttyNames)
 }
 
-const deckNavigatorPanePercent = 18
+const deckNavigatorPanePercent = 25
+const deckObservePanePercent = 25
+
+var runDeckCommand = exec.Command
 
 // runDeck opens the home-hero-dashboard layout: left navigator plus
 // the calling pane as the main chat session on the right.
@@ -371,31 +408,72 @@ func runDeck(_ context.Context, _ string, rightPaneID string) error {
 	if err != nil {
 		milliwaysBin = "milliways"
 	}
+	milliwaysCtlBin := resolveMilliwaysCtlBin(milliwaysBin)
 
 	// Split LEFT: narrow navigator pane. The current pane stays as the chat.
-	navArgs := []string{
-		"cli", "split-pane", "--left", "--percent", strconv.Itoa(deckNavigatorPanePercent),
-		"--",
-		milliwaysBin, "attach", "--deck", "--right-pane", rightPaneID,
-	}
-	if out, err := exec.Command("wezterm", navArgs...).CombinedOutput(); err != nil {
+	navArgs := deckNavSplitArgs(rightPaneID, milliwaysBin)
+	out, err := runDeckCommand("wezterm", navArgs...).CombinedOutput()
+	if err != nil {
 		return fmt.Errorf("wezterm split-pane (nav): %w\n%s", err, out)
+	}
+	if navPaneID := parseWeztermSplitPaneID(string(out)); navPaneID != "" {
+		observeArgs := deckObserveSplitArgs(navPaneID, milliwaysCtlBin)
+		if out, err := runDeckCommand("wezterm", observeArgs...).CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "milliways: observe cockpit launch failed (%v)\n%s", err, out)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "milliways: observe cockpit launch skipped; could not parse navigator pane id from %q\n", strings.TrimSpace(string(out)))
 	}
 
 	// Signal to printLanding that the navigator is handling provider selection.
-	os.Setenv("MILLIWAYS_DECK_MODE", "1")
+	if err := os.Setenv("MILLIWAYS_DECK_MODE", "1"); err != nil {
+		return fmt.Errorf("set MILLIWAYS_DECK_MODE: %w", err)
+	}
 	return nil
 }
 
-// splitComma splits a comma-separated string and trims whitespace.
-func splitComma(s string) []string {
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		if t := strings.TrimSpace(p); t != "" {
-			out = append(out, t)
+func deckNavSplitArgs(rightPaneID, milliwaysBin string) []string {
+	return []string{
+		"cli", "split-pane", "--pane-id", rightPaneID,
+		"--left", "--percent", strconv.Itoa(deckNavigatorPanePercent),
+		"--",
+		milliwaysBin, "attach", "--deck", "--right-pane", rightPaneID,
+	}
+}
+
+func deckObserveSplitArgs(navPaneID, milliwaysCtlBin string) []string {
+	return []string{
+		"cli", "split-pane", "--pane-id", navPaneID,
+		"--bottom", "--percent", strconv.Itoa(deckObservePanePercent),
+		"--",
+		milliwaysCtlBin, "observe-render",
+	}
+}
+
+func resolveMilliwaysCtlBin(milliwaysBin string) string {
+	if path, err := exec.LookPath("milliwaysctl"); err == nil {
+		return path
+	}
+	if milliwaysBin != "" {
+		candidate := filepath.Join(filepath.Dir(milliwaysBin), "milliwaysctl")
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+			return candidate
 		}
 	}
-	return out
+	return "milliwaysctl"
+}
+
+func parseWeztermSplitPaneID(out string) string {
+	lines := strings.Split(out, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		fields := strings.Fields(lines[i])
+		for j := len(fields) - 1; j >= 0; j-- {
+			if _, err := strconv.Atoi(fields[j]); err == nil {
+				return fields[j]
+			}
+		}
+	}
+	return ""
 }
 
 // startDaemonDetached spawns `milliwaysd` in its own session so it survives

@@ -101,7 +101,9 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 		// the goroutine run to completion.
 		select {
 		case <-ctx.Done():
-			d.pdb.Tickets().UpdateStatus(ticketID, "cancelled", 130, nil)
+			if updateErr := d.pdb.Tickets().UpdateStatus(ticketID, "cancelled", 130, nil); updateErr != nil {
+				slog.WarnContext(ctx, "async ticket update cancelled", "ticket", ticketID, "err", updateErr)
+			}
 			return
 		default:
 		}
@@ -138,7 +140,9 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 		case <-ctx.Done():
 			// Parent cancelled — k.Exec may still be running but will respect
 			// its own context deadline. We record cancellation and exit.
-			d.pdb.Tickets().UpdateStatus(ticketID, "cancelled", 130, nil)
+			if updateErr := d.pdb.Tickets().UpdateStatus(ticketID, "cancelled", 130, nil); updateErr != nil {
+				slog.WarnContext(ctx, "async ticket update cancelled", "ticket", ticketID, "err", updateErr)
+			}
 			return
 		}
 		dur := time.Since(start)
@@ -152,7 +156,9 @@ func (d *AsyncDispatcher) DispatchAsync(ctx context.Context, k kitchen.Kitchen, 
 
 		// Write output to file
 		if result.Output != "" {
-			_ = os.WriteFile(outputPath, []byte(result.Output), 0o600)
+			if writeErr := os.WriteFile(outputPath, []byte(result.Output), 0o600); writeErr != nil {
+				slog.WarnContext(ctx, "async output write", "ticket", ticketID, "path", outputPath, "err", writeErr)
+			}
 		}
 
 		status := "complete"

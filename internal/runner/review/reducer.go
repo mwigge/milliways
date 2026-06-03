@@ -59,7 +59,7 @@ func buildReducePrompt(content string, prior PriorContext) string {
 	if len(prior.Findings) > 0 {
 		sb.WriteString("Prior known issues for context:\n")
 		for _, f := range prior.Findings {
-			sb.WriteString(fmt.Sprintf("- [%s] %s: %s\n", f.Severity, f.Symbol, f.Reason))
+			fmt.Fprintf(&sb, "- [%s] %s: %s\n", f.Severity, f.Symbol, f.Reason)
 		}
 		sb.WriteString("\n")
 	}

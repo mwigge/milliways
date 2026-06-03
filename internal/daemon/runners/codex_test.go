@@ -20,22 +20,31 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
+var codexBinaryTestMu sync.Mutex
+
 func withCodexTestBinary(t *testing.T, script string) string {
 	t.Helper()
+	codexBinaryTestMu.Lock()
 	path := filepath.Join(t.TempDir(), "codex-test")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		codexBinaryTestMu.Unlock()
 		t.Fatalf("write fake codex: %v", err)
 	}
 	if err := os.Chmod(path, 0o755); err != nil {
+		codexBinaryTestMu.Unlock()
 		t.Fatalf("chmod fake codex: %v", err)
 	}
 	prev := codexBinary
 	codexBinary = path
-	t.Cleanup(func() { codexBinary = prev })
+	t.Cleanup(func() {
+		codexBinary = prev
+		codexBinaryTestMu.Unlock()
+	})
 	return path
 }
 
@@ -263,7 +272,7 @@ func TestBuildCodexCmdArgs_DefaultsAreRootFlags(t *testing.T) {
 	t.Parallel()
 
 	args := buildCodexCmdArgs("do it", "/repo", nil)
-	wantPrefix := []string{"--sandbox", "workspace-write", "--ask-for-approval", "never", "exec", "--json", "--color", "never", "--skip-git-repo-check", "-C", "/repo"}
+	wantPrefix := []string{"--sandbox", "workspace-write", "--ask-for-approval", "on-request", "exec", "--json", "--color", "never", "--skip-git-repo-check", "-C", "/repo"}
 	if len(args) < len(wantPrefix) {
 		t.Fatalf("args too short: %v", args)
 	}
@@ -286,7 +295,8 @@ func TestBuildCodexCmdArgs_RespectsRootOverrides(t *testing.T) {
 	extra := []string{"--ask-for-approval", "on-request", "--sandbox=read-only", "--model", "gpt-5"}
 	args := buildCodexCmdArgs("p", "/repo", extra)
 	joined := strings.Join(args, "\x00")
-	if strings.Contains(joined, "--ask-for-approval\x00never") {
+	if strings.Contains(joined, "--ask-for-approval\x00on-request\x00--ask-for-approval") ||
+		strings.Contains(joined, "--ask-for-approval\x00never") {
 		t.Fatalf("default approval injected despite override: %v", args)
 	}
 	if strings.Contains(joined, "--sandbox\x00workspace-write") {
@@ -357,13 +367,13 @@ func TestRunCodex_ModelChangeStartsFreshSession(t *testing.T) {
 	withCodexTestBinary(t, codexRecorderScript(argsFile, `printf '%s\n' '{"type":"session_configured","session_id":"sess-1"}'`))
 
 	state := &codexSessionState{}
-	runCodexOnce(context.Background(), []byte("first"), &fakePusher{}, &mockObserver{}, state)
+	runCodexOnce(context.Background(), []byte("first"), &fakePusher{}, &mockObserver{}, state, "")
 	if state.sessionID == "" {
 		t.Fatal("first run did not capture a session id")
 	}
 
 	t.Setenv("CODEX_MODEL", "gpt-5.5")
-	runCodexOnce(context.Background(), []byte("second"), &fakePusher{}, &mockObserver{}, state)
+	runCodexOnce(context.Background(), []byte("second"), &fakePusher{}, &mockObserver{}, state, "")
 
 	data, err := os.ReadFile(argsFile)
 	if err != nil {
@@ -484,9 +494,13 @@ func TestRunCodex_EmptyPromptPushesChunkEnd(t *testing.T) {
 // TestRunCodex_NoBinary asserts that a missing codex binary surfaces
 // an error_count tick (and no token observations).
 func TestRunCodex_NoBinary(t *testing.T) {
+	codexBinaryTestMu.Lock()
 	prev := codexBinary
 	codexBinary = "/no/such/binary/that/should/not/exist"
-	defer func() { codexBinary = prev }()
+	defer func() {
+		codexBinary = prev
+		codexBinaryTestMu.Unlock()
+	}()
 
 	pusher := &fakePusher{}
 	obs := &mockObserver{}
@@ -524,6 +538,106 @@ func TestRunCodex_NoBinary(t *testing.T) {
 	}
 }
 
+func TestRunCodex_ResolvesBinaryFromMilliwaysPath(t *testing.T) {
+	codexBinaryTestMu.Lock()
+	prev := codexBinary
+	codexBinary = "codex"
+	t.Cleanup(func() {
+		codexBinary = prev
+		codexBinaryTestMu.Unlock()
+	})
+
+	dir := t.TempDir()
+	argsFile := filepath.Join(t.TempDir(), "args.tsv")
+	script := codexRecorderScript(argsFile, `printf '%s\n' '{"type":"message","content":"local codex"}'`)
+	path := filepath.Join(dir, "codex")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write codex fixture: %v", err)
+	}
+	t.Setenv("MILLIWAYS_PATH", dir)
+	t.Setenv("PATH", "/usr/bin:/bin")
+
+	pusher, _ := runCodexPrompts(t, context.Background(), "hi")
+	if got := decodeCodexData(pusher.snapshot()); got != "local codex" {
+		t.Fatalf("decoded data = %q, want local codex; events=%v", got, pusher.snapshot())
+	}
+	if calls := readCodexArgCalls(t, argsFile); len(calls) != 1 {
+		t.Fatalf("codex calls = %v, want one", calls)
+	}
+}
+
+func TestRunCodex_ControlledEnvUsesShimPathWithoutBreakingBinaryDiscovery(t *testing.T) {
+	codexBinaryTestMu.Lock()
+	prev := codexBinary
+	codexBinary = "codex"
+	t.Cleanup(func() {
+		codexBinary = prev
+		codexBinaryTestMu.Unlock()
+	})
+	SetBrokerPathProvider(nil)
+	t.Cleanup(func() { SetBrokerPathProvider(nil) })
+
+	root := t.TempDir()
+	shimDir := filepath.Join(root, "shims")
+	realDir := filepath.Join(root, "real-bin")
+	if err := os.MkdirAll(shimDir, 0o755); err != nil {
+		t.Fatalf("mkdir shim dir: %v", err)
+	}
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir real dir: %v", err)
+	}
+	SetBrokerPathProvider(func(agentID string) string {
+		if agentID == AgentIDCodex {
+			return shimDir
+		}
+		return ""
+	})
+
+	envFile := filepath.Join(t.TempDir(), "env.tsv")
+	argsFile := filepath.Join(t.TempDir(), "args.tsv")
+	script := codexRecorderScript(argsFile, strings.Join([]string{
+		"printf 'ENV\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$MILLIWAYS_CLIENT_ID\" \"$MILLIWAYS_SESSION_ID\" \"$MILLIWAYS_WORKSPACE_ROOT\" \"$MILLIWAYS_SHIM_DIR\" \"$PATH\" >> " + shellQuote(envFile),
+		`printf '%s\n' '{"type":"message","content":"shimmed codex"}'`,
+	}, "\n"))
+	if err := os.WriteFile(filepath.Join(realDir, "codex"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write real codex fixture: %v", err)
+	}
+	t.Setenv("MILLIWAYS_PATH", realDir)
+	t.Setenv("PATH", shimDir)
+
+	pusher, _ := runCodexPrompts(t, context.Background(), "hi")
+	if got := decodeCodexData(pusher.snapshot()); got != "shimmed codex" {
+		t.Fatalf("decoded data = %q, want shimmed codex; events=%v", got, pusher.snapshot())
+	}
+
+	raw, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read env file: %v", err)
+	}
+	fields := strings.Split(strings.TrimSpace(string(raw)), "\t")
+	if len(fields) != 6 || fields[0] != "ENV" {
+		t.Fatalf("bad env capture: %q", raw)
+	}
+	if fields[1] != AgentIDCodex {
+		t.Fatalf("MILLIWAYS_CLIENT_ID = %q, want %q", fields[1], AgentIDCodex)
+	}
+	if !strings.HasPrefix(fields[2], AgentIDCodex+"-") {
+		t.Fatalf("MILLIWAYS_SESSION_ID = %q, want codex-prefixed session", fields[2])
+	}
+	if fields[3] == "" {
+		t.Fatalf("MILLIWAYS_WORKSPACE_ROOT missing from controlled env")
+	}
+	if fields[4] != shimDir {
+		t.Fatalf("MILLIWAYS_SHIM_DIR = %q, want %q", fields[4], shimDir)
+	}
+	if firstPath(fields[5]) != shimDir {
+		t.Fatalf("PATH first entry = %q, want shim dir; PATH=%q", firstPath(fields[5]), fields[5])
+	}
+	if !pathContains(fields[5], realDir) {
+		t.Fatalf("real binary dir missing from controlled PATH=%q", fields[5])
+	}
+}
+
 func TestRunCodex_StreamsJSONAndRecordsArgs(t *testing.T) {
 	argsFile := filepath.Join(t.TempDir(), "args.tsv")
 	withCodexTestBinary(t, codexRecorderScript(argsFile, strings.Join([]string{
@@ -548,7 +662,7 @@ func TestRunCodex_StreamsJSONAndRecordsArgs(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("arg calls = %v, want one call", calls)
 	}
-	if !containsCodexSubsequence(calls[0], []string{"--ask-for-approval", "never", "exec", "--json", "--color", "never", "--skip-git-repo-check"}) {
+	if !containsCodexSubsequence(calls[0], []string{"--ask-for-approval", "on-request", "exec", "--json", "--color", "never", "--skip-git-repo-check"}) {
 		t.Fatalf("first call missing expected argv shape: %v", calls[0])
 	}
 	if calls[0][len(calls[0])-1] != "say hi" {

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//nolint:errcheck // CLI help/status output writes are best-effort; RPC errors are handled explicitly.
 package main
 
 // `milliwaysctl parallel <verb>` — inspect parallel dispatch groups.

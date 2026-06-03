@@ -13,10 +13,10 @@ import (
 // --- stub CodeGraphClient ---
 
 type stubCG struct {
-	files      []CodeGraphFile
-	impact     map[string]float64 // symbol (dir basename) → score
-	filesErr   error
-	isIndexed  bool
+	files       []CodeGraphFile
+	impact      map[string]float64 // symbol (dir basename) → score
+	filesErr    error
+	isIndexed   bool
 	impactCalls int
 }
 
@@ -270,7 +270,7 @@ func writeGoFile(t *testing.T, dir, name string, lines int) {
 	var sb strings.Builder
 	sb.WriteString("package pkg\n\n")
 	for i := range lines - 2 {
-		sb.WriteString(fmt.Sprintf("// line %d\n", i+1))
+		fmt.Fprintf(&sb, "// line %d\n", i+1)
 	}
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(sb.String()), 0o644); err != nil {
 		t.Fatalf("writeGoFile %s/%s: %v", dir, name, err)

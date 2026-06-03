@@ -35,8 +35,10 @@ type MemoryEntry struct {
 type WorkingMemory struct {
 	entries         map[string]MemoryEntry
 	mu              sync.RWMutex
+	initMu          sync.Mutex
 	once            sync.Once
 	stopCh          chan struct{}
+	closed          bool
 	cleanupInterval time.Duration
 	now             func() time.Time
 }
@@ -60,15 +62,22 @@ func newWorkingMemoryWithInterval(interval time.Duration) *WorkingMemory {
 
 // Close stops the background cleanup goroutine.
 func (m *WorkingMemory) Close() {
-	if m == nil || m.stopCh == nil {
+	if m == nil {
 		return
 	}
-	select {
-	case <-m.stopCh:
+	m.initMu.Lock()
+	stopCh := m.stopCh
+	if stopCh == nil {
+		m.initMu.Unlock()
 		return
-	default:
-		close(m.stopCh)
 	}
+	if m.closed {
+		m.initMu.Unlock()
+		return
+	}
+	m.closed = true
+	close(stopCh)
+	m.initMu.Unlock()
 }
 
 // Set stores a value for key.
@@ -160,6 +169,7 @@ func (m *WorkingMemory) Entries() []MemoryEntry {
 }
 
 func (m *WorkingMemory) ensureInit() {
+	m.initMu.Lock()
 	if m.entries == nil {
 		m.entries = make(map[string]MemoryEntry)
 	}
@@ -172,19 +182,31 @@ func (m *WorkingMemory) ensureInit() {
 	if m.stopCh == nil {
 		m.stopCh = make(chan struct{})
 	}
+	m.initMu.Unlock()
 	m.once.Do(func() {
 		go m.cleanupLoop()
 	})
 }
 
 func (m *WorkingMemory) cleanupLoop() {
-	ticker := time.NewTicker(m.cleanupInterval)
+	m.initMu.Lock()
+	interval := m.cleanupInterval
+	stopCh := m.stopCh
+	now := m.now
+	m.initMu.Unlock()
+	if interval <= 0 {
+		interval = defaultCleanupInterval
+	}
+	if now == nil {
+		now = time.Now
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			m.purgeExpired(m.now())
-		case <-m.stopCh:
+			m.purgeExpired(now())
+		case <-stopCh:
 			return
 		}
 	}

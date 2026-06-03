@@ -16,13 +16,47 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/security"
+	"github.com/mwigge/milliways/internal/security/adapters"
+	"github.com/mwigge/milliways/internal/security/clientprofiles"
+	"github.com/mwigge/milliways/internal/security/firewall"
+	"github.com/mwigge/milliways/internal/security/outputgate"
+	"github.com/mwigge/milliways/internal/security/quarantine"
+	"github.com/mwigge/milliways/internal/security/rulepacks"
+	"github.com/mwigge/milliways/internal/security/rules"
+	"github.com/mwigge/milliways/internal/security/shims"
 )
+
+var securityStatusAdapters = func() []adapters.ScannerAdapter {
+	return []adapters.ScannerAdapter{
+		adapters.NewOSVScanner(),
+		adapters.NewGitleaks(),
+		adapters.NewSemgrep(),
+		adapters.NewGovulncheck(),
+	}
+}
+
+var securityScanScanners = outputgate.DefaultScanners
+
+var securityScannerStatusCache = struct {
+	sync.Mutex
+	signature string
+	expires   time.Time
+	statuses  []map[string]any
+}{}
 
 // securityFindingWire is the JSON wire type for a security finding.
 type securityFindingWire struct {
@@ -250,6 +284,23 @@ func (s *Server) securityScan(enc *json.Encoder, req *Request) {
 		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
 		return
 	}
+	var p securityScanParams
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, "invalid security.scan params: "+err.Error())
+			return
+		}
+	}
+	workspace := s.resolveSecurityWorkspace(p.Workspace)
+	if len(p.Layers) > 0 || p.Staged || strings.TrimSpace(p.Diff) != "" {
+		result, err := s.runLayeredSecurityScan(context.Background(), workspace, p)
+		if err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, "security scan: "+err.Error())
+			return
+		}
+		writeResult(enc, req.ID, result)
+		return
+	}
 
 	var lockfiles []string
 	if s.secRunner != nil {
@@ -261,7 +312,7 @@ func (s *Server) securityScan(enc *json.Encoder, req *Request) {
 		}
 	}
 
-	findings, err := s.pantryDB.Security().ListActive(nil)
+	findings, err := s.pantryDB.Security().ListActiveForWorkspace(workspace, nil)
 	if err != nil {
 		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("list active findings: %v", err))
 		return
@@ -277,6 +328,237 @@ func (s *Server) securityScan(enc *json.Encoder, req *Request) {
 		"lockfiles":  lockfiles,
 		"findings":   wires,
 	})
+}
+
+type securityScanParams struct {
+	Workspace string   `json:"workspace,omitempty"`
+	Layers    []string `json:"layers,omitempty"`
+	Diff      string   `json:"diff,omitempty"`
+	Staged    bool     `json:"staged,omitempty"`
+}
+
+func (s *Server) runLayeredSecurityScan(ctx context.Context, workspace string, p securityScanParams) (map[string]any, error) {
+	workspace = s.resolveSecurityWorkspace(workspace)
+	changes, err := securityScanChanges(workspace, p)
+	if err != nil {
+		return nil, err
+	}
+	plan := outputgate.PlanScans(changes)
+	plan = filterSecurityScanPlan(plan, p.Layers)
+	execResult := outputgate.ExecutePlan(ctx, workspace, plan, securityScanScanners())
+	if s.pantryDB != nil {
+		persistOutputGateScanResult(s.pantryDB.Security(), workspace, execResult)
+	}
+	return map[string]any{
+		"scanned_at": time.Now().UTC().Format(time.RFC3339),
+		"workspace":  workspace,
+		"plan":       plan,
+		"results":    execResult.Results,
+		"warnings":   execResult.Warnings,
+		"findings":   scanResultFindings(execResult.Results),
+	}, nil
+}
+
+func securityScanChanges(workspace string, p securityScanParams) ([]outputgate.FileChange, error) {
+	if p.Staged || strings.EqualFold(strings.TrimSpace(p.Diff), "staged") {
+		changes, err := daemonGitStagedChanges(workspace)
+		if err == nil {
+			return changes, nil
+		}
+		if len(p.Layers) == 0 {
+			return nil, err
+		}
+	}
+	return securityScanLayerChanges(p.Layers), nil
+}
+
+func securityScanLayerChanges(layers []string) []outputgate.FileChange {
+	changes := make([]outputgate.FileChange, 0)
+	for _, layer := range layers {
+		switch security.ScanKind(strings.TrimSpace(layer)) {
+		case security.ScanSecret:
+			changes = append(changes, outputgate.FileChange{Path: ".env.local", Status: outputgate.StatusModified, Source: outputgate.SourceStaged})
+		case security.ScanSAST:
+			changes = append(changes, outputgate.FileChange{Path: "main.go", Status: outputgate.StatusModified, Source: outputgate.SourceStaged})
+		case security.ScanDependency:
+			changes = append(changes, outputgate.FileChange{Path: "go.mod", Status: outputgate.StatusModified, Source: outputgate.SourceStaged})
+		}
+	}
+	return changes
+}
+
+func daemonGitStagedChanges(workspace string) ([]outputgate.FileChange, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "diff", "--cached", "--name-status", "-z")
+	cmd.Dir = workspace
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	fields := strings.Split(strings.TrimRight(string(out), "\x00"), "\x00")
+	changes := make([]outputgate.FileChange, 0, len(fields)/2)
+	for i := 0; i < len(fields); {
+		statusText := strings.TrimSpace(fields[i])
+		i++
+		if statusText == "" || i >= len(fields) {
+			continue
+		}
+		path := fields[i]
+		i++
+		if strings.HasPrefix(statusText, "R") || strings.HasPrefix(statusText, "C") {
+			if i >= len(fields) {
+				continue
+			}
+			path = fields[i]
+			i++
+		}
+		changes = append(changes, outputgate.FileChange{
+			Path:   path,
+			Status: daemonGitStatusKind(statusText),
+			Source: outputgate.SourceStaged,
+		})
+	}
+	return changes, nil
+}
+
+func daemonGitStatusKind(status string) outputgate.ChangeStatus {
+	if status == "" {
+		return outputgate.StatusModified
+	}
+	switch status[0] {
+	case 'A', 'C':
+		return outputgate.StatusAdded
+	case 'D':
+		return outputgate.StatusDeleted
+	case 'R':
+		return outputgate.StatusRenamed
+	default:
+		return outputgate.StatusModified
+	}
+}
+
+func filterSecurityScanPlan(plan outputgate.Plan, layers []string) outputgate.Plan {
+	if len(layers) == 0 {
+		return plan
+	}
+	keep := map[security.ScanKind]struct{}{}
+	for _, layer := range layers {
+		switch security.ScanKind(strings.TrimSpace(layer)) {
+		case security.ScanSecret, security.ScanSAST, security.ScanDependency:
+			keep[security.ScanKind(strings.TrimSpace(layer))] = struct{}{}
+		}
+	}
+	if len(keep) == 0 {
+		return plan
+	}
+	var requests []outputgate.ScanRequest
+	for _, req := range plan.Requests {
+		if _, ok := keep[req.Kind]; ok {
+			requests = append(requests, req)
+		}
+	}
+	plan.Requests = requests
+	return plan
+}
+
+func scanResultFindings(results []security.ScanResult) []security.Finding {
+	var findings []security.Finding
+	for _, result := range results {
+		findings = append(findings, result.Findings...)
+	}
+	return findings
+}
+
+func persistOutputGateScanResult(store *pantry.SecurityStore, workspace string, execResult outputgate.ExecutionResult) {
+	if store == nil {
+		return
+	}
+	for _, warning := range execResult.Warnings {
+		_ = store.UpsertWarning(pantry.SecurityWarning{
+			Workspace:    workspace,
+			Category:     string(warning.Category),
+			Severity:     securityWarningSeverity(warning.Severity),
+			Source:       outputGateWarningSource(warning.Source),
+			Message:      warning.Message,
+			Status:       string(security.FindingActive),
+			FirstSeen:    warning.FirstSeen,
+			LastSeen:     warning.LastSeen,
+			EvidenceHash: warning.EvidenceHash,
+			Remediation:  warning.Remediation,
+		})
+	}
+	for _, result := range execResult.Results {
+		for _, finding := range result.Findings {
+			category := string(finding.Category)
+			if category == "" {
+				category = string(categoryForScanKind(result.Kind))
+			}
+			_ = store.UpsertFinding(pantry.SecurityFinding{
+				Workspace:        workspace,
+				Category:         category,
+				CVEID:            outputGateFindingID(finding),
+				PackageName:      outputGateFindingPackage(result, finding),
+				InstalledVersion: outputGateFindingVersion(finding),
+				Severity:         securityWarningSeverity(finding.Severity),
+				Ecosystem:        string(result.Kind),
+				Summary:          finding.Summary,
+				ScanSource:       firstNonEmpty(finding.ScanSource, finding.FilePath, result.ToolName),
+				Status:           string(security.FindingActive),
+				FirstSeen:        result.ScannedAt,
+				LastSeen:         result.ScannedAt,
+			})
+		}
+	}
+}
+
+func categoryForScanKind(kind security.ScanKind) security.FindingCategory {
+	switch kind {
+	case security.ScanSecret:
+		return security.FindingSecret
+	case security.ScanSAST:
+		return security.FindingSAST
+	default:
+		return security.FindingDependency
+	}
+}
+
+func securityWarningSeverity(sev string) string {
+	sev = strings.ToUpper(strings.TrimSpace(sev))
+	if sev == "" || sev == "WARNING" {
+		return "WARN"
+	}
+	return sev
+}
+
+func outputGateWarningSource(source string) string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return "output-gate"
+	}
+	return "output-gate:" + source
+}
+
+func outputGateFindingID(f security.Finding) string {
+	return firstNonEmpty(f.CVEID, f.ID, f.EvidenceHash, "output-gate")
+}
+
+func outputGateFindingPackage(result security.ScanResult, f security.Finding) string {
+	return firstNonEmpty(f.PackageName, f.FilePath, f.ScanSource, result.ToolName, "output-gate")
+}
+
+func outputGateFindingVersion(f security.Finding) string {
+	return firstNonEmpty(f.InstalledVersion, f.EvidenceHash, "generated")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // securityEnable handles "security.enable" — turns on OSV scanning.
@@ -303,9 +585,1967 @@ func (s *Server) securityDisable(enc *json.Encoder, req *Request) {
 func (s *Server) securityStatus(enc *json.Encoder, req *Request) {
 	scannerPath := security.ScannerPath()
 	enabled := s.secRunner != nil && s.secRunner.IsEnabled()
+	result := map[string]any{
+		"enabled":                enabled,
+		"scanner_path":           scannerPath,
+		"installed":              scannerPath != "",
+		"scanners":               securityScannerAdapterStatus(context.Background()),
+		"security_workspace":     s.securityWorkspaceRoot(),
+		"mode":                   string(security.ModeWarn),
+		"posture":                string(security.PostureOK),
+		"warnings":               0,
+		"blocks":                 0,
+		"startup_scan_completed": false,
+		"startup_scan_stale":     false,
+		"startup_scan_required":  true,
+		"client_enforcement":     clientEnforcementSnapshot(),
+	}
+	if shimStatus, err := shims.StatusDefaultCatalog(filepath.Join(filepath.Dir(s.socket), "security-shims")); err == nil {
+		result["shims"] = shimStatus
+	}
+	if s.pantryDB != nil {
+		workspace := s.securityWorkspaceRoot()
+		status, err := s.pantryDB.Security().SecurityStatus(workspace)
+		if err == nil {
+			result["workspace"] = status.Workspace
+			result["security_workspace"] = status.Workspace
+			result["mode"] = status.Mode
+			result["posture"] = status.Posture
+			result["counts_by_category"] = status.CountsByCategory
+			result["counts_by_severity"] = status.CountsBySeverity
+			result["warnings"] = securityStatusWarningCount(status.CountsBySeverity)
+			result["blocks"] = status.CountsBySeverity["BLOCK"]
+			result["warning_count"] = result["warnings"]
+			result["block_count"] = result["blocks"]
+			result["top_active_blocks"] = securityStatusTopActiveBlocks(status.Warnings, 3)
+			result["active_client"] = status.ActiveClient
+			completed, stale, required := startupScanState(status, startupScanConfigHash(workspace))
+			result["startup_scan_completed"] = completed
+			result["startup_scan_stale"] = stale
+			result["startup_scan_required"] = required
+			if !status.StartupScanCompletedAt.IsZero() {
+				result["startup_scan_completed_at"] = status.StartupScanCompletedAt.UTC().Format(time.RFC3339)
+			}
+			if status.LastStartupScan != nil && !status.LastStartupScan.CompletedAt.IsZero() {
+				result["last_startup_scan_at"] = status.LastStartupScan.CompletedAt.UTC().Format(time.RFC3339)
+			}
+			if status.LastDependencyScan != nil && !status.LastDependencyScan.CompletedAt.IsZero() {
+				result["last_dependency_scan_at"] = status.LastDependencyScan.CompletedAt.UTC().Format(time.RFC3339)
+			}
+			result["cra"] = securityCRAStatus(workspace, status, result["scanners"])
+		}
+	}
+	workspace, _ := result["security_workspace"].(string)
+	result["rulepacks"] = s.securityRulePackStatus(workspace, false)
+	if _, ok := result["cra"]; !ok {
+		result["cra"] = securityCRAStatus("", pantry.SecurityStatus{}, result["scanners"])
+	}
+	writeResult(enc, req.ID, result)
+}
+
+func securityStatusWarningCount(counts map[string]int) int {
+	var total int
+	for severity, count := range counts {
+		if strings.EqualFold(severity, "BLOCK") {
+			continue
+		}
+		total += count
+	}
+	return total
+}
+
+func securityStatusTopActiveBlocks(warnings []pantry.SecurityWarning, limit int) []map[string]any {
+	if limit <= 0 {
+		limit = 3
+	}
+	out := make([]map[string]any, 0, limit)
+	for _, warning := range warnings {
+		if !strings.EqualFold(warning.Severity, "BLOCK") {
+			continue
+		}
+		item := map[string]any{
+			"category":    warning.Category,
+			"source":      warning.Source,
+			"message":     warning.Message,
+			"remediation": warning.Remediation,
+		}
+		if !warning.LastSeen.IsZero() {
+			item["last_seen"] = warning.LastSeen.UTC().Format(time.RFC3339)
+		}
+		out = append(out, item)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func (s *Server) securityCRA(enc *json.Encoder, req *Request) {
+	scanners := securityScannerAdapterStatus(context.Background())
+	workspace := s.securityWorkspaceRoot()
+	var status pantry.SecurityStatus
+	if s.pantryDB != nil {
+		if st, err := s.pantryDB.Security().SecurityStatus(workspace); err == nil {
+			status = st
+		}
+	}
+	report, summary := evaluateCRAReadiness(workspace, status, scanners)
+	checks := make([]map[string]any, 0, len(report.Checks))
+	for _, check := range report.Checks {
+		checks = append(checks, map[string]any{
+			"id":               check.ID,
+			"title":            check.Title,
+			"category":         string(check.Category),
+			"article":          check.Article,
+			"status":           string(check.Status),
+			"due_date":         check.DueDate,
+			"deadline_status":  string(check.DeadlineStatus),
+			"source_url":       check.SourceURL,
+			"present_evidence": check.PresentEvidence,
+			"missing_evidence": check.MissingEvidence,
+			"next_actions":     craNextActions(workspace, check.ID, check.MissingEvidence),
+		})
+	}
 	writeResult(enc, req.ID, map[string]any{
-		"enabled":      enabled,
-		"scanner_path": scannerPath,
-		"installed":    scannerPath != "",
+		"workspace": workspace,
+		"summary":   summary,
+		"checks":    checks,
 	})
+}
+
+func securityCRAStatus(workspace string, status pantry.SecurityStatus, scannerStatus any) map[string]any {
+	_, summary := evaluateCRAReadiness(workspace, status, scannerStatus)
+	return summary
+}
+
+func (s *Server) securityRulePackStatus(workspace string, persist bool) map[string]any {
+	result := map[string]any{
+		"offline":      true,
+		"update_state": "offline-current",
+		"count":        0,
+		"packs":        []map[string]any{},
+	}
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return result
+	}
+	packs, err := rulepacks.LoadAll(securityRulePackOptions(workspace))
+	if err != nil {
+		result["update_state"] = "error"
+		result["error"] = err.Error()
+		if s.pantryDB != nil {
+			if persisted, listErr := s.pantryDB.Security().ListRulePacks(workspace); listErr == nil {
+				result["count"] = len(persisted)
+				result["packs"] = securityPersistedRulePacksToWire(persisted)
+			}
+		}
+		return result
+	}
+	if persist && s.pantryDB != nil {
+		if persisted, err := s.persistSecurityRulePacks(workspace, packs); err == nil {
+			result["count"] = len(persisted)
+			result["packs"] = securityPersistedRulePacksToWire(persisted)
+			return result
+		} else {
+			result["update_state"] = "error"
+			result["error"] = err.Error()
+		}
+	}
+	result["count"] = len(packs)
+	result["packs"] = securityRulePacksToWire(packs)
+	return result
+}
+
+func craNextActions(workspace, checkID string, missing []string) []string {
+	if len(missing) == 0 {
+		return nil
+	}
+	var actions []string
+	hasMissing := func(field string) bool {
+		for _, item := range missing {
+			if item == field {
+				return true
+			}
+		}
+		return false
+	}
+	switch checkID {
+	case "cra-sbom":
+		actions = append(actions, "Generate SBOM evidence: milliwaysctl security sbom --output dist/milliways.spdx.json")
+	case "cra-vulnerability-handling":
+		if hasMissing(adapters.CRAEvidenceFieldVulnerabilityPolicy) || hasMissing(adapters.CRAEvidenceFieldReportingContact) || hasMissing(adapters.CRAEvidenceFieldReportingProcess) {
+			actions = append(actions, "Document vulnerability reporting in SECURITY.md with contact, triage process, response target, and disclosure policy")
+		}
+	case "cra-secure-by-default":
+		if hasMissing(adapters.CRAEvidenceFieldSecureByDefault) {
+			actions = append(actions, "Run milliwaysctl security startup-scan --strict and keep security mode at warn or stricter")
+		}
+		if hasMissing(adapters.CRAEvidenceFieldAutomaticUpdates) {
+			actions = append(actions, "Document security update delivery in docs/update-policy.md or SECURITY.md")
+		}
+	case "cra-scanner-coverage":
+		actions = append(actions, "Install and verify security scanners: milliwaysctl security status")
+	case "cra-support-period":
+		actions = append(actions, "Add SUPPORT.md with an explicit security support-until date")
+	case "cra-conformity-documentation":
+		actions = append(actions, "Create docs/cra-technical-file.md with product scope, security controls, risk assessment, and evidence links")
+	}
+	if len(actions) == 0 {
+		actions = append(actions, "Add evidence for: "+strings.Join(missing, ", "))
+	}
+	if strings.TrimSpace(workspace) != "" {
+		for i := range actions {
+			actions[i] = strings.ReplaceAll(actions[i], "$WORKSPACE", workspace)
+		}
+	}
+	return actions
+}
+
+func evaluateCRAReadiness(workspace string, status pantry.SecurityStatus, scannerStatus any) (adapters.CRAReport, map[string]any) {
+	supportPeriod := firstCRAEvidenceFile(workspace, "support-period")
+	report := adapters.NewCRAAdapter().Evaluate(adapters.CRAEvidenceInput{
+		ProductName:                     "MilliWays",
+		AsOf:                            time.Now().UTC(),
+		SBOMPaths:                       findCRAEvidenceFiles(workspace, "sbom"),
+		VulnerabilityHandlingPolicy:     firstCRAEvidenceFile(workspace, "security-policy"),
+		VulnerabilityReportingContact:   firstCRAEvidenceFileMatching(workspace, "security-contact", craSecurityContactEvidence),
+		VulnerabilityReportingProcess:   firstCRAEvidenceFileMatching(workspace, "security-process", craSecurityProcessEvidence),
+		SecureByDefaultEvidence:         secureByDefaultCRAEvidence(status),
+		ScannerCoverage:                 scannerCoverageCRAEvidence(scannerStatus),
+		SupportPeriod:                   supportPeriod,
+		SupportUntil:                    craSupportUntil(workspace, supportPeriod),
+		ConformityDocumentationPaths:    findCRAEvidenceFiles(workspace, "conformity"),
+		AutomaticSecurityUpdateEvidence: findCRAEvidenceFiles(workspace, "updates"),
+	})
+
+	total, present, partial, missing := len(report.Checks), 0, 0, 0
+	reportingPresent, reportingTotal := 0, 0
+	daysToReporting := 0
+	reportingDeadlineStatus := string(adapters.CRADeadlineUnknown)
+	designEvidenceStatus := string(adapters.CRAEvidenceMissing)
+	nextAction := ""
+	for _, check := range report.Checks {
+		switch check.Status {
+		case adapters.CRAEvidencePresent:
+			present++
+		case adapters.CRAEvidencePartial:
+			partial++
+		default:
+			missing++
+		}
+		if check.ID == "cra-vulnerability-handling" {
+			reportingPresent = len(check.PresentEvidence)
+			reportingTotal = len(check.PresentEvidence) + len(check.MissingEvidence)
+			daysToReporting = check.DaysUntilDue
+			reportingDeadlineStatus = string(check.DeadlineStatus)
+		}
+		if check.ID == "cra-secure-by-default" {
+			designEvidenceStatus = string(check.Status)
+		}
+		if nextAction == "" {
+			if actions := craNextActions(workspace, check.ID, check.MissingEvidence); len(actions) > 0 {
+				nextAction = actions[0]
+			}
+		}
+	}
+	score := 0
+	if total > 0 {
+		score = int((float64(present)+0.5*float64(partial))/float64(total)*100 + 0.5)
+	}
+	securityWarnings := status.CountsBySeverity["WARN"] + status.CountsBySeverity["HIGH"] + status.CountsBySeverity["CRITICAL"]
+	securityBlocks := status.CountsBySeverity["BLOCK"]
+	summary := map[string]any{
+		"regulation":                report.Regulation,
+		"evidence_score":            score,
+		"checks_total":              total,
+		"checks_present":            present,
+		"checks_partial":            partial,
+		"checks_missing":            missing,
+		"reporting_ready":           reportingTotal > 0 && reportingPresent == reportingTotal,
+		"reporting_present":         reportingPresent,
+		"reporting_total":           reportingTotal,
+		"design_evidence_status":    designEvidenceStatus,
+		"days_to_reporting":         daysToReporting,
+		"reporting_deadline":        "2026-09-11",
+		"reporting_deadline_status": reportingDeadlineStatus,
+		"full_deadline":             "2027-12-11",
+		"security_warnings":         securityWarnings,
+		"security_blocks":           securityBlocks,
+		"next_action":               nextAction,
+	}
+	return report, summary
+}
+
+func findCRAEvidenceFiles(workspace, kind string) []string {
+	if strings.TrimSpace(workspace) == "" {
+		return nil
+	}
+	candidates := map[string][]string{
+		"sbom": {
+			"sbom.spdx.json", "sbom.cdx.json", "bom.json", "dist/sbom.spdx.json",
+			"dist/sbom.cdx.json", "dist/milliways.spdx.json",
+		},
+		"conformity": {
+			"docs/cra-technical-file.md", "docs/declaration-of-conformity.md",
+			"docs/conformity.md", "COMPLIANCE.md",
+		},
+		"updates": {
+			"docs/update-policy.md", "docs/security-updates.md", "SECURITY.md",
+		},
+		"support-period": {
+			"SUPPORT.md", "docs/support.md", "SECURITY.md",
+		},
+		"security-policy": {
+			"SECURITY.md", ".github/SECURITY.md", "docs/security.md",
+		},
+		"security-contact": {
+			"SECURITY.md", ".well-known/security.txt", ".github/SECURITY.md",
+		},
+		"security-process": {
+			"SECURITY.md", "docs/security-reporting.md", ".github/SECURITY.md",
+		},
+	}
+	var found []string
+	for _, rel := range candidates[kind] {
+		path := filepath.Join(workspace, rel)
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			if craEvidenceFileIsPlaceholder(path) {
+				continue
+			}
+			found = append(found, rel)
+		}
+	}
+	return found
+}
+
+func craEvidenceFileIsPlaceholder(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), "MILLIWAYS_CRA_PLACEHOLDER")
+}
+
+func firstCRAEvidenceFile(workspace, kind string) string {
+	files := findCRAEvidenceFiles(workspace, kind)
+	if len(files) == 0 {
+		return ""
+	}
+	return files[0]
+}
+
+func firstCRAEvidenceFileMatching(workspace, kind string, match func(string) bool) string {
+	for _, rel := range findCRAEvidenceFiles(workspace, kind) {
+		data, err := os.ReadFile(filepath.Join(workspace, rel))
+		if err != nil {
+			continue
+		}
+		if match(string(data)) {
+			return rel
+		}
+	}
+	return ""
+}
+
+func craSecurityContactEvidence(content string) bool {
+	content = strings.ToLower(content)
+	return strings.Contains(content, "@") ||
+		strings.Contains(content, "security.txt") ||
+		strings.Contains(content, "github.com/") ||
+		strings.Contains(content, "contact")
+}
+
+func craSecurityProcessEvidence(content string) bool {
+	content = strings.ToLower(content)
+	for _, needle := range []string{"triage", "response", "respond", "disclosure", "sla", "within", "process"} {
+		if strings.Contains(content, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func craSupportUntil(workspace, rel string) *time.Time {
+	if strings.TrimSpace(workspace) == "" || strings.TrimSpace(rel) == "" {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, rel))
+	if err != nil {
+		return nil
+	}
+	if strings.Contains(string(data), "MILLIWAYS_CRA_PLACEHOLDER") {
+		return nil
+	}
+	fields := strings.FieldsFunc(string(data), func(r rune) bool {
+		return r < '0' || r > '9'
+	})
+	for i := 0; i+2 < len(fields); i++ {
+		if len(fields[i]) != 4 || len(fields[i+1]) != 2 || len(fields[i+2]) != 2 {
+			continue
+		}
+		t, err := time.Parse("2006-01-02", fields[i]+"-"+fields[i+1]+"-"+fields[i+2])
+		if err == nil && t.Year() >= 2027 {
+			return &t
+		}
+	}
+	return nil
+}
+
+func secureByDefaultCRAEvidence(status pantry.SecurityStatus) []string {
+	var evidence []string
+	if strings.TrimSpace(status.Workspace) == "" {
+		return evidence
+	}
+	switch security.NormalizeMode(security.Mode(status.Mode)) {
+	case security.ModeWarn, security.ModeStrict, security.ModeCI:
+		evidence = append(evidence, "security mode "+status.Mode)
+	}
+	if !status.StartupScanCompletedAt.IsZero() {
+		evidence = append(evidence, "startup scan completed")
+	}
+	return evidence
+}
+
+func scannerCoverageCRAEvidence(raw any) []adapters.CRAScannerCoverage {
+	items, ok := raw.([]map[string]any)
+	if !ok {
+		return nil
+	}
+	var coverage []adapters.CRAScannerCoverage
+	for _, item := range items {
+		installed, _ := item["installed"].(bool)
+		name, _ := item["name"].(string)
+		if !installed || name == "" {
+			continue
+		}
+		coverage = append(coverage, adapters.CRAScannerCoverage{Name: name, Kind: craScannerKind(name)})
+	}
+	return coverage
+}
+
+func craScannerKind(name string) string {
+	switch name {
+	case "osv-scanner", "govulncheck":
+		return "dependency"
+	case "gitleaks":
+		return "secret"
+	case "semgrep":
+		return "sast"
+	default:
+		return "scanner"
+	}
+}
+
+func securityScannerAdapterStatus(ctx context.Context) []map[string]any {
+	scannerAdapters := securityStatusAdapters()
+	statuses := make([]map[string]any, 0, len(scannerAdapters))
+	var signature strings.Builder
+	for _, adapter := range scannerAdapters {
+		installed := adapter.Installed()
+		signature.WriteString(adapter.Name())
+		signature.WriteByte('=')
+		if installed {
+			signature.WriteByte('1')
+		} else {
+			signature.WriteByte('0')
+		}
+		signature.WriteByte(';')
+		status := map[string]any{
+			"name":      adapter.Name(),
+			"installed": installed,
+		}
+		statuses = append(statuses, status)
+	}
+	cacheKey := signature.String()
+	now := time.Now()
+	securityScannerStatusCache.Lock()
+	if securityScannerStatusCache.signature == cacheKey && now.Before(securityScannerStatusCache.expires) {
+		cached := cloneScannerStatuses(securityScannerStatusCache.statuses)
+		securityScannerStatusCache.Unlock()
+		return cached
+	}
+	securityScannerStatusCache.Unlock()
+	for i, adapter := range scannerAdapters {
+		installed, _ := statuses[i]["installed"].(bool)
+		if installed {
+			versionCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			version, err := adapter.Version(versionCtx)
+			cancel()
+			if err != nil {
+				statuses[i]["version_error"] = err.Error()
+			} else if version != "" {
+				statuses[i]["version"] = version
+			}
+		}
+	}
+	securityScannerStatusCache.Lock()
+	securityScannerStatusCache.signature = cacheKey
+	securityScannerStatusCache.expires = now.Add(30 * time.Second)
+	securityScannerStatusCache.statuses = cloneScannerStatuses(statuses)
+	securityScannerStatusCache.Unlock()
+	return statuses
+}
+
+func cloneScannerStatuses(in []map[string]any) []map[string]any {
+	out := make([]map[string]any, len(in))
+	for i, status := range in {
+		cp := make(map[string]any, len(status))
+		for k, v := range status {
+			cp[k] = v
+		}
+		out[i] = cp
+	}
+	return out
+}
+
+// securityStartupScan handles "security.startup_scan" by running the fast
+// deterministic local scanner and persisting warnings into pantry.
+func (s *Server) securityStartupScan(enc *json.Encoder, req *Request) {
+	if s.pantryDB == nil {
+		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		return
+	}
+	var p struct {
+		Workspace string `json:"workspace,omitempty"`
+		Strict    bool   `json:"strict,omitempty"`
+	}
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+	}
+	workspace := strings.TrimSpace(p.Workspace)
+	if workspace == "" {
+		workspace = s.securityWorkspaceRoot()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := s.runStartupSecurityScan(ctx, workspace, p.Strict)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("startup scan: %v", err))
+		return
+	}
+	writeResult(enc, req.ID, result)
+}
+
+func (s *Server) runStartupSecurityScan(ctx context.Context, workspace string, strict bool) (map[string]any, error) {
+	if s.pantryDB == nil {
+		return nil, fmt.Errorf("pantry not available")
+	}
+	return runStartupSecurityScanWithStore(ctx, s.pantryDB.Security(), workspace, strict, s.activeAgent())
+}
+
+func runStartupSecurityScanWithStore(ctx context.Context, store *pantry.SecurityStore, workspace string, strict bool, activeAgent string) (map[string]any, error) {
+	if store == nil {
+		return nil, fmt.Errorf("pantry not available")
+	}
+	if abs, err := filepath.Abs(workspace); err == nil {
+		workspace = abs
+	}
+	runID, _ := store.InsertScanRun(pantry.SecurityScanRun{
+		Kind:      string(security.ScanStartup),
+		Workspace: workspace,
+		Status:    "running",
+		ToolName:  "milliways-startup-scan",
+	})
+	result, err := security.RunStartupScan(ctx, security.StartupScanOptions{
+		WorkspaceRoot:        workspace,
+		UserPersistenceRoots: startupPersistenceRoots(),
+	})
+	if err != nil {
+		if runID > 0 {
+			_ = store.CompleteScanRun(runID, "error", 0, 0, 0, err.Error())
+		}
+		return nil, err
+	}
+	warnCount, blockCount := 0, 0
+	warnings := make([]map[string]any, 0, len(result.Findings))
+	activeWarnings := make([]pantry.SecurityWarning, 0, len(result.Findings))
+	for _, f := range result.Findings {
+		sev := startupSeverityToStored(f.Severity)
+		if sev == "BLOCK" {
+			blockCount++
+		} else {
+			warnCount++
+		}
+		warning := pantry.SecurityWarning{
+			Workspace:   result.WorkspaceRoot,
+			Category:    string(f.Category),
+			Severity:    sev,
+			Source:      f.RelPath,
+			Message:     f.Title,
+			Status:      string(security.FindingActive),
+			ScanRunID:   runID,
+			Remediation: f.Remediation,
+		}
+		if err := store.UpsertWarning(warning); err != nil {
+			return nil, fmt.Errorf("persist warning: %w", err)
+		}
+		activeWarnings = append(activeWarnings, warning)
+		warnings = append(warnings, map[string]any{
+			"rule_id":     f.RuleID,
+			"category":    string(f.Category),
+			"severity":    sev,
+			"title":       f.Title,
+			"path":        f.RelPath,
+			"line":        f.Line,
+			"remediation": f.Remediation,
+		})
+	}
+	if err := store.ResolveWarningsNotSeen(result.WorkspaceRoot, startupScanWarningCategories(), "", activeWarnings); err != nil {
+		return nil, fmt.Errorf("resolve stale startup warnings: %w", err)
+	}
+	if runID > 0 {
+		_ = store.CompleteScanRun(runID, "completed", len(result.Findings), warnCount, blockCount, "")
+	}
+	if err := store.MarkStartupScanCompleted(result.WorkspaceRoot, startupScanConfigHash(result.WorkspaceRoot)); err != nil {
+		return nil, fmt.Errorf("mark startup scan completed: %w", err)
+	}
+	posture := string(security.PostureOK)
+	if blockCount > 0 || (strict && warnCount > 0) {
+		posture = string(security.PostureBlock)
+	} else if warnCount > 0 {
+		posture = string(security.PostureWarn)
+	}
+	_ = setWorkspaceStatusPreservingMode(store, result.WorkspaceRoot, string(security.ModeWarn), activeAgent)
+	return map[string]any{
+		"workspace":     result.WorkspaceRoot,
+		"scanned_at":    result.CompletedAt.UTC().Format(time.RFC3339),
+		"files":         result.FilesScanned,
+		"findings":      warnings,
+		"warnings":      warnCount,
+		"blocks":        blockCount,
+		"warning_count": warnCount,
+		"block_count":   blockCount,
+		"posture":       posture,
+	}, nil
+}
+
+func startupScanWarningCategories() []string {
+	return []string{
+		string(rules.CategoryClientProfile),
+		string(rules.CategoryIOC),
+		string(rules.CategoryPackage),
+		string(rules.CategoryPersistence),
+		string(rules.CategoryPolicy),
+	}
+}
+
+func setWorkspaceStatusPreservingMode(store *pantry.SecurityStore, workspace, fallbackMode, activeClient string) error {
+	mode := fallbackMode
+	if status, err := store.SecurityStatus(workspace); err == nil && strings.TrimSpace(status.Mode) != "" {
+		mode = status.Mode
+	}
+	return store.SetWorkspaceStatus(workspace, mode, activeClient)
+}
+
+// securityWarnings handles "security.warnings".
+func (s *Server) securityWarnings(enc *json.Encoder, req *Request) {
+	if s.pantryDB == nil {
+		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		return
+	}
+	warnings, err := s.pantryDB.Security().ListActiveWarnings(s.securityWorkspaceRoot())
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("list warnings: %v", err))
+		return
+	}
+	out := make([]map[string]any, 0, len(warnings))
+	for _, w := range warnings {
+		out = append(out, map[string]any{
+			"id":          w.ID,
+			"workspace":   w.Workspace,
+			"category":    w.Category,
+			"severity":    w.Severity,
+			"source":      w.Source,
+			"message":     w.Message,
+			"remediation": w.Remediation,
+			"last_seen":   w.LastSeen.UTC().Format(time.RFC3339),
+		})
+	}
+	writeResult(enc, req.ID, map[string]any{"warnings": out})
+}
+
+// securityMode handles "security.mode" get/set for the current workspace.
+func (s *Server) securityMode(enc *json.Encoder, req *Request) {
+	if s.pantryDB == nil {
+		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		return
+	}
+	var p struct {
+		Mode string `json:"mode,omitempty"`
+	}
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+	}
+	workspace := s.securityWorkspaceRoot()
+	if p.Mode != "" {
+		mode := security.NormalizeMode(security.Mode(p.Mode))
+		if string(mode) != p.Mode {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("invalid security mode %q (want off, observe, warn, strict, or ci)", p.Mode))
+			return
+		}
+		if err := s.pantryDB.Security().SetWorkspaceStatus(workspace, string(mode), s.activeAgent()); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("set mode: %v", err))
+			return
+		}
+	}
+	status, err := s.pantryDB.Security().SecurityStatus(workspace)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("security status: %v", err))
+		return
+	}
+	writeResult(enc, req.ID, map[string]any{
+		"workspace": status.Workspace,
+		"mode":      status.Mode,
+		"posture":   status.Posture,
+	})
+}
+
+type securityCommandCheckParams struct {
+	Command           string         `json:"command"`
+	Argv              []string       `json:"argv,omitempty"`
+	CWD               string         `json:"cwd,omitempty"`
+	Workspace         string         `json:"workspace,omitempty"`
+	Client            string         `json:"client,omitempty"`
+	Session           string         `json:"session,omitempty"`
+	SessionID         string         `json:"session_id,omitempty"`
+	OperationType     string         `json:"operation_type,omitempty"`
+	Env               map[string]any `json:"env,omitempty"`
+	EnvSummary        map[string]any `json:"env_summary,omitempty"`
+	Mode              string         `json:"mode,omitempty"`
+	EnforcementLevel  string         `json:"enforcement_level,omitempty"`
+	BrokerInteractive bool           `json:"broker_interactive,omitempty"`
+}
+
+type securityCommandRiskWire struct {
+	Category string `json:"category"`
+	Reason   string `json:"reason"`
+	Evidence string `json:"evidence,omitempty"`
+}
+
+type securityCommandCheckResult struct {
+	Command          string                    `json:"command"`
+	Workspace        string                    `json:"workspace,omitempty"`
+	CWD              string                    `json:"cwd,omitempty"`
+	Client           string                    `json:"client,omitempty"`
+	Mode             string                    `json:"mode"`
+	Posture          string                    `json:"posture,omitempty"`
+	Decision         string                    `json:"decision"`
+	Reason           string                    `json:"reason"`
+	Parsed           bool                      `json:"parsed"`
+	Risks            []securityCommandRiskWire `json:"risks"`
+	RiskCategories   []string                  `json:"risk_categories"`
+	EnforcementLevel string                    `json:"enforcement_level,omitempty"`
+}
+
+// securityCommandCheck handles "security.command_check".
+func (s *Server) securityCommandCheck(enc *json.Encoder, req *Request) {
+	var p securityCommandCheckParams
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+	}
+	result, err := s.runSecurityCommandCheck(p)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, err.Error())
+		return
+	}
+	if s.pantryDB != nil {
+		if err := s.recordSecurityPolicyDecision(p, result); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, err.Error())
+			return
+		}
+	}
+	writeResult(enc, req.ID, result)
+}
+
+// securityPolicyDecide handles "security.policy_decide".
+func (s *Server) securityPolicyDecide(enc *json.Encoder, req *Request) {
+	var p securityCommandCheckParams
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+	}
+	if strings.TrimSpace(p.OperationType) == "" {
+		p.OperationType = "command"
+	}
+	p.OperationType = strings.ToLower(strings.TrimSpace(p.OperationType))
+	if p.OperationType != "command" {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("unsupported operation_type %q", p.OperationType))
+		return
+	}
+
+	result, err := s.runSecurityCommandCheck(p)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, err.Error())
+		return
+	}
+	if s.pantryDB != nil {
+		if err := s.recordSecurityPolicyDecision(p, result); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, err.Error())
+			return
+		}
+	}
+	writeResult(enc, req.ID, result)
+}
+
+type securityPolicyAuditParams struct {
+	Workspace string `json:"workspace,omitempty"`
+	Session   string `json:"session,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	Client    string `json:"client,omitempty"`
+	Decision  string `json:"decision,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
+}
+
+// securityPolicyAudit handles "security.policy_audit".
+func (s *Server) securityPolicyAudit(enc *json.Encoder, req *Request) {
+	if s.pantryDB == nil {
+		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		return
+	}
+	var p securityPolicyAuditParams
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+	}
+	limit := p.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	workspace := strings.TrimSpace(p.Workspace)
+	if workspace == "" {
+		workspace = s.securityWorkspaceRoot()
+	}
+	if abs, err := filepath.Abs(workspace); err == nil {
+		workspace = abs
+	}
+
+	session := securityPolicyAuditSessionID(p)
+	client := strings.TrimSpace(p.Client)
+	decisionFilter := strings.TrimSpace(p.Decision)
+	decisions, err := s.pantryDB.Security().QueryPolicyDecisions(pantry.SecurityPolicyDecisionQuery{
+		Workspace: workspace,
+		SessionID: session,
+		Client:    client,
+		Decision:  decisionFilter,
+		Limit:     limit,
+	})
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("list policy decisions: %v", err))
+		return
+	}
+
+	events := make([]map[string]any, 0, minInt(limit, len(decisions)))
+	for _, d := range decisions {
+		events = append(events, securityPolicyDecisionWire(d))
+	}
+	writeResult(enc, req.ID, map[string]any{
+		"workspace": workspace,
+		"limit":     limit,
+		"events":    events,
+	})
+}
+
+func securityPolicyAuditSessionID(p securityPolicyAuditParams) string {
+	if sessionID := strings.TrimSpace(p.SessionID); sessionID != "" {
+		return sessionID
+	}
+	return strings.TrimSpace(p.Session)
+}
+
+func securityPolicyDecisionWire(d pantry.SecurityPolicyDecision) map[string]any {
+	event := map[string]any{
+		"id":                d.ID,
+		"created_at":        d.CreatedAt.UTC().Format(time.RFC3339),
+		"workspace":         d.Workspace,
+		"session_id":        d.SessionID,
+		"client":            d.Client,
+		"cwd":               d.CWD,
+		"operation_type":    d.OperationType,
+		"command":           d.Command,
+		"mode":              d.Mode,
+		"decision":          d.Decision,
+		"reason":            d.Reason,
+		"parsed":            d.Parsed,
+		"enforcement_level": d.EnforcementLevel,
+	}
+	var argv []string
+	if err := json.Unmarshal([]byte(d.ArgvJSON), &argv); err == nil && len(argv) > 0 {
+		event["argv"] = argv
+	}
+	var envSummary map[string]any
+	if err := json.Unmarshal([]byte(d.EnvSummaryJSON), &envSummary); err == nil && len(envSummary) > 0 {
+		event["env_summary"] = envSummary
+	}
+	var risks []securityCommandRiskWire
+	if err := json.Unmarshal([]byte(d.RisksJSON), &risks); err == nil && len(risks) > 0 {
+		event["risks"] = risks
+		event["risk_categories"] = securityPolicyRiskCategories(risks)
+	}
+	return event
+}
+
+func securityPolicyRiskCategories(risks []securityCommandRiskWire) []string {
+	categories := make([]string, 0, len(risks))
+	seen := map[string]struct{}{}
+	for _, risk := range risks {
+		category := strings.TrimSpace(risk.Category)
+		if category == "" {
+			continue
+		}
+		if _, ok := seen[category]; ok {
+			continue
+		}
+		seen[category] = struct{}{}
+		categories = append(categories, category)
+	}
+	return categories
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func (s *Server) runSecurityCommandCheck(p securityCommandCheckParams) (securityCommandCheckResult, error) {
+	command := strings.TrimSpace(p.Command)
+	if command == "" && len(p.Argv) > 0 {
+		command = shellCommandForSecurityPolicy(p.Argv[0], p.Argv[1:])
+	}
+	if command == "" {
+		return securityCommandCheckResult{}, fmt.Errorf("command is required")
+	}
+	cwd := strings.TrimSpace(p.CWD)
+	if cwd == "" {
+		cwd = s.securityWorkspaceRoot()
+	}
+	if abs, err := filepath.Abs(cwd); err == nil {
+		cwd = abs
+	}
+	workspace := strings.TrimSpace(p.Workspace)
+	if workspace == "" {
+		workspace = cwd
+	}
+	if abs, err := filepath.Abs(workspace); err == nil {
+		workspace = abs
+	}
+	client := strings.TrimSpace(p.Client)
+	if client == "" {
+		client = s.activeAgent()
+	}
+
+	mode, posture := security.ModeWarn, security.PostureUnknown
+	if s.pantryDB != nil {
+		status, err := s.pantryDB.Security().SecurityStatus(workspace)
+		if err == nil {
+			mode = security.Mode(status.Mode)
+			posture = security.Posture(status.Posture)
+			if client == "" {
+				client = status.ActiveClient
+			}
+		}
+	}
+	if strings.TrimSpace(p.Mode) != "" {
+		requested := security.Mode(strings.TrimSpace(p.Mode))
+		normalized := security.NormalizeMode(requested)
+		if normalized != requested {
+			return securityCommandCheckResult{}, fmt.Errorf("invalid security mode %q (want off, observe, warn, strict, or ci)", p.Mode)
+		}
+		mode = normalized
+	}
+
+	fwResult := firewall.Evaluate(firewall.Request{
+		Command:  command,
+		RunnerID: client,
+		CWD:      cwd,
+		Policy: firewall.Policy{
+			Mode:                      mode,
+			BlockNetworkDownloadsInCI: true,
+		},
+		Posture: posture,
+	})
+
+	risks := make([]securityCommandRiskWire, 0, len(fwResult.Risks))
+	categories := make([]string, 0, len(fwResult.Risks))
+	for _, risk := range fwResult.Risks {
+		category := string(risk.Category)
+		categories = append(categories, category)
+		risks = append(risks, securityCommandRiskWire{
+			Category: category,
+			Reason:   risk.Reason,
+			Evidence: redactSecurityAuditString(risk.Evidence),
+		})
+	}
+	decision := fwResult.Decision
+	reason := fwResult.Reason
+	if decision == firewall.DecisionNeedsConfirmation && strings.EqualFold(strings.TrimSpace(p.EnforcementLevel), "brokered") && !p.BrokerInteractive {
+		decision = firewall.DecisionBlock
+		reason = "confirmation required but broker is non-interactive: " + fallbackPolicyReason(reason)
+	}
+
+	return securityCommandCheckResult{
+		Command:          command,
+		Workspace:        workspace,
+		CWD:              cwd,
+		Client:           client,
+		Mode:             string(fwResult.Mode),
+		Posture:          string(posture),
+		Decision:         string(decision),
+		Reason:           reason,
+		Parsed:           fwResult.Parsed,
+		Risks:            risks,
+		RiskCategories:   categories,
+		EnforcementLevel: strings.TrimSpace(p.EnforcementLevel),
+	}, nil
+}
+
+func shellCommandForSecurityPolicy(command string, args []string) string {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, shellQuoteForSecurityPolicy(command))
+	for _, arg := range args {
+		parts = append(parts, shellQuoteForSecurityPolicy(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func shellQuoteForSecurityPolicy(value string) string {
+	if value == "" {
+		return "''"
+	}
+	if strings.IndexFunc(value, func(r rune) bool {
+		return (r < 'A' || r > 'Z') &&
+			(r < 'a' || r > 'z') &&
+			(r < '0' || r > '9') &&
+			!strings.ContainsRune("@%_+=:,./-", r)
+	}) == -1 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func (s *Server) recordSecurityPolicyDecision(p securityCommandCheckParams, result securityCommandCheckResult) error {
+	redactedCommand := redactSecurityAuditString(result.Command)
+	redactedArgv := redactSecurityAuditArgv(p.Argv)
+	argvJSON, err := json.Marshal(redactedArgv)
+	if err != nil {
+		return fmt.Errorf("marshal argv: %w", err)
+	}
+	envSummary := p.EnvSummary
+	if len(envSummary) == 0 && len(p.Env) > 0 {
+		envSummary = p.Env
+	}
+	envSummary = redactSecurityAuditMap(envSummary)
+	if len(envSummary) == 0 {
+		envSummary = map[string]any{}
+	}
+	envSummary["command_sha256"] = securityAuditCommandHash(result.Command)
+	envJSON, err := json.Marshal(envSummary)
+	if err != nil {
+		return fmt.Errorf("marshal env summary: %w", err)
+	}
+	if string(envJSON) == "null" {
+		envJSON = []byte("{}")
+	}
+	risksJSON, err := json.Marshal(redactSecurityCommandRisks(result.Risks))
+	if err != nil {
+		return fmt.Errorf("marshal policy risks: %w", err)
+	}
+	store := s.pantryDB.Security()
+	if err := store.RecordPolicyDecision(pantry.SecurityPolicyDecision{
+		CreatedAt:        time.Now().UTC(),
+		Workspace:        result.Workspace,
+		SessionID:        securityPolicySessionID(p),
+		Client:           result.Client,
+		CWD:              result.CWD,
+		OperationType:    "command",
+		Command:          redactedCommand,
+		ArgvJSON:         string(argvJSON),
+		EnvSummaryJSON:   string(envJSON),
+		Mode:             result.Mode,
+		Decision:         result.Decision,
+		Reason:           result.Reason,
+		Parsed:           result.Parsed,
+		RisksJSON:        string(risksJSON),
+		EnforcementLevel: strings.TrimSpace(p.EnforcementLevel),
+	}); err != nil {
+		return err
+	}
+	if shouldRecordBrokerBlockWarning(result) {
+		warningResult := result
+		warningResult.Command = redactedCommand
+		if err := store.UpsertWarning(brokerBlockSecurityWarning(p, warningResult)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func redactSecurityCommandRisks(risks []securityCommandRiskWire) []securityCommandRiskWire {
+	if len(risks) == 0 {
+		return nil
+	}
+	out := make([]securityCommandRiskWire, 0, len(risks))
+	for _, risk := range risks {
+		risk.Evidence = redactSecurityAuditString(risk.Evidence)
+		out = append(out, risk)
+	}
+	return out
+}
+
+func securityAuditCommandHash(command string) string {
+	sum := sha256.Sum256([]byte(command))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func redactSecurityAuditArgv(argv []string) []string {
+	if len(argv) == 0 {
+		return nil
+	}
+	out := make([]string, len(argv))
+	for i, arg := range argv {
+		out[i] = redactSecurityAuditString(arg)
+		if i > 0 && isSensitiveSecurityAuditKey(argv[i-1]) {
+			out[i] = "[REDACTED]"
+		}
+	}
+	return out
+}
+
+func redactSecurityAuditMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		if isSensitiveSecurityAuditKey(key) {
+			out[key] = "[REDACTED]"
+			continue
+		}
+		if s, ok := value.(string); ok {
+			out[key] = redactSecurityAuditString(s)
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+func redactSecurityAuditString(value string) string {
+	if securityAuditStringLooksSensitive(value) {
+		fields := strings.Fields(value)
+		original := append([]string(nil), fields...)
+		for i := range fields {
+			field := fields[i]
+			if eq := strings.Index(field, "="); eq > 0 && isSensitiveSecurityAuditKey(field[:eq]) {
+				fields[i] = field[:eq+1] + "[REDACTED]"
+				continue
+			}
+			if i > 0 && (isSensitiveSecurityAuditKey(original[i-1]) || strings.EqualFold(strings.Trim(original[i-1], ":'\""), "bearer")) {
+				fields[i] = "[REDACTED]"
+			}
+		}
+		value = strings.Join(fields, " ")
+	}
+	for _, marker := range []string{"Bearer ", "bearer ", "token=", "api_key=", "apikey=", "password=", "secret="} {
+		for {
+			idx := strings.Index(value, marker)
+			if idx < 0 {
+				break
+			}
+			start := idx + len(marker)
+			end := start
+			for end < len(value) && !strings.ContainsRune(" \t\r\n'\"", rune(value[end])) {
+				end++
+			}
+			if end == start {
+				break
+			}
+			value = value[:start] + "[REDACTED]" + value[end:]
+		}
+	}
+	return value
+}
+
+func securityAuditStringLooksSensitive(value string) bool {
+	lower := strings.ToLower(value)
+	for _, marker := range []string{"token", "secret", "password", "passwd", "apikey", "api-key", "api_key", "authorization", "bearer ", "credential", "private-key", "private_key"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSensitiveSecurityAuditKey(key string) bool {
+	key = strings.ToLower(strings.TrimLeft(strings.TrimSpace(key), "-"))
+	for _, marker := range []string{"token", "secret", "password", "passwd", "apikey", "api-key", "api_key", "authorization", "auth", "credential", "private-key", "private_key"} {
+		if strings.Contains(key, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func securityPolicySessionID(p securityCommandCheckParams) string {
+	if sessionID := strings.TrimSpace(p.SessionID); sessionID != "" {
+		return sessionID
+	}
+	return strings.TrimSpace(p.Session)
+}
+
+func shouldRecordBrokerBlockWarning(result securityCommandCheckResult) bool {
+	return result.Decision == string(firewall.DecisionBlock) && strings.EqualFold(strings.TrimSpace(result.EnforcementLevel), "brokered")
+}
+
+func brokerBlockSecurityWarning(p securityCommandCheckParams, result securityCommandCheckResult) pantry.SecurityWarning {
+	source := "shim"
+	if command, ok := p.EnvSummary["shim_command"].(string); ok && strings.TrimSpace(command) != "" {
+		source = "shim:" + strings.TrimSpace(command)
+	}
+	sum := sha256.Sum256([]byte(result.Workspace + "\x00" + result.Client + "\x00" + result.Command + "\x00" + result.Reason))
+	return pantry.SecurityWarning{
+		Workspace:    result.Workspace,
+		Category:     "command-policy",
+		Severity:     "BLOCK",
+		Source:       source,
+		Message:      "shim blocked command: " + result.Command,
+		Status:       string(security.FindingActive),
+		FirstSeen:    time.Now().UTC(),
+		LastSeen:     time.Now().UTC(),
+		EvidenceHash: hex.EncodeToString(sum[:]),
+		Remediation:  result.Reason,
+	}
+}
+
+func fallbackPolicyReason(reason string) string {
+	if strings.TrimSpace(reason) == "" {
+		return "policy requires confirmation"
+	}
+	return reason
+}
+
+func (s *Server) recordClientProfileSecurity(ctx context.Context, workspace, client string) error {
+	_, err := s.runClientProfileSecurity(ctx, workspace, client)
+	return err
+}
+
+func (s *Server) ensureClientProfileSecurityGate(ctx context.Context, workspace, client string) error {
+	result, err := s.runClientProfileSecurity(ctx, workspace, client)
+	if err != nil {
+		return fmt.Errorf("security client profile gate: %w", err)
+	}
+	store := s.pantryDB.Security()
+	status, err := store.SecurityStatus(workspace)
+	if err != nil {
+		return fmt.Errorf("security client profile gate status: %w", err)
+	}
+	mode := security.Mode(strings.TrimSpace(status.Mode))
+	if mode == "" {
+		mode = security.ModeWarn
+	}
+	if mode != security.ModeStrict && mode != security.ModeCI {
+		return nil
+	}
+	blockCount := profileResultBlockCount(result)
+	if blockCount == 0 {
+		blockCount = activeClientProfileBlockCount(status.Warnings, client)
+	}
+	if blockCount > 0 {
+		return fmt.Errorf("security client profile blocked %s for workspace %s: %d block client-profile finding(s); run `milliwaysctl security client %s`", client, workspace, blockCount, client)
+	}
+	return nil
+}
+
+func profileResultBlockCount(result map[string]any) int {
+	switch v := result["block_count"].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	case json.Number:
+		n, _ := v.Int64()
+		return int(n)
+	default:
+		return 0
+	}
+}
+
+func activeClientProfileBlockCount(warnings []pantry.SecurityWarning, client string) int {
+	prefix := strings.ToLower(strings.TrimSpace(client)) + ":"
+	count := 0
+	for _, warning := range warnings {
+		if warning.Category != string(security.FindingClient) || warning.Severity != "BLOCK" {
+			continue
+		}
+		if prefix != ":" && !strings.HasPrefix(strings.ToLower(warning.Source), prefix) {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func (s *Server) securityClientProfile(enc *json.Encoder, req *Request) {
+	if s.pantryDB == nil {
+		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		return
+	}
+	var p struct {
+		Client    string `json:"client"`
+		Workspace string `json:"workspace,omitempty"`
+	}
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+	}
+	if strings.TrimSpace(p.Client) == "" {
+		writeError(enc, req.ID, ErrInvalidParams, "client is required")
+		return
+	}
+	workspace := strings.TrimSpace(p.Workspace)
+	if workspace == "" {
+		workspace = s.securityWorkspaceRoot()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	result, err := s.runClientProfileSecurity(ctx, workspace, p.Client)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("client profile: %v", err))
+		return
+	}
+	writeResult(enc, req.ID, result)
+}
+
+// securityQuarantine handles "security.quarantine" as a dry-run planner.
+func (s *Server) securityQuarantine(enc *json.Encoder, req *Request) {
+	var p struct {
+		Workspace string `json:"workspace,omitempty"`
+		DryRun    bool   `json:"dry_run"`
+		Apply     bool   `json:"apply"`
+	}
+	p.DryRun = true
+	if len(req.Params) > 0 {
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
+	}
+	workspace := strings.TrimSpace(p.Workspace)
+	if workspace == "" {
+		workspace = s.securityWorkspaceRoot()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	plan, err := quarantine.PlanActions(ctx, quarantine.Options{
+		WorkspaceRoot:    workspace,
+		SystemdRoots:     quarantineRoots("systemd-user", filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user")),
+		LaunchAgentRoots: quarantineRoots("launch-agents", filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents")),
+	})
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("plan quarantine: %v", err))
+		return
+	}
+	if p.Apply {
+		applied, err := quarantine.ApplyPlan(ctx, plan, quarantine.ApplyOptions{})
+		if err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("apply quarantine: %v", err))
+			return
+		}
+		actions := make([]map[string]any, 0, len(applied.Actions))
+		for _, a := range applied.Actions {
+			if s.pantryDB != nil {
+				_ = s.pantryDB.Security().RecordQuarantineAction(pantry.SecurityQuarantineAction{
+					Workspace:        plan.WorkspaceRoot,
+					Kind:             string(a.Kind),
+					SourcePath:       a.SourcePath,
+					DestinationPath:  a.DestinationPath,
+					OriginalHash:     a.Hash,
+					AppliedHash:      a.AppliedHash,
+					Status:           string(a.Status),
+					Error:            a.Error,
+					RollbackHint:     a.RollbackHint,
+					AdditionalFields: a.AdditionalFields,
+					AppliedAt:        a.AppliedAt,
+				})
+			}
+			actions = append(actions, quarantineAppliedActionWire(a))
+		}
+		writeResult(enc, req.ID, map[string]any{
+			"workspace":       plan.WorkspaceRoot,
+			"quarantine_root": plan.QuarantineRoot,
+			"planned_at":      plan.PlannedAt.UTC().Format(time.RFC3339),
+			"applied_at":      applied.AppliedAt.UTC().Format(time.RFC3339),
+			"dry_run":         false,
+			"actions":         actions,
+		})
+		return
+	}
+	actions := make([]map[string]any, 0, len(plan.Actions))
+	for _, a := range plan.Actions {
+		actions = append(actions, map[string]any{
+			"kind":              string(a.Kind),
+			"reason":            a.Reason,
+			"source_path":       a.SourcePath,
+			"destination_path":  a.DestinationPath,
+			"hash":              a.Hash,
+			"apply_required":    a.ApplyRequired,
+			"rollback_hint":     a.RollbackHint,
+			"additional_fields": a.AdditionalFields,
+		})
+	}
+	writeResult(enc, req.ID, map[string]any{
+		"workspace":       plan.WorkspaceRoot,
+		"quarantine_root": plan.QuarantineRoot,
+		"planned_at":      plan.PlannedAt.UTC().Format(time.RFC3339),
+		"dry_run":         true,
+		"actions":         actions,
+	})
+}
+
+func quarantineAppliedActionWire(a quarantine.AppliedAction) map[string]any {
+	return map[string]any{
+		"kind":              string(a.Kind),
+		"reason":            a.Reason,
+		"source_path":       a.SourcePath,
+		"destination_path":  a.DestinationPath,
+		"hash":              a.Hash,
+		"applied_hash":      a.AppliedHash,
+		"status":            string(a.Status),
+		"error":             a.Error,
+		"apply_required":    a.ApplyRequired,
+		"rollback_hint":     a.RollbackHint,
+		"additional_fields": a.AdditionalFields,
+		"applied_at":        a.AppliedAt.UTC().Format(time.RFC3339),
+	}
+}
+
+// securityRulesList handles "security.rules_list".
+func (s *Server) securityRulesList(enc *json.Encoder, req *Request) {
+	workspace := s.securityWorkspaceRoot()
+	packs, err := rulepacks.LoadAll(securityRulePackOptions(workspace))
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("load rule packs: %v", err))
+		return
+	}
+	persisted, err := s.persistSecurityRulePacks(workspace, packs)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("persist rule packs: %v", err))
+		return
+	}
+	writeResult(enc, req.ID, map[string]any{
+		"rules":              securityRulePacksToWire(packs),
+		"persisted_metadata": securityPersistedRulePacksToWire(persisted),
+		"offline":            true,
+	})
+}
+
+// securityRulesUpdate verifies local rule packs. Network updates are
+// intentionally disabled by default.
+func (s *Server) securityRulesUpdate(enc *json.Encoder, req *Request) {
+	workspace := s.securityWorkspaceRoot()
+	packs, err := rulepacks.LoadAll(securityRulePackOptions(workspace))
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("verify rule packs: %v", err))
+		return
+	}
+	persisted, err := s.persistSecurityRulePacks(workspace, packs)
+	if err != nil {
+		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("persist rule packs: %v", err))
+		return
+	}
+	writeResult(enc, req.ID, map[string]any{
+		"ok":                 true,
+		"offline":            true,
+		"packs":              len(packs),
+		"persisted_metadata": securityPersistedRulePacksToWire(persisted),
+		"message":            "local rule packs verified; network updates are disabled by default",
+	})
+}
+
+func (s *Server) persistSecurityRulePacks(workspace string, packs []rulepacks.Pack) ([]pantry.SecurityRulePack, error) {
+	if s.pantryDB == nil {
+		return nil, nil
+	}
+	store := s.pantryDB.Security()
+	for _, p := range packs {
+		if err := store.UpsertRulePack(pantry.SecurityRulePack{
+			Workspace:               workspace,
+			Name:                    p.Manifest.Name,
+			Version:                 p.Manifest.Version,
+			Source:                  string(p.Source),
+			ManifestSource:          p.Manifest.Source,
+			Checksum:                p.Manifest.Checksum,
+			MinimumMilliWaysVersion: p.Manifest.MinimumMilliWaysVersion,
+			RulesFile:               p.Manifest.RulesFile,
+			RulesCount:              len(p.Rules),
+			Root:                    p.Root,
+			ManifestPath:            p.ManifestPath,
+			RulesPath:               p.RulesPath,
+			Status:                  "loaded",
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return store.ListRulePacks(workspace)
+}
+
+func securityRulePacksToWire(packs []rulepacks.Pack) []map[string]any {
+	out := make([]map[string]any, 0, len(packs))
+	for _, p := range packs {
+		out = append(out, map[string]any{
+			"name":                      p.Manifest.Name,
+			"version":                   p.Manifest.Version,
+			"source":                    string(p.Source),
+			"manifest_source":           p.Manifest.Source,
+			"checksum":                  p.Manifest.Checksum,
+			"minimum_milliways_version": p.Manifest.MinimumMilliWaysVersion,
+			"rules_file":                p.Manifest.RulesFile,
+			"rules":                     len(p.Rules),
+			"root":                      p.Root,
+			"manifest_path":             p.ManifestPath,
+			"rules_path":                p.RulesPath,
+			"status":                    "loaded",
+		})
+	}
+	return out
+}
+
+func securityPersistedRulePacksToWire(packs []pantry.SecurityRulePack) []map[string]any {
+	out := make([]map[string]any, 0, len(packs))
+	for _, p := range packs {
+		out = append(out, map[string]any{
+			"workspace":                 p.Workspace,
+			"name":                      p.Name,
+			"version":                   p.Version,
+			"source":                    p.Source,
+			"manifest_source":           p.ManifestSource,
+			"checksum":                  p.Checksum,
+			"minimum_milliways_version": p.MinimumMilliWaysVersion,
+			"rules_file":                p.RulesFile,
+			"rules":                     p.RulesCount,
+			"root":                      p.Root,
+			"manifest_path":             p.ManifestPath,
+			"rules_path":                p.RulesPath,
+			"status":                    p.Status,
+			"first_seen":                secWireTime(p.FirstSeen),
+			"last_seen":                 secWireTime(p.LastSeen),
+		})
+	}
+	return out
+}
+
+func secWireTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
+func (s *Server) runClientProfileSecurity(ctx context.Context, workspace, client string) (map[string]any, error) {
+	client = strings.ToLower(strings.TrimSpace(client))
+	if s.pantryDB == nil || client == "" {
+		return nil, fmt.Errorf("pantry not available or client empty")
+	}
+	configHash := clientProfileConfigHash(workspace, client)
+	store := s.pantryDB.Security()
+	if cached, ok, err := store.GetClientProfile(workspace, client, configHash); err != nil {
+		return nil, err
+	} else if ok && cached.Status == "completed" && cached.ResultJSON != "" {
+		var result map[string]any
+		if err := json.Unmarshal([]byte(cached.ResultJSON), &result); err != nil {
+			return nil, fmt.Errorf("decode cached client profile: %w", err)
+		}
+		if err := setWorkspaceStatusPreservingMode(store, workspace, string(security.ModeWarn), client); err != nil {
+			return nil, err
+		}
+		result["cached"] = true
+		result["config_hash"] = configHash
+		return result, nil
+	}
+
+	check := clientprofiles.New(client, clientprofiles.DefaultOptions())
+	result := check.Check(ctx, workspace)
+	runID, _ := store.InsertScanRun(pantry.SecurityScanRun{
+		Kind:      string(security.ScanClientProfile),
+		Workspace: workspace,
+		Status:    "running",
+		ToolName:  "milliways-client-profile",
+	})
+	warnCount, blockCount := 0, 0
+	activeWarnings := make([]pantry.SecurityWarning, 0, len(result.Warnings))
+	for _, warning := range result.Warnings {
+		sev := profileSeverityToStored(warning.Severity)
+		if sev == "BLOCK" {
+			blockCount++
+		} else {
+			warnCount++
+		}
+		source := warning.Path
+		if source == "" {
+			source = warning.Key
+		}
+		if source == "" {
+			source = warning.ID
+		}
+		storedWarning := pantry.SecurityWarning{
+			Workspace:   workspace,
+			Category:    string(security.FindingClient),
+			Severity:    sev,
+			Source:      client + ":" + source,
+			Message:     warning.Summary,
+			Status:      string(security.FindingActive),
+			ScanRunID:   runID,
+			Remediation: "Review the client configuration before using this client in the workspace.",
+		}
+		if err := store.UpsertWarning(storedWarning); err != nil {
+			return nil, err
+		}
+		activeWarnings = append(activeWarnings, storedWarning)
+	}
+	if err := store.ResolveWarningsNotSeen(workspace, []string{string(security.FindingClient)}, client+":", activeWarnings); err != nil {
+		return nil, err
+	}
+	status := "completed"
+	scanErr := result.Error
+	if scanErr != "" {
+		status = "error"
+	}
+	if runID > 0 {
+		_ = store.CompleteScanRun(runID, status, len(result.Warnings), warnCount, blockCount, scanErr)
+	}
+	if err := setWorkspaceStatusPreservingMode(store, workspace, string(security.ModeWarn), client); err != nil {
+		return nil, err
+	}
+	warnings := make([]map[string]any, 0, len(result.Warnings))
+	for _, w := range result.Warnings {
+		warnings = append(warnings, map[string]any{
+			"client":   w.Client,
+			"id":       w.ID,
+			"severity": string(w.Severity),
+			"summary":  w.Summary,
+			"detail":   w.Detail,
+			"path":     w.Path,
+			"key":      w.Key,
+		})
+	}
+	out := map[string]any{
+		"client":        result.Client,
+		"workspace":     result.Workspace,
+		"checked_at":    result.CheckedAt.UTC().Format(time.RFC3339),
+		"warnings":      warnings,
+		"warning_count": warnCount,
+		"block_count":   blockCount,
+		"error":         result.Error,
+		"config_hash":   configHash,
+		"cached":        false,
+	}
+	resultJSON, err := json.Marshal(out)
+	if err != nil {
+		return nil, fmt.Errorf("encode client profile cache: %w", err)
+	}
+	if err := store.UpsertClientProfile(pantry.SecurityClientProfile{
+		Workspace:    workspace,
+		Client:       client,
+		ConfigHash:   configHash,
+		WarningCount: warnCount,
+		BlockCount:   blockCount,
+		Status:       status,
+		ResultJSON:   string(resultJSON),
+		Error:        scanErr,
+	}); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func clientProfileConfigHash(workspace, client string) string {
+	if abs, err := filepath.Abs(workspace); err == nil {
+		workspace = abs
+	}
+	home, _ := os.UserHomeDir()
+	configDir, err := os.UserConfigDir()
+	if err != nil || configDir == "" {
+		configDir = filepath.Join(home, ".config")
+	}
+
+	h := sha256.New()
+	writeHashPart(h, "client-profile-v2")
+	writeHashPart(h, "workspace="+workspace)
+	writeHashPart(h, "client="+client)
+	for _, env := range clientProfileEnvKeys(client) {
+		writeHashPart(h, "env:"+env+"="+os.Getenv(env))
+	}
+	for _, path := range clientProfileConfigPaths(workspace, home, configDir, client) {
+		writeHashPart(h, "path="+path)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			writeHashPart(h, "missing")
+			continue
+		}
+		writeHashPart(h, string(data))
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+func writeHashPart(h interface{ Write([]byte) (int, error) }, part string) {
+	_, _ = h.Write([]byte(part))
+	_, _ = h.Write([]byte{0})
+}
+
+func clientProfileConfigPaths(workspace, home, configDir, client string) []string {
+	var paths []string
+	add := func(path string) {
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	addWorkspace := func(rel string) {
+		if workspace != "" {
+			add(filepath.Join(workspace, rel))
+		}
+	}
+	addConfig := func(rel string) {
+		if configDir != "" {
+			add(filepath.Join(configDir, rel))
+		}
+	}
+	switch client {
+	case clientprofiles.ClientClaude:
+		if home != "" {
+			add(filepath.Join(home, ".claude", "settings.json"))
+			add(filepath.Join(home, ".claude", "settings.local.json"))
+			add(filepath.Join(home, ".claude", "mcp.json"))
+		}
+		addWorkspace(".claude/settings.json")
+		addWorkspace(".claude/settings.local.json")
+		addWorkspace(".claude/mcp.json")
+		addConfig(filepath.Join("claude", "settings.json"))
+		addConfig(filepath.Join("claude", "mcp.json"))
+		for _, path := range globProfilePaths(filepath.Join(workspace, ".claude", "*.js")) {
+			add(path)
+		}
+		addWorkspace("CLAUDE.md")
+	case clientprofiles.ClientCodex:
+		if home != "" {
+			add(filepath.Join(home, ".codex", "config.toml"))
+			add(filepath.Join(home, ".codex", "config.json"))
+		}
+		addWorkspace(filepath.Join(".codex", "config.toml"))
+		addConfig(filepath.Join("codex", "config.toml"))
+		addConfig(filepath.Join("codex", "config.json"))
+	case clientprofiles.ClientCopilot:
+		if home != "" {
+			add(filepath.Join(home, ".copilot", "config.json"))
+			add(filepath.Join(home, ".copilot", "settings.json"))
+		}
+		addWorkspace(".copilot/config.json")
+		addWorkspace(".copilot/settings.json")
+		addConfig(filepath.Join("github-copilot", "config.json"))
+		addConfig(filepath.Join("copilot", "config.json"))
+	case clientprofiles.ClientGemini:
+		if home != "" {
+			add(filepath.Join(home, ".gemini", "settings.json"))
+			add(filepath.Join(home, ".gemini", "config.json"))
+		}
+		addWorkspace(".gemini/settings.json")
+		addWorkspace(".gemini/config.json")
+		addConfig(filepath.Join("gemini", "settings.json"))
+		addConfig(filepath.Join("gemini", "config.json"))
+	case clientprofiles.ClientPool:
+		addWorkspace(".pool/config.json")
+		addWorkspace(".pool/settings.json")
+		addConfig(filepath.Join("pool", "config.json"))
+		addConfig(filepath.Join("pool", "settings.json"))
+	case clientprofiles.ClientMiniMax:
+		if home != "" {
+			add(filepath.Join(home, ".minimax", "config.json"))
+			add(filepath.Join(home, ".minimax", "settings.json"))
+		}
+		addWorkspace(".minimax/config.json")
+		addWorkspace(".minimax/settings.json")
+		addConfig(filepath.Join("minimax", "config.json"))
+		addConfig(filepath.Join("milliways", "local.env"))
+	case clientprofiles.ClientKimi:
+		if home != "" {
+			add(filepath.Join(home, ".kimi", "config.json"))
+			add(filepath.Join(home, ".kimi", "settings.json"))
+		}
+		addWorkspace(".kimi/config.json")
+		addWorkspace(".kimi/settings.json")
+		addConfig(filepath.Join("kimi", "config.json"))
+		addConfig(filepath.Join("kimi", "settings.json"))
+		addConfig(filepath.Join("milliways", "local.env"))
+	case clientprofiles.ClientDeepSeek:
+		if home != "" {
+			add(filepath.Join(home, ".deepseek", "config.json"))
+			add(filepath.Join(home, ".deepseek", "settings.json"))
+		}
+		addWorkspace(".deepseek/config.json")
+		addWorkspace(".deepseek/settings.json")
+		addConfig(filepath.Join("deepseek", "config.json"))
+		addConfig(filepath.Join("deepseek", "settings.json"))
+		addConfig(filepath.Join("milliways", "local.env"))
+	case clientprofiles.ClientLocal:
+		addWorkspace(filepath.Join(".milliways", "local.env"))
+		addConfig(filepath.Join("milliways", "local.env"))
+		addConfig(filepath.Join("milliways", "local.yaml"))
+	}
+	addWorkspace("package.json")
+	sort.Strings(paths)
+	return dedupeStrings(paths)
+}
+
+func globProfilePaths(pattern string) []string {
+	if strings.TrimSpace(pattern) == "" {
+		return nil
+	}
+	matches, _ := filepath.Glob(pattern)
+	sort.Strings(matches)
+	return matches
+}
+
+func clientProfileEnvKeys(client string) []string {
+	switch client {
+	case clientprofiles.ClientCodex:
+		return []string{"CODEX_FLAGS", "CODEX_ARGS", "OPENAI_CODEX_FLAGS"}
+	case clientprofiles.ClientCopilot:
+		return []string{"COPILOT_FLAGS", "COPILOT_ARGS", "GITHUB_COPILOT_FLAGS"}
+	case clientprofiles.ClientGemini:
+		return []string{"GEMINI_FLAGS", "GEMINI_ARGS"}
+	case clientprofiles.ClientPool:
+		return []string{"POOL_FLAGS", "POOL_ARGS"}
+	case clientprofiles.ClientMiniMax:
+		return []string{"MINIMAX_FLAGS", "MINIMAX_ARGS"}
+	case clientprofiles.ClientKimi:
+		return []string{"KIMI_FLAGS", "KIMI_ARGS"}
+	case clientprofiles.ClientDeepSeek:
+		return []string{"DEEPSEEK_FLAGS", "DEEPSEEK_ARGS"}
+	case clientprofiles.ClientLocal:
+		return []string{"MILLIWAYS_LOCAL_ENDPOINT", "MILLIWAYS_LOCAL_BIND", "MILLIWAYS_LOCAL_API_KEY", "MILLIWAYS_LOCAL_AUTH_TOKEN"}
+	default:
+		return nil
+	}
+}
+
+func dedupeStrings(in []string) []string {
+	out := in[:0]
+	var prev string
+	for _, item := range in {
+		if item == prev {
+			continue
+		}
+		out = append(out, item)
+		prev = item
+	}
+	return out
+}
+
+func (s *Server) securityWorkspaceRoot() string {
+	if root := strings.TrimSpace(os.Getenv("MILLIWAYS_WORKSPACE_ROOT")); root != "" {
+		if abs, err := filepath.Abs(root); err == nil {
+			return abs
+		}
+		return root
+	}
+	if wd, err := os.Getwd(); err == nil {
+		return wd
+	}
+	return "."
+}
+
+func startupScanState(status pantry.SecurityStatus, currentConfigHash string) (completed, stale, required bool) {
+	completed = !status.StartupScanCompletedAt.IsZero()
+	stale = completed && status.StartupScanConfigHash != currentConfigHash
+	required = !completed || stale
+	return completed, stale, required
+}
+
+func startupScanConfigHash(workspace string) string {
+	if abs, err := filepath.Abs(workspace); err == nil {
+		workspace = abs
+	}
+	roots := startupPersistenceRoots()
+	parts := make([]string, 0, 2+len(roots))
+	parts = append(parts, "startup-scan-v1", "workspace="+workspace)
+	for _, root := range roots {
+		path := root.Path
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+		parts = append(parts, root.Name+"="+path)
+	}
+	sort.Strings(parts[2:])
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\n")))
+	return hex.EncodeToString(sum[:])
+}
+
+func startupPersistenceRoots() []security.StartupScanRoot {
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	if home == "" {
+		return nil
+	}
+	return []security.StartupScanRoot{
+		{Name: "systemd-user", Path: filepath.Join(home, ".config", "systemd", "user")},
+		{Name: "launch-agents", Path: filepath.Join(home, "Library", "LaunchAgents")},
+	}
+}
+
+func quarantineRoots(name, path string) []quarantine.Root {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	return []quarantine.Root{{Name: name, Path: path}}
+}
+
+func securityRulePackOptions(workspace string) rulepacks.Options {
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	var userDirs []string
+	if home != "" {
+		userDirs = append(userDirs, filepath.Join(home, ".config", "milliways", "security", "rules"))
+	}
+	return rulepacks.Options{
+		BundledDirs:   []string{"/usr/share/milliways/security/rules"},
+		UserDirs:      userDirs,
+		WorkspaceDirs: []string{filepath.Join(workspace, ".milliways", "security", "rules")},
+		AllowNetwork:  false,
+	}
+}
+
+func startupSeverityToStored(sev any) string {
+	switch strings.ToLower(fmt.Sprint(sev)) {
+	case "block":
+		return "BLOCK"
+	default:
+		return "WARN"
+	}
+}
+
+func profileSeverityToStored(sev clientprofiles.Severity) string {
+	switch sev {
+	case clientprofiles.SeverityCritical:
+		return "BLOCK"
+	default:
+		return "WARN"
+	}
 }

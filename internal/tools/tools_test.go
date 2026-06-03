@@ -16,6 +16,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -33,17 +34,17 @@ func TestNewBuiltInRegistryContainsAllTools(t *testing.T) {
 
 	registry := NewBuiltInRegistry()
 	defs := registry.List()
-	if len(defs) != 8 {
-		t.Fatalf("tool count = %d, want 8", len(defs))
+	if len(defs) != 12 {
+		t.Fatalf("tool count = %d, want 12", len(defs))
 	}
-	for _, name := range []string{"Read", "Write", "Edit", "Grep", "Glob", "Bash", "WebFetch"} {
+	for _, name := range []string{"Read", "Write", "Edit", "ApplyPatch", "Delete", "Grep", "Glob", "Bash", "WebFetch", "Todo", "Question"} {
 		if _, ok := registry.Get(name); !ok {
 			t.Fatalf("missing tool %q", name)
 		}
 	}
 }
 
-func TestHandleReadWriteAndEdit(t *testing.T) {
+func TestHandleReadWriteEditAndApplyPatch(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", dir)
 	path := filepath.Join(dir, "sample.txt")
@@ -62,8 +63,9 @@ func TestHandleReadWriteAndEdit(t *testing.T) {
 		t.Fatalf("content = %q", content)
 	}
 	_, err = handleEdit(context.Background(), map[string]any{
-		"path": path,
-		"diff": "@@\n-world\n+gopher\n",
+		"path":       path,
+		"old_string": "world",
+		"new_string": "gopher",
 	})
 	if err != nil {
 		t.Fatalf("handleEdit() error = %v", err)
@@ -77,6 +79,150 @@ func TestHandleReadWriteAndEdit(t *testing.T) {
 	}
 	if _, err := os.Stat(path + ".bak"); err != nil {
 		t.Fatalf("expected backup: %v", err)
+	}
+
+	_, err = handleApplyPatch(context.Background(), map[string]any{
+		"path": path,
+		"diff": "@@\n-gopher\n+agent\n",
+	})
+	if err != nil {
+		t.Fatalf("handleApplyPatch() error = %v", err)
+	}
+	patched, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() after patch error = %v", err)
+	}
+	if string(patched) != "hello\nagent\n" {
+		t.Fatalf("patched = %q", string(patched))
+	}
+}
+
+func TestHandleEditRequiresExactSingleReplacement(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", dir)
+	path := filepath.Join(dir, "sample.txt")
+	if err := os.WriteFile(path, []byte("same\nsame\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := handleEdit(context.Background(), map[string]any{
+		"path":       path,
+		"old_string": "same",
+		"new_string": "other",
+	})
+	if err == nil || !strings.Contains(err.Error(), "exactly once") {
+		t.Fatalf("handleEdit() error = %v, want exactly-once error", err)
+	}
+}
+
+func TestHandleDeleteRemovesWorkspaceFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", dir)
+	path := filepath.Join(dir, "sample.txt")
+	if err := os.WriteFile(path, []byte("delete me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handleDelete(context.Background(), map[string]any{"path": path}); err != nil {
+		t.Fatalf("handleDelete() error = %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("deleted file stat err = %v, want not exist", err)
+	}
+}
+
+func TestHandleDeleteRejectsDenylist(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", dir)
+	secret := filepath.Join(dir, ".ssh", "id_rsa")
+	if err := os.MkdirAll(filepath.Dir(secret), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secret, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handleDelete(context.Background(), map[string]any{"path": secret}); err == nil {
+		t.Fatal("handleDelete() allowed denylisted path")
+	}
+}
+
+func TestTodoAndQuestionReturnJSON(t *testing.T) {
+	t.Parallel()
+
+	todo, err := handleTodo(context.Background(), map[string]any{"items": []any{"one", "two"}})
+	if err != nil {
+		t.Fatalf("handleTodo() error = %v", err)
+	}
+	var todoResult map[string]any
+	if err := json.Unmarshal([]byte(todo), &todoResult); err != nil {
+		t.Fatalf("todo result is not JSON: %v", err)
+	}
+	if todoResult["status"] != "recorded" {
+		t.Fatalf("todo status = %v", todoResult["status"])
+	}
+
+	question, err := handleQuestion(context.Background(), map[string]any{"question": "Proceed?"})
+	if err != nil {
+		t.Fatalf("handleQuestion() error = %v", err)
+	}
+	if !strings.Contains(question, "Proceed?") {
+		t.Fatalf("question result = %q", question)
+	}
+}
+
+func TestHandleReadRejectsSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", dir)
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := handleRead(context.Background(), map[string]any{"path": link}); err == nil {
+		t.Fatal("handleRead() allowed symlink escape")
+	}
+}
+
+func TestHandleGlobFiltersSymlinkEscapes(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "visible.txt"), []byte("visible"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", dir)
+	link := filepath.Join(dir, "outside")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	got, err := handleGlob(context.Background(), map[string]any{"path": dir, "pattern": "*/*.txt"})
+	if err != nil {
+		t.Fatalf("handleGlob() error = %v", err)
+	}
+	if strings.Contains(got, "secret.txt") || strings.Contains(got, outside) {
+		t.Fatalf("handleGlob leaked symlink escape: %q", got)
+	}
+}
+
+func TestHandleWriteRejectsBackupSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	path := filepath.Join(dir, "sample.txt")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", dir)
+	if err := os.Symlink(outside, path+".bak"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := handleWrite(context.Background(), map[string]any{"path": path, "content": "new"}); err == nil {
+		t.Fatal("handleWrite() allowed backup symlink escape")
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("outside backup target was touched: %v", err)
 	}
 }
 

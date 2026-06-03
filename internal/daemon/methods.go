@@ -25,6 +25,7 @@ import (
 
 	"github.com/mwigge/milliways/internal/daemon/metrics"
 	"github.com/mwigge/milliways/internal/daemon/observability"
+	"github.com/mwigge/milliways/internal/daemon/runners"
 	"github.com/mwigge/milliways/internal/history"
 )
 
@@ -50,21 +51,23 @@ type ProtoVersion struct {
 }
 
 type Status struct {
-	Proto       ProtoVersion `json:"proto"`
-	ActiveAgent *string      `json:"active_agent"`
-	Turn        int          `json:"turn"`
-	TokensIn    int          `json:"tokens_in"`
-	TokensOut   int          `json:"tokens_out"`
-	CostUSD     float64      `json:"cost_usd"`
-	QuotaPct    float64      `json:"quota_pct"`
-	Errors5m    int          `json:"errors_5m"`
+	Proto             ProtoVersion                           `json:"proto"`
+	ActiveAgent       *string                                `json:"active_agent"`
+	Turn              int                                    `json:"turn"`
+	TokensIn          int                                    `json:"tokens_in"`
+	TokensOut         int                                    `json:"tokens_out"`
+	CostUSD           float64                                `json:"cost_usd"`
+	QuotaPct          float64                                `json:"quota_pct"`
+	Errors5m          int                                    `json:"errors_5m"`
+	ClientEnforcement map[string]runners.EnforcementMetadata `json:"client_enforcement,omitempty"`
 }
 
 type AgentInfo struct {
-	ID         string `json:"id"`
-	Available  bool   `json:"available"`
-	AuthStatus string `json:"auth_status"`
-	Model      string `json:"model,omitempty"`
+	ID          string                      `json:"id"`
+	Available   bool                        `json:"available"`
+	AuthStatus  string                      `json:"auth_status"`
+	Model       string                      `json:"model,omitempty"`
+	Enforcement runners.EnforcementMetadata `json:"enforcement"`
 }
 
 type QuotaSnapshot struct {
@@ -85,14 +88,16 @@ type RoutingDecision struct {
 // historyAgents is the allowlist for history.append agent_ids.
 // Only these agents may have their history recorded.
 var historyAgents = map[string]bool{
-	"_echo":   true,
-	"claude":  true,
-	"codex":   true,
-	"copilot": true,
-	"gemini":  true,
-	"pool":    true,
-	"minimax": true,
-	"local":   true,
+	"_echo":    true,
+	"claude":   true,
+	"codex":    true,
+	"copilot":  true,
+	"gemini":   true,
+	"pool":     true,
+	"minimax":  true,
+	"kimi":     true,
+	"deepseek": true,
+	"local":    true,
 }
 
 const (
@@ -188,15 +193,25 @@ func (s *Server) buildStatus() Status {
 	}
 	r5m := &metrics.Range{From: "-5min"}
 	return Status{
-		Proto:       ProtoVersion{Major: ProtoMajor, Minor: ProtoMinor},
-		ActiveAgent: activeAgent,
-		Turn:        0,
-		TokensIn:    int(s.sumMetric("tokens_in", r5m)),
-		TokensOut:   int(s.sumMetric("tokens_out", r5m)),
-		CostUSD:     s.sumMetric("cost_usd", r5m),
-		QuotaPct:    0.0,
-		Errors5m:    int(s.sumMetric("error_count", r5m)),
+		Proto:             ProtoVersion{Major: ProtoMajor, Minor: ProtoMinor},
+		ActiveAgent:       activeAgent,
+		Turn:              0,
+		TokensIn:          int(s.sumMetric("tokens_in", r5m)),
+		TokensOut:         int(s.sumMetric("tokens_out", r5m)),
+		CostUSD:           s.sumMetric("cost_usd", r5m),
+		QuotaPct:          0.0,
+		Errors5m:          int(s.sumMetric("error_count", r5m)),
+		ClientEnforcement: clientEnforcementSnapshot(),
 	}
+}
+
+func clientEnforcementSnapshot() map[string]runners.EnforcementMetadata {
+	agents := []string{"claude", "codex", "copilot", "gemini", "pool", "minimax", "kimi", "deepseek", "local"}
+	out := make(map[string]runners.EnforcementMetadata, len(agents))
+	for _, agent := range agents {
+		out[agent] = runners.ClientEnforcementMetadata(agent)
+	}
+	return out
 }
 
 // buildQuotaSnapshots returns per-agent token/cost usage for the last hour.
@@ -205,7 +220,7 @@ func (s *Server) buildQuotaSnapshots() []QuotaSnapshot {
 	if s.metrics == nil {
 		return nil
 	}
-	agents := []string{"claude", "codex", "copilot", "gemini", "pool", "minimax", "local"}
+	agents := []string{"claude", "codex", "copilot", "gemini", "pool", "minimax", "kimi", "deepseek", "local"}
 	r1h := &metrics.Range{From: "-1h"}
 	var out []QuotaSnapshot
 	for _, agent := range agents {
@@ -281,6 +296,14 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		s.agentClose(enc, req)
 	case "deck.snapshot":
 		s.deckSnapshot(enc, req)
+	case "approval.list":
+		s.approvalList(enc, req)
+	case "approval.respond":
+		s.approvalRespond(enc, req)
+	case "coding.changes":
+		s.codingChanges(enc, req)
+	case "coding.diff":
+		s.codingDiff(enc, req)
 	case "apply.extract":
 		s.applyExtract(enc, req)
 	case "context.get":
@@ -385,6 +408,28 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		s.securityDisable(enc, req)
 	case "security.status":
 		s.securityStatus(enc, req)
+	case "security.cra":
+		s.securityCRA(enc, req)
+	case "security.startup_scan":
+		s.securityStartupScan(enc, req)
+	case "security.warnings":
+		s.securityWarnings(enc, req)
+	case "security.mode":
+		s.securityMode(enc, req)
+	case "security.client_profile":
+		s.securityClientProfile(enc, req)
+	case "security.command_check":
+		s.securityCommandCheck(enc, req)
+	case "security.policy_decide":
+		s.securityPolicyDecide(enc, req)
+	case "security.policy_audit":
+		s.securityPolicyAudit(enc, req)
+	case "security.quarantine":
+		s.securityQuarantine(enc, req)
+	case "security.rules_list":
+		s.securityRulesList(enc, req)
+	case "security.rules_update":
+		s.securityRulesUpdate(enc, req)
 	case "config.setenv":
 		// Injects a single env var into the daemon process so runners that
 		// read it on each request (e.g. MINIMAX_API_KEY) pick it up without

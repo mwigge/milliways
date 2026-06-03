@@ -229,9 +229,10 @@ func BuildSummarizePrompt(userPrompt string, steps []*Step) string {
 	var parts []string
 	for _, s := range steps {
 		status := "completed"
-		if s.Status == StatusFailed {
+		switch s.Status {
+		case StatusFailed:
 			status = "FAILED"
-		} else if s.Status == StatusSkipped {
+		case StatusSkipped:
 			status = "SKIPPED"
 		}
 
