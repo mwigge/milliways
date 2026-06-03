@@ -2250,6 +2250,13 @@ func (l *chatLoop) printHistory(rest string) {
 func (l *chatLoop) handleSessions(rest string) {
 	sessionsDir := expandHome("~/.config/milliways/sessions")
 	store := session.NewFileStore(sessionsDir)
+
+	args := strings.Fields(strings.TrimSpace(rest))
+	if len(args) > 0 && args[0] != "list" {
+		l.printSessionDetail(store, args[0])
+		return
+	}
+
 	summaries, err := store.List()
 	if err != nil {
 		fmt.Fprintf(l.errw, "✗ sessions: %v\n", err)
@@ -2259,7 +2266,11 @@ func (l *chatLoop) handleSessions(rest string) {
 		fmt.Fprintln(l.out, "  (no saved sessions)")
 		return
 	}
-	fmt.Fprintln(l.out, "\nSaved sessions:")
+
+	fmt.Fprintln(l.out, "")
+	fmt.Fprintln(l.out, "## Saved sessions")
+	fmt.Fprintln(l.out, "| # | Age | Model | Preview |")
+	fmt.Fprintln(l.out, "|---|-----|-------|---------|")
 	for i, s := range summaries {
 		age := formatSessionAge(s.UpdatedAt)
 		model := s.Model
@@ -2269,12 +2280,39 @@ func (l *chatLoop) handleSessions(rest string) {
 		preview := s.Preview
 		if preview == "" {
 			preview = "—"
-		} else if len(preview) > 60 {
-			preview = preview[:57] + "…"
+		} else if len(preview) > 50 {
+			preview = preview[:47] + "…"
 		}
-		fmt.Fprintf(l.out, "  [%d] %s  %s  %s\n", i+1, age, model, preview)
+		fmt.Fprintf(l.out, "| %d | %s | %s | %s |\n", i+1, age, model, preview)
 	}
-	fmt.Fprintln(l.out, "\n  Use /sessions <id> to view a session's full transcript.")
+	fmt.Fprintln(l.out, "\n  Use `/sessions <id>` to view a session's full transcript.")
+}
+
+func (l *chatLoop) printSessionDetail(store *session.FileStore, id string) {
+	sess, err := store.Load(id)
+	if err != nil {
+		fmt.Fprintf(l.errw, "✗ sessions %s: %v\n", id, err)
+		return
+	}
+	age := formatSessionAge(sess.UpdatedAt)
+	model := sess.Model
+	if model == "" {
+		model = "—"
+	}
+	fmt.Fprintf(l.out, "\n## Session %s — %s · %s\n\n", id, model, age)
+	for i, msg := range sess.Messages {
+		role := strings.Title(string(msg.Role))
+		content := msg.Content
+		if len(content) > 200 {
+			content = content[:197] + "…"
+		}
+		content = strings.ReplaceAll(content, "\n", " ")
+		fmt.Fprintf(l.out, "**%s**: %s\n", role, content)
+		if i >= 20 {
+			fmt.Fprintf(l.out, "\n  … %d more messages\n", len(sess.Messages)-i-1)
+			break
+		}
+	}
 }
 
 func formatSessionAge(t time.Time) string {
