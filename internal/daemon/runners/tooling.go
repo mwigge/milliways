@@ -45,7 +45,7 @@ import (
 // DefaultMaxTurns is the safety bound on assistant→tool→assistant turns
 // inside a single dispatch. Spec: runner-tool-execution / "Loop bound".
 // Override at runtime with the MILLIWAYS_MAX_TURNS env var.
-const DefaultMaxTurns = 100
+const DefaultMaxTurns = 200
 
 // Role values used in conversation Messages.
 const (

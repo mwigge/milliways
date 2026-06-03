@@ -44,12 +44,13 @@ func (s *stubMP) KGAdd(_ context.Context, subject, _ string, object string, prop
 // TestMempalaceWriteHandoff_NilMP verifies that mempalaceWriteHandoff
 // returns ok=false with a reason when no MemPalace client is configured.
 func TestMempalaceWriteHandoff_NilMP(t *testing.T) {
-	t.Parallel()
+	// Unset MEMPALACE env vars so mempalaceClient() returns nil.
+	t.Setenv("MILLIWAYS_MEMPALACE_MCP_CMD", "")
+	t.Setenv("MEMPALACE_MCP_CMD", "")
 
 	_, send, readResp, cleanup := parallelTestHarness(t)
 	defer cleanup()
 
-	// MEMPALACE_MCP_CMD is not set in the test environment so
 	// mempalaceClient() returns nil — the handler must respond ok=false.
 	send("mempalace.write_handoff", map[string]any{
 		"target_provider": "codex",
@@ -84,7 +85,6 @@ func TestMempalaceWriteHandoff_NilMP(t *testing.T) {
 // calls KGAdd with the correct subject (handoff:<target>) and stores the
 // briefing text when a MemPalace client is available.
 func TestMempalaceWriteHandoff_WritesToMP(t *testing.T) {
-	t.Parallel()
 
 	stub := &stubMP{}
 	// Call the handler directly to inject our stub MP client.
@@ -108,7 +108,6 @@ func TestMempalaceWriteHandoff_WritesToMP(t *testing.T) {
 // TestMempalaceWriteHandoff_WritesToMP_Error verifies that a KGAdd error
 // is propagated back as ok=false in the RPC result.
 func TestMempalaceWriteHandoff_WritesToMP_Error(t *testing.T) {
-	t.Parallel()
 
 	sentinel := errors.New("kgadd transient error")
 	stub := &stubMP{err: sentinel}

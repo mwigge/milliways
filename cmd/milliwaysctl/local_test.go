@@ -239,9 +239,10 @@ func TestRunLocalListModels_UsesAPIKeyFromLocalEnv(t *testing.T) {
 	}))
 	defer srv.Close()
 	endpoint = srv.URL + "/v1"
-	if err := os.WriteFile(envPath, []byte("MILLIWAYS_LOCAL_ENDPOINT="+endpoint+"\nMILLIWAYS_LOCAL_API_KEY=smoke-key\n"), 0o600); err != nil {
+	if err := os.WriteFile(envPath, []byte("MILLIWAYS_LOCAL_API_KEY=smoke-key\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("MILLIWAYS_LOCAL_ENDPOINT", endpoint)
 
 	var out bytes.Buffer
 	code := runLocalListModels(nil, &out, &out)

@@ -57,6 +57,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mwigge/milliways/internal/daemon"
+	"github.com/mwigge/milliways/internal/daemon/runners"
 	"github.com/mwigge/milliways/internal/mempalace"
 	"github.com/mwigge/milliways/internal/project"
 	"github.com/mwigge/milliways/internal/rpc"
@@ -1418,7 +1419,7 @@ func (l *chatLoop) refreshPromptHint(chunkEnd map[string]any, turnSaved bool) {
 
 	if mh, _ := chunkEnd["max_turns_hit"].(bool); mh {
 		_, _ = fmt.Fprintln(l.out, "\n────────────────────────────────────────")
-		_, _ = fmt.Fprintln(l.out, " ⚑  Reached the 100-turn agentic limit.")
+		_, _ = fmt.Fprintf(l.out, " ⚑  Reached the %d-turn agentic limit.\n", runners.DefaultMaxTurns)
 		_, _ = fmt.Fprintln(l.out, "────────────────────────────────────────")
 		if l.sess != nil {
 			// Send a summarization prompt — the response streams back
