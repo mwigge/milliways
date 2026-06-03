@@ -939,18 +939,29 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 	firstData := true
 	thinkingActive := false // true while a thinking status line is on screen
 	var thinkingBuffer strings.Builder
+	var lastThinkingTime time.Time // zero = no pending thinking
+	const thinkingTimeout = 3 * time.Second
 	flushThinking := func() {
 		msg := strings.TrimSpace(thinkingBuffer.String())
 		if msg == "" {
 			thinkingBuffer.Reset()
+			lastThinkingTime = time.Time{}
 			return
 		}
 		formatted := formatThinkingLineWidth(sess.agentID, msg, streamTextWidth())
 		l.writeStreamStatus(formatted)
 		thinkingBuffer.Reset()
+		lastThinkingTime = time.Time{}
 		thinkingActive = true
 	}
 	for line := range sess.streamCh {
+		// Safety net: if thinking has been accumulating without punctuation-triggered
+		// flush and without new thinking events arriving, force-flush it to prevent
+		// a stuck thinking line from ghosting on screen indefinitely.
+		if !lastThinkingTime.IsZero() && time.Since(lastThinkingTime) > thinkingTimeout {
+			slog.Debug("thinking timeout force-flush", "sess", sess.handle, "elapsed", time.Since(lastThinkingTime))
+			flushThinking()
+		}
 		var ev map[string]any
 		if err := json.Unmarshal(line, &ev); err != nil {
 			continue
@@ -982,6 +993,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 							_, _ = io.WriteString(h.out, "\n")
 						}
 						appendThinkingFragment(&thinkingBuffer, msg)
+						lastThinkingTime = time.Now()
 						slog.Debug("thinking event received",
 							"sess", sess.handle, "fragment_len", len(msg),
 							"buffer_len", thinkingBuffer.Len(),
@@ -1092,6 +1104,10 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			return
 		}
 	}
+	// Stream goroutine exited without "end" — defensive flush in case
+	// thinking was accumulating but chunk_end never arrived (e.g. premature
+	// EOF, server disconnect, or think tag opened without closing).
+	flushThinking()
 }
 
 func renderProviderThinkingData(agentID, text string) (string, bool) {
