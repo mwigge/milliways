@@ -453,7 +453,7 @@ func TestClassifyDispatchError_DistinguishesCancelTimeoutIntegrity(t *testing.T)
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			ev := classifyDispatchError(AgentIDLocal, c.err)
+			ev := classifyDispatchError(AgentIDLocal, c.err, nil)
 			if got, _ := ev["code"].(int); got != c.wantCode {
 				t.Errorf("code = %v, want %d", ev["code"], c.wantCode)
 			}

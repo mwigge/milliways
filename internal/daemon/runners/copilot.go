@@ -118,7 +118,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		observeError(metrics, AgentIDCopilot)
 		spanErr = err.Error()
 		if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			stream.Push(classifyDispatchError(AgentIDCopilot, ctx.Err()))
+			stream.Push(classifyDispatchError(AgentIDCopilot, ctx.Err(), nil))
 			return
 		}
 		stream.Push(copilotStartError("start", err))
@@ -161,7 +161,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		observeError(metrics, AgentIDCopilot)
 		spanErr = ctxErr.Error()
-		stream.Push(classifyDispatchError(AgentIDCopilot, ctxErr))
+		stream.Push(classifyDispatchError(AgentIDCopilot, ctxErr, nil))
 		return
 	}
 

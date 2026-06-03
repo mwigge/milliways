@@ -301,7 +301,7 @@ func classifyLocalDispatchError(err error) map[string]any {
 			"msg":   AgentIDLocal + ": quota or rate limit reached",
 		}
 	}
-	return classifyDispatchError(AgentIDLocal, err)
+	return classifyDispatchError(AgentIDLocal, err, nil)
 }
 
 // localClient implements the runners.Client interface for RunAgenticLoop.

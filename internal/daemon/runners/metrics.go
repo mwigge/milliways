@@ -35,6 +35,7 @@ const (
 	AgentIDCodex   = "codex"
 	AgentIDCopilot = "copilot"
 	AgentIDMiniMax = "minimax"
+	AgentIDBerget  = "berget"
 	AgentIDLocal   = "local"
 	AgentIDGemini  = "gemini"
 	AgentIDPool    = "pool"

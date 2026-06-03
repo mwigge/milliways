@@ -143,7 +143,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		observeError(metrics, AgentIDCodex)
 		spanErr = err.Error()
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			stream.Push(classifyDispatchError(AgentIDCodex, ctxErr))
+			stream.Push(classifyDispatchError(AgentIDCodex, ctxErr, nil))
 		} else {
 			stream.Push(classifyCodexStartError(err))
 		}
@@ -250,7 +250,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	} else if ctxErr := ctx.Err(); ctxErr != nil {
 		observeError(metrics, AgentIDCodex)
 		spanErr = ctxErr.Error()
-		stream.Push(classifyDispatchError(AgentIDCodex, ctxErr))
+		stream.Push(classifyDispatchError(AgentIDCodex, ctxErr, nil))
 	} else if scanErr != nil {
 		observeError(metrics, AgentIDCodex)
 		spanErr = scanErr.Error()

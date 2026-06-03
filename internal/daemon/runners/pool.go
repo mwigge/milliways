@@ -134,7 +134,7 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 		observeError(metrics, AgentIDPool)
 		spanErr = err.Error()
 		if ctx.Err() != nil {
-			stream.Push(classifyDispatchError(AgentIDPool, ctx.Err()))
+			stream.Push(classifyDispatchError(AgentIDPool, ctx.Err(), nil))
 		} else {
 			stream.Push(poolStartErrorEvent("pool: could not start — " + installHint("pool")))
 		}
@@ -184,7 +184,7 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 		observeError(metrics, AgentIDPool)
 		if ctx.Err() != nil {
 			spanErr = ctx.Err().Error()
-			stream.Push(classifyDispatchError(AgentIDPool, ctx.Err()))
+			stream.Push(classifyDispatchError(AgentIDPool, ctx.Err(), nil))
 			return
 		}
 		spanErr = waitErr.Error()

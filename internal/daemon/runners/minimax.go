@@ -203,7 +203,7 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	if err != nil {
 		observeError(metrics, AgentIDMiniMax)
 		endDispatchSpan(span, 0, 0, 0, err.Error())
-		stream.Push(classifyDispatchError(AgentIDMiniMax, err))
+		stream.Push(classifyDispatchError(AgentIDMiniMax, err, ErrMiniMaxQuota))
 		stream.Push(zeroUsageChunkEnd())
 		return
 	}
@@ -300,7 +300,11 @@ func minimaxCostUSD(u *openaiStreamUsage) float64 {
 // the daemon stream can carry. Distinguishes user cancel, deadline
 // exceeded, integrity failures, and generic backend errors so clients can
 // react differently (retry vs surface vs cancel-confirmed).
-func classifyDispatchError(agentID string, err error) map[string]any {
+//
+// The quotaErr parameter should be the runner-specific sentinel error
+// (e.g. ErrMiniMaxQuota, ErrBergetQuota) so the switch can detect it
+// via errors.Is.
+func classifyDispatchError(agentID string, err error, quotaErr error) map[string]any {
 	switch {
 	case errors.Is(err, context.Canceled):
 		return map[string]any{
@@ -330,7 +334,7 @@ func classifyDispatchError(agentID string, err error) map[string]any {
 			"code":  -32012,
 			"msg":   agentID + ": SSE line exceeded 1MB scanner buffer (oversized tool-call args?)",
 		}
-	case errors.Is(err, ErrMiniMaxQuota):
+	case quotaErr != nil && errors.Is(err, quotaErr):
 		return map[string]any{
 			"t":     "err",
 			"agent": agentID,
