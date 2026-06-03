@@ -562,7 +562,7 @@ func TestOrderDeckProvidersMatchesNumericShortcuts(t *testing.T) {
 	for _, p := range got {
 		ids = append(ids, p.ID)
 	}
-	want := []string{"claude", "codex", "minimax", "gemini", "pool"}
+	want := []string{"minimax", "claude", "codex", "gemini", "pool"}
 	if strings.Join(ids, ",") != strings.Join(want, ",") {
 		t.Fatalf("ordered providers = %v, want %v", ids, want)
 	}
