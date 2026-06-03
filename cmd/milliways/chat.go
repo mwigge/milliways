@@ -58,6 +58,7 @@ import (
 	"github.com/mwigge/milliways/internal/mempalace"
 	"github.com/mwigge/milliways/internal/project"
 	"github.com/mwigge/milliways/internal/rpc"
+	"github.com/mwigge/milliways/internal/session"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -1454,6 +1455,8 @@ func (l *chatLoop) handleSlash(line string) {
 		l.handleCopyLast(rest)
 	case "history":
 		l.printHistory(rest)
+	case "sessions":
+		l.handleSessions(rest)
 	case "cost", "spend":
 		l.printCost()
 	case "trace", "traces":
@@ -2242,6 +2245,61 @@ func (l *chatLoop) printHistory(rest string) {
 	for i, entry := range entries {
 		fmt.Fprintf(l.out, "  [%d] %s\n", i+1, renderHistoryEntry(entry))
 	}
+}
+
+func (l *chatLoop) handleSessions(rest string) {
+	sessionsDir := expandHome("~/.config/milliways/sessions")
+	store := session.NewFileStore(sessionsDir)
+	summaries, err := store.List()
+	if err != nil {
+		fmt.Fprintf(l.errw, "✗ sessions: %v\n", err)
+		return
+	}
+	if len(summaries) == 0 {
+		fmt.Fprintln(l.out, "  (no saved sessions)")
+		return
+	}
+	fmt.Fprintln(l.out, "\nSaved sessions:")
+	for i, s := range summaries {
+		age := formatSessionAge(s.UpdatedAt)
+		model := s.Model
+		if model == "" {
+			model = "—"
+		}
+		preview := s.Preview
+		if preview == "" {
+			preview = "—"
+		} else if len(preview) > 60 {
+			preview = preview[:57] + "…"
+		}
+		fmt.Fprintf(l.out, "  [%d] %s  %s  %s\n", i+1, age, model, preview)
+	}
+	fmt.Fprintln(l.out, "\n  Use /sessions <id> to view a session's full transcript.")
+}
+
+func formatSessionAge(t time.Time) string {
+	ago := time.Since(t)
+	switch {
+	case ago < time.Minute:
+		return "just now"
+	case ago < time.Hour:
+		return fmt.Sprintf("%dm ago", int(ago.Minutes()))
+	case ago < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(ago.Hours()))
+	case ago < 7*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(ago.Hours()/24))
+	default:
+		return t.Format("Jan 02")
+	}
+}
+
+func expandHome(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
 }
 
 func (l *chatLoop) activeAgentID() string {
@@ -3373,6 +3431,7 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /search <text> [client:<name>] search blocks")
 	fmt.Fprintln(l.out, "  /copy-last [response|prompt|block|code] copy last block via terminal clipboard")
 	fmt.Fprintln(l.out, "  /history [limit] [client]      show session and saved runner history")
+	fmt.Fprintln(l.out, "  /sessions                    list saved sessions")
 	fmt.Fprintln(l.out, "  /cost                         token usage per runner (last hour)")
 	fmt.Fprintln(l.out, "  /trace [limit]                show recent daemon/agent spans")
 	fmt.Fprintln(l.out, "  /retry                        re-send the last user prompt")
