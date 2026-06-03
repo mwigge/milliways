@@ -24,8 +24,8 @@ func TestDefaultConfig(t *testing.T) {
 	t.Parallel()
 	cfg := defaultConfig()
 
-	if len(cfg.Kitchens) != 9 {
-		t.Errorf("expected 9 default kitchens, got %d", len(cfg.Kitchens))
+	if len(cfg.Kitchens) != 10 {
+		t.Errorf("expected 10 default kitchens, got %d", len(cfg.Kitchens))
 	}
 
 	claude, ok := cfg.Kitchens["claude"]
@@ -59,7 +59,7 @@ func TestLoadConfig_FileNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error for missing file, got %v", err)
 	}
-	if len(cfg.Kitchens) != 9 {
+	if len(cfg.Kitchens) != 10 {
 		t.Errorf("expected defaults when file missing, got %d kitchens", len(cfg.Kitchens))
 	}
 }

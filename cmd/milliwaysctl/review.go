@@ -1,3 +1,4 @@
+//nolint:errcheck // CLI output writes are best-effort; review runner errors are handled explicitly.
 package main
 
 import (
@@ -36,7 +37,12 @@ func runLocalReviewCode(args []string, stdout, stderr io.Writer) int {
 	gitCommit := fs.Bool("git-commit", false, "auto-commit after each group that produces file edits")
 	lintAfter := fs.Bool("lint", false, "run build/tests after edits and add failures to findings")
 
-	if err := fs.Parse(args); err != nil {
+	normalizedArgs, err := normalizeReviewCodeArgs(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "review-code: %v\n", err)
+		return 2
+	}
+	if err := fs.Parse(normalizedArgs); err != nil {
 		return 2
 	}
 	if fs.NArg() < 1 {
@@ -52,14 +58,19 @@ func runLocalReviewCode(args []string, stdout, stderr io.Writer) int {
 	}
 
 	endpoint := strings.TrimRight(os.Getenv("MILLIWAYS_LOCAL_ENDPOINT"), "/")
+	if envEndpoint := strings.TrimRight(localEnvValue("MILLIWAYS_LOCAL_ENDPOINT"), "/"); envEndpoint != "" {
+		endpoint = envEndpoint
+	}
 	if endpoint == "" {
 		endpoint = "http://localhost:8765/v1"
 	}
+	apiKey := localAPIKey()
 	socketPath := defaultSocket()
 
 	cfg := review.Config{
 		RepoPath:      repoPath,
 		Endpoint:      endpoint,
+		APIKey:        apiKey,
 		ModelAlias:    *model,
 		OutPath:       *out,
 		Resume:        *resume,
@@ -94,12 +105,36 @@ func runLocalReviewCode(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stderr, "report written to %s\n", *out)
 	} else {
-		fmt.Fprint(stdout, report)
+		_, _ = fmt.Fprint(stdout, report)
 	}
 
 	fmt.Fprintf(stderr, "\ngroups: %d  findings: %d  model: %s\n",
 		len(result.Groups), len(result.Findings), result.Model)
 	return 0
+}
+
+func normalizeReviewCodeArgs(args []string) ([]string, error) {
+	if len(args) == 0 {
+		return args, nil
+	}
+	var repo string
+	var flags []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if repo == "" && arg != "" && !strings.HasPrefix(arg, "-") {
+			repo = arg
+			continue
+		}
+		flags = append(flags, arg)
+		if (arg == "--model" || arg == "-model" || arg == "--out" || arg == "-out") && i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	if repo == "" {
+		return args, nil
+	}
+	return append(flags, repo), nil
 }
 
 func buildReport(result review.ReviewResult) string {

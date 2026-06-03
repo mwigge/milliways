@@ -188,7 +188,7 @@ func (h *codeHighlighter) processLine(line string) {
 			h.writeString(rendered)
 			return
 		}
-		h.writeString(renderPlainMarkdownLine(line, true))
+		h.writeString(h.renderCodeOrMarkdown(line, true))
 		return
 	}
 
@@ -223,7 +223,7 @@ func (h *codeHighlighter) Flush() error {
 				h.writeString(strings.TrimSuffix(rendered, "\n"))
 				return nil
 			}
-			h.writeString(strings.TrimSuffix(renderPlainMarkdownLine(line, false), "\n"))
+			h.writeString(strings.TrimSuffix(h.renderCodeOrMarkdown(line, false), "\n"))
 		}
 	}
 	h.flushTable()
@@ -253,6 +253,19 @@ func (h *codeHighlighter) flushTable() {
 		h.writeString(renderPlainMarkdownLine(line, true))
 	}
 	h.lastBlank = false
+}
+
+func (h *codeHighlighter) renderCodeOrMarkdown(line string, addNewline bool) string {
+	if isCodeLine(line) {
+		highlighted := syntaxHighlight(line, "")
+		if highlighted != "" && highlighted != line {
+			if addNewline {
+				return highlighted + "\n"
+			}
+			return highlighted
+		}
+	}
+	return renderPlainMarkdownLine(line, addNewline)
 }
 
 func renderPlainMarkdownLine(line string, addNewline bool) string {
@@ -454,6 +467,40 @@ func isMarkdownTableCandidate(line string) bool {
 	}
 	cells := parseMarkdownTableRow(line)
 	return len(cells) >= 2
+}
+
+func isCodeLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") ||
+		strings.HasPrefix(trimmed, "/*") || strings.HasPrefix(trimmed, "<!--") ||
+		strings.HasPrefix(trimmed, "\"\"\"") || strings.HasPrefix(trimmed, "```") {
+		return true
+	}
+	if strings.Contains(trimmed, "func ") || strings.Contains(trimmed, "func(") ||
+		strings.Contains(trimmed, "class ") || strings.Contains(trimmed, "struct ") ||
+		strings.Contains(trimmed, "interface ") || strings.Contains(trimmed, "package ") ||
+		strings.Contains(trimmed, "import ") {
+		return true
+	}
+	if strings.Contains(trimmed, " = ") || strings.Contains(trimmed, " := ") ||
+		strings.Contains(trimmed, " -> ") || strings.Contains(trimmed, " => ") ||
+		strings.Contains(trimmed, "::") {
+		return true
+	}
+	if strings.Contains(trimmed, "();") || strings.Contains(trimmed, "() {") ||
+		strings.Contains(trimmed, "!=") || strings.Contains(trimmed, "== ") {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "\t") && len(trimmed) > 1 {
+		c := trimmed[1]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' {
+			return true
+		}
+	}
+	return false
 }
 
 func parseMarkdownTableRow(line string) []string {
@@ -1212,33 +1259,4 @@ func writeTerminalStatus(out io.Writer, line string) {
 		return
 	}
 	_, _ = io.WriteString(out, line+"\n")
-}
-
-// writeThinkingInPlace overwrites the current terminal line with a thinking
-// status fragment. It uses \r to return to column 0 and \033[2K to erase the
-// line, then writes the text without a trailing newline. This means the line
-// is never committed to the scrollback buffer, so subsequent overwrites and
-// clearThinkingInPlace leave no visible trail. No-op when ANSI is unavailable.
-func writeThinkingInPlace(out io.Writer, line string) {
-	if line == "" || !ansiEnabled() {
-		return
-	}
-	w := out
-	if h, ok := out.(*codeHighlighter); ok {
-		w = h.out
-	}
-	_, _ = io.WriteString(w, "\r\033[2K"+line)
-}
-
-// clearThinkingInPlace erases the current thinking status line, leaving the
-// cursor at column 0 ready for response output. No-op when ANSI is unavailable.
-func clearThinkingInPlace(out io.Writer) {
-	if !ansiEnabled() {
-		return
-	}
-	w := out
-	if h, ok := out.(*codeHighlighter); ok {
-		w = h.out
-	}
-	_, _ = io.WriteString(w, "\r\033[2K")
 }

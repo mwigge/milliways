@@ -100,8 +100,8 @@ type AggregateContext struct {
 }
 
 // known agent ids served by context.get_all even when no session is open.
-// Mirrors the runner set lifted in Phase 4 (claude, codex, minimax, copilot).
-var knownContextAgents = []string{"claude", "codex", "minimax", "copilot"}
+// Keep this in sync with first-class daemon/chat runners.
+var knownContextAgents = []string{"claude", "codex", "copilot", "minimax", "kimi", "deepseek", "gemini", "local", "pool"}
 
 type contextGetParams struct {
 	AgentID string `json:"agent_id"`
@@ -219,9 +219,9 @@ func (s *Server) knownAgent(agentID string) bool {
 	return false
 }
 
-// buildContextSnapshot composes the per-agent snapshot. Tokens / tools /
-// mcp_servers / files_in_context / cost are zero / empty until runners wire
-// metrics. Model is pulled from the cached runner probes when available.
+// buildContextSnapshot composes the per-agent snapshot from the active daemon
+// session when present, falling back to cached runner probes for inactive
+// agents.
 func (s *Server) buildContextSnapshot(agentID string) ContextSnapshot {
 	snap := ContextSnapshot{
 		AgentID:        agentID,
@@ -238,7 +238,16 @@ func (s *Server) buildContextSnapshot(agentID string) ContextSnapshot {
 		}
 	}
 	if sess := s.findSessionByAgent(agentID); sess != nil {
-		snap.SessionID = fmt.Sprintf("h-%d", sess.Handle)
+		deck := sess.deckSnapshot()
+		snap.SessionID = fmt.Sprintf("h-%d", deck.Handle)
+		snap.Turn = deck.TurnCount
+		snap.Tokens.Input = deck.InputTokens
+		snap.Tokens.Output = deck.OutputTokens
+		snap.CostUSD = deck.CostUSD
+		snap.Errors5m = deck.ErrorCount
+		if deck.Model != "" {
+			snap.Model = deck.Model
+		}
 	}
 	return snap
 }

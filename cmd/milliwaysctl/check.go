@@ -37,6 +37,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -72,12 +73,20 @@ type checkItem struct {
 func runCheck(_ []string, stdout, _ io.Writer) int {
 	items := collectCheckItems()
 
-	fmt.Fprintln(stdout, "milliwaysctl check — milliways installation health")
-	fmt.Fprintln(stdout)
-	for _, item := range items {
-		fmt.Fprintf(stdout, "  [%s] %-32s %s\n", item.status, item.label, item.detail)
+	if _, err := fmt.Fprintln(stdout, "milliwaysctl check — milliways installation health"); err != nil {
+		return 1
 	}
-	fmt.Fprintln(stdout)
+	if _, err := fmt.Fprintln(stdout); err != nil {
+		return 1
+	}
+	for _, item := range items {
+		if _, err := fmt.Fprintf(stdout, "  [%s] %-32s %s\n", item.status, item.label, item.detail); err != nil {
+			return 1
+		}
+	}
+	if _, err := fmt.Fprintln(stdout); err != nil {
+		return 1
+	}
 
 	for _, item := range items {
 		if item.status == statusFail {
@@ -185,7 +194,7 @@ func checkSupportScripts() checkItem {
 	return checkItem{
 		label:  label,
 		status: statusFail,
-		detail: "not found — run: bash scripts/install.sh  or  milliwaysctl upgrade",
+		detail: "not found — run: bash install.sh  or  milliwaysctl upgrade",
 	}
 }
 
@@ -321,6 +330,9 @@ func checkLocalServer() checkItem {
 	const label = "Local server"
 	endpoint := os.Getenv("MILLIWAYS_LOCAL_ENDPOINT")
 	if endpoint == "" {
+		endpoint = localEnvValue("MILLIWAYS_LOCAL_ENDPOINT")
+	}
+	if endpoint == "" {
 		return checkItem{
 			label:  label,
 			status: statusWarn,
@@ -329,7 +341,18 @@ func checkLocalServer() checkItem {
 	}
 
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(endpoint) //nolint:gosec // endpoint is user-supplied config
+	req, err := http.NewRequest(http.MethodGet, strings.TrimRight(endpoint, "/")+"/models", nil)
+	if err != nil {
+		return checkItem{
+			label:  label,
+			status: statusWarn,
+			detail: fmt.Sprintf("%s — invalid endpoint (%v)", endpoint, err),
+		}
+	}
+	if apiKey := localAPIKey(); apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	resp, err := client.Do(req) //nolint:gosec // endpoint is user-supplied config
 	if err != nil {
 		return checkItem{
 			label:  label,
@@ -337,11 +360,18 @@ func checkLocalServer() checkItem {
 			detail: fmt.Sprintf("%s — not reachable (%v)", endpoint, err),
 		}
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close() //nolint:errcheck // response body is not read; status code is all this probe needs
+	if resp.StatusCode != http.StatusOK {
+		return checkItem{
+			label:  label,
+			status: statusWarn,
+			detail: fmt.Sprintf("%s — /models returned HTTP %d", endpoint, resp.StatusCode),
+		}
+	}
 	return checkItem{
 		label:  label,
 		status: statusPass,
-		detail: fmt.Sprintf("%s — reachable (HTTP %d)", endpoint, resp.StatusCode),
+		detail: fmt.Sprintf("%s — /models reachable (HTTP %d)", endpoint, resp.StatusCode),
 	}
 }
 

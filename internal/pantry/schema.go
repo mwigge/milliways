@@ -260,3 +260,291 @@ CREATE INDEX IF NOT EXISTS idx_mw_security_accepted_risks_expires_at ON mw_secur
 
 INSERT OR IGNORE INTO mw_schema (version) VALUES (7);
 `
+
+const schemaV8 = `
+ALTER TABLE mw_security_findings ADD COLUMN category TEXT NOT NULL DEFAULT 'dependency';
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_findings_category_status ON mw_security_findings(category, status);
+
+CREATE TABLE IF NOT EXISTS mw_security_workspace_status (
+    workspace   TEXT PRIMARY KEY,
+    mode        TEXT NOT NULL DEFAULT 'warn',
+    active_client TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS mw_security_scan_runs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind           TEXT NOT NULL,
+    workspace      TEXT NOT NULL DEFAULT '',
+    status         TEXT NOT NULL DEFAULT 'running',
+    started_at     TEXT NOT NULL,
+    completed_at   TEXT NOT NULL DEFAULT '',
+    tool_name      TEXT NOT NULL DEFAULT '',
+    tool_version   TEXT NOT NULL DEFAULT '',
+    findings_total INTEGER NOT NULL DEFAULT 0,
+    warn_count     INTEGER NOT NULL DEFAULT 0,
+    block_count    INTEGER NOT NULL DEFAULT 0,
+    error          TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_scan_runs_workspace_kind ON mw_security_scan_runs(workspace, kind);
+CREATE INDEX IF NOT EXISTS idx_mw_security_scan_runs_started_at ON mw_security_scan_runs(started_at);
+
+CREATE TABLE IF NOT EXISTS mw_security_warnings (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace     TEXT NOT NULL DEFAULT '',
+    category      TEXT NOT NULL,
+    severity      TEXT NOT NULL DEFAULT 'WARN',
+    source        TEXT NOT NULL DEFAULT '',
+    message       TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'active',
+    scan_run_id   INTEGER NOT NULL DEFAULT 0,
+    first_seen    TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen     TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at   TEXT NOT NULL DEFAULT '',
+    evidence_hash TEXT NOT NULL DEFAULT '',
+    remediation   TEXT NOT NULL DEFAULT '',
+    UNIQUE(workspace, category, source, message)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_warnings_workspace_status ON mw_security_warnings(workspace, status);
+CREATE INDEX IF NOT EXISTS idx_mw_security_warnings_category ON mw_security_warnings(category);
+CREATE INDEX IF NOT EXISTS idx_mw_security_warnings_severity ON mw_security_warnings(severity);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (8);
+`
+
+const schemaV9 = `
+CREATE TABLE IF NOT EXISTS mw_security_rule_packs (
+    id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace                  TEXT NOT NULL DEFAULT '',
+    name                       TEXT NOT NULL,
+    version                    TEXT NOT NULL,
+    source                     TEXT NOT NULL,
+    manifest_source            TEXT NOT NULL DEFAULT '',
+    checksum                   TEXT NOT NULL,
+    minimum_milliways_version  TEXT NOT NULL DEFAULT '',
+    rules_file                 TEXT NOT NULL DEFAULT '',
+    rules_count                INTEGER NOT NULL DEFAULT 0,
+    root                       TEXT NOT NULL DEFAULT '',
+    manifest_path              TEXT NOT NULL DEFAULT '',
+    rules_path                 TEXT NOT NULL DEFAULT '',
+    status                     TEXT NOT NULL DEFAULT 'loaded',
+    first_seen                 TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen                  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(workspace, source, name, version, root)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_rule_packs_workspace_source ON mw_security_rule_packs(workspace, source);
+CREATE INDEX IF NOT EXISTS idx_mw_security_rule_packs_status ON mw_security_rule_packs(status);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (9);
+`
+
+const schemaV10 = `
+ALTER TABLE mw_security_workspace_status ADD COLUMN startup_scan_completed_at TEXT NOT NULL DEFAULT '';
+ALTER TABLE mw_security_workspace_status ADD COLUMN startup_scan_config_hash TEXT NOT NULL DEFAULT '';
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (10);
+`
+
+const schemaV11 = `
+CREATE TABLE IF NOT EXISTS mw_security_quarantine_actions (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace              TEXT NOT NULL DEFAULT '',
+    kind                   TEXT NOT NULL,
+    source_path            TEXT NOT NULL,
+    destination_path       TEXT NOT NULL DEFAULT '',
+    original_hash          TEXT NOT NULL DEFAULT '',
+    applied_hash           TEXT NOT NULL DEFAULT '',
+    status                 TEXT NOT NULL,
+    error                  TEXT NOT NULL DEFAULT '',
+    rollback_hint          TEXT NOT NULL DEFAULT '',
+    additional_fields_json TEXT NOT NULL DEFAULT '{}',
+    applied_at             TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_quarantine_actions_workspace ON mw_security_quarantine_actions(workspace, applied_at);
+CREATE INDEX IF NOT EXISTS idx_mw_security_quarantine_actions_status ON mw_security_quarantine_actions(status);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (11);
+`
+
+const schemaV12 = `
+CREATE TABLE IF NOT EXISTS mw_security_client_profiles (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace        TEXT NOT NULL DEFAULT '',
+    client           TEXT NOT NULL,
+    config_hash      TEXT NOT NULL,
+    warning_count    INTEGER NOT NULL DEFAULT 0,
+    block_count      INTEGER NOT NULL DEFAULT 0,
+    status           TEXT NOT NULL DEFAULT 'completed',
+    result_json      TEXT NOT NULL DEFAULT '{}',
+    error            TEXT NOT NULL DEFAULT '',
+    first_checked_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_checked_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(workspace, client, config_hash)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_client_profiles_workspace_client
+    ON mw_security_client_profiles(workspace, client, last_checked_at);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (12);
+`
+
+const schemaV13 = `
+CREATE TABLE IF NOT EXISTS mw_security_findings_v13 (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace         TEXT NOT NULL DEFAULT '',
+    category          TEXT NOT NULL DEFAULT 'dependency',
+    cve_id            TEXT NOT NULL,
+    package_name      TEXT NOT NULL,
+    installed_version TEXT NOT NULL,
+    fixed_in_version  TEXT NOT NULL DEFAULT '',
+    severity          TEXT NOT NULL DEFAULT '',
+    ecosystem         TEXT NOT NULL DEFAULT '',
+    summary           TEXT NOT NULL DEFAULT '',
+    scan_source       TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL DEFAULT 'active',
+    first_seen        TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen         TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(workspace, cve_id, package_name, installed_version, ecosystem)
+);
+
+INSERT OR IGNORE INTO mw_security_findings_v13
+    (id, workspace, category, cve_id, package_name, installed_version,
+     fixed_in_version, severity, ecosystem, summary, scan_source, status,
+     first_seen, last_seen)
+SELECT id, '', category, cve_id, package_name, installed_version,
+       fixed_in_version, severity, ecosystem, summary, scan_source, status,
+       first_seen, last_seen
+FROM mw_security_findings;
+
+DROP TABLE mw_security_findings;
+ALTER TABLE mw_security_findings_v13 RENAME TO mw_security_findings;
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_findings_workspace_status
+    ON mw_security_findings(workspace, status);
+CREATE INDEX IF NOT EXISTS idx_mw_security_findings_workspace_severity
+    ON mw_security_findings(workspace, severity);
+CREATE INDEX IF NOT EXISTS idx_mw_security_findings_workspace_cve_id
+    ON mw_security_findings(workspace, cve_id);
+CREATE INDEX IF NOT EXISTS idx_mw_security_findings_category_status
+    ON mw_security_findings(category, status);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (13);
+`
+
+const schemaV14 = `
+CREATE TABLE IF NOT EXISTS mw_security_policy_decisions (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at        TEXT NOT NULL,
+    workspace         TEXT NOT NULL DEFAULT '',
+    session_id        TEXT NOT NULL DEFAULT '',
+    client            TEXT NOT NULL DEFAULT '',
+    cwd               TEXT NOT NULL DEFAULT '',
+    operation_type    TEXT NOT NULL,
+    command           TEXT NOT NULL DEFAULT '',
+    argv_json         TEXT NOT NULL DEFAULT '[]',
+    env_summary_json  TEXT NOT NULL DEFAULT '{}',
+    mode              TEXT NOT NULL,
+    decision          TEXT NOT NULL,
+    reason            TEXT NOT NULL DEFAULT '',
+    parsed            INTEGER NOT NULL DEFAULT 0,
+    risks_json        TEXT NOT NULL DEFAULT '[]',
+    enforcement_level TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_security_policy_decisions_workspace_created
+    ON mw_security_policy_decisions(workspace, created_at);
+CREATE INDEX IF NOT EXISTS idx_mw_security_policy_decisions_session
+    ON mw_security_policy_decisions(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_mw_security_policy_decisions_decision
+    ON mw_security_policy_decisions(decision, created_at);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (14);
+`
+
+const schemaV15 = `
+ALTER TABLE mw_memory_items ADD COLUMN workspace TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_mw_memory_items_workspace_type_status
+    ON mw_memory_items(workspace, memory_type, status);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (15);
+`
+
+const schemaV16 = `
+CREATE TABLE IF NOT EXISTS mw_coding_change_sets (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace    TEXT NOT NULL DEFAULT '',
+    session_id   TEXT NOT NULL DEFAULT '',
+    client       TEXT NOT NULL DEFAULT '',
+    turn_id      TEXT NOT NULL DEFAULT '',
+    tool_call_id TEXT NOT NULL DEFAULT '',
+    operation    TEXT NOT NULL DEFAULT '',
+    status       TEXT NOT NULL DEFAULT 'open',
+    reason       TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    completed_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_coding_change_sets_workspace_created
+    ON mw_coding_change_sets(workspace, created_at);
+CREATE INDEX IF NOT EXISTS idx_mw_coding_change_sets_session_created
+    ON mw_coding_change_sets(session_id, created_at);
+
+CREATE TABLE IF NOT EXISTS mw_coding_file_changes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    change_set_id INTEGER NOT NULL REFERENCES mw_coding_change_sets(id),
+    workspace     TEXT NOT NULL DEFAULT '',
+    session_id    TEXT NOT NULL DEFAULT '',
+    client        TEXT NOT NULL DEFAULT '',
+    turn_id       TEXT NOT NULL DEFAULT '',
+    tool_call_id  TEXT NOT NULL DEFAULT '',
+    operation     TEXT NOT NULL DEFAULT '',
+    path          TEXT NOT NULL DEFAULT '',
+    before_hash   TEXT NOT NULL DEFAULT '',
+    after_hash    TEXT NOT NULL DEFAULT '',
+    diff          TEXT NOT NULL DEFAULT '',
+    preview       TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_coding_file_changes_change_set
+    ON mw_coding_file_changes(change_set_id, id);
+CREATE INDEX IF NOT EXISTS idx_mw_coding_file_changes_workspace_path
+    ON mw_coding_file_changes(workspace, path);
+
+CREATE TABLE IF NOT EXISTS mw_tool_approvals (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace    TEXT NOT NULL DEFAULT '',
+    session_id   TEXT NOT NULL DEFAULT '',
+    client       TEXT NOT NULL DEFAULT '',
+    turn_id      TEXT NOT NULL DEFAULT '',
+    tool_call_id TEXT NOT NULL DEFAULT '',
+    tool_name    TEXT NOT NULL DEFAULT '',
+    operation    TEXT NOT NULL DEFAULT '',
+    path         TEXT NOT NULL DEFAULT '',
+    before_hash  TEXT NOT NULL DEFAULT '',
+    after_hash   TEXT NOT NULL DEFAULT '',
+    diff         TEXT NOT NULL DEFAULT '',
+    preview      TEXT NOT NULL DEFAULT '',
+    decision     TEXT NOT NULL DEFAULT 'pending',
+    reason       TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mw_tool_approvals_workspace_created
+    ON mw_tool_approvals(workspace, created_at);
+CREATE INDEX IF NOT EXISTS idx_mw_tool_approvals_session_created
+    ON mw_tool_approvals(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_mw_tool_approvals_decision_created
+    ON mw_tool_approvals(decision, created_at);
+
+INSERT OR IGNORE INTO mw_schema (version) VALUES (16);
+`

@@ -357,6 +357,8 @@ func (r *AgentRegistry) Open(agentID string) (*AgentSession, error) {
 		go runCopilot(sess, mo)
 	case "minimax":
 		go runMiniMax(sess, mo)
+	case "berget":
+		go runBerget(sess, mo)
 	case "local":
 		go runLocal(sess, mo)
 	case "gemini":
@@ -433,6 +435,21 @@ func runMiniMax(sess *AgentSession, metrics runners.MetricsObserver) {
 	runners.RunMiniMax(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
 	sess.closeStreams()
 	slog.Debug("minimax session ended", "handle", sess.Handle)
+}
+
+// runBerget waits for the sidecar to attach, then hands the session's
+// input channel + stream to runners.RunBerget. Each agent.send call
+// triggers one Berget chat completion HTTP request (stream:true). The
+// session stays open across sends and ends only when the registry closes
+// the input channel. `metrics` may be nil.
+func runBerget(sess *AgentSession, metrics runners.MetricsObserver) {
+	stream := waitForStream(sess)
+	if stream == nil {
+		return
+	}
+	runners.RunBerget(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics)
+	sess.closeStreams()
+	slog.Debug("berget session ended", "handle", sess.Handle)
 }
 
 func runLocal(sess *AgentSession, metrics runners.MetricsObserver) {

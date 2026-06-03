@@ -300,8 +300,7 @@ func RenderSummary(s Summary) string {
 	sb.WriteByte('\n')
 
 	// Summary line.
-	sb.WriteString(fmt.Sprintf("%d HIGH · %d MEDIUM · %d LOW\n",
-		s.HighCount, s.MediumCount, s.LowCount))
+	fmt.Fprintf(&sb, "%d HIGH · %d MEDIUM · %d LOW\n", s.HighCount, s.MediumCount, s.LowCount)
 
 	return sb.String()
 }

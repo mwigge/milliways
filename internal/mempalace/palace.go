@@ -26,6 +26,14 @@ type SearchResult struct {
 	Relevance   float64 `json:"relevance"`
 }
 
+// KGTriple is one knowledge-graph triple returned by MemPalace.
+type KGTriple struct {
+	Subject    string            `json:"subject"`
+	Predicate  string            `json:"predicate"`
+	Object     string            `json:"object"`
+	Properties map[string]string `json:"properties,omitempty"`
+}
+
 // Palace abstracts durable semantic memory storage.
 type Palace interface {
 	Search(ctx context.Context, query string, limit int) ([]SearchResult, error)

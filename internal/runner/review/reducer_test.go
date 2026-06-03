@@ -22,14 +22,14 @@ func buildFixtureScratch(t *testing.T, path string, groupCount, findingsPerGroup
 	sb.WriteString("Stack: Go\n\n")
 	sb.WriteString("## Plan\n")
 	for i := 0; i < groupCount; i++ {
-		sb.WriteString(fmt.Sprintf("- [x] pkg/pkg%02d  (Go, 1 files, impact: 0.50)\n", i))
+		fmt.Fprintf(&sb, "- [x] pkg/pkg%02d  (Go, 1 files, impact: 0.50)\n", i)
 	}
 	sb.WriteString("\n")
 
 	for i := 0; i < groupCount; i++ {
-		sb.WriteString(fmt.Sprintf("## [%d/%d] pkg/pkg%02d (Go)\n", i+1, groupCount, i))
+		fmt.Fprintf(&sb, "## [%d/%d] pkg/pkg%02d (Go)\n", i+1, groupCount, i)
 		for j := 0; j < findingsPerGroup; j++ {
-			sb.WriteString(fmt.Sprintf("- **HIGH** `Sym%d` in `file%02d.go`: reason for issue %d in group %d\n", j, j, j, i))
+			fmt.Fprintf(&sb, "- **HIGH** `Sym%d` in `file%02d.go`: reason for issue %d in group %d\n", j, j, j, i)
 		}
 		sb.WriteString("\n")
 	}

@@ -2,10 +2,10 @@
 # install_local_swap.sh — install llama-swap so milliways' /local runner can
 # hot-swap models on demand.
 #
-# Pre-req: scripts/install_local.sh has already been run (we need llama-server
-# and at least one cached GGUF). This script downloads llama-swap, generates
-# a config that lists every GGUF currently in $MODEL_DIR, and starts it as
-# a foreground/background service on the same port milliways already expects.
+# Pre-req: llama-server is on PATH and at least one GGUF is cached in
+# $MODEL_DIR. This script downloads llama-swap, generates a config that lists
+# every GGUF currently in $MODEL_DIR, and starts it as a foreground/background
+# service on the same port milliways already expects.
 
 set -euo pipefail
 
@@ -43,14 +43,14 @@ port_in_use() {
 }
 
 # ---------------------------------------------------------------------------
-# 1. Pre-flight: make sure install_local.sh has run.
+# 1. Pre-flight: make sure the llama.cpp worker and models are available.
 # ---------------------------------------------------------------------------
 preflight() {
   if ! command -v llama-server >/dev/null 2>&1; then
-    fail "llama-server not found — run scripts/install_local.sh first"
+    fail "llama-server not found — install llama.cpp first or use /install-local-server for the rs-llmctl single-model backend"
   fi
   if [ ! -d "$MODEL_DIR" ] || [ -z "$(ls -A "$MODEL_DIR" 2>/dev/null | grep '\.gguf$')" ]; then
-    fail "no GGUFs in $MODEL_DIR — run scripts/install_local.sh first"
+    fail "no GGUFs in $MODEL_DIR — run /download-local-model first or place a .gguf there"
   fi
 }
 
@@ -58,6 +58,7 @@ preflight() {
 # 2. Download llama-swap binary release.
 # ---------------------------------------------------------------------------
 install_llamaswap() {
+  mkdir -p "$HOME/.local/bin"
   if command -v llama-swap >/dev/null 2>&1; then
     ok "llama-swap already installed: $(command -v llama-swap)"
     return
@@ -186,6 +187,7 @@ warm_models() {
 #    written by install_local.sh.
 # ---------------------------------------------------------------------------
 write_service() {
+  mkdir -p "$HOME/.local/bin"
   if port_in_use "$PORT"; then
     warn "port $PORT is already in use — kill the existing milliways-local-server first"
     info "    pkill -f milliways-local-server"

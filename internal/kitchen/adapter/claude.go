@@ -178,7 +178,7 @@ func (a *ClaudeAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Eve
 		}
 		a.mu.Lock()
 		if a.stdinPipe != nil {
-			fmt.Fprintf(a.stdinPipe, "%s\n", promptJSON)
+			_, _ = fmt.Fprintf(a.stdinPipe, "%s\n", promptJSON)
 		}
 		a.mu.Unlock()
 	}()
@@ -201,7 +201,7 @@ func (a *ClaudeAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Eve
 		defer func() {
 			a.mu.Lock()
 			if a.stdinPipe != nil {
-				a.stdinPipe.Close()
+				_ = a.stdinPipe.Close()
 				a.stdinPipe = nil
 			}
 			a.mu.Unlock()
@@ -240,7 +240,7 @@ func (a *ClaudeAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Eve
 			if sawDone {
 				a.mu.Lock()
 				if a.stdinPipe != nil {
-					a.stdinPipe.Close()
+					_ = a.stdinPipe.Close()
 					a.stdinPipe = nil
 				}
 				a.processID = 0

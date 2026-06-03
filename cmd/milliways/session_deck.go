@@ -171,11 +171,7 @@ func (d *sessionDeck) ApplyDaemonSnapshot(s daemonDeckSnapshot) {
 		if len(src.Buffer) > 0 {
 			st.Buffer = st.Buffer[:0]
 			for _, block := range src.Buffer {
-				st.Buffer = append(st.Buffer, sessionDeckBlock{
-					Kind: block.Kind,
-					Text: block.Text,
-					At:   block.At,
-				})
+				st.Buffer = append(st.Buffer, sessionDeckBlock(block))
 			}
 		}
 	}

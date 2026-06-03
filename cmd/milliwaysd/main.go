@@ -69,13 +69,21 @@ func main() {
 	if err != nil {
 		die("acquire lock: %v", err)
 	}
-	defer lock.Release()
+	defer func() {
+		if err := lock.Release(); err != nil {
+			slog.Warn("release lock", "err", err)
+		}
+	}()
 
 	srv, err := daemon.NewServer(*socket)
 	if err != nil {
 		die("new server: %v", err)
 	}
-	defer srv.Close()
+	defer func() {
+		if err := srv.Close(); err != nil {
+			slog.Warn("close server", "err", err)
+		}
+	}()
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)

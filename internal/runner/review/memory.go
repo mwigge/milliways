@@ -193,7 +193,7 @@ func socketCall(socketPath string) cgCallFn {
 		if err != nil {
 			return nil, fmt.Errorf("dial %s: %w", socketPath, err)
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		// Set deadline from context if present.
 		if dl, ok := ctx.Deadline(); ok {

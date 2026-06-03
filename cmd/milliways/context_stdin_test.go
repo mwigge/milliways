@@ -81,9 +81,7 @@ func TestDispatchWithContextStdin(t *testing.T) {
 	configHome := t.TempDir()
 	binDir := t.TempDir()
 	repoRoot := t.TempDir()
-	if err := os.Mkdir(filepath.Join(repoRoot, ".git"), 0o755); err != nil {
-		t.Fatalf("Mkdir(.git): %v", err)
-	}
+	createDispatchTestGitRepo(t, repoRoot)
 
 	kitchenPath := writeExecutable(t, binDir, "opencode", `#!/bin/sh
 printf '%s\n' 'context stdin ok'
@@ -129,6 +127,20 @@ printf '%s\n' 'context stdin ok'
 	}
 	if !strings.Contains(stdout.String(), "context stdin ok") {
 		t.Fatalf("stdout = %q, want kitchen output", stdout.String())
+	}
+}
+
+func createDispatchTestGitRepo(t *testing.T, repoRoot string) {
+	t.Helper()
+
+	gitDir := filepath.Join(repoRoot, ".git")
+	for _, rel := range []string{"objects", "refs", "refs/heads"} {
+		if err := os.MkdirAll(filepath.Join(gitDir, rel), 0o755); err != nil {
+			t.Fatalf("Mkdir(.git/%s): %v", rel, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(.git/HEAD): %v", err)
 	}
 }
 

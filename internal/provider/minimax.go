@@ -76,7 +76,7 @@ func (p *MiniMaxProvider) SupportsModel(m Model) bool {
 }
 
 // Send executes a streaming chat completion request.
-func (p *MiniMaxProvider) Send(ctx context.Context, req Request) (Response, error) {
+func (p *MiniMaxProvider) Send(ctx context.Context, req Request) (resp Response, err error) {
 	if p == nil {
 		return Response{}, errors.New("nil minimax provider")
 	}
@@ -109,7 +109,7 @@ func (p *MiniMaxProvider) Send(ctx context.Context, req Request) (Response, erro
 	if err != nil {
 		return Response{}, fmt.Errorf("send minimax request: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer closeResponseBody(httpResp.Body, &err, "close minimax response body")
 
 	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
 		message, readErr := readErrorBody(httpResp.Body)
@@ -327,6 +327,12 @@ func readErrorBody(body io.Reader) (string, error) {
 		return payload.Error.Message, nil
 	}
 	return trimmed, nil
+}
+
+func closeResponseBody(body io.Closer, err *error, context string) {
+	if closeErr := body.Close(); closeErr != nil && *err == nil {
+		*err = fmt.Errorf("%s: %w", context, closeErr)
+	}
 }
 
 var _ Provider = (*MiniMaxProvider)(nil)

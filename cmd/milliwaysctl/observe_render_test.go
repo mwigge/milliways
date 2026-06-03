@@ -145,10 +145,162 @@ func TestFormatObservabilityFrame_ShowsUsageAndTimeToLimit(t *testing.T) {
 		"tokens:        in 1.2k / out 800 / total 2.0k",
 		"cost:          $0.01",
 		"time to limit: claude 1.0h",
+		"security:      SEC WARN (mode warn: warn/audit",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("frame missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestFormatObservabilityFrame_ShowsSecurityPosture(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 4, 27, 12, 34, 56, 0, time.UTC)
+	usage := observeRenderUsage{
+		Security: observeRenderSecurity{
+			Installed:         true,
+			Enabled:           true,
+			Mode:              "strict",
+			Posture:           "block",
+			Warnings:          2,
+			Blocks:            1,
+			SecurityWorkspace: "/repo/service",
+		},
+	}
+
+	got := formatObservabilityFrame(fixedNow, nil, usage)
+	for _, want := range []string{
+		"security:      SEC BLOCK 1 (mode strict: block gates)",
+		"sec workspace: /repo/service",
+		"milliways observability",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("frame missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestFormatObservabilityFrame_ShowsStartupScanAndScannerGapsCompactly(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	usage := observeRenderUsage{
+		Security: observeRenderSecurity{
+			Installed:           true,
+			Enabled:             true,
+			Mode:                "warn",
+			Posture:             "warn",
+			StartupScanRequired: true,
+			StartupScanStale:    true,
+			Scanners: []observeRenderScanner{
+				{Name: "osv-scanner", Installed: true},
+				{Name: "gitleaks", Installed: false},
+				{Name: "semgrep", Installed: true},
+				{Name: "govulncheck", Installed: false},
+			},
+		},
+	}
+
+	got := formatObservabilityFrame(fixedNow, nil, usage)
+	want := "sec detail:    startup scan stale; missing local scanners gitleaks, govulncheck"
+	if !strings.Contains(got, want) {
+		t.Fatalf("frame missing compact security detail %q:\n%s", want, got)
+	}
+	if strings.Contains(got, "osv-scanner") || strings.Contains(got, "semgrep") {
+		t.Fatalf("security detail should only include scanner gaps:\n%s", got)
+	}
+}
+
+func TestFormatObservabilityFrame_ShowsSecurityPolicyAndClientEnforcement(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	usage := observeRenderUsage{
+		Security: observeRenderSecurity{
+			Installed:            true,
+			Enabled:              true,
+			Mode:                 "strict",
+			Posture:              "ok",
+			ActiveClient:         "codex",
+			StartupScanCompleted: true,
+			LastStartupScanAt:    "2026-05-14T10:00:00Z",
+			LastDependencyScanAt: "2026-05-14T10:05:00Z",
+			ClientEnforcement: map[string]observeRenderEnforcement{
+				"codex":   {Level: "brokered", ControlledEnv: true},
+				"local":   {Level: "full"},
+				"minimax": {Level: "full"},
+				"pool":    {Level: "preflight-only"},
+			},
+		},
+	}
+
+	got := formatObservabilityFrame(fixedNow, nil, usage)
+	for _, want := range []string{
+		"sec policy:    active codex; startup complete; last startup 2026-05-14T10:00Z; last deps 2026-05-14T10:05Z",
+		"sec clients:   full 2, preflight-only 2",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("frame missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestFormatObservabilityFrame_UsesStatusClientEnforcementFallback(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	usage := observeRenderUsage{
+		Status: observeRenderStatus{
+			ClientEnforcement: map[string]observeRenderEnforcement{
+				"codex": {Level: "brokered"},
+				"local": {Level: "full"},
+			},
+		},
+		Security: observeRenderSecurity{Installed: true, Mode: "warn"},
+	}
+
+	got := formatObservabilityFrame(fixedNow, nil, usage)
+	if !strings.Contains(got, "sec clients:   full 1, preflight-only 1") {
+		t.Fatalf("frame missing status enforcement fallback:\n%s", got)
+	}
+}
+
+func TestFormatObservabilityFrame_ShowsCRAReadinessKPIs(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	usage := observeRenderUsage{
+		Security: observeRenderSecurity{
+			Installed: true,
+			Mode:      "warn",
+			CRA: observeRenderCRA{
+				EvidenceScore:        67,
+				ChecksTotal:          6,
+				ChecksPresent:        3,
+				ChecksPartial:        2,
+				ChecksMissing:        1,
+				ReportingReady:       false,
+				ReportingPresent:     2,
+				ReportingTotal:       3,
+				DesignEvidenceStatus: "partial",
+				SecurityWarnings:     2,
+				SecurityBlocks:       1,
+				DaysToReporting:      120,
+				ReportingDeadline:    "2026-09-11",
+				NextAction:           "Generate SBOM evidence: milliwaysctl security sbom --output dist/milliways.spdx.json",
+			},
+		},
+	}
+
+	got := formatObservabilityFrame(fixedNow, nil, usage)
+	want := "cra:           67% evidence, reporting 2/3 not ready, security 2w/1b, design partial"
+	if !strings.Contains(got, want) {
+		t.Fatalf("frame missing CRA KPIs %q:\n%s", want, got)
+	}
+	if !strings.Contains(got, "cra next:      Generate SBOM evidence: milliwaysctl security sbom") {
+		t.Fatalf("frame missing CRA next action:\n%s", got)
+	}
+	if strings.Contains(got, "120d to 2026-09-11") {
+		t.Fatalf("frame should not render CRA as a countdown:\n%s", got)
+	}
+	if strings.Contains(got, "Article 14 2026-09-11") {
+		t.Fatalf("frame should treat Article 14 as active posture, not a date KPI:\n%s", got)
 	}
 }
 
@@ -184,7 +336,7 @@ func TestFormatObservabilityFrame_StaysCompact(t *testing.T) {
 	if !strings.Contains(got, "latest: rpc.observe.latest") {
 		t.Fatalf("frame missing compact latest span:\n%s", got)
 	}
-	if lines := strings.Count(got, "\n"); lines > 18 {
+	if lines := strings.Count(got, "\n"); lines > 19 {
 		t.Fatalf("frame too tall for lower-left pane: %d lines\n%s", lines, got)
 	}
 }

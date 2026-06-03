@@ -157,10 +157,10 @@ func InjectBaseline(ctx context.Context, prompt string, mp MPClient) string {
 	for _, t := range triples {
 		source := t.Properties["source"]
 		ts := t.Properties["ts"]
-		sb.WriteString(fmt.Sprintf("%s: %s (source: %s, %s)\n", path, t.Object, source, ts))
+		fmt.Fprintf(&sb, "%s: %s (source: %s, %s)\n", path, t.Object, source, ts)
 	}
 	if total > 20 {
-		sb.WriteString(fmt.Sprintf("[truncated — showing 20 of %d prior findings]\n", total))
+		fmt.Fprintf(&sb, "[truncated — showing 20 of %d prior findings]\n", total)
 	}
 	return sb.String()
 }

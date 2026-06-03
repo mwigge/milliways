@@ -166,7 +166,7 @@ func TestRenderScanResult_SeverityOrdering(t *testing.T) {
 	if idxCritical == -1 || idxHigh == -1 || idxMedium == -1 || idxLow == -1 {
 		t.Fatalf("not all severity levels found in output:\n%s", got)
 	}
-	if !(idxCritical < idxHigh && idxHigh < idxMedium && idxMedium < idxLow) {
+	if idxCritical >= idxHigh || idxHigh >= idxMedium || idxMedium >= idxLow {
 		t.Errorf("severity order wrong: CRITICAL=%d HIGH=%d MEDIUM=%d LOW=%d\noutput:\n%s",
 			idxCritical, idxHigh, idxMedium, idxLow, got)
 	}

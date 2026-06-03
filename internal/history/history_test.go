@@ -108,9 +108,13 @@ func TestTrimFileToLines(t *testing.T) {
 		t.Fatalf("create file: %v", err)
 	}
 	for i := 0; i < 10; i++ {
-		f.WriteString("line\n")
+		if _, err := f.WriteString("line\n"); err != nil {
+			t.Fatalf("write line: %v", err)
+		}
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatalf("close file: %v", err)
+	}
 
 	err = trimFileToLines(fpath, 5)
 	if err != nil {
@@ -141,9 +145,13 @@ func TestTrimFileToLines_underMax(t *testing.T) {
 		t.Fatalf("create file: %v", err)
 	}
 	for i := 0; i < 3; i++ {
-		f.WriteString("line\n")
+		if _, err := f.WriteString("line\n"); err != nil {
+			t.Fatalf("write line: %v", err)
+		}
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatalf("close file: %v", err)
+	}
 
 	err = trimFileToLines(fpath, 5)
 	if err != nil {

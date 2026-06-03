@@ -183,7 +183,7 @@ func BuildContinuationPrompt(in ContinueInput) string {
 		b.WriteString("\n\n")
 	}
 
-	b.WriteString(fmt.Sprintf("Continue from the current state in %s. Do not restart the task from scratch.", in.NextProvider))
+	fmt.Fprintf(&b, "Continue from the current state in %s. Do not restart the task from scratch.", in.NextProvider)
 	return b.String()
 }
 

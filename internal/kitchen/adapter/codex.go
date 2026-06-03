@@ -52,13 +52,11 @@ type codexEvent struct {
 
 // buildCodexArgs assembles the codex CLI arguments. It always begins with
 // "exec --json", then merges any user-supplied flags from cfg.Args, injects
-// safe agentic defaults for --sandbox and --ask-for-approval when the user
+// safer agentic defaults for --sandbox and --ask-for-approval when the user
 // hasn't set them, and appends the prompt as the final positional argument.
 //
-// Defaults: --sandbox workspace-write --ask-for-approval never. Without these,
-// codex exec runs in read-only / on-request mode and silently refuses to
-// execute its tools when invoked non-interactively, which is the entire
-// point of routing through milliways.
+// Defaults: --sandbox workspace-write --ask-for-approval on-request. This
+// matches the daemon runner path and avoids silently disabling human approval.
 func buildCodexArgs(cfg kitchen.GenericConfig, task kitchen.Task) []string {
 	args := []string{"exec", "--json"}
 	args = append(args, cfg.Args...)
@@ -66,7 +64,7 @@ func buildCodexArgs(cfg kitchen.GenericConfig, task kitchen.Task) []string {
 		args = append(args, "--sandbox", "workspace-write")
 	}
 	if !hasFlag(cfg.Args, "--ask-for-approval") {
-		args = append(args, "--ask-for-approval", "never")
+		args = append(args, "--ask-for-approval", "on-request")
 	}
 	args = append(args, task.Prompt)
 	return args
@@ -127,7 +125,7 @@ func (a *CodexAdapter) Exec(ctx context.Context, task kitchen.Task) (<-chan Even
 		defer func() {
 			a.mu.Lock()
 			if a.stdinPipe != nil {
-				a.stdinPipe.Close()
+				_ = a.stdinPipe.Close()
 				a.stdinPipe = nil
 			}
 			a.processID = 0

@@ -26,6 +26,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -33,7 +34,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"os/signal"
 	"sort"
 	"strconv"
@@ -116,7 +116,7 @@ func runAttach(ctx context.Context, handle int64, jsonMode bool, out io.Writer, 
 	}
 	client, err := rpc.Dial(sock)
 	if err != nil {
-		fmt.Fprintln(errw, friendlyError("attach: ", "", err))
+		_, _ = fmt.Fprintln(errw, friendlyError("attach: ", "", err))
 		return fmt.Errorf("%s", friendlyError("attach: ", "", err))
 	}
 	defer func() { _ = client.Close() }()
@@ -124,7 +124,7 @@ func runAttach(ctx context.Context, handle int64, jsonMode bool, out io.Writer, 
 	events, cancel, err := client.Subscribe("agent.stream", map[string]any{"handle": handle})
 	if err != nil {
 		// Handle not found — check if the error message suggests an unknown handle.
-		fmt.Fprintf(errw, "unknown handle: %d\n", handle)
+		_, _ = fmt.Fprintf(errw, "unknown handle: %d\n", handle)
 		return fmt.Errorf("%s", friendlyError("attach stream: ", "", err))
 	}
 
@@ -158,7 +158,7 @@ func drainStreamToWriter(events <-chan []byte, w io.Writer, jsonMode bool) {
 				continue
 			}
 			if jsonMode {
-				fmt.Fprintln(w, formatDeltaEvent(string(decoded), time.Now().UTC()))
+				_, _ = fmt.Fprintln(w, formatDeltaEvent(string(decoded), time.Now().UTC()))
 			} else {
 				_, _ = w.Write(decoded)
 			}
@@ -170,7 +170,7 @@ func drainStreamToWriter(events <-chan []byte, w io.Writer, jsonMode bool) {
 			}
 			usage.CostUSD += ev.CostUSD
 			if jsonMode {
-				fmt.Fprintln(w, formatDoneEventWithUsage(usage, time.Now().UTC()))
+				_, _ = fmt.Fprintln(w, formatDoneEventWithUsage(usage, time.Now().UTC()))
 			}
 		case "end":
 			return
@@ -477,6 +477,7 @@ type deckProviderInfo struct {
 	ID           string
 	AuthStatus   string
 	Model        string
+	Enforcement  deckEnforcementInfo
 	Handle       int64
 	Status       string
 	Turns        int
@@ -491,6 +492,29 @@ type deckProviderInfo struct {
 	QueueDepth   int
 	LastError    string
 	LastThink    string
+	UsedPct      float64 // percentage of daily quota consumed (0-100)
+}
+
+type deckEnforcementInfo struct {
+	Level         string `json:"level"`
+	ControlledEnv bool   `json:"controlled_env,omitempty"`
+	BrokerPath    string `json:"broker_path,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+}
+
+func deckProtectionLabel(p deckProviderInfo) string {
+	level := strings.TrimSpace(p.Enforcement.Level)
+	switch level {
+	case "full":
+		return "protected"
+	case "brokered":
+		if p.Enforcement.ControlledEnv || strings.TrimSpace(p.Enforcement.BrokerPath) != "" {
+			return "preflight-only"
+		}
+		return "unprotected"
+	default:
+		return "unprotected"
+	}
 }
 
 func renderDeckNavigator(w int, providers []deckProviderInfo, selected int, active string, polled bool, quotas map[string]parallel.QuotaSummary) string {
@@ -564,13 +588,18 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 		if i == selected {
 			prefix = "▶ " + prefix
 		}
-		meta := fmt.Sprintf("turns %d", p.Turns)
+		quotaStr := ""
+		if p.UsedPct > 0 {
+			quotaStr = fmt.Sprintf(" %.0f%%", p.UsedPct)
+		}
+		meta := fmt.Sprintf("turns %d%v", p.Turns, quotaStr)
 		if p.LastError != "" {
 			meta = "err"
 		} else if p.LastThink != "" {
 			meta = "think"
 		}
-		return fmt.Sprintf("%s %s %s %s %s", prefix, p.ID, status, auth, meta)
+		name := fmt.Sprintf("%s (%s)", p.ID, deckProtectionLabel(p))
+		return fmt.Sprintf("%s %s %s %s %s", prefix, name, status, auth, meta)
 	}
 	card := func(selected bool, provider, line string) {
 		edgeColor := dim
@@ -593,24 +622,9 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 
 	// The bottom-left observability pane owns status, quota, cost, and span
 	// details. Keep this pane focused on client selection and active context.
-	clientBudget := max(3, h-6)
-	maxCards := min(7, max(1, clientBudget/3))
-	if maxCards > len(providers) || len(providers) == 0 {
-		maxCards = len(providers)
-	}
-	start := 0
-	if len(providers) > maxCards {
-		start = selected - maxCards/2
-		if start < 0 {
-			start = 0
-		}
-		if start+maxCards > len(providers) {
-			start = len(providers) - maxCards
-		}
-	}
-	end := start + maxCards
+	start, end := deckVisibleProviderRange(len(providers), selected, h)
 	clientSection := "Clients"
-	if len(providers) > 0 && maxCards < len(providers) {
+	if len(providers) > 0 && end-start < len(providers) {
 		clientSection = fmt.Sprintf("Clients %d-%d/%d", start+1, end, len(providers))
 	}
 	section(clientSection)
@@ -630,50 +644,69 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 	return b.String()
 }
 
-// obsProviderShort returns a 4-char abbreviation used in the Observability panel rows.
-func obsProviderShort(id string) string {
-	switch id {
-	case "claude":
-		return "clde"
-	case "codex":
-		return "cdex"
-	case "copilot":
-		return "cplt"
-	case "gemini":
-		return "gemi"
-	case "minimax":
-		return "mnmx"
-	case "local":
-		return "lcal"
-	case "pool":
-		return "pool"
-	default:
-		if len(id) >= 4 {
-			return id[:4]
-		}
-		return id + strings.Repeat(" ", 4-len(id))
+func deckVisibleProviderRange(total, selected, h int) (int, int) {
+	if h <= 0 {
+		h = 40
 	}
+	clientBudget := max(3, h-6)
+	maxCards := min(7, max(1, clientBudget/3))
+	if maxCards > total || total == 0 {
+		maxCards = total
+	}
+	start := 0
+	if total > maxCards {
+		start = selected - maxCards/2
+		if start < 0 {
+			start = 0
+		}
+		if start+maxCards > total {
+			start = total - maxCards
+		}
+	}
+	return start, start + maxCards
 }
 
-// obsStatusRow returns the status glyph and a short label for an agent row in
-// the Observability panel.
-func obsStatusRow(status, lastError string) (glyph, label string) {
-	switch status {
-	case deckStatusThinking:
-		return "●", "think"
-	case deckStatusStreaming:
-		return "⟳", "stream"
-	case deckStatusRunning:
-		return "▶", "tool"
-	case deckStatusError:
-		reason := lastError
-		if len(reason) > 8 {
-			reason = reason[:8]
-		}
-		return "✗", "err:" + reason
-	default:
-		return "◌", "idle"
+func deckProviderIndexAtRow(row, total, selected, h int) int {
+	if row < 2 || total <= 0 {
+		return -1
 	}
+	start, end := deckVisibleProviderRange(total, selected, h)
+	idx := start + (row-2)/3
+	if idx < start || idx >= end {
+		return -1
+	}
+	return idx
+}
+
+func readSGRMouse(br *bufio.Reader) (int, int, bool) {
+	var seq strings.Builder
+	for i := 0; i < 32; i++ {
+		b, err := br.ReadByte()
+		if err != nil {
+			return 0, 0, false
+		}
+		if b == 'M' || b == 'm' {
+			if b == 'm' {
+				return 0, 0, false
+			}
+			parts := strings.Split(seq.String(), ";")
+			if len(parts) != 3 {
+				return 0, 0, false
+			}
+			button, err1 := strconv.Atoi(parts[0])
+			x, err2 := strconv.Atoi(parts[1])
+			y, err3 := strconv.Atoi(parts[2])
+			if err1 != nil || err2 != nil || err3 != nil || x <= 0 || y <= 0 {
+				return 0, 0, false
+			}
+			if button&3 != 0 {
+				return 0, 0, false
+			}
+			return x, y, true
+		}
+		seq.WriteByte(b)
+	}
+	return 0, 0, false
 }
 
 func formatDurationMS(ms float64) string {
@@ -751,7 +784,8 @@ func renderDeckNavigatorPlain(providers []deckProviderInfo, active string, polle
 		if model == "" {
 			model = "-"
 		}
-		fmt.Fprintf(&b, "  %d %s %s %s model %s turns %d\n", i+1, p.ID, status, auth, model, p.Turns)
+		name := fmt.Sprintf("%s (%s)", p.ID, deckProtectionLabel(p))
+		fmt.Fprintf(&b, "  %d %s %s %s model %s turns %d\n", i+1, name, status, auth, model, p.Turns)
 	}
 	fmt.Fprintln(&b, "Controls")
 	fmt.Fprintln(&b, "  up/down move; enter switch; q quit")
@@ -772,21 +806,20 @@ func runDeckNavigatorPlain(ctx context.Context) error {
 
 // runDeckNavigator is the interactive provider browser for deck mode.
 // It shows a list of all providers, lets the user browse with ↑↓, and
-// sends "/switch <provider>\n" to rightPaneID on Enter.
+// writes a local deck switch control message on Enter.
 //
 // Key bindings:
 //
 //	↑ / k   move up
 //	↓ / j   move down
-//	Enter   switch right pane to selected provider
+//	Enter   switch chat pane to selected provider
 //	q/^D    exit navigator
 func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 	sock := daemonSocket()
 
 	// Retry dial up to 3 times with 200ms backoff. The navigator is launched
-	// by wezterm cli split-pane concurrently with the chat pane; the daemon
-	// is expected to be up but a short timing race can cause the first dial
-	// to fail.
+	// concurrently with the chat pane; the daemon is expected to be up but a
+	// short timing race can cause the first dial to fail.
 	var client *rpc.Client
 	const dialAttempts = 3
 	const dialBackoff = 200 * time.Millisecond
@@ -814,9 +847,9 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 	}
 	defer func() {
 		_ = term.Restore(fd, oldState)
-		fmt.Print("\033[?25h\033[?1049l\033[0m\n")
+		fmt.Print("\033[?1006l\033[?1000l\033[?25h\033[?1049l\033[0m\n")
 	}()
-	fmt.Print("\033[?1049h\033[?25l") // alternate screen + hidden cursor
+	fmt.Print("\033[?1049h\033[?25l\033[?1000h\033[?1006h") // alternate screen + hidden cursor + SGR mouse
 
 	var providers []deckProviderInfo
 	var quotas map[string]parallel.QuotaSummary
@@ -830,9 +863,10 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 	pollProviders := func() {
 		// agent.list returns a flat []AgentInfo array, not {"agents":[...]}.
 		var agents []struct {
-			ID         string `json:"id"`
-			AuthStatus string `json:"auth_status"`
-			Model      string `json:"model"`
+			ID          string              `json:"id"`
+			AuthStatus  string              `json:"auth_status"`
+			Model       string              `json:"model"`
+			Enforcement deckEnforcementInfo `json:"enforcement"`
 		}
 		if err := client.Call("agent.list", nil, &agents); err != nil {
 			return
@@ -864,6 +898,7 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 				ID:           a.ID,
 				AuthStatus:   a.AuthStatus,
 				Model:        model,
+				Enforcement:  a.Enforcement,
 				Handle:       d.Handle,
 				Status:       d.Status,
 				Turns:        d.TurnCount,
@@ -878,6 +913,12 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 				QueueDepth:   d.QueueDepth,
 				LastError:    d.LastError,
 				LastThink:    d.LastThinking,
+				UsedPct: func() float64 {
+					if q, ok := quotas[a.ID]; ok {
+						return q.UsedPct()
+					}
+					return 0
+				}(),
 			})
 		}
 		updated = orderDeckProviders(updated)
@@ -911,47 +952,63 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 		keyUp
 		keyDown
 		keyEnter
+		keyMouse
 		keyEOF
 	)
 	type keyEvent struct {
 		kind keyKind
 		ch   byte
+		x    int
+		y    int
 	}
 	keyCh := make(chan keyEvent, 8)
 	go func() {
-		buf := make([]byte, 8)
+		br := bufio.NewReader(os.Stdin)
 		for {
-			n, err := os.Stdin.Read(buf)
-			if err != nil || n == 0 {
+			b, err := br.ReadByte()
+			if err != nil {
 				keyCh <- keyEvent{kind: keyEOF}
 				return
 			}
-			// Arrow keys arrive as ESC [ A/B.
-			if n >= 3 && buf[0] == 27 && buf[1] == '[' {
-				switch buf[2] {
+			if b == 27 {
+				next, err := br.ReadByte()
+				if err != nil {
+					continue
+				}
+				if next != '[' {
+					continue
+				}
+				third, err := br.ReadByte()
+				if err != nil {
+					continue
+				}
+				switch third {
 				case 'A':
 					keyCh <- keyEvent{kind: keyUp}
 				case 'B':
 					keyCh <- keyEvent{kind: keyDown}
+				case '<':
+					if x, y, ok := readSGRMouse(br); ok {
+						keyCh <- keyEvent{kind: keyMouse, x: x, y: y}
+					}
 				}
 				continue
 			}
-			keyCh <- keyEvent{kind: keyRune, ch: buf[0]}
+			switch b {
+			case '\r', '\n':
+				keyCh <- keyEvent{kind: keyEnter}
+			default:
+				keyCh <- keyEvent{kind: keyRune, ch: b}
+			}
 		}
 	}()
 
 	switchProvider := func(provider string) {
-		if rightPaneID == "" {
+		if err := writeDeckSwitchControl(provider); err != nil {
+			slog.Debug("deck: switch control write failed", "provider", provider, "err", err)
 			return
 		}
-		err := exec.Command("wezterm", "cli", "send-text",
-			"--pane-id", rightPaneID,
-			"--no-paste",
-			"/switch "+provider+"\n").Run()
-		if err != nil {
-			slog.Debug("deck: send-text failed", "provider", provider, "err", err)
-			return
-		}
+		_ = client.Call("agent.set_active", map[string]any{"agent_id": provider}, nil)
 		active = provider
 		render()
 	}
@@ -990,6 +1047,12 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 				if selected >= 0 && selected < len(providers) {
 					switchProvider(providers[selected].ID)
 				}
+			case keyMouse:
+				_, h, _ := term.GetSize(fd)
+				if idx := deckProviderIndexAtRow(ev.y, len(providers), selected, h); idx >= 0 {
+					selected = idx
+					switchProvider(providers[selected].ID)
+				}
 			case keyRune:
 				switch ev.ch {
 				case 'k': // vim up
@@ -1017,9 +1080,10 @@ func runDeckNavigator(ctx context.Context, rightPaneID string) error {
 func pollDeckNavigatorSnapshot(ctx context.Context, client *rpc.Client) ([]deckProviderInfo, string, bool, map[string]parallel.QuotaSummary) {
 	_ = ctx
 	var agents []struct {
-		ID         string `json:"id"`
-		AuthStatus string `json:"auth_status"`
-		Model      string `json:"model"`
+		ID          string              `json:"id"`
+		AuthStatus  string              `json:"auth_status"`
+		Model       string              `json:"model"`
+		Enforcement deckEnforcementInfo `json:"enforcement"`
 	}
 	if err := client.Call("agent.list", nil, &agents); err != nil {
 		return nil, "", false, nil
@@ -1035,6 +1099,13 @@ func pollDeckNavigatorSnapshot(ctx context.Context, client *rpc.Client) ([]deckP
 			}
 		}
 	}
+	// Fetch quotas before populating deckProviderInfo so UsedPct can reference them
+	var quotas map[string]parallel.QuotaSummary
+	var snapshots []rpc.QuotaSnapshot
+	if err := client.Call("quota.get", nil, &snapshots); err == nil {
+		quotas = buildQuotasFromSnapshots(snapshots)
+	}
+
 	updated := make([]deckProviderInfo, 0, len(agents))
 	for _, a := range agents {
 		d := deckByAgent[a.ID]
@@ -1046,6 +1117,7 @@ func pollDeckNavigatorSnapshot(ctx context.Context, client *rpc.Client) ([]deckP
 			ID:           a.ID,
 			AuthStatus:   a.AuthStatus,
 			Model:        model,
+			Enforcement:  a.Enforcement,
 			Handle:       d.Handle,
 			Status:       d.Status,
 			Turns:        d.TurnCount,
@@ -1060,12 +1132,13 @@ func pollDeckNavigatorSnapshot(ctx context.Context, client *rpc.Client) ([]deckP
 			QueueDepth:   d.QueueDepth,
 			LastError:    d.LastError,
 			LastThink:    d.LastThinking,
+			UsedPct: func() float64 {
+				if q, ok := quotas[a.ID]; ok {
+					return q.UsedPct()
+				}
+				return 0
+			}(),
 		})
-	}
-	var quotas map[string]parallel.QuotaSummary
-	var snapshots []rpc.QuotaSnapshot
-	if err := client.Call("quota.get", nil, &snapshots); err == nil {
-		quotas = buildQuotasFromSnapshots(snapshots)
 	}
 	return orderDeckProviders(updated), active, true, quotas
 }

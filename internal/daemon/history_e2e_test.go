@@ -35,14 +35,18 @@ func TestHistoryE2E(t *testing.T) {
 		t.Fatalf("mkdtemp: %v", err)
 	}
 	sock := filepath.Join(stateDir, "sock")
-	defer os.RemoveAll(stateDir)
+	defer func() {
+		if err := os.RemoveAll(stateDir); err != nil {
+			t.Errorf("RemoveAll state dir: %v", err)
+		}
+	}()
 
 	srv, err := NewServer(sock)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
-	defer srv.Close()
+	serveTestServer(t, srv)
+	defer closeTestServer(t, srv)
 
 	// Give the listener time to be ready.
 	time.Sleep(50 * time.Millisecond)
@@ -51,7 +55,7 @@ func TestHistoryE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+	defer closeTestConn(t, conn)
 
 	enc := json.NewEncoder(conn)
 	reader := bufio.NewReader(conn)
@@ -127,7 +131,7 @@ func TestHistoryE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sidecar dial: %v", err)
 	}
-	defer sidecar.Close()
+	defer closeTestConn(t, sidecar)
 
 	preamble := fmt.Sprintf("STREAM %d %d\n", int64(streamID), int64(0))
 	if _, err := sidecar.Write([]byte(preamble)); err != nil {
@@ -185,7 +189,7 @@ func TestHistoryE2E(t *testing.T) {
 
 	// Step 7: history.append a chunk_end event.
 	chunkEndPayload := map[string]any{
-		"t":            "chunk_end",
+		"t":             "chunk_end",
 		"cost_usd":      0.015,
 		"input_tokens":  100,
 		"output_tokens": 50,
@@ -269,21 +273,25 @@ func TestHistoryE2EPayloadTooLarge(t *testing.T) {
 		t.Fatalf("mkdtemp: %v", err)
 	}
 	sock := filepath.Join(stateDir, "sock")
-	defer os.RemoveAll(stateDir)
+	defer func() {
+		if err := os.RemoveAll(stateDir); err != nil {
+			t.Errorf("RemoveAll state dir: %v", err)
+		}
+	}()
 
 	srv, err := NewServer(sock)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
-	defer srv.Close()
+	serveTestServer(t, srv)
+	defer closeTestServer(t, srv)
 	time.Sleep(50 * time.Millisecond)
 
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+	defer closeTestConn(t, conn)
 
 	enc := json.NewEncoder(conn)
 	reader := bufio.NewReader(conn)
@@ -342,21 +350,25 @@ func TestHistoryE2EInvalidAgentID(t *testing.T) {
 		t.Fatalf("mkdtemp: %v", err)
 	}
 	sock := filepath.Join(stateDir, "sock")
-	defer os.RemoveAll(stateDir)
+	defer func() {
+		if err := os.RemoveAll(stateDir); err != nil {
+			t.Errorf("RemoveAll state dir: %v", err)
+		}
+	}()
 
 	srv, err := NewServer(sock)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
-	defer srv.Close()
+	serveTestServer(t, srv)
+	defer closeTestServer(t, srv)
 	time.Sleep(50 * time.Millisecond)
 
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+	defer closeTestConn(t, conn)
 
 	enc := json.NewEncoder(conn)
 	reader := bufio.NewReader(conn)
@@ -414,21 +426,25 @@ func TestHistoryE2ERateLimit(t *testing.T) {
 		t.Fatalf("mkdtemp: %v", err)
 	}
 	sock := filepath.Join(stateDir, "sock")
-	defer os.RemoveAll(stateDir)
+	defer func() {
+		if err := os.RemoveAll(stateDir); err != nil {
+			t.Errorf("RemoveAll state dir: %v", err)
+		}
+	}()
 
 	srv, err := NewServer(sock)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	go srv.Serve()
-	defer srv.Close()
+	serveTestServer(t, srv)
+	defer closeTestServer(t, srv)
 	time.Sleep(50 * time.Millisecond)
 
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+	defer closeTestConn(t, conn)
 
 	enc := json.NewEncoder(conn)
 	reader := bufio.NewReader(conn)
@@ -488,7 +504,11 @@ func TestHistoryQuotaCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mkdtemp: %v", err)
 	}
-	defer os.RemoveAll(stateDir)
+	defer func() {
+		if err := os.RemoveAll(stateDir); err != nil {
+			t.Errorf("RemoveAll state dir: %v", err)
+		}
+	}()
 
 	// Rate limit: 61st call within same window should fail.
 	for i := 0; i < 61; i++ {

@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
@@ -359,24 +360,80 @@ func TestDeckNavigatorAgentListShape(t *testing.T) {
 	}
 }
 
+func TestDeckProviderIndexAtRowMatchesRenderedCards(t *testing.T) {
+	t.Parallel()
+
+	if got := deckProviderIndexAtRow(2, 7, 0, 40); got != 0 {
+		t.Fatalf("row 2 index = %d, want 0", got)
+	}
+	if got := deckProviderIndexAtRow(4, 7, 0, 40); got != 0 {
+		t.Fatalf("row 4 index = %d, want 0", got)
+	}
+	if got := deckProviderIndexAtRow(5, 7, 0, 40); got != 1 {
+		t.Fatalf("row 5 index = %d, want 1", got)
+	}
+	if got := deckProviderIndexAtRow(14, 7, 6, 22); got != 6 {
+		t.Fatalf("scrolled row index = %d, want 6", got)
+	}
+	if got := deckProviderIndexAtRow(1, 7, 0, 40); got != -1 {
+		t.Fatalf("section row index = %d, want -1", got)
+	}
+}
+
+func TestReadSGRMouse(t *testing.T) {
+	t.Parallel()
+
+	x, y, ok := readSGRMouse(bufio.NewReader(strings.NewReader("0;12;5M")))
+	if !ok || x != 12 || y != 5 {
+		t.Fatalf("mouse = (%d,%d,%t), want (12,5,true)", x, y, ok)
+	}
+	if _, _, ok := readSGRMouse(bufio.NewReader(strings.NewReader("0;12;5m"))); ok {
+		t.Fatal("release event should be ignored")
+	}
+}
+
 func TestRenderDeckNavigatorShowsRequestedPanels(t *testing.T) {
 	t.Parallel()
 
 	got := stripANSI(renderDeckNavigator(34, []deckProviderInfo{
-		{ID: "claude", AuthStatus: "ok", Model: "sonnet"},
-		{ID: "codex", AuthStatus: "ok", Model: "gpt-5.5"},
+		{ID: "claude", AuthStatus: "ok", Model: "sonnet", Enforcement: deckEnforcementInfo{Level: "brokered", ControlledEnv: true}},
+		{ID: "codex", AuthStatus: "ok", Model: "gpt-5.5", Enforcement: deckEnforcementInfo{Level: "brokered", ControlledEnv: true}},
 	}, 1, "codex", true, map[string]parallel.QuotaSummary{
 		"codex": {UsedToday: 25, LimitDay: 100},
 	}))
 
 	wantFragments := []string{
 		"Clients",
-		"codex active",
+		"codex (preflight-only) act",
 		"↑↓ move",
 	}
 	for _, want := range wantFragments {
 		if !strings.Contains(got, want) {
 			t.Errorf("renderDeckNavigator() missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderDeckNavigatorShowsClientProtectionState(t *testing.T) {
+	t.Parallel()
+
+	got := stripANSI(renderDeckNavigatorSized(54, 30, []deckProviderInfo{
+		{ID: "claude", AuthStatus: "ok", Status: "idle", Enforcement: deckEnforcementInfo{Level: "brokered", ControlledEnv: true}},
+		{ID: "minimax", AuthStatus: "ok", Status: "idle", Enforcement: deckEnforcementInfo{Level: "full"}},
+		{ID: "custom", AuthStatus: "ok", Status: "idle", Enforcement: deckEnforcementInfo{Level: "preflight-only"}},
+		{ID: "raw", AuthStatus: "ok", Status: "idle", Enforcement: deckEnforcementInfo{Level: "brokered"}},
+		{ID: "unknown", AuthStatus: "ok", Status: "idle"},
+	}, 0, "claude", true, nil))
+
+	for _, want := range []string{
+		"claude (preflight-only)",
+		"minimax (protected)",
+		"custom (unprotected)",
+		"raw (unprotected)",
+		"unknown (unprotected)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("navigator missing %q:\n%s", want, got)
 		}
 	}
 }
@@ -398,7 +455,7 @@ func TestRenderDeckNavigatorSizedKeepsActiveControlsVisible(t *testing.T) {
 	if lines := strings.Count(got, "\r\n"); lines > 22 {
 		t.Fatalf("rendered %d lines, want <= 22:\n%s", lines, got)
 	}
-	for _, want := range []string{"Clients", "pool", "pool active", "↑↓ move"} {
+	for _, want := range []string{"Clients", "pool", "pool (unprotected) active", "↑↓ move"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("render missing %q:\n%s", want, got)
 		}
@@ -432,7 +489,7 @@ func TestRenderDeckNavigatorSizedShowsSevenWhenThereIsRoom(t *testing.T) {
 	}
 	for _, want := range []string{"claude", "codex", "copilot", "gemini", "minimax", "local", "pool"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("expected all seven clients, missing %q:\n%s", want, got)
+			t.Fatalf("expected all clients, missing %q:\n%s", want, got)
 		}
 	}
 	// Quick Menu was removed — verify it is absent.
@@ -536,8 +593,8 @@ func TestRenderDeckNavigatorPlainHasNoANSIOrBoxDrawing(t *testing.T) {
 	for _, want := range []string{
 		"milliways deck",
 		"Clients",
-		"1 claude active auth ok model sonnet",
-		"2 codex thinking auth missing",
+		"1 claude (unprotected) active auth ok model sonnet",
+		"2 codex (unprotected) thinking auth missing",
 		"Controls",
 		"up/down move; enter switch; q quit",
 	} {
@@ -562,7 +619,7 @@ func TestOrderDeckProvidersMatchesNumericShortcuts(t *testing.T) {
 	for _, p := range got {
 		ids = append(ids, p.ID)
 	}
-	want := []string{"claude", "codex", "minimax", "gemini", "pool"}
+	want := []string{"minimax", "claude", "codex", "gemini", "pool"}
 	if strings.Join(ids, ",") != strings.Join(want, ",") {
 		t.Fatalf("ordered providers = %v, want %v", ids, want)
 	}
@@ -604,7 +661,7 @@ func TestRenderDeckNavigatorObservabilityActiveProviders(t *testing.T) {
 	}
 	got := stripANSI(renderDeckNavigator(90, providers, 0, "claude", true, nil))
 
-	for _, want := range []string{"Clients", "claude", "codex", "gemini", "claude thinking"} {
+	for _, want := range []string{"Clients", "claude", "codex", "gemini", "claude (unprotected) thinking"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("navigator missing %q:\n%s", want, got)
 		}

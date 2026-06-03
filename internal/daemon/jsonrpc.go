@@ -55,6 +55,7 @@ const (
 	ErrReplayWindowExpired      = -32007
 	ErrReplayTruncated          = -32008
 	ErrNotFound                 = -32009
+	ErrInternal                 = -32603
 )
 
 func writeError(enc *json.Encoder, id json.RawMessage, code int, msg string) {

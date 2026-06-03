@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//nolint:errcheck // CLI upgrade status/help output writes are best-effort; command failures are returned explicitly.
 package main
 
 // `milliwaysctl upgrade` — upgrade milliways to the latest release.
@@ -65,13 +66,22 @@ func runUpgrade(args []string, stdout, stderr io.Writer) int {
 
 	// Translate flags to the env vars upgrade.sh reads.
 	if check {
-		os.Setenv("UPGRADE_CHECK", "1")
+		if err := os.Setenv("UPGRADE_CHECK", "1"); err != nil {
+			fmt.Fprintf(stderr, "milliwaysctl upgrade: set UPGRADE_CHECK: %v\n", err)
+			return 1
+		}
 	}
 	if yes {
-		os.Setenv("UPGRADE_YES", "1")
+		if err := os.Setenv("UPGRADE_YES", "1"); err != nil {
+			fmt.Fprintf(stderr, "milliwaysctl upgrade: set UPGRADE_YES: %v\n", err)
+			return 1
+		}
 	}
 	if targetVersion != "" {
-		os.Setenv("MILLIWAYS_VERSION", targetVersion)
+		if err := os.Setenv("MILLIWAYS_VERSION", targetVersion); err != nil {
+			fmt.Fprintf(stderr, "milliwaysctl upgrade: set MILLIWAYS_VERSION: %v\n", err)
+			return 1
+		}
 	}
 
 	return runUpgradeScript(stdout, stderr)
@@ -104,7 +114,7 @@ func runUpgradeScript(stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "  Run manually: curl -sSf https://raw.githubusercontent.com/mwigge/milliways/master/install.sh | bash\n")
 		return 1
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() //nolint:errcheck // best-effort close after upgrade script download
 	if resp.StatusCode != 200 {
 		fmt.Fprintf(stderr, "milliwaysctl upgrade: download HTTP %d\n", resp.StatusCode)
 		return 1

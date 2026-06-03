@@ -85,6 +85,9 @@ func (db *DB) Parallel() *ParallelStore { return &ParallelStore{db: db.conn} }
 // Security returns the security findings and accepted-risks store.
 func (db *DB) Security() *SecurityStore { return &SecurityStore{db: db.conn} }
 
+// Coding returns the coding change tracking and approval store.
+func (db *DB) Coding() *CodingStore { return &CodingStore{db: db.conn} }
+
 // Path returns the database file path.
 func (db *DB) Path() string { return db.path }
 
@@ -138,6 +141,51 @@ func migrate(conn *sql.DB) error {
 	if version < 7 {
 		if _, err := conn.Exec(schemaV7); err != nil {
 			return fmt.Errorf("applying schema v7: %w", err)
+		}
+	}
+	if version < 8 {
+		if _, err := conn.Exec(schemaV8); err != nil {
+			return fmt.Errorf("applying schema v8: %w", err)
+		}
+	}
+	if version < 9 {
+		if _, err := conn.Exec(schemaV9); err != nil {
+			return fmt.Errorf("applying schema v9: %w", err)
+		}
+	}
+	if version < 10 {
+		if _, err := conn.Exec(schemaV10); err != nil {
+			return fmt.Errorf("applying schema v10: %w", err)
+		}
+	}
+	if version < 11 {
+		if _, err := conn.Exec(schemaV11); err != nil {
+			return fmt.Errorf("applying schema v11: %w", err)
+		}
+	}
+	if version < 12 {
+		if _, err := conn.Exec(schemaV12); err != nil {
+			return fmt.Errorf("applying schema v12: %w", err)
+		}
+	}
+	if version < 13 {
+		if _, err := conn.Exec(schemaV13); err != nil {
+			return fmt.Errorf("applying schema v13: %w", err)
+		}
+	}
+	if version < 14 {
+		if _, err := conn.Exec(schemaV14); err != nil {
+			return fmt.Errorf("applying schema v14: %w", err)
+		}
+	}
+	if version < 15 {
+		if _, err := conn.Exec(schemaV15); err != nil {
+			return fmt.Errorf("applying schema v15: %w", err)
+		}
+	}
+	if version < 16 {
+		if _, err := conn.Exec(schemaV16); err != nil {
+			return fmt.Errorf("applying schema v16: %w", err)
 		}
 	}
 

@@ -51,6 +51,107 @@ func TestSecurityStore_UpsertAndListActive(t *testing.T) {
 	}
 }
 
+func TestSecurityStore_RecordAndListPolicyDecisions(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	err := ss.RecordPolicyDecision(SecurityPolicyDecision{
+		Workspace:        "/work",
+		SessionID:        "session-1",
+		Client:           "codex",
+		CWD:              "/work",
+		OperationType:    "command",
+		Command:          "npm install left-pad",
+		ArgvJSON:         `["npm","install","left-pad"]`,
+		EnvSummaryJSON:   `{"PATH":"set"}`,
+		Mode:             "strict",
+		Decision:         "block",
+		Reason:           "package install commands require safe package policy",
+		Parsed:           true,
+		RisksJSON:        `[{"category":"package-install"}]`,
+		EnforcementLevel: "blocking",
+	})
+	if err != nil {
+		t.Fatalf("RecordPolicyDecision: %v", err)
+	}
+
+	decisions, err := ss.ListPolicyDecisions("/work", 10)
+	if err != nil {
+		t.Fatalf("ListPolicyDecisions: %v", err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("decisions = %d, want 1", len(decisions))
+	}
+	got := decisions[0]
+	if got.Workspace != "/work" || got.SessionID != "session-1" || got.Client != "codex" {
+		t.Fatalf("identity fields = %#v", got)
+	}
+	if got.Decision != "block" || got.Mode != "strict" || !got.Parsed {
+		t.Fatalf("decision fields = %#v", got)
+	}
+	if got.EnforcementLevel != "blocking" || got.RisksJSON == "" {
+		t.Fatalf("audit fields = %#v", got)
+	}
+}
+
+func TestSecurityStore_QueryPolicyDecisionsFiltersBeforeLimit(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+	base := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+
+	if err := ss.RecordPolicyDecision(SecurityPolicyDecision{
+		CreatedAt:        base,
+		Workspace:        "/work",
+		SessionID:        "session-match",
+		Client:           "codex",
+		CWD:              "/work",
+		OperationType:    "command",
+		Command:          "npm install left-pad",
+		Mode:             "strict",
+		Decision:         "block",
+		Reason:           "package install commands require safe package policy",
+		Parsed:           true,
+		EnforcementLevel: "blocking",
+	}); err != nil {
+		t.Fatalf("RecordPolicyDecision matching: %v", err)
+	}
+	for i := 1; i <= 150; i++ {
+		if err := ss.RecordPolicyDecision(SecurityPolicyDecision{
+			CreatedAt:        base.Add(time.Duration(i) * time.Second),
+			Workspace:        "/work",
+			SessionID:        "session-other",
+			Client:           "codex",
+			CWD:              "/work",
+			OperationType:    "command",
+			Command:          "echo newer",
+			Mode:             "warn",
+			Decision:         "allow",
+			EnforcementLevel: "advisory",
+		}); err != nil {
+			t.Fatalf("RecordPolicyDecision non-matching %d: %v", i, err)
+		}
+	}
+
+	decisions, err := ss.QueryPolicyDecisions(SecurityPolicyDecisionQuery{
+		Workspace: "/work",
+		SessionID: "session-match",
+		Client:    "codex",
+		Decision:  "block",
+		Limit:     1,
+	})
+	if err != nil {
+		t.Fatalf("QueryPolicyDecisions: %v", err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("decisions = %d, want 1", len(decisions))
+	}
+	if got := decisions[0]; got.SessionID != "session-match" || got.Decision != "block" {
+		t.Fatalf("decision = %#v, want older matching block", got)
+	}
+}
+
 func TestSecurityStore_UpsertIdempotent(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
@@ -77,6 +178,9 @@ func TestSecurityStore_UpsertIdempotent(t *testing.T) {
 	}
 	if all[0].Summary != "updated summary" {
 		t.Errorf("Summary not updated: %q", all[0].Summary)
+	}
+	if all[0].Category != "dependency" {
+		t.Errorf("Category = %q, want dependency", all[0].Category)
 	}
 }
 
@@ -204,5 +308,368 @@ func TestSecurityStore_ListActive_ExcludesAccepted(t *testing.T) {
 		if a.CVEID == "CVE-2024-44444" {
 			t.Error("accepted-risk finding still appears in ListActive")
 		}
+	}
+}
+
+func TestSecurityStore_ScanRunLifecycle(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	id, err := ss.InsertScanRun(SecurityScanRun{
+		Kind:      "startup",
+		Workspace: "/repo",
+		ToolName:  "milliways",
+	})
+	if err != nil {
+		t.Fatalf("InsertScanRun: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("InsertScanRun returned id 0")
+	}
+	if err := ss.CompleteScanRun(id, "completed", 3, 2, 1, ""); err != nil {
+		t.Fatalf("CompleteScanRun: %v", err)
+	}
+
+	status, err := ss.SecurityStatus("/repo")
+	if err != nil {
+		t.Fatalf("SecurityStatus: %v", err)
+	}
+	if status.LastStartupScan == nil {
+		t.Fatal("LastStartupScan is nil")
+	}
+	if status.LastStartupScan.ID != id {
+		t.Fatalf("LastStartupScan.ID = %d, want %d", status.LastStartupScan.ID, id)
+	}
+	if status.LastStartupScan.FindingsTotal != 3 {
+		t.Fatalf("FindingsTotal = %d, want 3", status.LastStartupScan.FindingsTotal)
+	}
+}
+
+func TestSecurityStore_UpsertAndListRulePacks(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	pack := SecurityRulePack{
+		Workspace:               "/repo",
+		Name:                    "workspace-ioc",
+		Version:                 "1.0.0",
+		Source:                  "workspace",
+		ManifestSource:          "workspace",
+		Checksum:                "sha256:abc",
+		MinimumMilliWaysVersion: "0.0.0",
+		RulesFile:               "rules.yaml",
+		RulesCount:              2,
+		Root:                    "/repo/.milliways/security/rules/ioc",
+		ManifestPath:            "/repo/.milliways/security/rules/ioc/manifest.yaml",
+		RulesPath:               "/repo/.milliways/security/rules/ioc/rules.yaml",
+	}
+	if err := ss.UpsertRulePack(pack); err != nil {
+		t.Fatalf("UpsertRulePack: %v", err)
+	}
+	pack.RulesCount = 3
+	if err := ss.UpsertRulePack(pack); err != nil {
+		t.Fatalf("second UpsertRulePack: %v", err)
+	}
+
+	packs, err := ss.ListRulePacks("/repo")
+	if err != nil {
+		t.Fatalf("ListRulePacks: %v", err)
+	}
+	if len(packs) != 1 {
+		t.Fatalf("ListRulePacks len = %d, want 1", len(packs))
+	}
+	if packs[0].RulesCount != 3 {
+		t.Fatalf("RulesCount = %d, want 3", packs[0].RulesCount)
+	}
+	if packs[0].Status != "loaded" {
+		t.Fatalf("Status = %q, want loaded", packs[0].Status)
+	}
+	if packs[0].FirstSeen.IsZero() || packs[0].LastSeen.IsZero() {
+		t.Fatalf("timestamps not persisted: %#v", packs[0])
+	}
+}
+
+func TestSecurityStore_MarkStartupScanCompleted(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	if err := ss.MarkStartupScanCompleted("/repo", "hash-a"); err != nil {
+		t.Fatalf("MarkStartupScanCompleted: %v", err)
+	}
+	status, err := ss.SecurityStatus("/repo")
+	if err != nil {
+		t.Fatalf("SecurityStatus: %v", err)
+	}
+	if status.StartupScanCompletedAt.IsZero() {
+		t.Fatal("StartupScanCompletedAt is zero")
+	}
+	if status.StartupScanConfigHash != "hash-a" {
+		t.Fatalf("StartupScanConfigHash = %q, want hash-a", status.StartupScanConfigHash)
+	}
+
+	if err := ss.SetWorkspaceStatus("/repo", "strict", "codex"); err != nil {
+		t.Fatalf("SetWorkspaceStatus: %v", err)
+	}
+	status, err = ss.SecurityStatus("/repo")
+	if err != nil {
+		t.Fatalf("SecurityStatus after SetWorkspaceStatus: %v", err)
+	}
+	if status.Mode != "strict" || status.ActiveClient != "codex" {
+		t.Fatalf("workspace mode/client = %q/%q, want strict/codex", status.Mode, status.ActiveClient)
+	}
+	if status.StartupScanConfigHash != "hash-a" {
+		t.Fatalf("StartupScanConfigHash after SetWorkspaceStatus = %q, want hash-a", status.StartupScanConfigHash)
+	}
+}
+
+func TestSecurityStore_RecordAndListQuarantineActions(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	record := SecurityQuarantineAction{
+		Workspace:        "/repo",
+		Kind:             "move-to-quarantine",
+		SourcePath:       "/repo/.claude/hooks.js",
+		DestinationPath:  "/repo/.milliways/quarantine/hooks.js",
+		OriginalHash:     "sha256:original",
+		AppliedHash:      "sha256:applied",
+		Status:           "applied",
+		RollbackHint:     "move the quarantined file back",
+		AdditionalFields: map[string]string{"task": "agent-start"},
+		AppliedAt:        time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC),
+	}
+	if err := ss.RecordQuarantineAction(record); err != nil {
+		t.Fatalf("RecordQuarantineAction: %v", err)
+	}
+
+	records, err := ss.ListQuarantineActions("/repo")
+	if err != nil {
+		t.Fatalf("ListQuarantineActions: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("records len = %d, want 1", len(records))
+	}
+	got := records[0]
+	if got.Kind != record.Kind || got.SourcePath != record.SourcePath || got.Status != "applied" {
+		t.Fatalf("record mismatch: %#v", got)
+	}
+	if got.OriginalHash != "sha256:original" || got.AppliedHash != "sha256:applied" {
+		t.Fatalf("hashes not persisted: %#v", got)
+	}
+	if got.RollbackHint == "" {
+		t.Fatal("rollback hint was not persisted")
+	}
+	if got.AdditionalFields["task"] != "agent-start" {
+		t.Fatalf("additional fields = %#v", got.AdditionalFields)
+	}
+	if got.AppliedAt.IsZero() {
+		t.Fatal("AppliedAt is zero")
+	}
+}
+
+func TestSecurityStore_UpsertGetAndListClientProfiles(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	profile := SecurityClientProfile{
+		Workspace:    "/repo",
+		Client:       "claude",
+		ConfigHash:   "sha256:a",
+		WarningCount: 2,
+		BlockCount:   1,
+		Status:       "completed",
+		ResultJSON:   `{"client":"claude","warnings":[{"id":"a"}]}`,
+	}
+	if err := ss.UpsertClientProfile(profile); err != nil {
+		t.Fatalf("UpsertClientProfile: %v", err)
+	}
+	profile.WarningCount = 3
+	profile.ResultJSON = `{"client":"claude","warnings":[{"id":"a"},{"id":"b"}]}`
+	if err := ss.UpsertClientProfile(profile); err != nil {
+		t.Fatalf("second UpsertClientProfile: %v", err)
+	}
+
+	got, ok, err := ss.GetClientProfile("/repo", "claude", "sha256:a")
+	if err != nil {
+		t.Fatalf("GetClientProfile: %v", err)
+	}
+	if !ok {
+		t.Fatal("GetClientProfile ok = false, want true")
+	}
+	if got.WarningCount != 3 || got.BlockCount != 1 || got.Status != "completed" {
+		t.Fatalf("profile counts/status mismatch: %#v", got)
+	}
+	if got.FirstCheckedAt.IsZero() || got.LastCheckedAt.IsZero() {
+		t.Fatalf("timestamps not persisted: %#v", got)
+	}
+
+	if _, ok, err := ss.GetClientProfile("/repo", "claude", "sha256:b"); err != nil {
+		t.Fatalf("GetClientProfile stale hash: %v", err)
+	} else if ok {
+		t.Fatal("GetClientProfile stale hash ok = true, want false")
+	}
+
+	if err := ss.UpsertClientProfile(SecurityClientProfile{
+		Workspace:    "/repo",
+		Client:       "claude",
+		ConfigHash:   "sha256:b",
+		WarningCount: 0,
+		Status:       "completed",
+		ResultJSON:   `{"client":"claude","warnings":[]}`,
+	}); err != nil {
+		t.Fatalf("UpsertClientProfile second hash: %v", err)
+	}
+	profiles, err := ss.ListClientProfiles("/repo", "claude")
+	if err != nil {
+		t.Fatalf("ListClientProfiles: %v", err)
+	}
+	if len(profiles) != 2 {
+		t.Fatalf("ListClientProfiles len = %d, want 2", len(profiles))
+	}
+}
+
+func TestSecurityStore_UpsertWarningIdempotent(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	w := SecurityWarning{
+		Workspace:   "/repo",
+		Category:    "ioc",
+		Severity:    "WARN",
+		Source:      "package.json",
+		Message:     "suspicious package script",
+		Remediation: "review script",
+	}
+	if err := ss.UpsertWarning(w); err != nil {
+		t.Fatalf("UpsertWarning: %v", err)
+	}
+	w.Severity = "BLOCK"
+	w.Remediation = "remove script"
+	if err := ss.UpsertWarning(w); err != nil {
+		t.Fatalf("second UpsertWarning: %v", err)
+	}
+
+	warnings, err := ss.ListActiveWarnings("/repo")
+	if err != nil {
+		t.Fatalf("ListActiveWarnings: %v", err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings len = %d, want 1", len(warnings))
+	}
+	if warnings[0].Severity != "BLOCK" {
+		t.Fatalf("Severity = %q, want BLOCK", warnings[0].Severity)
+	}
+	if warnings[0].Remediation != "remove script" {
+		t.Fatalf("Remediation = %q, want remove script", warnings[0].Remediation)
+	}
+}
+
+func TestSecurityStore_ResolveWarningsNotSeen(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	kept := SecurityWarning{
+		Workspace: "/repo",
+		Category:  "package",
+		Severity:  "WARN",
+		Source:    "package.json",
+		Message:   "lifecycle script",
+	}
+	stale := SecurityWarning{
+		Workspace: "/repo",
+		Category:  "package",
+		Severity:  "WARN",
+		Source:    "old-package.json",
+		Message:   "old lifecycle script",
+	}
+	other := SecurityWarning{
+		Workspace: "/repo",
+		Category:  "client-profile",
+		Severity:  "WARN",
+		Source:    "codex:config",
+		Message:   "client warning",
+	}
+	for _, w := range []SecurityWarning{kept, stale, other} {
+		if err := ss.UpsertWarning(w); err != nil {
+			t.Fatalf("UpsertWarning: %v", err)
+		}
+	}
+
+	if err := ss.ResolveWarningsNotSeen("/repo", []string{"package"}, "", []SecurityWarning{kept}); err != nil {
+		t.Fatalf("ResolveWarningsNotSeen: %v", err)
+	}
+	warnings, err := ss.ListActiveWarnings("/repo")
+	if err != nil {
+		t.Fatalf("ListActiveWarnings: %v", err)
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("warnings len = %d, want 2: %#v", len(warnings), warnings)
+	}
+	for _, w := range warnings {
+		if w.Source == stale.Source {
+			t.Fatalf("stale warning remained active: %#v", w)
+		}
+	}
+}
+
+func TestSecurityStore_SecurityStatusAggregatesFindingsAndWarnings(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ss := db.Security()
+
+	if err := ss.SetWorkspaceStatus("/repo", "strict", "codex"); err != nil {
+		t.Fatalf("SetWorkspaceStatus: %v", err)
+	}
+	if err := ss.UpsertFinding(SecurityFinding{
+		Workspace:        "/repo",
+		CVEID:            "CVE-2026-11111",
+		PackageName:      "pkg",
+		InstalledVersion: "v1",
+		Severity:         "HIGH",
+		Ecosystem:        "Go",
+	}); err != nil {
+		t.Fatalf("UpsertFinding: %v", err)
+	}
+	if err := ss.UpsertWarning(SecurityWarning{
+		Workspace: "/repo",
+		Category:  "client-profile",
+		Severity:  "BLOCK",
+		Source:    "codex",
+		Message:   "unsafe approval mode",
+	}); err != nil {
+		t.Fatalf("UpsertWarning: %v", err)
+	}
+
+	status, err := ss.SecurityStatus("/repo")
+	if err != nil {
+		t.Fatalf("SecurityStatus: %v", err)
+	}
+	if status.Mode != "strict" {
+		t.Fatalf("Mode = %q, want strict", status.Mode)
+	}
+	if status.ActiveClient != "codex" {
+		t.Fatalf("ActiveClient = %q, want codex", status.ActiveClient)
+	}
+	if status.Posture != "block" {
+		t.Fatalf("Posture = %q, want block", status.Posture)
+	}
+	if status.CountsByCategory["dependency"] != 1 {
+		t.Fatalf("dependency count = %d, want 1", status.CountsByCategory["dependency"])
+	}
+	if status.CountsByCategory["client-profile"] != 1 {
+		t.Fatalf("client-profile count = %d, want 1", status.CountsByCategory["client-profile"])
+	}
+	if status.CountsBySeverity["HIGH"] != 1 {
+		t.Fatalf("HIGH count = %d, want 1", status.CountsBySeverity["HIGH"])
+	}
+	if status.CountsBySeverity["BLOCK"] != 1 {
+		t.Fatalf("BLOCK count = %d, want 1", status.CountsBySeverity["BLOCK"])
 	}
 }

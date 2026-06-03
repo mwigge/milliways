@@ -27,19 +27,25 @@ import (
 var allowedSetenvKeys = map[string]bool{
 	// Auth keys
 	"MINIMAX_API_KEY":   true,
+	"KIMI_API_KEY":      true,
+	"MOONSHOT_API_KEY":  true,
+	"DEEPSEEK_API_KEY":  true,
 	"GEMINI_API_KEY":    true,
 	"OPENAI_API_KEY":    true,
 	"ANTHROPIC_API_KEY": true,
 	// Model selection (live-switchable via /model <name>)
-	"MINIMAX_MODEL":         true,
-	"MILLIWAYS_LOCAL_MODEL": true,
-	"ANTHROPIC_MODEL":       true,
-	"CLAUDE_MODEL":          true,
-	"OPENAI_MODEL":          true,
-	"CODEX_MODEL":           true,
-	"GEMINI_MODEL":          true,
-	"GOOGLE_MODEL":          true,
-	"COPILOT_MODEL":         true,
+	"MINIMAX_MODEL":           true,
+	"KIMI_MODEL":              true,
+	"DEEPSEEK_MODEL":          true,
+	"MILLIWAYS_LOCAL_MODEL":   true,
+	"MILLIWAYS_LOCAL_API_KEY": true,
+	"ANTHROPIC_MODEL":         true,
+	"CLAUDE_MODEL":            true,
+	"OPENAI_MODEL":            true,
+	"CODEX_MODEL":             true,
+	"GEMINI_MODEL":            true,
+	"GOOGLE_MODEL":            true,
+	"COPILOT_MODEL":           true,
 	// PATH override — set via /path so CLIs in non-standard locations
 	// (e.g. ~/.local/bin, /opt/homebrew/bin) are found by all runners.
 	"MILLIWAYS_PATH": true,
@@ -59,22 +65,34 @@ var allowedSetenvKeys = map[string]bool{
 	"HF_TOKEN": true,
 	// Endpoint overrides
 	"MINIMAX_API_URL":          true,
+	"KIMI_API_URL":             true,
+	"DEEPSEEK_API_URL":         true,
 	"MILLIWAYS_LOCAL_ENDPOINT": true,
 	"MINIMAX_TIMEOUT":          true,
+	"KIMI_TIMEOUT":             true,
+	"DEEPSEEK_TIMEOUT":         true,
 	// Local-runner tuning (set via /local-temp, /local-max-tokens)
 	"MILLIWAYS_LOCAL_TEMP":       true,
 	"MILLIWAYS_LOCAL_MAX_TOKENS": true,
+	"MILLIWAYS_LOCAL_TOOLS":      true,
+	"MINIMAX_TOOLS":              true,
+	"KIMI_TOOLS":                 true,
+	"DEEPSEEK_TOOLS":             true,
 	// Tuning
 	"MILLIWAYS_MAX_TURNS": true,
 }
 
-// LocalEnvPath returns ~/.config/milliways/local.env.
+// LocalEnvPath returns the configured milliways local.env path.
 func LocalEnvPath() string {
 	return localEnvDefaultPath()
 }
 
-// localEnvDefaultPath returns ~/.config/milliways/local.env.
+// localEnvDefaultPath returns $XDG_CONFIG_HOME/milliways/local.env or
+// ~/.config/milliways/local.env.
 func localEnvDefaultPath() string {
+	if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); xdg != "" {
+		return filepath.Join(xdg, "milliways", "local.env")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""

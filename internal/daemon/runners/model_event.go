@@ -63,7 +63,7 @@ func ModelHint(agentID string) (string, string) {
 		return "gemini CLI default", "cli-default"
 	case AgentIDPool:
 		return "Poolside ACP", "cli-default"
-	case AgentIDMiniMax, AgentIDLocal:
+	case AgentIDMiniMax, AgentIDLocal, AgentIDKimi, AgentIDDeepSeek:
 		return currentModel(agentID), "configured"
 	default:
 		return "", ""

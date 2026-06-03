@@ -34,15 +34,15 @@ func BuildSystemPrompt(hits []mempalace.SearchResult, memory []MemoryEntry, sess
 	builder.WriteString("[Session Context]\n")
 	builder.WriteString("memory:\n")
 	for _, entry := range sortedMemory(memory) {
-		builder.WriteString(fmt.Sprintf("  %s: %s\n", entry.Key, entry.Value))
+		fmt.Fprintf(&builder, "  %s: %s\n", entry.Key, entry.Value)
 	}
 	builder.WriteString("\n")
 	if len(hits) > 0 {
 		builder.WriteString("MemPalace hits:\n")
 		for _, hit := range hits {
-			builder.WriteString(fmt.Sprintf("- %s/%s (relevance %.2f): %s\n", hit.Wing, hit.Room, hit.Relevance, strings.TrimSpace(hit.Content)))
+			fmt.Fprintf(&builder, "- %s/%s (relevance %.2f): %s\n", hit.Wing, hit.Room, hit.Relevance, strings.TrimSpace(hit.Content))
 			if strings.TrimSpace(hit.FactSummary) != "" {
-				builder.WriteString(fmt.Sprintf("  summary: %s\n", strings.TrimSpace(hit.FactSummary)))
+				fmt.Fprintf(&builder, "  summary: %s\n", strings.TrimSpace(hit.FactSummary))
 			}
 		}
 		builder.WriteString("\n")
@@ -76,7 +76,7 @@ func buildConversationSection(sess *session.Session) string {
 		if content == "" {
 			continue
 		}
-		builder.WriteString(fmt.Sprintf("- %s: %s\n", message.Role, content))
+		fmt.Fprintf(&builder, "- %s: %s\n", message.Role, content)
 	}
 	return builder.String()
 }

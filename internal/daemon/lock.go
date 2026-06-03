@@ -44,41 +44,52 @@ func AcquireLock(pidPath string) (*Lock, error) {
 		}
 		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 			if !errors.Is(err, syscall.EWOULDBLOCK) {
-				f.Close()
+				_ = f.Close()
 				return nil, fmt.Errorf("flock: %w", err)
 			}
 			// Already locked — check if stale (process gone) or superseded (binary newer).
 			if attempt == 0 {
 				if isStaleLock(f) {
 					slog.Warn("stale lock detected, taking over", "pid_file", pidPath)
-					f.Close()
+					_ = f.Close()
 					continue
 				}
 				if isSuperseded(f) {
 					slog.Info("newer binary detected; replacing running daemon")
-					f.Close()
+					_ = f.Close()
 					continue
 				}
 			}
 			pid, _ := readPid(f)
-			f.Close()
+			_ = f.Close()
 			return nil, fmt.Errorf("daemon already running (pid %d)", pid)
 		}
 		// Lock acquired — write our pid.
-		f.Truncate(0)
-		f.Seek(0, 0)
+		if err := f.Truncate(0); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("truncate pid: %w", err)
+		}
+		if _, err := f.Seek(0, 0); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("seek pid: %w", err)
+		}
 		if _, err := f.WriteString(strconv.Itoa(os.Getpid()) + "\n"); err != nil {
-			f.Close()
+			_ = f.Close()
 			return nil, fmt.Errorf("write pid: %w", err)
 		}
-		f.Sync()
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("sync pid: %w", err)
+		}
 		return &Lock{file: f, path: pidPath}, nil
 	}
 	return nil, fmt.Errorf("could not acquire lock after stale-lock retry")
 }
 
 func readPid(f *os.File) (int, error) {
-	f.Seek(0, 0)
+	if _, err := f.Seek(0, 0); err != nil {
+		return 0, err
+	}
 	var pid int
 	_, err := fmt.Fscanln(f, &pid)
 	return pid, err
@@ -155,7 +166,8 @@ func (l *Lock) Release() error {
 	if l == nil || l.file == nil {
 		return nil
 	}
-	syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
-	l.file.Close()
-	return os.Remove(l.path)
+	unlockErr := syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
+	closeErr := l.file.Close()
+	removeErr := os.Remove(l.path)
+	return errors.Join(unlockErr, closeErr, removeErr)
 }

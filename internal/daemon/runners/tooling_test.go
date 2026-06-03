@@ -17,10 +17,17 @@ package runners
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/provider"
+	"github.com/mwigge/milliways/internal/security"
+	"github.com/mwigge/milliways/internal/security/firewall"
+	"github.com/mwigge/milliways/internal/security/outputgate"
 	"github.com/mwigge/milliways/internal/tools"
 )
 
@@ -118,6 +125,623 @@ func TestRunAgenticLoop_MultipleToolCallsExecutedInOrder(t *testing.T) {
 	}
 	if messages[3].Role != RoleTool || messages[3].ToolCallID != "c2" || !strings.Contains(messages[3].Content, "second") {
 		t.Errorf("messages[3] = %+v, want tool/c2 containing 'second'", messages[3])
+	}
+}
+
+func TestRunAgenticLoop_PreToolDecisionHookBlocksBeforeExecution(t *testing.T) {
+	t.Parallel()
+
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "echo", Args: `{"text":"blocked"}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	executed := false
+	registry.Register("echo", func(_ context.Context, _ map[string]any) (string, error) {
+		executed = true
+		return "should not run", nil
+	}, provider.ToolDef{Name: "echo"})
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	var seen ToolDecisionRequest
+	result, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		ToolHooks: ToolHooks{
+			Decide: func(_ context.Context, req ToolDecisionRequest) (ToolDecisionResult, error) {
+				seen = req
+				return ToolDecisionResult{
+					Decision: ToolDecisionBlock,
+					Message:  "approval required before echo",
+					Metadata: map[string]any{
+						"policy": "unit-test",
+					},
+				}, nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	if executed {
+		t.Fatal("tool executed despite pre-tool block")
+	}
+	if result.StoppedAt != StopReasonStop {
+		t.Fatalf("stopped = %q, want stop", result.StoppedAt)
+	}
+	if seen.Call.ID != "c1" || seen.ToolName != "echo" || seen.Args["text"] != "blocked" {
+		t.Fatalf("decision request = %#v, want parsed call metadata", seen)
+	}
+	if len(messages) < 3 || messages[2].Role != RoleTool || !strings.Contains(messages[2].Content, "approval required before echo") {
+		t.Fatalf("blocked tool result not folded into message stream: %+v", messages)
+	}
+	if !strings.Contains(messages[2].Content, "policy") {
+		t.Fatalf("blocked tool result missing decision metadata: %q", messages[2].Content)
+	}
+}
+
+func TestRunAgenticLoop_PreToolDecisionBlockEmitsAfterHookEvent(t *testing.T) {
+	t.Parallel()
+
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "echo", Args: `{"text":"blocked"}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	executed := false
+	registry.Register("echo", func(_ context.Context, _ map[string]any) (string, error) {
+		executed = true
+		return "should not run", nil
+	}, provider.ToolDef{Name: "echo"})
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+	var afterEvents []ToolExecutionEvent
+
+	_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		SessionID: "session-block",
+		ToolHooks: ToolHooks{
+			Decide: func(_ context.Context, _ ToolDecisionRequest) (ToolDecisionResult, error) {
+				return ToolDecisionResult{
+					Decision: ToolDecisionBlock,
+					Message:  "approval denied",
+					Metadata: map[string]any{
+						"approval_id":       int64(42),
+						"approval_decision": "deny",
+					},
+				}, nil
+			},
+			After: func(_ context.Context, ev ToolExecutionEvent) error {
+				afterEvents = append(afterEvents, ev)
+				return nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	if executed {
+		t.Fatal("tool executed despite pre-tool block")
+	}
+
+	if len(afterEvents) != 1 {
+		t.Fatalf("after hook calls = %d, want 1", len(afterEvents))
+	}
+	event := afterEvents[0]
+	if !event.Blocked {
+		t.Fatalf("after event Blocked = false, want true: %#v", event)
+	}
+	if event.SessionID != "session-block" || event.Call.ID != "c1" || event.ToolName != "echo" {
+		t.Fatalf("after event metadata = %#v, want blocked tool call metadata", event)
+	}
+	if !strings.Contains(event.Result, "approval denied") {
+		t.Fatalf("after event result = %q, want denial message", event.Result)
+	}
+	if event.Metadata["approval_decision"] != "deny" {
+		t.Fatalf("after event metadata = %+v, want approval_decision deny", event.Metadata)
+	}
+}
+
+func TestRunAgenticLoop_PreToolDecisionHookCanResumeOriginalToolCall(t *testing.T) {
+	t.Parallel()
+
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "echo", Args: `{"text":"approved"}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	executed := make(chan string, 1)
+	registry.Register("echo", func(_ context.Context, args map[string]any) (string, error) {
+		text, _ := args["text"].(string)
+		executed <- text
+		return text, nil
+	}, provider.ToolDef{Name: "echo"})
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+	seenDecision := make(chan ToolDecisionRequest, 1)
+	approved := make(chan struct{})
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+			ToolHooks: ToolHooks{
+				Decide: func(ctx context.Context, req ToolDecisionRequest) (ToolDecisionResult, error) {
+					seenDecision <- req
+					select {
+					case <-approved:
+						return ToolDecisionResult{Decision: ToolDecisionAllow}, nil
+					case <-ctx.Done():
+						return ToolDecisionResult{}, ctx.Err()
+					}
+				},
+			},
+		})
+		done <- err
+	}()
+
+	select {
+	case req := <-seenDecision:
+		if req.Call.ID != "c1" || req.ToolName != "echo" || req.Args["text"] != "approved" {
+			t.Fatalf("decision request = %#v, want original parsed tool call", req)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("decision hook was not reached")
+	}
+	select {
+	case text := <-executed:
+		t.Fatalf("tool executed before approval with %q", text)
+	default:
+	}
+	close(approved)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunAgenticLoop err = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RunAgenticLoop did not resume after approval")
+	}
+	select {
+	case text := <-executed:
+		if text != "approved" {
+			t.Fatalf("executed text = %q, want approved", text)
+		}
+	default:
+		t.Fatal("tool did not execute after approval")
+	}
+	if len(messages) < 3 || messages[2].Role != RoleTool || messages[2].ToolCallID != "c1" || !strings.Contains(messages[2].Content, "approved") {
+		t.Fatalf("resumed tool result not folded into original call message: %+v", messages)
+	}
+}
+
+func TestRunAgenticLoop_PostToolHookReceivesFileChangesAndOutputMetadata(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "write_file", Args: `{"path":"generated.txt"}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	registry.Register("write_file", func(_ context.Context, args map[string]any) (string, error) {
+		path, _ := args["path"].(string)
+		if err := os.WriteFile(filepath.Join(workspace, path), []byte("hello"), 0o644); err != nil {
+			return "", err
+		}
+		return "wrote generated.txt", nil
+	}, provider.ToolDef{Name: "write_file"})
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	var event ToolExecutionEvent
+	_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		ToolHooks: ToolHooks{
+			Workspace: workspace,
+			After: func(_ context.Context, ev ToolExecutionEvent) error {
+				event = ev
+				return nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	if event.Call.ID != "c1" || event.ToolName != "write_file" || event.SessionID != "" {
+		t.Fatalf("post-tool event metadata = %#v, want tool call metadata", event)
+	}
+	if event.OutputBytes != len("wrote generated.txt") || event.OutputTruncated {
+		t.Fatalf("output metadata = bytes:%d truncated:%v, want full output bytes", event.OutputBytes, event.OutputTruncated)
+	}
+	if len(event.FileChanges) != 1 || event.FileChanges[0].Path != "generated.txt" || event.FileChanges[0].Status != "added" {
+		t.Fatalf("file changes = %#v, want generated.txt added", event.FileChanges)
+	}
+}
+
+func TestWrapToolResultUsesRuntimeLimit(t *testing.T) {
+	t.Setenv("MILLIWAYS_TOOL_RESULT_MAX_BYTES", "8")
+
+	wrapped := wrapToolResult("Read", "0123456789abcdef")
+	if !strings.Contains(wrapped, "01234567") {
+		t.Fatalf("wrapped result missing retained prefix: %q", wrapped)
+	}
+	if strings.Contains(wrapped, "89abcdef") {
+		t.Fatalf("wrapped result was not truncated at runtime limit: %q", wrapped)
+	}
+	if !strings.Contains(wrapped, "tool output exceeded 8 bytes") {
+		t.Fatalf("wrapped result missing truncation notice: %q", wrapped)
+	}
+}
+
+func TestRunAgenticLoop_CommandFirewallWarnAllowsBashExecution(t *testing.T) {
+	t.Parallel()
+
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "Bash", Args: `{"command":"npm install left-pad"}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	executed := false
+	registry.Register("Bash", func(_ context.Context, args map[string]any) (string, error) {
+		executed = true
+		if got, _ := args["command"].(string); got != "npm install left-pad" {
+			t.Fatalf("command = %q", got)
+		}
+		return "installed", nil
+	}, provider.ToolDef{Name: "Bash"})
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		CommandFirewall: StaticCommandFirewall{
+			Policy: firewall.Policy{Mode: security.ModeWarn},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	if !executed {
+		t.Fatalf("Bash tool was not executed in warn mode")
+	}
+	if len(messages) < 3 || !strings.Contains(messages[2].Content, "installed") {
+		t.Fatalf("tool result missing executed output; messages = %+v", messages)
+	}
+	if !strings.Contains(messages[2].Content, "[security warning] command allowed in warn mode") {
+		t.Fatalf("warn-mode security decision not surfaced in tool result; messages = %+v", messages)
+	}
+}
+
+func TestRunAgenticLoop_CommandFirewallStrictBlocksBashExecution(t *testing.T) {
+	t.Parallel()
+
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "Bash", Args: `{"command":"npm install left-pad"}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	executed := false
+	registry.Register("Bash", func(context.Context, map[string]any) (string, error) {
+		executed = true
+		return "should not run", nil
+	}, provider.ToolDef{Name: "Bash"})
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		CommandFirewall: StaticCommandFirewall{
+			Policy: firewall.Policy{Mode: security.ModeStrict},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	if executed {
+		t.Fatalf("Bash tool executed despite strict firewall block")
+	}
+	if len(messages) < 3 {
+		t.Fatalf("messages len = %d, want tool error message", len(messages))
+	}
+	content := messages[2].Content
+	if !strings.Contains(content, "error: command blocked by security firewall") {
+		t.Fatalf("tool content = %q, want firewall block error", content)
+	}
+	if !strings.Contains(content, "package install") {
+		t.Fatalf("tool content = %q, want firewall reason", content)
+	}
+}
+
+func TestRunAgenticLoop_CommandFirewallPersistsBashDecisionAudit(t *testing.T) {
+	workspace := t.TempDir()
+	db, err := pantry.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := db.Security()
+
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "Bash", Args: `{"command":"npm install left-pad"}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	registry.Register("Bash", func(context.Context, map[string]any) (string, error) {
+		return "should not run", nil
+	}, provider.ToolDef{Name: "Bash"})
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	_, err = RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		SessionID: "session-1",
+		CommandFirewall: StaticCommandFirewall{
+			Policy:   firewall.Policy{Mode: security.ModeStrict},
+			RunnerID: AgentIDLocal,
+			CWD:      workspace,
+			Store:    store,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	decisions, err := store.ListPolicyDecisions(workspace, 10)
+	if err != nil {
+		t.Fatalf("ListPolicyDecisions: %v", err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("policy decisions = %d, want 1", len(decisions))
+	}
+	decision := decisions[0]
+	if decision.Command != "npm install left-pad" || decision.Decision != "block" || decision.SessionID != "session-1" || decision.Client != AgentIDLocal {
+		t.Fatalf("policy decision = %#v", decision)
+	}
+	if !strings.Contains(decision.RisksJSON, "package-install") {
+		t.Fatalf("risks_json = %q, want package-install", decision.RisksJSON)
+	}
+}
+
+func TestRunAgenticLoop_CommandFirewallIgnoresNonBashTools(t *testing.T) {
+	t.Parallel()
+
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "echo", Args: `{"text":"npm install left-pad"}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := newRegistryWithEcho()
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		CommandFirewall: StaticCommandFirewall{
+			Policy: firewall.Policy{Mode: security.ModeStrict},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	if len(messages) < 3 || !strings.Contains(messages[2].Content, "npm install left-pad") {
+		t.Fatalf("non-Bash tool result was unexpectedly blocked; messages = %+v", messages)
+	}
+}
+
+func TestRunAgenticLoop_OutputGateScansGeneratedSecretAndSASTFiles(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "WriteApp", Args: `{}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	registry.Register("WriteApp", func(context.Context, map[string]any) (string, error) {
+		if err := os.WriteFile(workspace+"/app.go", []byte("package main\n"), 0o644); err != nil {
+			return "", err
+		}
+		return "wrote app", nil
+	}, provider.ToolDef{Name: "WriteApp"})
+	secret := &outputGateFakeAdapter{
+		name:      "secret-tool",
+		installed: true,
+		result: security.ScanResult{Findings: []security.Finding{{
+			ID:       "secret-1",
+			Severity: "HIGH",
+			FilePath: "app.go",
+			Summary:  "generated token",
+		}}},
+	}
+	sast := &outputGateFakeAdapter{
+		name:      "sast-tool",
+		installed: true,
+		result: security.ScanResult{Findings: []security.Finding{{
+			ID:       "sast-1",
+			Severity: "MEDIUM",
+			FilePath: "app.go",
+			Summary:  "generated issue",
+		}}},
+	}
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		OutputGate: OutputGateOptions{
+			Workspace: workspace,
+			Mode:      security.ModeWarn,
+			Scanners: []outputgate.Scanner{
+				{Kind: security.ScanSecret, Adapter: secret},
+				{Kind: security.ScanSAST, Adapter: sast},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	assertOutputGateCall(t, secret, workspace, []string{"app.go"})
+	assertOutputGateCall(t, sast, workspace, []string{"app.go"})
+	content := messages[2].Content
+	if !strings.Contains(content, "wrote app") || !strings.Contains(content, "security output gate:") {
+		t.Fatalf("tool content missing output gate report: %q", content)
+	}
+	if !strings.Contains(content, "secret-1") || !strings.Contains(content, "sast-1") {
+		t.Fatalf("tool content missing scanner findings: %q", content)
+	}
+}
+
+func TestRunAgenticLoop_OutputGateWarnsWhenScannerMissing(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "WriteApp", Args: `{}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	registry.Register("WriteApp", func(context.Context, map[string]any) (string, error) {
+		return "wrote app", os.WriteFile(workspace+"/app.go", []byte("package main\n"), 0o644)
+	}, provider.ToolDef{Name: "WriteApp"})
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		OutputGate: OutputGateOptions{
+			Workspace: workspace,
+			Mode:      security.ModeWarn,
+			Scanners:  []outputgate.Scanner{},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	content := messages[2].Content
+	if !strings.Contains(content, "secret scan skipped: no secret scanner adapter configured") {
+		t.Fatalf("tool content missing secret scanner warning: %q", content)
+	}
+	if !strings.Contains(content, "sast scan skipped: no sast scanner adapter configured") {
+		t.Fatalf("tool content missing sast scanner warning: %q", content)
+	}
+}
+
+func TestRunAgenticLoop_OutputGatePersistsFindingsAndWarnings(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	db, err := pantry.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	store := db.Security()
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "WriteApp", Args: `{}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	registry.Register("WriteApp", func(context.Context, map[string]any) (string, error) {
+		return "wrote app", os.WriteFile(workspace+"/app.go", []byte("package main\n"), 0o644)
+	}, provider.ToolDef{Name: "WriteApp"})
+	secret := &outputGateFakeAdapter{
+		name:      "gitleaks",
+		installed: true,
+		result: security.ScanResult{Findings: []security.Finding{{
+			ID:       "secret-1",
+			Category: security.FindingSecret,
+			Severity: "HIGH",
+			FilePath: "app.go",
+			Line:     7,
+			Summary:  "generated token",
+			Status:   security.FindingBlocked,
+		}}},
+	}
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	_, err = RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		OutputGate: OutputGateOptions{
+			Workspace: workspace,
+			Mode:      security.ModeWarn,
+			Store:     store,
+			Scanners: []outputgate.Scanner{
+				{Kind: security.ScanSecret, Adapter: secret},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+
+	status, err := store.SecurityStatus(workspace)
+	if err != nil {
+		t.Fatalf("SecurityStatus: %v", err)
+	}
+	if status.CountsByCategory["secret"] != 1 {
+		t.Fatalf("secret count = %d, want 1", status.CountsByCategory["secret"])
+	}
+	if status.CountsBySeverity["HIGH"] != 1 {
+		t.Fatalf("HIGH count = %d, want 1", status.CountsBySeverity["HIGH"])
+	}
+	findings, err := store.ListAll()
+	if err != nil {
+		t.Fatalf("ListAll: %v", err)
+	}
+	if len(findings) != 1 || findings[0].Status != "blocked" {
+		t.Fatalf("findings = %#v, want one blocked finding", findings)
+	}
+	if len(status.Warnings) != 1 || !strings.Contains(status.Warnings[0].Message, "no sast scanner adapter configured") {
+		t.Fatalf("warnings = %#v, want persisted missing sast warning", status.Warnings)
+	}
+}
+
+func TestRunAgenticLoop_OutputGateNoopWhenNoModifiedFiles(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	client := &stubClient{turns: []TurnResult{
+		{
+			ToolCalls:    []ToolCall{{ID: "c1", Name: "Noop", Args: `{}`}},
+			FinishReason: FinishToolCalls,
+		},
+		{Content: "done", FinishReason: FinishStop},
+	}}
+	registry := tools.NewRegistry()
+	registry.Register("Noop", func(context.Context, map[string]any) (string, error) {
+		return "nothing changed", nil
+	}, provider.ToolDef{Name: "Noop"})
+	secret := &outputGateFakeAdapter{name: "secret-tool", installed: true}
+	messages := []Message{{Role: RoleUser, Content: "go"}}
+
+	_, err := RunAgenticLoop(context.Background(), client, registry, &messages, LoopOptions{
+		OutputGate: OutputGateOptions{
+			Workspace: workspace,
+			Mode:      security.ModeWarn,
+			Scanners:  []outputgate.Scanner{{Kind: security.ScanSecret, Adapter: secret}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunAgenticLoop err = %v", err)
+	}
+	if len(secret.calls) != 0 {
+		t.Fatalf("scanner calls = %#v, want none", secret.calls)
+	}
+	content := messages[2].Content
+	if strings.Contains(content, "security output gate:") {
+		t.Fatalf("tool content included output gate report despite no changes: %q", content)
 	}
 }
 
@@ -339,5 +963,59 @@ func TestRunAgenticLoop_MaxTurnsEnvVar(t *testing.T) {
 	}
 	if result.Turns != 3 {
 		t.Errorf("turns = %d, want 3 (from MILLIWAYS_MAX_TURNS=3)", result.Turns)
+	}
+}
+
+type outputGateFakeAdapter struct {
+	name      string
+	installed bool
+	result    security.ScanResult
+	err       error
+	calls     []outputGateScanCall
+}
+
+type outputGateScanCall struct {
+	workspace string
+	targets   []string
+}
+
+func (a *outputGateFakeAdapter) Name() string {
+	return a.name
+}
+
+func (a *outputGateFakeAdapter) Installed() bool {
+	return a.installed
+}
+
+func (a *outputGateFakeAdapter) Version(context.Context) (string, error) {
+	return "", nil
+}
+
+func (a *outputGateFakeAdapter) Scan(_ context.Context, workspace string, targets []string) (security.ScanResult, error) {
+	a.calls = append(a.calls, outputGateScanCall{workspace: workspace, targets: append([]string(nil), targets...)})
+	if a.err != nil {
+		return security.ScanResult{}, a.err
+	}
+	result := a.result
+	if result.ScannedAt.IsZero() {
+		result.ScannedAt = time.Unix(1, 0).UTC()
+	}
+	return result, nil
+}
+
+func (a *outputGateFakeAdapter) RenderFinding(security.Finding) string {
+	return ""
+}
+
+func assertOutputGateCall(t *testing.T, adapter *outputGateFakeAdapter, workspace string, targets []string) {
+	t.Helper()
+	if len(adapter.calls) != 1 {
+		t.Fatalf("%s calls = %#v, want one call", adapter.name, adapter.calls)
+	}
+	if adapter.calls[0].workspace != workspace {
+		t.Fatalf("%s workspace = %q, want %q", adapter.name, adapter.calls[0].workspace, workspace)
+	}
+	if strings.Join(adapter.calls[0].targets, ",") != strings.Join(targets, ",") {
+		t.Fatalf("%s targets = %#v, want %#v", adapter.name, adapter.calls[0].targets, targets)
 	}
 }

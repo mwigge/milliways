@@ -1,0 +1,16 @@
+{
+  "results": [
+    {
+      "check_id": "go.lang.security.audit.net.bind-all-interfaces",
+      "path": "/work/app/server.go",
+      "start": { "line": 42, "col": 10 },
+      "extra": {
+        "message": "Possible bind to all interfaces",
+        "severity": "WARNING",
+        "metadata": {
+          "cwe": ["CWE-200"]
+        }
+      }
+    }
+  ]
+}

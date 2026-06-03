@@ -96,7 +96,7 @@ func formatFinding(f pantry.SecurityFinding) string {
 	var lines strings.Builder
 	lines.WriteString(firstLine)
 	if f.Summary != "" {
-		lines.WriteString(fmt.Sprintf("%-9s %s\n", "", f.Summary))
+		fmt.Fprintf(&lines, "%-9s %s\n", "", f.Summary)
 	}
 	return lines.String()
 }

@@ -49,3 +49,69 @@ func TestPersistLocalEnvReplacesAndLoadsMiniMaxAPIKey(t *testing.T) {
 		t.Fatalf("MINIMAX_API_KEY = %q, want new-key", got)
 	}
 }
+
+func TestLoadLocalEnvLoadsLocalRunnerAPIKey(t *testing.T) {
+	t.Setenv("MILLIWAYS_LOCAL_ENDPOINT", "")
+	t.Setenv("MILLIWAYS_LOCAL_MODEL", "")
+	t.Setenv("MILLIWAYS_LOCAL_API_KEY", "")
+	t.Setenv("KIMI_TOOLS", "")
+	t.Setenv("DEEPSEEK_TOOLS", "")
+	t.Setenv("MINIMAX_TOOLS", "")
+	t.Setenv("MILLIWAYS_LOCAL_TOOLS", "")
+	path := filepath.Join(t.TempDir(), "milliways", "local.env")
+
+	content := strings.Join([]string{
+		"MILLIWAYS_LOCAL_ENDPOINT=http://127.0.0.1:8765/v1",
+		"MILLIWAYS_LOCAL_MODEL=qwen",
+		"MILLIWAYS_LOCAL_API_KEY=local-secret",
+		"KIMI_TOOLS=off",
+		"DEEPSEEK_TOOLS=off",
+		"MINIMAX_TOOLS=off",
+		"MILLIWAYS_LOCAL_TOOLS=off",
+		"UNSAFE_KEY=ignored",
+		"",
+	}, "\n")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	LoadLocalEnv(path)
+	if got := os.Getenv("MILLIWAYS_LOCAL_ENDPOINT"); got != "http://127.0.0.1:8765/v1" {
+		t.Fatalf("MILLIWAYS_LOCAL_ENDPOINT = %q", got)
+	}
+	if got := os.Getenv("MILLIWAYS_LOCAL_MODEL"); got != "qwen" {
+		t.Fatalf("MILLIWAYS_LOCAL_MODEL = %q", got)
+	}
+	if got := os.Getenv("MILLIWAYS_LOCAL_API_KEY"); got != "local-secret" {
+		t.Fatalf("MILLIWAYS_LOCAL_API_KEY = %q", got)
+	}
+	if got := os.Getenv("KIMI_TOOLS"); got != "off" {
+		t.Fatalf("KIMI_TOOLS = %q", got)
+	}
+	if got := os.Getenv("DEEPSEEK_TOOLS"); got != "off" {
+		t.Fatalf("DEEPSEEK_TOOLS = %q", got)
+	}
+	if got := os.Getenv("MINIMAX_TOOLS"); got != "off" {
+		t.Fatalf("MINIMAX_TOOLS = %q", got)
+	}
+	if got := os.Getenv("MILLIWAYS_LOCAL_TOOLS"); got != "off" {
+		t.Fatalf("MILLIWAYS_LOCAL_TOOLS = %q", got)
+	}
+	if got := os.Getenv("UNSAFE_KEY"); got != "" {
+		t.Fatalf("UNSAFE_KEY should not be loaded, got %q", got)
+	}
+}
+
+func TestLocalEnvPathUsesXDGConfigHome(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "xdg"))
+	t.Setenv("HOME", filepath.Join(tmp, "home"))
+
+	want := filepath.Join(tmp, "xdg", "milliways", "local.env")
+	if got := LocalEnvPath(); got != want {
+		t.Fatalf("LocalEnvPath() = %q, want %q", got, want)
+	}
+}

@@ -45,11 +45,18 @@ var _ Palace = (*Client)(nil)
 
 // NewClientFromEnv starts a MemPalace MCP client from environment variables.
 func NewClientFromEnv() (*Client, error) {
-	command := strings.TrimSpace(os.Getenv("MEMPALACE_MCP_CMD"))
+	command := strings.TrimSpace(os.Getenv("MILLIWAYS_MEMPALACE_MCP_CMD"))
 	if command == "" {
-		return nil, errors.New("MEMPALACE_MCP_CMD is required")
+		command = strings.TrimSpace(os.Getenv("MEMPALACE_MCP_CMD"))
 	}
-	args := strings.Fields(os.Getenv("MEMPALACE_MCP_ARGS"))
+	if command == "" {
+		return nil, errors.New("MILLIWAYS_MEMPALACE_MCP_CMD or MEMPALACE_MCP_CMD is required")
+	}
+	argsEnv := os.Getenv("MILLIWAYS_MEMPALACE_MCP_ARGS")
+	if strings.TrimSpace(argsEnv) == "" {
+		argsEnv = os.Getenv("MEMPALACE_MCP_ARGS")
+	}
+	args := strings.Fields(argsEnv)
 	return NewClient(command, args...)
 }
 
@@ -90,6 +97,45 @@ func (c *Client) Write(ctx context.Context, wing, room, drawer string, content s
 	_, err := c.rpc.CallTool(ctx, "mempalace_add_drawer", args)
 	if err != nil {
 		return fmt.Errorf("mempalace_add_drawer: %w", err)
+	}
+	return nil
+}
+
+// KGQuery returns knowledge-graph triples matching subject/predicate filters.
+func (c *Client) KGQuery(ctx context.Context, subjectPrefix, predicate string, filters map[string]string) ([]KGTriple, error) {
+	if c == nil || c.rpc == nil {
+		return nil, errors.New("nil mempalace client")
+	}
+	args := map[string]any{
+		"subject_prefix": subjectPrefix,
+		"predicate":      predicate,
+	}
+	if len(filters) > 0 {
+		args["filters"] = filters
+	}
+	result, err := c.rpc.CallTool(ctx, "mempalace_kg_query", args)
+	if err != nil {
+		return nil, fmt.Errorf("mempalace_kg_query: %w", err)
+	}
+	return decodeToolResult[[]KGTriple](result)
+}
+
+// KGAdd stores one knowledge-graph triple with optional properties.
+func (c *Client) KGAdd(ctx context.Context, subject, predicate, object string, props map[string]string) error {
+	if c == nil || c.rpc == nil {
+		return errors.New("nil mempalace client")
+	}
+	args := map[string]any{
+		"subject":   subject,
+		"predicate": predicate,
+		"object":    object,
+	}
+	if len(props) > 0 {
+		args["properties"] = props
+	}
+	_, err := c.rpc.CallTool(ctx, "mempalace_kg_add", args)
+	if err != nil {
+		return fmt.Errorf("mempalace_kg_add: %w", err)
 	}
 	return nil
 }

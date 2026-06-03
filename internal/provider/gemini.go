@@ -79,7 +79,7 @@ func (p *GeminiProvider) SupportsModel(m Model) bool {
 }
 
 // Send executes a Gemini generateContent request.
-func (p *GeminiProvider) Send(ctx context.Context, req Request) (Response, error) {
+func (p *GeminiProvider) Send(ctx context.Context, req Request) (resp Response, err error) {
 	if p == nil {
 		return Response{}, errors.New("nil gemini provider")
 	}
@@ -119,7 +119,7 @@ func (p *GeminiProvider) Send(ctx context.Context, req Request) (Response, error
 	if err != nil {
 		return Response{}, fmt.Errorf("send gemini request: %w", err)
 	}
-	defer httpResp.Body.Close()
+	defer closeResponseBody(httpResp.Body, &err, "close gemini response body")
 
 	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
 		message, readErr := readErrorBody(httpResp.Body)

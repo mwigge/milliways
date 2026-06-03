@@ -1,6 +1,14 @@
-FROM fedora:39
+FROM fedora:41
 
-RUN dnf install -y golang git ca-certificates && dnf clean all
+ARG GO_VERSION=1.26.2
+ARG TARGETARCH
+
+RUN dnf install -y ca-certificates curl git tar gzip \
+    && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz" \
+      | tar -xz -C /usr/local \
+    && dnf clean all
+
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 WORKDIR /app
 COPY . .

@@ -48,17 +48,32 @@ func (s *artifactChState) take() chan string {
 	return ch
 }
 
+// discard closes and discards a stored channel (if any) so goroutines
+// blocked on <-ch are unblocked immediately. Safe to call multiple times.
+// Used by activateSession to clean up in-flight artifact goroutines when
+// the user switches sessions mid-artifact.
+func (s *artifactChState) discard() {
+	s.mu.Lock()
+	ch := s.ch
+	s.ch = nil
+	s.mu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
+}
+
 // handleCompact summarises the current turn log by asking the active runner,
 // then replaces the log with the summary. No-ops on runners that have their own
 // native /compact (those are passed through by handleSlash).
 func (l *chatLoop) handleCompact() {
 	if l.sess == nil {
-		fmt.Fprintln(l.errw, "✗ no runner active — pick one first")
+		_, _ = fmt.Fprintln(l.errw, "✗ no runner active — pick one first")
 		return
 	}
+	agentID := l.sess.agentID
 	turns := l.snapshotTurns()
 	if len(turns) == 0 {
-		fmt.Fprintln(l.out, "  (nothing to compact)")
+		_, _ = fmt.Fprintln(l.out, "  (nothing to compact)")
 		return
 	}
 	var sb strings.Builder
@@ -68,22 +83,59 @@ func (l *chatLoop) handleCompact() {
 	}
 	ch := make(chan string, 1)
 	l.artifact.set(ch)
-	fmt.Fprintln(l.out, "  compacting context…")
+	_, _ = fmt.Fprintln(l.out, "  compacting context…")
 	if err := l.sess.send(l.enrichWithPalace(context.Background(), sb.String())); err != nil {
 		l.artifact.set(nil)
-		fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
+		_, _ = fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 		return
 	}
 	go func() {
-		summary, ok := <-ch
+		var summary string
+		var ok bool
+		select {
+		case summary, ok = <-ch:
+		case <-time.After(10 * time.Minute):
+			_, _ = fmt.Fprintln(l.errw, "✗ compact: artifact timed out waiting for stream completion")
+			return
+		}
 		if !ok || summary == "" {
 			return
 		}
 		l.turnMu.Lock()
-		l.turnLog = []chatTurn{{Role: "system", Text: "[context compacted]\n" + summary}}
+		l.turnLog = []chatTurn{
+			{Role: "user", Text: "Continue from the compacted conversation context."},
+			{Role: "assistant", AgentID: agentID, Text: "[context compacted]\n" + summary},
+		}
 		l.turnMu.Unlock()
-		fmt.Fprintln(l.out, "  ✓ context compacted")
+		if err := l.resetAgentSessionAfterCompact(agentID); err != nil {
+			_, _ = fmt.Fprintln(l.errw, friendlyError("warn: compact reset: ", "", err))
+		}
+		_, _ = fmt.Fprintln(l.out, "  ✓ context compacted")
 	}()
+}
+
+func (l *chatLoop) resetAgentSessionAfterCompact(agentID string) error {
+	if l == nil || strings.TrimSpace(agentID) == "" {
+		return nil
+	}
+	if l.sessions != nil {
+		if sess := l.sessions[agentID]; sess != nil {
+			_ = sess.close()
+			delete(l.sessions, agentID)
+		}
+	}
+	wasActive := l.sess != nil && l.sess.agentID == agentID
+	if wasActive {
+		l.sess = nil
+	}
+	if wasActive {
+		sess, err := l.ensureAgentSession(agentID)
+		if err != nil {
+			return err
+		}
+		l.activateSession(sess)
+	}
+	return nil
 }
 
 // handleClear wipes the local turn log so the next /switch briefing starts fresh.
@@ -91,13 +143,13 @@ func (l *chatLoop) handleClear() {
 	l.turnMu.Lock()
 	l.turnLog = nil
 	l.turnMu.Unlock()
-	fmt.Fprintln(l.out, "  context cleared")
+	_, _ = fmt.Fprintln(l.out, "  context cleared")
 }
 
 // handleReview gets the current git diff and asks the active runner to review it.
 func (l *chatLoop) handleReview(args string) {
 	if l.sess == nil {
-		fmt.Fprintln(l.errw, "✗ no runner active")
+		_, _ = fmt.Fprintln(l.errw, "✗ no runner active")
 		return
 	}
 	diff, err := exec.Command("git", "diff", "HEAD").Output()
@@ -105,7 +157,7 @@ func (l *chatLoop) handleReview(args string) {
 		diff, _ = exec.Command("git", "diff").Output()
 	}
 	if len(strings.TrimSpace(string(diff))) == 0 {
-		fmt.Fprintln(l.errw, "✗ nothing to review (git diff is empty)")
+		_, _ = fmt.Fprintln(l.errw, "✗ nothing to review (git diff is empty)")
 		return
 	}
 	focus := ""
@@ -123,11 +175,11 @@ func (l *chatLoop) handleReview(args string) {
 func (l *chatLoop) handlePptx(topic string) {
 	topic = strings.TrimSpace(topic)
 	if topic == "" {
-		fmt.Fprintln(l.errw, "usage: /pptx <topic>")
+		_, _ = fmt.Fprintln(l.errw, "usage: /pptx <topic>")
 		return
 	}
 	if l.sess == nil {
-		fmt.Fprintln(l.errw, "✗ no runner active")
+		_, _ = fmt.Fprintln(l.errw, "✗ no runner active")
 		return
 	}
 	cwd, _ := os.Getwd()
@@ -137,14 +189,14 @@ func (l *chatLoop) handlePptx(topic string) {
 
 	color := agentColor(l.sess.agentID)
 	reset := "\033[0m"
-	fmt.Fprintf(l.out, "%s* pptx:%s generating %q with %s\n", color, reset, topic, l.sess.agentID)
-	fmt.Fprintf(l.out, "  output: %s\n\n", outPath)
+	_, _ = fmt.Fprintf(l.out, "%s* pptx:%s generating %q with %s\n", color, reset, topic, l.sess.agentID)
+	_, _ = fmt.Fprintf(l.out, "  output: %s\n\n", outPath)
 
 	ch := make(chan string, 1)
 	l.artifact.set(ch)
 	if err := l.sess.send(l.enrichWithPalace(context.Background(), pptxPrompt(topic, outFile))); err != nil {
 		l.artifact.set(nil)
-		fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
+		_, _ = fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 		return
 	}
 	// Progress ticker while waiting for the LLM response.
@@ -155,7 +207,7 @@ func (l *chatLoop) handlePptx(topic string) {
 		for {
 			select {
 			case <-t.C:
-				fmt.Fprintf(l.out, "  …still generating\n")
+				_, _ = fmt.Fprintf(l.out, "  …still generating\n")
 				l.rl.Refresh()
 			case <-tickDone:
 				return
@@ -164,38 +216,50 @@ func (l *chatLoop) handlePptx(topic string) {
 	}()
 
 	go func() {
-		raw, ok := <-ch
+		var raw string
+		var ok bool
+		select {
+		case raw, ok = <-ch:
+		case <-time.After(10 * time.Minute):
+			close(tickDone)
+			_, _ = fmt.Fprintln(l.errw, "✗ pptx: artifact timed out waiting for stream completion")
+			l.rl.Refresh()
+			return
+		}
 		close(tickDone)
 		if !ok || raw == "" {
 			return
 		}
 		script := extractLangBlock(raw, "python", "py")
 		if script == "" {
-			fmt.Fprintf(l.errw, "✗ pptx: no python code block in response — first 200 chars:\n  %s\n",
+			_, _ = fmt.Fprintf(l.errw, "✗ pptx: no python code block in response — first 200 chars:\n  %s\n",
 				truncate(raw, 200))
 			l.rl.Refresh()
 			return
 		}
 		if err := validatePythonScript(script); err != nil {
-			fmt.Fprintf(l.errw, "✗ pptx: script validation failed: %v\n  Refusing to execute.\n", err)
+			_, _ = fmt.Fprintf(l.errw, "✗ pptx: script validation failed: %v\n  Refusing to execute.\n", err)
 			l.rl.Refresh()
 			return
 		}
 		tmp, err := os.CreateTemp("", "milliways-pptx-*.py")
 		if err != nil {
-			fmt.Fprintf(l.errw, "✗ pptx: temp file: %v\n", err)
+			_, _ = fmt.Fprintf(l.errw, "✗ pptx: temp file: %v\n", err)
 			return
 		}
 		tmpPath := tmp.Name()
-		defer os.Remove(tmpPath)
+		defer func() { _ = os.Remove(tmpPath) }()
 		if _, err := tmp.WriteString(script); err != nil {
-			tmp.Close()
-			fmt.Fprintf(l.errw, "✗ pptx: write script: %v\n", err)
+			_ = tmp.Close()
+			_, _ = fmt.Fprintf(l.errw, "✗ pptx: write script: %v\n", err)
 			return
 		}
-		tmp.Close()
+		if err := tmp.Close(); err != nil {
+			_, _ = fmt.Fprintf(l.errw, "✗ pptx: close script: %v\n", err)
+			return
+		}
 
-		fmt.Fprintf(l.out, "\n%s* pptx:%s running script…\n", color, reset)
+		_, _ = fmt.Fprintf(l.out, "\n%s* pptx:%s running script…\n", color, reset)
 		runCtx, runCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer runCancel()
 		cmd := exec.CommandContext(runCtx, pythonForArtifacts(), tmpPath)
@@ -204,15 +268,15 @@ func (l *chatLoop) handlePptx(topic string) {
 		out, runErr := cmd.CombinedOutput()
 		if len(out) > 0 {
 			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-				fmt.Fprintln(l.out, "  "+line)
+				_, _ = fmt.Fprintln(l.out, "  "+line)
 			}
 		}
 		if runErr != nil {
-			fmt.Fprintf(l.errw, "✗ pptx: script failed: %v\n  Tip: ensure python-pptx is installed: pip install python-pptx\n", runErr)
+			_, _ = fmt.Fprintf(l.errw, "✗ pptx: script failed: %v\n  Tip: ensure python-pptx is installed: pip install python-pptx\n", runErr)
 			l.rl.Refresh()
 			return
 		}
-		fmt.Fprintf(l.out, "\n  saved: %s\n", outPath)
+		_, _ = fmt.Fprintf(l.out, "\n  saved: %s\n", outPath)
 		l.rl.Refresh()
 	}()
 }
@@ -222,11 +286,11 @@ func (l *chatLoop) handlePptx(topic string) {
 func (l *chatLoop) handleDrawio(topic string) {
 	topic = strings.TrimSpace(topic)
 	if topic == "" {
-		fmt.Fprintln(l.errw, "usage: /drawio <topic>")
+		_, _ = fmt.Fprintln(l.errw, "usage: /drawio <topic>")
 		return
 	}
 	if l.sess == nil {
-		fmt.Fprintln(l.errw, "✗ no runner active")
+		_, _ = fmt.Fprintln(l.errw, "✗ no runner active")
 		return
 	}
 	cwd, _ := os.Getwd()
@@ -236,34 +300,45 @@ func (l *chatLoop) handleDrawio(topic string) {
 
 	color := agentColor(l.sess.agentID)
 	reset := "\033[0m"
-	fmt.Fprintf(l.out, "%s* drawio:%s generating %q with %s\n", color, reset, topic, l.sess.agentID)
-	fmt.Fprintf(l.out, "  output: %s\n\n", outPath)
+	_, _ = fmt.Fprintf(l.out, "%s* drawio:%s generating %q with %s\n", color, reset, topic, l.sess.agentID)
+	_, _ = fmt.Fprintf(l.out, "  output: %s\n\n", outPath)
 
 	ch := make(chan string, 1)
 	l.artifact.set(ch)
 	if err := l.sess.send(l.enrichWithPalace(context.Background(), drawioPrompt(topic))); err != nil {
 		l.artifact.set(nil)
-		fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
+		_, _ = fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 		return
 	}
 	go func() {
-		raw, ok := <-ch
+		var raw string
+		var ok bool
+		select {
+		case raw, ok = <-ch:
+		case <-time.After(10 * time.Minute):
+			_, _ = fmt.Fprintln(l.errw, "✗ drawio: artifact timed out waiting for stream completion")
+			return
+		}
 		if !ok || raw == "" {
 			return
 		}
 		xml := extractXMLBlock(raw)
 		if xml == "" {
-			fmt.Fprintln(l.errw, "✗ drawio: no XML found in response")
+			_, _ = fmt.Fprintln(l.errw, "✗ drawio: no XML found in response")
 			return
 		}
 		if !strings.Contains(xml, "<?xml") {
 			xml = `<?xml version="1.0" encoding="UTF-8"?>` + "\n" + xml
 		}
-		if err := os.WriteFile(outPath, []byte(xml), 0o644); err != nil {
-			fmt.Fprintf(l.errw, "✗ drawio: write file: %v\n", err)
+		if len(xml) > 10*1024*1024 {
+			_, _ = fmt.Fprintln(l.errw, "✗ drawio: generated diagram is too large (>10 MB)")
 			return
 		}
-		fmt.Fprintf(l.out, "\n  saved: %s\n", outPath)
+		if err := os.WriteFile(outPath, []byte(xml), 0o644); err != nil {
+			_, _ = fmt.Fprintf(l.errw, "✗ drawio: write file: %v\n", err)
+			return
+		}
+		_, _ = fmt.Fprintf(l.out, "\n  saved: %s\n", outPath)
 		l.rl.Refresh()
 	}()
 }
@@ -408,10 +483,13 @@ import ast, sys
 tree = ast.parse(sys.stdin.read())
 allowed_imports = {
     'pptx','collections','copy','datetime','decimal','fractions',
-    'functools','io','itertools','math','numbers','os.path','pathlib',
+    'functools','itertools','math','numbers','os.path',
     'random','statistics','string','struct','typing','codecs','enum',
 }
 blocked_builtins = {'eval','exec','compile','__import__','getattr','setattr','delattr','open','breakpoint'}
+blocked_attrs = {
+    'write_text','write_bytes','open','FileIO','BufferedWriter','BufferedRandom',
+}
 errors = []
 for node in ast.walk(tree):
     if isinstance(node, ast.Import):
@@ -428,6 +506,8 @@ for node in ast.walk(tree):
         name = func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else '')
         if name in blocked_builtins:
             errors.append(f'disallowed builtin call: {name}()')
+        if name in blocked_attrs:
+            errors.append(f'disallowed file I/O call: {name}()')
 if errors:
     for e in errors:
         print(f'BLOCKED: {e}', file=sys.stderr)

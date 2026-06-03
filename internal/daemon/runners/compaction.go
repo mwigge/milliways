@@ -16,7 +16,6 @@ package runners
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/mwigge/milliways/internal/provider"
@@ -51,7 +50,7 @@ type CompactionOptions struct {
 //  5. If step 3 fails, fall back to progressive tool-result dropping:
 //     - Replace all RoleTool message content with "[tool result omitted — context compacted]".
 //     - If total message count still exceeds CtxTokens/200, keep only the
-//       system message + last 6 messages.
+//     system message + last 6 messages.
 //
 // Returns the compacted messages slice and whether compaction occurred.
 func compactMessages(
@@ -76,7 +75,11 @@ func compactMessages(
 	// summarisation prompt.
 	var sb strings.Builder
 	for _, m := range compactable {
-		sb.WriteString(fmt.Sprintf("[%s]: %s\n", m.Role, m.Content))
+		sb.WriteByte('[')
+		sb.WriteString(string(m.Role))
+		sb.WriteString("]: ")
+		sb.WriteString(m.Content)
+		sb.WriteByte('\n')
 	}
 	formatted := sb.String()
 

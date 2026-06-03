@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mwigge/milliways/internal/runner/review"
 )
@@ -105,6 +107,7 @@ func TestLocalEndpointForKind(t *testing.T) {
 		kind string
 		want string
 	}{
+		{"rs-llmctl", "http://127.0.0.1:8765/v1"},
 		{"llama-server", "http://127.0.0.1:8765/v1"},
 		{"llama-swap", "http://127.0.0.1:8765/v1"},
 		{"ollama", "http://127.0.0.1:11434/v1"},
@@ -217,6 +220,39 @@ func TestRunLocalListModels_QueriesEndpoint(t *testing.T) {
 	}
 }
 
+func TestRunLocalListModels_UsesAPIKeyFromLocalEnv(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+	envPath := filepath.Join(tmp, ".config", "milliways", "local.env")
+	if err := os.MkdirAll(filepath.Dir(envPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var endpoint string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer smoke-key" {
+			t.Fatalf("Authorization = %q, want bearer key from local.env", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"qwen"}]}`))
+	}))
+	defer srv.Close()
+	endpoint = srv.URL + "/v1"
+	if err := os.WriteFile(envPath, []byte("MILLIWAYS_LOCAL_ENDPOINT="+endpoint+"\nMILLIWAYS_LOCAL_API_KEY=smoke-key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	code := runLocalListModels(nil, &out, &out)
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0", code)
+	}
+	if got := strings.TrimSpace(out.String()); got != "qwen" {
+		t.Errorf("output = %q, want qwen", got)
+	}
+}
+
 func TestRunLocalListModels_BackendUnreachable(t *testing.T) {
 	t.Setenv("MILLIWAYS_LOCAL_ENDPOINT", "http://127.0.0.1:0/v1") // port 0 — guaranteed not listening
 
@@ -234,6 +270,13 @@ func TestRunLocalSwitchServer_WritesEnvFile(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+	envPath := filepath.Join(tmp, ".config", "milliways", "local.env")
+	if err := os.MkdirAll(filepath.Dir(envPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envPath, []byte("MILLIWAYS_LOCAL_API_KEY=keep-key\nMILLIWAYS_LOCAL_MODEL=qwen\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	var stdout, stderr bytes.Buffer
 	code := runLocalSwitchServer([]string{"ollama"}, &stdout, &stderr)
@@ -241,7 +284,6 @@ func TestRunLocalSwitchServer_WritesEnvFile(t *testing.T) {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
 	}
 
-	envPath := filepath.Join(tmp, ".config", "milliways", "local.env")
 	body, err := os.ReadFile(envPath)
 	if err != nil {
 		t.Fatalf("expected %s, err = %v", envPath, err)
@@ -249,8 +291,80 @@ func TestRunLocalSwitchServer_WritesEnvFile(t *testing.T) {
 	if !strings.Contains(string(body), "MILLIWAYS_LOCAL_ENDPOINT=http://127.0.0.1:11434/v1") {
 		t.Errorf("env file content = %q, missing ollama endpoint", body)
 	}
+	if strings.Contains(string(body), "MILLIWAYS_LOCAL_API_KEY=keep-key") {
+		t.Errorf("env file content = %q, stale generated api key should be removed for ollama", body)
+	}
+	if !strings.Contains(string(body), "MILLIWAYS_LOCAL_MODEL=qwen") {
+		t.Errorf("env file content = %q, lost existing local model", body)
+	}
+	info, err := os.Stat(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("local.env mode = %o, want 600", got)
+	}
 	if !strings.Contains(stdout.String(), "11434") {
 		t.Errorf("stdout = %q, want it to include the resolved endpoint", stdout.String())
+	}
+}
+
+func TestRunLocalSwitchServer_TightensExistingEnvPermissions(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+	envPath := filepath.Join(tmp, ".config", "milliways", "local.env")
+	if err := os.MkdirAll(filepath.Dir(envPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envPath, []byte("MILLIWAYS_LOCAL_API_KEY=keep-key\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runLocalSwitchServer([]string{"rs-llmctl"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	info, err := os.Stat(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("local.env mode = %o, want 600", got)
+	}
+	body, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "MILLIWAYS_LOCAL_API_KEY=keep-key") {
+		t.Errorf("local.env lost api key: %q", body)
+	}
+}
+
+func TestRunLocalSwitchServer_RsLlmctlPreservesAPIKey(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+	envPath := filepath.Join(tmp, ".config", "milliways", "local.env")
+	if err := os.MkdirAll(filepath.Dir(envPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envPath, []byte("MILLIWAYS_LOCAL_API_KEY=keep-key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := runLocalSwitchServer([]string{"rs-llmctl"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	body, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "MILLIWAYS_LOCAL_API_KEY=keep-key") {
+		t.Errorf("env file content = %q, rs-llmctl api key should be preserved", body)
 	}
 }
 
@@ -306,6 +420,84 @@ func TestRunLocal_HelpExitsZero(t *testing.T) {
 	}
 }
 
+func TestSelectGPUCatalogModelChoosesLargestSafeFit(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	got, err := selectGPUCatalogModel(16)
+	if err != nil {
+		t.Fatalf("selectGPUCatalogModel: %v", err)
+	}
+	if got.Name != "Qwen3-8B" {
+		t.Fatalf("model = %s, want Qwen3-8B", got.Name)
+	}
+}
+
+func TestFirstMemoryGB(t *testing.T) {
+	cases := map[string]float64{
+		"Total VRAM: 16384 MB":      16,
+		"VRAM Total Memory: 8 GiB":  8,
+		"Memory: 17179869184 bytes": 16,
+	}
+	for input, want := range cases {
+		if got := firstMemoryGB(input); got != want {
+			t.Fatalf("firstMemoryGB(%q) = %v, want %v", input, got, want)
+		}
+	}
+}
+
+func TestParseROCMSMIOutput(t *testing.T) {
+	gpu, ok := parseROCMSMIOutput(`GPU[0]          : Card series: Radeon RX 7900 XTX
+GPU[0]          : VRAM Total Memory (B): 25757220864`)
+	if !ok {
+		t.Fatal("parseROCMSMIOutput returned false")
+	}
+	if gpu.Vendor != "amd" || gpu.Name != "Radeon RX 7900 XTX" {
+		t.Fatalf("gpu = %#v", gpu)
+	}
+	if gpu.VRAMGB < 23.9 || gpu.VRAMGB > 24.1 {
+		t.Fatalf("VRAMGB = %v, want about 24", gpu.VRAMGB)
+	}
+}
+
+func TestLocalGPUInfoLlamaAccelDefaultsAMDtoVulkanWithoutHIP(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("ROCM_PATH", t.TempDir())
+
+	got, err := (localGPUInfo{Vendor: "amd"}).LlamaAccel("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "vulkan" {
+		t.Fatalf("accel = %q, want vulkan", got)
+	}
+}
+
+func TestLocalGPUInfoLlamaAccelOverride(t *testing.T) {
+	got, err := (localGPUInfo{Vendor: "amd"}).LlamaAccel("hip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "hip" {
+		t.Fatalf("accel = %q, want hip", got)
+	}
+}
+
+func TestWithEnvOverrides(t *testing.T) {
+	got := withEnvOverrides([]string{"PATH=/bin", "MODEL_REPO=old"}, map[string]string{
+		"MODEL_REPO":      "new",
+		"LLAMA_CPP_ACCEL": "hip",
+	})
+	joined := strings.Join(got, "\n")
+	for _, want := range []string{"PATH=/bin", "MODEL_REPO=new", "LLAMA_CPP_ACCEL=hip"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("env missing %q: %#v", want, got)
+		}
+	}
+	if strings.Contains(joined, "MODEL_REPO=old") {
+		t.Fatalf("env kept old override: %#v", got)
+	}
+}
+
 // ── setup-model tests ─────────────────────────────────────────────────────────
 
 func TestRunLocal_SetupModelMissingRepo(t *testing.T) {
@@ -356,8 +548,12 @@ func TestRunLocal_SetupModelDownloadAndRegister(t *testing.T) {
 	// llama-swap.yaml should exist somewhere under cfgDir.
 	var yamlBytes []byte
 	_ = filepath.WalkDir(cfgDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() { return err }
-		if strings.HasSuffix(path, "llama-swap.yaml") { yamlBytes, _ = os.ReadFile(path) }
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if strings.HasSuffix(path, "llama-swap.yaml") {
+			yamlBytes, _ = os.ReadFile(path)
+		}
 		return nil
 	})
 	if len(yamlBytes) == 0 {
@@ -393,6 +589,84 @@ func TestRunLocal_SetupModelIdempotent(t *testing.T) {
 	}
 	if !strings.Contains(out2.String(), "already registered") {
 		t.Errorf("expected 'already registered' on second call, got: %q", out2.String())
+	}
+}
+
+func TestWriteLocalBackendSelection_LlamaSwapRemovesGeneratedAPIKey(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+	envPath := filepath.Join(tmp, ".config", "milliways", "local.env")
+	if err := os.MkdirAll(filepath.Dir(envPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envPath, []byte("MILLIWAYS_LOCAL_API_KEY=stale\nMILLIWAYS_LOCAL_MODEL=qwen\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeLocalBackendSelection("llama-swap"); err != nil {
+		t.Fatalf("writeLocalBackendSelection() error = %v", err)
+	}
+
+	body, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "MILLIWAYS_LOCAL_API_KEY=stale") {
+		t.Fatalf("local.env kept stale generated api key: %s", body)
+	}
+	if !strings.Contains(string(body), "MILLIWAYS_LOCAL_ENDPOINT=http://127.0.0.1:8765/v1") {
+		t.Fatalf("local.env missing llama-swap endpoint: %s", body)
+	}
+	if !strings.Contains(string(body), "MILLIWAYS_LOCAL_MODEL=qwen") {
+		t.Fatalf("local.env lost model alias: %s", body)
+	}
+}
+
+func TestRunLocalServerUninstallRemovesSwapArtifacts(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+	paths := []string{
+		filepath.Join(tmp, "Library", "LaunchAgents", "dev.milliways.local-swap.plist"),
+		filepath.Join(tmp, ".config", "systemd", "user", "milliways-local-swap.service"),
+		filepath.Join(tmp, ".local", "bin", "milliways-local-swap"),
+	}
+	for _, path := range paths {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	envPath := filepath.Join(tmp, ".config", "milliways", "local.env")
+	if err := os.MkdirAll(filepath.Dir(envPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envPath, []byte("MILLIWAYS_LOCAL_ENDPOINT=http://127.0.0.1:8765/v1\nMILLIWAYS_LOCAL_API_KEY=stale\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	origExec := execCommand
+	execCommand = func(_ string, _ ...string) *exec.Cmd { return exec.Command("true") }
+	defer func() { execCommand = origExec }()
+
+	var stdout, stderr bytes.Buffer
+	code := runLocalServerUninstall([]string{"--yes"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	for _, path := range paths {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists or stat failed with %v", path, err)
+		}
+	}
+	body, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "MILLIWAYS_LOCAL_API_KEY") || strings.Contains(string(body), "MILLIWAYS_LOCAL_ENDPOINT") {
+		t.Fatalf("local.env kept removed keys: %s", body)
 	}
 }
 
@@ -637,6 +911,17 @@ func TestBuiltinCatalogIntegrity(t *testing.T) {
 	}
 }
 
+func TestBuiltinCatalogNamesAreUnique(t *testing.T) {
+	t.Parallel()
+	seen := make(map[string]int, len(builtinCatalog))
+	for i, e := range builtinCatalog {
+		if prev, exists := seen[e.Name]; exists {
+			t.Errorf("duplicate catalog name %q: entries %d and %d", e.Name, prev, i)
+		}
+		seen[e.Name] = i
+	}
+}
+
 // ── server maintenance tests ──────────────────────────────────────────────────
 
 func TestRunLocal_ServerStatus_NotRunning(t *testing.T) {
@@ -683,6 +968,41 @@ func TestRunLocal_ServerPort_DefaultPort(t *testing.T) {
 	if got != "8765" {
 		t.Errorf("server-port (default) = %q, want %q", got, "8765")
 	}
+}
+
+func TestWaitDaemonSocketReadyWaitsForSocket(t *testing.T) {
+	dir, err := os.MkdirTemp(os.TempDir(), "mw-sock-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	socketPath := filepath.Join(dir, "milliways", "sock")
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ready := make(chan struct{})
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		ln, err := net.Listen("unix", socketPath)
+		if err != nil {
+			t.Errorf("listen unix: %v", err)
+			close(ready)
+			return
+		}
+		defer func() { _ = ln.Close() }() //nolint:errcheck // test listener cleanup
+		close(ready)
+		conn, err := ln.Accept()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}()
+
+	if err := waitDaemonSocketReady(3 * time.Second); err != nil {
+		t.Fatalf("waitDaemonSocketReady: %v", err)
+	}
+	<-ready
 }
 
 func TestRunLocal_DefaultModel_UpdatesLauncher(t *testing.T) {
@@ -792,6 +1112,63 @@ func TestRunLocalReviewCode_LintFlag(t *testing.T) {
 	}
 	if !captured.LintAfterEdit {
 		t.Error("Config.LintAfterEdit = false, want true when --lint is passed")
+	}
+}
+
+func TestRunLocalReviewCode_ParsesFlagsAfterRepo(t *testing.T) {
+	repoDir := t.TempDir()
+
+	var captured review.Config
+	orig := reviewNewFn
+	reviewNewFn = func(cfg review.Config) (reviewRunner, error) {
+		captured = cfg
+		return &stubReviewRunner{}, nil
+	}
+	t.Cleanup(func() { reviewNewFn = orig })
+
+	reportPath := filepath.Join(repoDir, "report.md")
+	var stdout, stderr bytes.Buffer
+	code := runLocalReviewCode([]string{repoDir, "--out", reportPath, "--lint", "--no-memory"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if !captured.LintAfterEdit {
+		t.Error("Config.LintAfterEdit = false, want true when --lint follows repo")
+	}
+	if captured.OutPath != reportPath {
+		t.Errorf("Config.OutPath = %q, want %q", captured.OutPath, reportPath)
+	}
+}
+
+func TestRunLocalReviewCode_UsesAPIKeyFromLocalEnv(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+	envPath := filepath.Join(tmp, ".config", "milliways", "local.env")
+	if err := os.MkdirAll(filepath.Dir(envPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envPath, []byte("MILLIWAYS_LOCAL_ENDPOINT=http://127.0.0.1:8765/v1\nMILLIWAYS_LOCAL_API_KEY=review-key\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	repoDir := t.TempDir()
+
+	var captured review.Config
+	orig := reviewNewFn
+	reviewNewFn = func(cfg review.Config) (reviewRunner, error) {
+		captured = cfg
+		return &stubReviewRunner{}, nil
+	}
+	t.Cleanup(func() { reviewNewFn = orig })
+
+	var stdout, stderr bytes.Buffer
+	code := runLocalReviewCode([]string{"--no-memory", repoDir}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if captured.APIKey != "review-key" {
+		t.Errorf("Config.APIKey = %q, want local.env key", captured.APIKey)
 	}
 }
 

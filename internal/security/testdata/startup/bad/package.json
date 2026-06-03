@@ -1,0 +1,12 @@
+{
+  "scripts": {
+    "preinstall": "node setup.mjs",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "safe-package": "1.2.3"
+  },
+  "optionalDependencies": {
+    "left-pad": "github:example/left-pad#deadbeef"
+  }
+}

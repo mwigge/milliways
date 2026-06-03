@@ -16,8 +16,34 @@ package security
 
 import "time"
 
+// FindingCategory describes the security layer that produced a finding.
+type FindingCategory string
+
+const (
+	FindingDependency FindingCategory = "dependency"
+	FindingSecret     FindingCategory = "secret"
+	FindingSAST       FindingCategory = "sast"
+	FindingIOC        FindingCategory = "ioc"
+	FindingClient     FindingCategory = "client-profile"
+	FindingCommand    FindingCategory = "command-block"
+	FindingPersist    FindingCategory = "persistence"
+)
+
+// FindingStatus is the lifecycle state for a security finding.
+type FindingStatus string
+
+const (
+	FindingActive      FindingStatus = "active"
+	FindingAccepted    FindingStatus = "accepted"
+	FindingResolved    FindingStatus = "resolved"
+	FindingQuarantined FindingStatus = "quarantined"
+	FindingBlocked     FindingStatus = "blocked"
+)
+
 // Finding is one CVE finding from an OSV scan.
 type Finding struct {
+	ID               string
+	Category         FindingCategory
 	CVEID            string
 	PackageName      string
 	InstalledVersion string
@@ -26,6 +52,16 @@ type Finding struct {
 	Ecosystem        string
 	Summary          string
 	ScanSource       string // lockfile path that triggered this finding
+	Status           FindingStatus
+	WorkspacePath    string
+	FilePath         string
+	Line             int
+	Column           int
+	ClientID         string
+	SessionID        string
+	ToolName         string
+	Remediation      string
+	EvidenceHash     string
 }
 
 // ScanResult is the output of one scan run.
@@ -33,4 +69,8 @@ type ScanResult struct {
 	Findings  []Finding
 	ScannedAt time.Time
 	LockFiles []string // which lockfiles were scanned
+	Kind      ScanKind
+	Workspace string
+	ToolName  string
+	Error     string
 }

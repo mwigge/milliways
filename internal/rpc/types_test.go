@@ -65,12 +65,17 @@ func TestAgentInfo_UnmarshalJSON_missingRequired(t *testing.T) {
 		data := `{"auth_status":"ok","available":true,"id":"alice"}`
 		// Create a map and delete the field to be sure.
 		var m map[string]interface{}
-		json.Unmarshal([]byte(data), &m)
+		if err := json.Unmarshal([]byte(data), &m); err != nil {
+			t.Fatalf("Unmarshal fixture: %v", err)
+		}
 		delete(m, field)
-		bytes, _ := json.Marshal(m)
+		bytes, err := json.Marshal(m)
+		if err != nil {
+			t.Fatalf("Marshal fixture: %v", err)
+		}
 
 		var info AgentInfo
-		err := json.Unmarshal(bytes, &info)
+		err = json.Unmarshal(bytes, &info)
 		if err == nil {
 			t.Errorf("expected error when field %q is missing", field)
 		}
@@ -124,10 +129,13 @@ func TestAggregateContext_totalsValidation(t *testing.T) {
 			"agents": []interface{}{},
 			"totals": m,
 		}
-		bytes, _ := json.Marshal(data)
+		bytes, err := json.Marshal(data)
+		if err != nil {
+			t.Fatalf("Marshal fixture: %v", err)
+		}
 
 		var ctx AggregateContext
-		err := json.Unmarshal(bytes, &ctx)
+		err = json.Unmarshal(bytes, &ctx)
 		if err == nil {
 			t.Errorf("expected error for negative %s", field)
 		}

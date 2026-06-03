@@ -235,6 +235,8 @@ func LoginKitchen(kitchenName string) error {
 		return loginInteractiveTUI("opencode", "opencode", "providers")
 	case "minimax":
 		return LoginAPIKey("minimax")
+	case "berget":
+		return LoginAPIKey("berget")
 	case "groq":
 		return loginEnvVar("groq", "GROQ_API_KEY", "https://console.groq.com/keys")
 	case "ollama":

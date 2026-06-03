@@ -45,12 +45,12 @@ func TestNewRing_CapsCapacityToOne(t *testing.T) {
 func TestRing_Push_RecordsSpans(t *testing.T) {
 	r := NewRing(3)
 	span := Span{
-		TraceID:  "trace-123",
-		SpanID:   "span-456",
-		Name:     "test-span",
-		StartTS:  time.Now(),
+		TraceID:    "trace-123",
+		SpanID:     "span-456",
+		Name:       "test-span",
+		StartTS:    time.Now(),
 		DurationMS: 100,
-		Status:   "ok",
+		Status:     "ok",
 	}
 	r.Push(span)
 
@@ -215,7 +215,7 @@ func TestNewSpanID_ReturnsHexString(t *testing.T) {
 	}
 
 	for _, c := range id {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Errorf("invalid hex character: %c", c)
 		}
 	}
@@ -239,7 +239,7 @@ func TestNewTraceID_ReturnsHexString(t *testing.T) {
 	}
 
 	for _, c := range id {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			t.Errorf("invalid hex character: %c", c)
 		}
 	}
@@ -321,7 +321,9 @@ func TestSpan_StatusValues(t *testing.T) {
 		}
 
 		var raw map[string]any
-		json.Unmarshal(data, &raw)
+		if err := json.Unmarshal(data, &raw); err != nil {
+			t.Fatalf("failed to unmarshal span: %v", err)
+		}
 
 		// Status field should be present regardless of value
 		if raw["status"] != tc.status {
@@ -505,12 +507,14 @@ func TestRing_Snapshot_ReturnsCopy(t *testing.T) {
 func TestSpan_JSONFieldNames(t *testing.T) {
 	span := Span{
 		TraceID: "trace",
-		SpanID: "span",
-		Name:   "name",
+		SpanID:  "span",
+		Name:    "name",
 	}
 	data, _ := json.Marshal(span)
 	var decoded map[string]any
-	json.Unmarshal(data, &decoded)
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
 
 	expectedFields := []string{"trace_id", "span_id", "name", "start_ts", "duration_ms", "status"}
 	for _, field := range expectedFields {
@@ -597,7 +601,9 @@ func TestSpan_FullFields(t *testing.T) {
 	}
 
 	var decoded map[string]any
-	json.Unmarshal(data, &decoded)
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
 
 	if decoded["trace_id"] != "full-trace" {
 		t.Error("trace_id mismatch")

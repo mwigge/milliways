@@ -88,3 +88,46 @@ func TestWorkingMemoryConcurrentAccess(t *testing.T) {
 		t.Fatalf("len(Keys()) = %d, want %d", got, workers*writesPerWorker)
 	}
 }
+
+func TestWorkingMemoryZeroValueConcurrentFirstAccess(t *testing.T) {
+	t.Parallel()
+
+	var memory WorkingMemory
+	t.Cleanup(memory.Close)
+
+	const workers = 32
+	var wg sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			key := fmt.Sprintf("zero-%d", worker)
+			memory.Set(key, "value", 0)
+			if _, ok := memory.Get(key); !ok {
+				t.Errorf("missing key %s", key)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := len(memory.Keys()); got != workers {
+		t.Fatalf("len(Keys()) = %d, want %d", got, workers)
+	}
+}
+
+func TestWorkingMemoryCloseConcurrentIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	memory := NewWorkingMemory()
+	const workers = 16
+	var wg sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			memory.Close()
+		}()
+	}
+	wg.Wait()
+}

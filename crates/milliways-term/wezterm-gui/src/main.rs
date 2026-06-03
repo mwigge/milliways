@@ -681,6 +681,9 @@ fn setup_mux(
 ) -> anyhow::Result<Arc<Mux>> {
     let mux = Arc::new(mux::Mux::new(Some(local_domain.clone())));
     Mux::set_mux(&mux);
+    // Modified by milliways contributors, 2026: register milliways extensions
+    // after the global mux exists so AgentDomain can attach safely.
+    milliways::init();
     let client_id = Arc::new(mux::client::ClientId::new());
     mux.register_client(client_id.clone());
     mux.replace_identity(Some(client_id));
@@ -843,9 +846,6 @@ fn main() {
     config::designate_this_as_the_main_thread();
     config::assign_error_callback(mux::connui::show_configuration_error_message);
     notify_on_panic();
-    // Modified by milliways contributors, 2026: register milliways extensions
-    // (AgentDomain, Lua API, status helpers). No-op at the moment.
-    milliways::init();
     if let Err(e) = run() {
         terminate_with_error(e);
     }

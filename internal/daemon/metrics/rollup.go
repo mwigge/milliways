@@ -16,6 +16,7 @@ package metrics
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -103,8 +104,7 @@ func (s *Store) demoteTier(tx *sql.Tx, from Tier, now time.Time) error {
 		var r srcRow
 		if err := rows.Scan(&r.metric, &r.agentID, &r.ts, &r.value,
 			&r.count, &r.sum, &r.mn, &r.mx, &r.p50, &r.p95, &r.p99); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan: %w", err)
+			return errors.Join(fmt.Errorf("scan: %w", err), rows.Close())
 		}
 		bucketTS := s.bucketStart(time.Unix(r.ts, 0), to).Unix()
 		k := aggKey{metric: r.metric, agentID: r.agentID, bucketTS: bucketTS}
@@ -135,10 +135,11 @@ func (s *Store) demoteTier(tx *sql.Tx, from Tier, now time.Time) error {
 		a.p99WeightedNum += r.p99 * w
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("rows iter: %w", err)
+		return errors.Join(fmt.Errorf("rows iter: %w", err), rows.Close())
 	}
-	rows.Close()
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close rows: %w", err)
+	}
 
 	// Merge each pending aggregate into any existing destination bucket
 	// (read-modify-write within the same tx so we never observe a
@@ -149,7 +150,7 @@ func (s *Store) demoteTier(tx *sql.Tx, from Tier, now time.Time) error {
 	if err != nil {
 		return fmt.Errorf("prepare select dst: %w", err)
 	}
-	defer selStmt.Close()
+	defer func() { _ = selStmt.Close() }()
 
 	upsert, err := tx.Prepare(fmt.Sprintf(`INSERT INTO %s
         (metric, agent_id, ts, value, count, sum, min, max, p50, p95, p99)
@@ -166,7 +167,7 @@ func (s *Store) demoteTier(tx *sql.Tx, from Tier, now time.Time) error {
 	if err != nil {
 		return fmt.Errorf("prepare upsert: %w", err)
 	}
-	defer upsert.Close()
+	defer func() { _ = upsert.Close() }()
 
 	for k, a := range pending {
 		// Read any existing bucket so we can merge.

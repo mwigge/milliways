@@ -27,8 +27,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mwigge/milliways/internal/daemon/runners"
 	"github.com/mwigge/milliways/internal/history"
 	"github.com/mwigge/milliways/internal/parallel"
+	"github.com/mwigge/milliways/internal/security"
 )
 
 // stubMPClient implements parallel.MPClient and captures KGAdd calls.
@@ -134,6 +136,29 @@ type agentMethodsHarness struct {
 	handle   int64
 }
 
+func serveTestServer(t *testing.T, srv *Server) {
+	t.Helper()
+	go func() {
+		if err := srv.Serve(); err != nil {
+			t.Errorf("Serve: %v", err)
+		}
+	}()
+}
+
+func closeTestServer(t *testing.T, srv *Server) {
+	t.Helper()
+	if err := srv.Close(); err != nil && !os.IsNotExist(err) {
+		t.Errorf("Close server: %v", err)
+	}
+}
+
+func closeTestConn(t *testing.T, conn net.Conn) {
+	t.Helper()
+	if err := conn.Close(); err != nil {
+		t.Errorf("Close conn: %v", err)
+	}
+}
+
 // newAgentMethodsHarness creates a test server with the stub MP wired in.
 // It uses the parallel_methods_test.go pattern of starting a real Server
 // but replaces pantryDB with a real pantry db so guards pass.
@@ -147,7 +172,9 @@ func newAgentMethodsHarness(t *testing.T, mp parallel.MPClient) *agentMethodsHar
 
 	srv, err := NewServer(sock)
 	if err != nil {
-		os.RemoveAll(stateDir)
+		if removeErr := os.RemoveAll(stateDir); removeErr != nil {
+			t.Errorf("RemoveAll state dir: %v", removeErr)
+		}
 		t.Fatalf("NewServer: %v", err)
 	}
 
@@ -156,13 +183,15 @@ func newAgentMethodsHarness(t *testing.T, mp parallel.MPClient) *agentMethodsHar
 		srv.testMPClient = mp
 	}
 
-	go srv.Serve()
+	serveTestServer(t, srv)
 	time.Sleep(50 * time.Millisecond)
 
 	conn, err := net.Dial("unix", sock)
 	if err != nil {
-		srv.Close()
-		os.RemoveAll(stateDir)
+		closeTestServer(t, srv)
+		if removeErr := os.RemoveAll(stateDir); removeErr != nil {
+			t.Errorf("RemoveAll state dir: %v", removeErr)
+		}
 		t.Fatalf("dial: %v", err)
 	}
 	enc := json.NewEncoder(conn)
@@ -177,12 +206,14 @@ func newAgentMethodsHarness(t *testing.T, mp parallel.MPClient) *agentMethodsHar
 		reader:   reader,
 	}
 	t.Cleanup(func() {
-		conn.Close()
+		closeTestConn(t, conn)
 		if h.sidecar != nil {
-			h.sidecar.Close()
+			closeTestConn(t, h.sidecar)
 		}
-		srv.Close()
-		os.RemoveAll(stateDir)
+		closeTestServer(t, srv)
+		if err := os.RemoveAll(stateDir); err != nil {
+			t.Errorf("RemoveAll state dir: %v", err)
+		}
 	})
 	return h
 }
@@ -198,6 +229,9 @@ func (h *agentMethodsHarness) openEcho() {
 		h.t.Fatalf("agent.open result: %v", resp)
 	}
 	h.handle = int64(result["handle"].(float64))
+	if workspace, _ := result["security_workspace"].(string); workspace == "" {
+		h.t.Fatalf("agent.open security_workspace empty: %v", result)
+	}
 
 	// agent.stream
 	h.send("agent.stream", map[string]any{"handle": h.handle}, 2)
@@ -295,11 +329,99 @@ func (h *agentMethodsHarness) attachAdditionalStream(id any) net.Conn {
 		h.t.Fatalf("dial sidecar: %v", err)
 	}
 	if _, err := sidecar.Write([]byte("STREAM " + itoa(streamID) + " 0\n")); err != nil {
-		sidecar.Close()
+		closeTestConn(h.t, sidecar)
 		h.t.Fatalf("write sidecar preamble: %v", err)
 	}
-	h.t.Cleanup(func() { sidecar.Close() })
+	h.t.Cleanup(func() { closeTestConn(h.t, sidecar) })
 	return sidecar
+}
+
+func TestAgentOpen_BlocksStrictClientProfileBeforeSessionCreation(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	writeSecurityMethodFile(t, filepath.Join(workspace, ".codex", "config.toml"), `sandbox_mode = "danger-full-access"`)
+	if err := db.Security().SetWorkspaceStatus(workspace, string(security.ModeStrict), "codex"); err != nil {
+		t.Fatalf("SetWorkspaceStatus: %v", err)
+	}
+
+	s := &Server{pantryDB: db}
+	s.agents = NewAgentRegistry(s)
+	enc, buf := newCapturingEncoder()
+	s.agentOpen(enc, &Request{
+		ID:     mustSecurityMethodParams(t, 1),
+		Params: mustSecurityMethodParams(t, map[string]any{"agent_id": "codex"}),
+	})
+
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	rawErr, ok := resp["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("agent.open succeeded; want client-profile block: %v", resp)
+	}
+	if msg, _ := rawErr["message"].(string); !strings.Contains(msg, "client profile blocked codex") {
+		t.Fatalf("error message = %q, want client profile block; resp=%v", msg, resp)
+	}
+	s.agents.mu.Lock()
+	sessionCount := len(s.agents.sessions)
+	s.agents.mu.Unlock()
+	if sessionCount != 0 {
+		t.Fatalf("sessions created = %d, want 0 before blocked client open", sessionCount)
+	}
+
+	status, err := db.Security().SecurityStatus(workspace)
+	if err != nil {
+		t.Fatalf("SecurityStatus: %v", err)
+	}
+	if status.CountsBySeverity["BLOCK"] == 0 {
+		t.Fatalf("profile block was not recorded in status: %#v", status.Warnings)
+	}
+}
+
+func TestAgentOpen_WarnModeRecordsClientProfileWithoutBlocking(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	writeSecurityMethodFile(t, filepath.Join(workspace, ".codex", "config.toml"), `approval_policy = "never"`)
+	if err := db.Security().SetWorkspaceStatus(workspace, string(security.ModeWarn), ""); err != nil {
+		t.Fatalf("SetWorkspaceStatus: %v", err)
+	}
+
+	s := &Server{pantryDB: db}
+	s.agents = NewAgentRegistry(s)
+	enc, buf := newCapturingEncoder()
+	s.agentOpen(enc, &Request{
+		ID:     mustSecurityMethodParams(t, 1),
+		Params: mustSecurityMethodParams(t, map[string]any{"agent_id": "codex"}),
+	})
+
+	resp := decodeSecurityMethodResponse(t, buf.Bytes())
+	if _, ok := resp["error"]; ok {
+		t.Fatalf("agent.open returned error in warn mode: %v", resp)
+	}
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("agent.open result = %T, want map; resp=%v", resp["result"], resp)
+	}
+	handle, _ := result["handle"].(float64)
+	if handle == 0 {
+		t.Fatalf("agent.open handle missing: %v", result)
+	}
+	t.Cleanup(func() {
+		if sess, ok := s.agents.Get(AgentHandle(handle)); ok {
+			sess.Close()
+		}
+	})
+
+	status, err := db.Security().SecurityStatus(workspace)
+	if err != nil {
+		t.Fatalf("SecurityStatus: %v", err)
+	}
+	if status.ActiveClient != "codex" {
+		t.Fatalf("ActiveClient = %q, want codex", status.ActiveClient)
+	}
+	if status.CountsByCategory[string(security.FindingClient)] == 0 || status.CountsBySeverity["WARN"] == 0 {
+		t.Fatalf("profile warning was not recorded in warn mode: %#v", status.Warnings)
+	}
 }
 
 func TestAgentStream_FansOutToMultipleSubscribers(t *testing.T) {
@@ -350,8 +472,8 @@ func TestDeckSnapshotReportsSessionStateAndBuffer(t *testing.T) {
 	if sess.Handle != h.handle {
 		t.Fatalf("handle = %d, want %d", sess.Handle, h.handle)
 	}
-	if sess.Status != "streaming" {
-		t.Fatalf("status = %q, want streaming", sess.Status)
+	if sess.Status != "idle" {
+		t.Fatalf("status = %q, want idle after echo chunk_end", sess.Status)
 	}
 	if sess.PromptCount != 1 {
 		t.Fatalf("prompt count = %d, want 1", sess.PromptCount)
@@ -395,6 +517,9 @@ func TestRecordingPusherRecordsModelInDeckSnapshot(t *testing.T) {
 }
 
 func TestAgentListOverlaysObservedSessionModel(t *testing.T) {
+	runners.SetBrokerPathProvider(nil)
+	t.Cleanup(func() { runners.SetBrokerPathProvider(nil) })
+
 	reg := NewAgentRegistry(nil)
 	sess := &AgentSession{
 		AgentID: "codex",
@@ -421,6 +546,9 @@ func TestAgentListOverlaysObservedSessionModel(t *testing.T) {
 	}
 	if agents[0].Model != "gpt-5.5" {
 		t.Fatalf("agent model = %q, want observed model", agents[0].Model)
+	}
+	if agents[0].Enforcement.Level != runners.EnforcementPreflightOnly {
+		t.Fatalf("agent enforcement = %q, want %q", agents[0].Enforcement.Level, runners.EnforcementPreflightOnly)
 	}
 }
 
@@ -591,11 +719,24 @@ func TestAgentOpen_InvalidatesInjectedHandoff(t *testing.T) {
 	h := newAgentMethodsHarness(t, mp)
 	h.openEcho()
 
+	h.send("agent.send", map[string]any{"handle": h.handle, "bytes": "continue the work"}, 3)
+	_ = h.readResp()
 	combined := h.readStreamText(400 * time.Millisecond)
 	if !strings.Contains(combined, "take over with this briefing") {
 		t.Fatalf("expected handoff briefing in stream; got %q", combined)
 	}
-	invalidated := mp.invalidatedCopy()
+	if !strings.Contains(combined, "continue the work") {
+		t.Fatalf("expected handoff to be merged with user prompt; got %q", combined)
+	}
+	var invalidated []string
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		invalidated = mp.invalidatedCopy()
+		if len(invalidated) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if len(invalidated) == 0 {
 		t.Fatal("expected delivered handoff to be invalidated")
 	}

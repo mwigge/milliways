@@ -17,6 +17,7 @@ package tools
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -74,8 +75,12 @@ func handleWrite(_ context.Context, args map[string]any) (string, error) {
 		return "", fmt.Errorf("create parent dir for %q: %w", path, err)
 	}
 	if existing, err := os.ReadFile(path); err == nil {
-		if err := os.WriteFile(path+".bak", existing, 0o600); err != nil {
-			return "", fmt.Errorf("write backup for %q: %w", path, err)
+		backupPath, err := backupPathFor(path)
+		if err != nil {
+			return "", fmt.Errorf("backup path refused for %q: %w", path, err)
+		}
+		if err := os.WriteFile(backupPath, existing, 0o600); err != nil {
+			return "", fmt.Errorf("write backup for %q: %w", backupPath, err)
 		}
 	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -84,9 +89,50 @@ func handleWrite(_ context.Context, args map[string]any) (string, error) {
 	return "ok", nil
 }
 
-// handleEdit applies a minimal unified diff to a file. Refuses edits
+// handleEdit replaces one exact string occurrence in a file. Refuses edits
 // outside the workspace root or matching the credential denylist.
 func handleEdit(_ context.Context, args map[string]any) (string, error) {
+	rawPath, ok := pathArg(args)
+	if !ok {
+		return "", errors.New("path is required")
+	}
+	path, err := containedPath(rawPath)
+	if err != nil {
+		return "", err
+	}
+	oldString, oldOK := stringArg(args, "old_string")
+	newString, newOK := stringArg(args, "new_string")
+	if !oldOK || !newOK {
+		return "", errors.New("old_string and new_string are required")
+	}
+	if oldString == "" {
+		return "", errors.New("old_string must not be empty")
+	}
+	originalBytes, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read file %q: %w", path, err)
+	}
+	original := string(originalBytes)
+	if count := strings.Count(original, oldString); count != 1 {
+		return "", fmt.Errorf("old_string must match exactly once, matched %d times", count)
+	}
+	backupPath, err := backupPathFor(path)
+	if err != nil {
+		return "", fmt.Errorf("backup path refused for %q: %w", path, err)
+	}
+	if err := os.WriteFile(backupPath, originalBytes, 0o600); err != nil {
+		return "", fmt.Errorf("write backup for %q: %w", backupPath, err)
+	}
+	updated := strings.Replace(original, oldString, newString, 1)
+	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
+		return "", fmt.Errorf("write edited file %q: %w", path, err)
+	}
+	return "ok", nil
+}
+
+// handleApplyPatch applies a minimal unified diff to a file. Refuses edits
+// outside the workspace root or matching the credential denylist.
+func handleApplyPatch(_ context.Context, args map[string]any) (string, error) {
 	rawPath, ok := pathArg(args)
 	if !ok {
 		return "", errors.New("path is required")
@@ -107,13 +153,71 @@ func handleEdit(_ context.Context, args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path+".bak", originalBytes, 0o600); err != nil {
-		return "", fmt.Errorf("write backup for %q: %w", path, err)
+	backupPath, err := backupPathFor(path)
+	if err != nil {
+		return "", fmt.Errorf("backup path refused for %q: %w", path, err)
+	}
+	if err := os.WriteFile(backupPath, originalBytes, 0o600); err != nil {
+		return "", fmt.Errorf("write backup for %q: %w", backupPath, err)
 	}
 	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
-		return "", fmt.Errorf("write edited file %q: %w", path, err)
+		return "", fmt.Errorf("write patched file %q: %w", path, err)
 	}
 	return "ok", nil
+}
+
+// handleDelete deletes one workspace-contained file.
+func handleDelete(_ context.Context, args map[string]any) (string, error) {
+	rawPath, ok := pathArg(args)
+	if !ok {
+		return "", errors.New("path is required")
+	}
+	path, err := containedPath(rawPath)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("stat file %q: %w", path, err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("delete refused: %q is a directory", path)
+	}
+	if err := os.Remove(path); err != nil {
+		return "", fmt.Errorf("delete file %q: %w", path, err)
+	}
+	return "ok", nil
+}
+
+func handleTodo(_ context.Context, args map[string]any) (string, error) {
+	data, err := json.Marshal(map[string]any{
+		"status": "recorded",
+		"items":  args["items"],
+		"note":   args["note"],
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode todo result: %w", err)
+	}
+	return string(data), nil
+}
+
+func handleQuestion(_ context.Context, args map[string]any) (string, error) {
+	question, _ := stringArg(args, "question")
+	if strings.TrimSpace(question) == "" {
+		question, _ = stringArg(args, "prompt")
+	}
+	if strings.TrimSpace(question) == "" {
+		return "question recorded", nil
+	}
+	return "question recorded: " + question, nil
+}
+
+func backupPathFor(path string) (string, error) {
+	raw := path + ".bak"
+	if info, err := os.Lstat(raw); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("backup path %q is a symlink", raw)
+	}
+	return containedPath(raw)
 }
 
 // handleGrep searches files under the given path for regex matches.
@@ -208,8 +312,14 @@ func handleGlob(_ context.Context, args map[string]any) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("glob %q: %w", pattern, err)
 	}
-	sort.Strings(matches)
-	return strings.Join(matches, "\n"), nil
+	kept := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if _, err := containedPath(match); err == nil {
+			kept = append(kept, match)
+		}
+	}
+	sort.Strings(kept)
+	return strings.Join(kept, "\n"), nil
 }
 
 // handleWebFetch fetches a URL and returns the response body. Validates
@@ -248,7 +358,7 @@ func handleWebFetch(ctx context.Context, args map[string]any) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fetch url: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // best-effort close after response body is consumed
 	data, err := ioReadAllLimited(resp.Body, defaultReadLimit)
 	if err != nil {
 		return "", err

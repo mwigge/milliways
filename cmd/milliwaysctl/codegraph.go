@@ -49,17 +49,17 @@ func runCodegraph(args []string, stdout, stderr io.Writer) int {
 		printCodegraphUsage(stdout)
 		return 0
 	default:
-		fmt.Fprintf(stderr, "milliwaysctl codegraph: unknown verb %q\n", verb)
+		_, _ = fmt.Fprintf(stderr, "milliwaysctl codegraph: unknown verb %q\n", verb)
 		printCodegraphUsage(stderr)
 		return 2
 	}
 }
 
 func printCodegraphUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: milliwaysctl codegraph <verb> [args...]")
-	fmt.Fprintln(w, "verbs:")
-	fmt.Fprintln(w, "  index [path]   index the repo at path (default: cwd)")
-	fmt.Fprintln(w, "  status         show index status / last indexed time")
+	_, _ = fmt.Fprintln(w, "usage: milliwaysctl codegraph <verb> [args...]")
+	_, _ = fmt.Fprintln(w, "verbs:")
+	_, _ = fmt.Fprintln(w, "  index [path]   index the repo at path (default: cwd)")
+	_, _ = fmt.Fprintln(w, "  status         show index status / last indexed time")
 }
 
 // findCodegraphBinary resolves the codegraph binary by checking candidates in
@@ -105,7 +105,7 @@ func isExecutablePath(path string) bool {
 func runCodegraphIndex(args []string, stdout, stderr io.Writer) int {
 	bin, ok := findCodegraphBinary()
 	if !ok {
-		fmt.Fprintln(stderr, "codegraph: binary not found; install CodeGraph or set MILLIWAYS_CODEGRAPH_MCP_CMD")
+		_, _ = fmt.Fprintln(stderr, "codegraph: binary not found; install CodeGraph or set MILLIWAYS_CODEGRAPH_MCP_CMD")
 		return 1
 	}
 
@@ -116,7 +116,7 @@ func runCodegraphIndex(args []string, stdout, stderr io.Writer) int {
 
 	absPath, err := filepath.Abs(indexPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "codegraph index: resolve path %q: %v\n", indexPath, err)
+		_, _ = fmt.Fprintf(stderr, "codegraph index: resolve path %q: %v\n", indexPath, err)
 		return 1
 	}
 
@@ -128,20 +128,20 @@ func runCodegraphIndex(args []string, stdout, stderr io.Writer) int {
 		if errors.As(err, &ee) {
 			return ee.ExitCode()
 		}
-		fmt.Fprintf(stderr, "codegraph index: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "codegraph index: %v\n", err)
 		return 1
 	}
 
 	envPath, err := configPath("local.env")
 	if err != nil {
-		fmt.Fprintf(stderr, "codegraph index: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "codegraph index: %v\n", err)
 		return 1
 	}
 	if err := setLocalEnvKey(envPath, "MILLIWAYS_CODEGRAPH_WORKSPACE", absPath); err != nil {
-		fmt.Fprintf(stderr, "codegraph index: write workspace to local.env: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "codegraph index: write workspace to local.env: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "MILLIWAYS_CODEGRAPH_WORKSPACE=%s (wrote %s)\n", absPath, envPath)
+	_, _ = fmt.Fprintf(stdout, "MILLIWAYS_CODEGRAPH_WORKSPACE=%s (wrote %s)\n", absPath, envPath)
 	return 0
 }
 
@@ -150,10 +150,10 @@ func runCodegraphIndex(args []string, stdout, stderr io.Writer) int {
 func runCodegraphStatus(_ []string, stdout, _ io.Writer) int {
 	workspace := os.Getenv("MILLIWAYS_CODEGRAPH_WORKSPACE")
 	if workspace == "" {
-		fmt.Fprintln(stdout, "codegraph: no workspace indexed yet — run `milliwaysctl codegraph index [path]`")
+		_, _ = fmt.Fprintln(stdout, "codegraph: no workspace indexed yet — run `milliwaysctl codegraph index [path]`")
 		return 0
 	}
-	fmt.Fprintf(stdout, "MILLIWAYS_CODEGRAPH_WORKSPACE=%s\n", workspace)
+	_, _ = fmt.Fprintf(stdout, "MILLIWAYS_CODEGRAPH_WORKSPACE=%s\n", workspace)
 	return 0
 }
 

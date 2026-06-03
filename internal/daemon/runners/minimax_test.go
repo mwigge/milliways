@@ -525,3 +525,27 @@ func TestMinimaxNoReasoningSplit(t *testing.T) {
 		t.Errorf("doubleEmit reasoning = %q, want it to contain the thinking text", result2.Reasoning)
 	}
 }
+
+func TestSanitizeProviderErrorBodyRedactsSensitiveFields(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`{"error":{"message":"bad request api_key=plain token=tok Authorization: Basic abc","prompt":"user secret","headers":{"authorization":"Bearer abc"},"messages":[{"content":"private"}],"body":{"messages":["nested secret"]},"response":"tool output","code":"bad"}}`)
+	got := sanitizeProviderErrorBody(body)
+	for _, forbidden := range []string{"user secret", "Bearer abc", "private", "nested secret", "tool output", "api_key=plain", "token=tok", "Basic abc"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("sanitizeProviderErrorBody leaked %q in %s", forbidden, got)
+		}
+	}
+	if !strings.Contains(got, "bad request") || !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("sanitizeProviderErrorBody = %s", got)
+	}
+}
+
+func TestSanitizeProviderURLDropsCredentialsAndQuery(t *testing.T) {
+	t.Parallel()
+
+	got := sanitizeProviderURL("https://user:pass@example.test/v1/chat/completions?api_key=secret#frag")
+	if got != "https://example.test/v1/chat/completions" {
+		t.Fatalf("sanitizeProviderURL = %q", got)
+	}
+}

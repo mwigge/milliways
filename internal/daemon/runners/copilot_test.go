@@ -99,7 +99,7 @@ func TestStreamCopilotStdout_LargePayload(t *testing.T) {
 }
 
 // TestStreamCopilotStdout_ReaderError stops cleanly on non-EOF errors.
-type errReader struct{ msg string }
+type errReader struct{}
 
 func (e *errReader) Read(p []byte) (int, error) {
 	return 0, io.ErrUnexpectedEOF
@@ -197,8 +197,6 @@ func TestBuildCopilotCmdArgs_ModelAndDirectoryFlags(t *testing.T) {
 	got := buildCopilotCmdArgs("hello", "/tmp/project")
 	want := []string{
 		"-p", "hello",
-		"--allow-all-tools",
-		"--allow-all-paths",
 		"--model", "gpt-test",
 		"--add-dir", "/tmp/project",
 	}
@@ -211,7 +209,7 @@ func TestBuildCopilotCmdArgs_OmitsOptionalFlags(t *testing.T) {
 	t.Setenv("COPILOT_MODEL", "")
 
 	got := buildCopilotCmdArgs("hello", "")
-	want := []string{"-p", "hello", "--allow-all-tools", "--allow-all-paths"}
+	want := []string{"-p", "hello"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("args = %#v, want %#v", got, want)
 	}
@@ -253,6 +251,50 @@ func TestRunCopilot_StreamsStdout(t *testing.T) {
 	}
 	if got := obs.counterTotal(MetricErrorCount, AgentIDCopilot); got != 0 {
 		t.Fatalf("error_count total = %v, want 0", got)
+	}
+}
+
+func TestRunCopilot_ControlledEnvUsesShimPath(t *testing.T) {
+	SetBrokerPathProvider(nil)
+	t.Cleanup(func() { SetBrokerPathProvider(nil) })
+
+	root := t.TempDir()
+	shimDir := filepath.Join(root, "shims")
+	if err := os.MkdirAll(shimDir, 0o755); err != nil {
+		t.Fatalf("mkdir shim dir: %v", err)
+	}
+	SetBrokerPathProvider(func(agentID string) string {
+		if agentID == AgentIDCopilot {
+			return shimDir
+		}
+		return ""
+	})
+
+	envFile := filepath.Join(t.TempDir(), "env.tsv")
+	withCopilotFixture(t,
+		"printf 'ENV\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \"$MILLIWAYS_CLIENT_ID\" \"$MILLIWAYS_SESSION_ID\" \"$MILLIWAYS_WORKSPACE_ROOT\" \"$MILLIWAYS_SHIM_DIR\" \"$PATH\" >> "+shellQuote(envFile)+"\n"+
+			"printf 'ok'\n",
+		nil,
+	)
+
+	pusher := &fakePusher{}
+	runCopilotInput(t, context.Background(), []byte("hi"), pusher, &mockObserver{})
+
+	fields := readEnvCapture(t, envFile)
+	if fields[1] != AgentIDCopilot {
+		t.Fatalf("MILLIWAYS_CLIENT_ID = %q, want %q", fields[1], AgentIDCopilot)
+	}
+	if !strings.HasPrefix(fields[2], AgentIDCopilot+"-") {
+		t.Fatalf("MILLIWAYS_SESSION_ID = %q, want copilot-prefixed session", fields[2])
+	}
+	if fields[3] == "" {
+		t.Fatalf("MILLIWAYS_WORKSPACE_ROOT missing from controlled env")
+	}
+	if fields[4] != shimDir {
+		t.Fatalf("MILLIWAYS_SHIM_DIR = %q, want %q", fields[4], shimDir)
+	}
+	if firstPath(fields[5]) != shimDir {
+		t.Fatalf("PATH first entry = %q, want shim dir; PATH=%q", firstPath(fields[5]), fields[5])
 	}
 }
 

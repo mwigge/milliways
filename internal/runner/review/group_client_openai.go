@@ -15,6 +15,7 @@ Return [] if no issues found. No prose, no explanation — only the JSON array.`
 // in the content (not tool_calls); the format difference only matters for tool USE.
 type OpenAIGroupClient struct {
 	Endpoint     string
+	APIKey       string
 	Model        string
 	HTTP         *http.Client
 	MaxFileLines int             // large file threshold; 0 uses defaultMaxFileLines
@@ -25,6 +26,7 @@ type OpenAIGroupClient struct {
 func NewOpenAIGroupClient(endpoint, model string) GroupClient {
 	return OpenAIGroupClient{
 		Endpoint:     endpoint,
+		APIKey:       "",
 		Model:        model,
 		HTTP:         &http.Client{},
 		MaxFileLines: defaultMaxFileLines,
@@ -36,6 +38,7 @@ func NewOpenAIGroupClient(endpoint, model string) GroupClient {
 func NewOpenAIGroupClientWithCG(endpoint, model string, cg CodeGraphClient) GroupClient {
 	return OpenAIGroupClient{
 		Endpoint:     endpoint,
+		APIKey:       "",
 		Model:        model,
 		HTTP:         &http.Client{},
 		MaxFileLines: defaultMaxFileLines,
@@ -72,7 +75,7 @@ func (c OpenAIGroupClient) ReviewGroup(ctx context.Context, group Group, prior P
 		httpClient = &http.Client{}
 	}
 
-	content, err := doChat(ctx, httpClient, c.Endpoint, payload)
+	content, err := doChat(ctx, httpClient, c.Endpoint, c.APIKey, payload)
 	if err != nil {
 		return nil, fmt.Errorf("chat completion: %w", err)
 	}

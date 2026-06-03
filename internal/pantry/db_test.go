@@ -65,6 +65,88 @@ func TestOpen_Idempotent(t *testing.T) {
 	_ = db2.Close()
 }
 
+func TestMigrateV16PreservesSecurityDataAndCreatesCodingTables(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "test.db")
+	conn, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	for version, schema := range []string{
+		schemaV1, schemaV2, schemaV3, schemaV4, schemaV5, schemaV6, schemaV7,
+		schemaV8, schemaV9, schemaV10, schemaV11, schemaV12, schemaV13,
+	} {
+		if _, err := conn.Exec(schema); err != nil {
+			t.Fatalf("apply schema v%d: %v", version+1, err)
+		}
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO mw_security_findings
+			(workspace, category, cve_id, package_name, installed_version, fixed_in_version,
+			 severity, ecosystem, summary, scan_source, status, first_seen, last_seen)
+		VALUES
+			('/work', 'dependency', 'CVE-2026-0001', 'pkg', '1.0.0', '1.0.1',
+			 'HIGH', 'Go', 'old finding', 'go.sum', 'active',
+			 '2026-05-14T10:00:00Z', '2026-05-14T10:00:00Z')`); err != nil {
+		t.Fatalf("insert v13 finding: %v", err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO mw_security_workspace_status
+			(workspace, mode, active_client, updated_at, startup_scan_completed_at, startup_scan_config_hash)
+		VALUES
+			('/work', 'strict', 'codex', '2026-05-14T10:00:00Z',
+			 '2026-05-14T10:00:00Z', 'config-hash')`); err != nil {
+		t.Fatalf("insert v13 status: %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open migrated v13 db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	var version int
+	if err := db.conn.QueryRow("SELECT COALESCE(MAX(version), 0) FROM mw_schema").Scan(&version); err != nil {
+		t.Fatalf("query schema version: %v", err)
+	}
+	if version != 16 {
+		t.Fatalf("schema version = %d, want 16", version)
+	}
+	for _, table := range []string{
+		"mw_security_policy_decisions",
+		"mw_coding_change_sets",
+		"mw_coding_file_changes",
+		"mw_tool_approvals",
+	} {
+		var tableCount int
+		if err := db.conn.QueryRow(`
+			SELECT count(*) FROM sqlite_master
+			WHERE type = 'table' AND name = ?`, table).Scan(&tableCount); err != nil {
+			t.Fatalf("query table %s: %v", table, err)
+		}
+		if tableCount != 1 {
+			t.Fatalf("table %s count = %d, want 1", table, tableCount)
+		}
+	}
+	findings, err := db.Security().ListActiveForWorkspace("/work", nil)
+	if err != nil {
+		t.Fatalf("ListActiveForWorkspace: %v", err)
+	}
+	if len(findings) != 1 || findings[0].CVEID != "CVE-2026-0001" {
+		t.Fatalf("findings after v14 migration = %#v, want preserved CVE-2026-0001", findings)
+	}
+	status, err := db.Security().SecurityStatus("/work")
+	if err != nil {
+		t.Fatalf("SecurityStatus: %v", err)
+	}
+	if status.Mode != "strict" || status.ActiveClient != "codex" || status.StartupScanConfigHash != "config-hash" {
+		t.Fatalf("security status after v14 migration = %#v", status)
+	}
+}
+
 func TestLedger_InsertAndStats(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
@@ -527,5 +609,59 @@ func TestMemoryItems_InsertListAndInvalidate(t *testing.T) {
 	}
 	if len(semantic) != 0 {
 		t.Fatalf("semantic items = %#v", semantic)
+	}
+}
+
+func TestMemoryItems_WorkspaceIsolation(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	if _, err := db.MemoryItems().InsertForWorkspace(conversation.MemoryCandidate{
+		SourceKind: "accepted_fact",
+		MemoryType: conversation.MemorySemantic,
+		Text:       "repo a fact",
+		Scope:      "project",
+		Confidence: 0.9,
+	}, "conv-a", "/repo/a"); err != nil {
+		t.Fatalf("InsertForWorkspace repo a: %v", err)
+	}
+	if _, err := db.MemoryItems().InsertForWorkspace(conversation.MemoryCandidate{
+		SourceKind: "accepted_fact",
+		MemoryType: conversation.MemorySemantic,
+		Text:       "repo b fact",
+		Scope:      "project",
+		Confidence: 0.9,
+	}, "conv-b", "/repo/b"); err != nil {
+		t.Fatalf("InsertForWorkspace repo b: %v", err)
+	}
+	if _, err := db.MemoryItems().Insert(conversation.MemoryCandidate{
+		SourceKind: "accepted_fact",
+		MemoryType: conversation.MemorySemantic,
+		Text:       "legacy global fact",
+		Scope:      "project",
+		Confidence: 0.9,
+	}, "conv-legacy"); err != nil {
+		t.Fatalf("Insert legacy global: %v", err)
+	}
+
+	got, err := db.MemoryItems().ListActiveByTypeForWorkspace(conversation.MemorySemantic, "project", "/repo/a")
+	if err != nil {
+		t.Fatalf("ListActiveByTypeForWorkspace repo a: %v", err)
+	}
+	if len(got) != 2 || got[0] != "repo a fact" || got[1] != "legacy global fact" {
+		t.Fatalf("repo a items = %#v", got)
+	}
+	got, err = db.MemoryItems().ListActiveByTypeForWorkspace(conversation.MemorySemantic, "project", "/repo/b")
+	if err != nil {
+		t.Fatalf("ListActiveByTypeForWorkspace repo b: %v", err)
+	}
+	if len(got) != 2 || got[0] != "repo b fact" || got[1] != "legacy global fact" {
+		t.Fatalf("repo b items = %#v", got)
+	}
+	global, err := db.MemoryItems().ListActiveByType(conversation.MemorySemantic, "project")
+	if err != nil {
+		t.Fatalf("ListActiveByType global: %v", err)
+	}
+	if len(global) != 1 || global[0] != "legacy global fact" {
+		t.Fatalf("global items = %#v, want legacy only", global)
 	}
 }

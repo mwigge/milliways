@@ -25,7 +25,7 @@ package main
 //   - check:   `<bin> --version`-style command that reports success
 //   - install: argv to invoke (uses execCommand so tests can stub)
 //
-// HTTP-only runners (minimax, pool) have no CLI to install — they fall
+// HTTP-only runners (minimax, berget, pool) have no CLI to install — they fall
 // through to a usage message that points to the API-key envs they need.
 
 import (
@@ -100,6 +100,10 @@ var installSpecs = []installSpec{
 	{
 		client: "minimax",
 		info:   "minimax is HTTP-only; no CLI to install. Set MINIMAX_API_KEY (and optionally MINIMAX_API_URL) and the runner will work.",
+	},
+	{
+		client: "berget",
+		info:   "berget is HTTP-only; no CLI to install. Set BERGET_API_KEY (and optionally BERGET_API_URL) and the runner will work.",
 	},
 	{
 		client: "pool",

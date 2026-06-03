@@ -40,7 +40,6 @@ func (d FSDetector) Detect(repoPath string) ([]Lang, error) {
 	}
 
 	var langs []Lang
-	hasTS := false
 
 	// Go
 	if names["go.mod"] {
@@ -60,8 +59,7 @@ func (d FSDetector) Detect(repoPath string) ([]Lang, error) {
 	// TypeScript takes priority over JavaScript when tsconfig.json is present
 	if names["package.json"] && names["tsconfig.json"] {
 		langs = append(langs, typescriptLang(repoPath))
-		hasTS = true
-	} else if names["package.json"] && !hasTS {
+	} else if names["package.json"] {
 		langs = append(langs, javascriptLang(repoPath))
 	}
 
@@ -183,7 +181,7 @@ func excludeArgs(excludes []string) string {
 	for _, ex := range excludes {
 		// Normalise: strip trailing slash for the path pattern wildcard.
 		trimmed := strings.TrimSuffix(ex, "/")
-		sb.WriteString(fmt.Sprintf(` -not -path "*/%s/*"`, trimmed))
+		fmt.Fprintf(&sb, ` -not -path "*/%s/*"`, trimmed)
 	}
 	return sb.String()
 }

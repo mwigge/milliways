@@ -58,6 +58,7 @@ import (
 	"github.com/mwigge/milliways/internal/mempalace"
 	"github.com/mwigge/milliways/internal/project"
 	"github.com/mwigge/milliways/internal/rpc"
+	"github.com/mwigge/milliways/internal/session"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -151,13 +152,14 @@ func friendlyError(prefix string, rawMsg string, err error) string {
 // dispatch table in internal/daemon/agents.go but ordered for the
 // landing-zone display (most-used first).
 var chatSwitchableAgents = []string{
-	"claude",  // /1
-	"codex",   // /2
-	"copilot", // /3
-	"minimax", // /4 — matches wezterm Leader+1..4 mapping
-	"gemini",  // /5
-	"local",   // /6
-	"pool",    // /7
+	"minimax", // /1
+	"berget",  // /2
+	"claude",  // /3
+	"codex",   // /4
+	"copilot", // /5
+	"gemini",  // /6
+	"local",   // /7
+	"pool",    // /8
 }
 
 // chatCtlAliases maps user-facing slash commands to the milliwaysctl
@@ -595,7 +597,7 @@ func chatPromptState(agentID, state string) string {
 		arrow = "▶"
 	}
 	if agentID == "" {
-		return "[select: /1 claude · /2 codex · /4 minimax · /help] " + arrow + " "
+		return "[select: /1 minimax · /2 berget · /3 claude · /help] " + arrow + " "
 	}
 	color := agentColor(agentID)
 	thinkColor := agentThinkingColor(agentID)
@@ -938,18 +940,29 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 	firstData := true
 	thinkingActive := false // true while a thinking status line is on screen
 	var thinkingBuffer strings.Builder
+	var lastThinkingTime time.Time // zero = no pending thinking
+	const thinkingTimeout = 3 * time.Second
 	flushThinking := func() {
 		msg := strings.TrimSpace(thinkingBuffer.String())
 		if msg == "" {
 			thinkingBuffer.Reset()
+			lastThinkingTime = time.Time{}
 			return
 		}
 		formatted := formatThinkingLineWidth(sess.agentID, msg, streamTextWidth())
 		l.writeStreamStatus(formatted)
 		thinkingBuffer.Reset()
+		lastThinkingTime = time.Time{}
 		thinkingActive = true
 	}
 	for line := range sess.streamCh {
+		// Safety net: if thinking has been accumulating without punctuation-triggered
+		// flush and without new thinking events arriving, force-flush it to prevent
+		// a stuck thinking line from ghosting on screen indefinitely.
+		if !lastThinkingTime.IsZero() && time.Since(lastThinkingTime) > thinkingTimeout {
+			slog.Debug("thinking timeout force-flush", "sess", sess.handle, "elapsed", time.Since(lastThinkingTime))
+			flushThinking()
+		}
 		var ev map[string]any
 		if err := json.Unmarshal(line, &ev); err != nil {
 			continue
@@ -981,7 +994,13 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 							_, _ = io.WriteString(h.out, "\n")
 						}
 						appendThinkingFragment(&thinkingBuffer, msg)
+						lastThinkingTime = time.Now()
+						slog.Debug("thinking event received",
+							"sess", sess.handle, "fragment_len", len(msg),
+							"buffer_len", thinkingBuffer.Len(),
+							"should_flush", shouldFlushThinkingFragment(thinkingBuffer.String()))
 						if shouldFlushThinkingFragment(thinkingBuffer.String()) {
+							slog.Debug("flushing thinking", "sess", sess.handle, "msg", thinkingBuffer.String())
 							flushThinking()
 						}
 					}
@@ -1016,6 +1035,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 				}
 			}
 		case "chunk_end":
+			slog.Debug("chunk_end received", "sess", sess.handle, "thinking_buffer_len", thinkingBuffer.Len())
 			flushThinking()
 			if h, ok := l.out.(*codeHighlighter); ok {
 				_ = h.Flush()
@@ -1085,6 +1105,10 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			return
 		}
 	}
+	// Stream goroutine exited without "end" — defensive flush in case
+	// thinking was accumulating but chunk_end never arrived (e.g. premature
+	// EOF, server disconnect, or think tag opened without closing).
+	flushThinking()
 }
 
 func renderProviderThinkingData(agentID, text string) (string, bool) {
@@ -1431,6 +1455,8 @@ func (l *chatLoop) handleSlash(line string) {
 		l.handleCopyLast(rest)
 	case "history":
 		l.printHistory(rest)
+	case "sessions":
+		l.handleSessions(rest)
 	case "cost", "spend":
 		l.printCost()
 	case "trace", "traces":
@@ -2221,6 +2247,99 @@ func (l *chatLoop) printHistory(rest string) {
 	}
 }
 
+func (l *chatLoop) handleSessions(rest string) {
+	sessionsDir := expandHome("~/.config/milliways/sessions")
+	store := session.NewFileStore(sessionsDir)
+
+	args := strings.Fields(strings.TrimSpace(rest))
+	if len(args) > 0 && args[0] != "list" {
+		l.printSessionDetail(store, args[0])
+		return
+	}
+
+	summaries, err := store.List()
+	if err != nil {
+		fmt.Fprintf(l.errw, "✗ sessions: %v\n", err)
+		return
+	}
+	if len(summaries) == 0 {
+		fmt.Fprintln(l.out, "  (no saved sessions)")
+		return
+	}
+
+	fmt.Fprintln(l.out, "")
+	fmt.Fprintln(l.out, "## Saved sessions")
+	fmt.Fprintln(l.out, "| # | Age | Model | Preview |")
+	fmt.Fprintln(l.out, "|---|-----|-------|---------|")
+	for i, s := range summaries {
+		age := formatSessionAge(s.UpdatedAt)
+		model := s.Model
+		if model == "" {
+			model = "—"
+		}
+		preview := s.Preview
+		if preview == "" {
+			preview = "—"
+		} else if len(preview) > 50 {
+			preview = preview[:47] + "…"
+		}
+		fmt.Fprintf(l.out, "| %d | %s | %s | %s |\n", i+1, age, model, preview)
+	}
+	fmt.Fprintln(l.out, "\n  Use `/sessions <id>` to view a session's full transcript.")
+}
+
+func (l *chatLoop) printSessionDetail(store *session.FileStore, id string) {
+	sess, err := store.Load(id)
+	if err != nil {
+		fmt.Fprintf(l.errw, "✗ sessions %s: %v\n", id, err)
+		return
+	}
+	age := formatSessionAge(sess.UpdatedAt)
+	model := sess.Model
+	if model == "" {
+		model = "—"
+	}
+	fmt.Fprintf(l.out, "\n## Session %s — %s · %s\n\n", id, model, age)
+	for i, msg := range sess.Messages {
+		role := strings.Title(string(msg.Role))
+		content := msg.Content
+		if len(content) > 200 {
+			content = content[:197] + "…"
+		}
+		content = strings.ReplaceAll(content, "\n", " ")
+		fmt.Fprintf(l.out, "**%s**: %s\n", role, content)
+		if i >= 20 {
+			fmt.Fprintf(l.out, "\n  … %d more messages\n", len(sess.Messages)-i-1)
+			break
+		}
+	}
+}
+
+func formatSessionAge(t time.Time) string {
+	ago := time.Since(t)
+	switch {
+	case ago < time.Minute:
+		return "just now"
+	case ago < time.Hour:
+		return fmt.Sprintf("%dm ago", int(ago.Minutes()))
+	case ago < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(ago.Hours()))
+	case ago < 7*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(ago.Hours()/24))
+	default:
+		return t.Format("Jan 02")
+	}
+}
+
+func expandHome(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
+}
+
 func (l *chatLoop) activeAgentID() string {
 	if l.sess == nil {
 		return ""
@@ -2941,7 +3060,7 @@ func (l *chatLoop) handleLocalHot(args string) {
 // the next runner.
 func (l *chatLoop) handlePrompt(prompt string) {
 	if l.sess == nil {
-		fmt.Fprintln(l.errw, "✗ no client picked yet — type /1 (claude), /2 (codex), /4 (minimax), /6 (local) etc, or /help for the full list")
+		fmt.Fprintln(l.errw, "✗ no client picked yet — type /1 (minimax), /3 (claude), /4 (codex), /5 (copilot), /help for the full list")
 		return
 	}
 	l.ringMu.Lock()
@@ -3325,7 +3444,7 @@ func (l *chatLoop) printHelp() {
 
 	fmt.Fprintln(l.out, "Session:")
 	fmt.Fprintln(l.out, "  /model                        list models for active runner + switch instructions")
-	fmt.Fprintln(l.out, "  /model <name>                 switch model live (minimax / local only)")
+	fmt.Fprintln(l.out, "  /model <name>                 switch model live (minimax / berget / local only)")
 	fmt.Fprintln(l.out, "  /agents                       list clients with live auth status")
 	fmt.Fprintln(l.out, "  /quota                        current quota snapshot")
 	fmt.Fprintln(l.out, "  /metrics                      live metrics dashboard (token usage, costs, ops)")
@@ -3350,6 +3469,7 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out, "  /search <text> [client:<name>] search blocks")
 	fmt.Fprintln(l.out, "  /copy-last [response|prompt|block|code] copy last block via terminal clipboard")
 	fmt.Fprintln(l.out, "  /history [limit] [client]      show session and saved runner history")
+	fmt.Fprintln(l.out, "  /sessions                    list saved sessions")
 	fmt.Fprintln(l.out, "  /cost                         token usage per runner (last hour)")
 	fmt.Fprintln(l.out, "  /trace [limit]                show recent daemon/agent spans")
 	fmt.Fprintln(l.out, "  /retry                        re-send the last user prompt")
@@ -3358,7 +3478,7 @@ func (l *chatLoop) printHelp() {
 
 	fmt.Fprintln(l.out, "Runner rotation:")
 	fmt.Fprintln(l.out, "  /ring                         show the current rotation ring and exhausted runners")
-	fmt.Fprintln(l.out, "  /ring <r1,r2,...>             set the auto-rotation order (e.g. /ring claude,codex,minimax)")
+	fmt.Fprintln(l.out, "  /ring <r1,r2,...>             set the auto-rotation order (e.g. /ring minimax,berget,claude)")
 	fmt.Fprintln(l.out, "  /ring off                     disable auto-rotation")
 	fmt.Fprintln(l.out)
 
@@ -3396,6 +3516,21 @@ func runnerModelSpec(agentID string) modelSpec {
 			current:  cur,
 			endpoint: ep,
 			choices:  globalModelCache.Models("minimax"),
+		}
+	case "berget":
+		cur := os.Getenv("BERGET_MODEL")
+		if cur == "" {
+			cur = "moonshotai/Kimi-K2.6"
+		}
+		ep := os.Getenv("BERGET_API_URL")
+		if ep == "" {
+			ep = "https://api.berget.ai/v1/chat/completions"
+		}
+		return modelSpec{
+			envKey:   "BERGET_MODEL",
+			current:  cur,
+			endpoint: ep,
+			choices:  globalModelCache.Models("berget"),
 		}
 	case "local":
 		cur := os.Getenv("MILLIWAYS_LOCAL_MODEL")

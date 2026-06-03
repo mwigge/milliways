@@ -26,6 +26,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +37,8 @@ import (
 	"github.com/mwigge/milliways/internal/pantry"
 	"github.com/mwigge/milliways/internal/parallel"
 	"github.com/mwigge/milliways/internal/security"
+	"github.com/mwigge/milliways/internal/security/firewall"
+	"github.com/mwigge/milliways/internal/security/shims"
 )
 
 // Protocol version exposed via ping. Bump major when breaking; minor for
@@ -66,6 +69,7 @@ type Server struct {
 	// Background broadcaster lifecycle.
 	bgCtx    context.Context
 	bgCancel context.CancelFunc
+	bgWG     sync.WaitGroup
 
 	// Status broadcaster.
 	statusMu          sync.Mutex
@@ -76,6 +80,10 @@ type Server struct {
 
 	// currentAgent is the last agent opened via agent.open.
 	currentAgent string
+
+	// agentSecurityWorkspaces tracks the most recent security workspace opened
+	// per agent id so runner-side security hooks follow the active session.
+	agentSecurityWorkspaces map[string]string
 
 	// In-memory span ring — populated by every dispatch, served by
 	// observability.spans.
@@ -115,31 +123,31 @@ func NewServer(socket string) (*Server, error) {
 		return nil, fmt.Errorf("listen %s: %w", socket, err)
 	}
 	if err := os.Chmod(socket, 0o600); err != nil {
-		l.Close()
-		return nil, fmt.Errorf("chmod %s: %w", socket, err)
+		return nil, errors.Join(fmt.Errorf("chmod %s: %w", socket, err), l.Close())
 	}
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	s := &Server{
-		socket:            socket,
-		listener:          l,
-		streams:           NewStreamRegistry(),
-		bgCtx:             bgCtx,
-		bgCancel:          bgCancel,
-		statusSubscribers: make(map[int64]*Stream),
-		spans:             observability.NewRing(1000),
+		socket:                  socket,
+		listener:                l,
+		streams:                 NewStreamRegistry(),
+		bgCtx:                   bgCtx,
+		bgCancel:                bgCancel,
+		statusSubscribers:       make(map[int64]*Stream),
+		agentSecurityWorkspaces: make(map[string]string),
+		spans:                   observability.NewRing(1000),
 	}
 	s.agents = NewAgentRegistry(s)
 
 	metricsPath := filepath.Join(filepath.Dir(socket), "metrics.db")
 	mstore, err := metrics.Open(metricsPath)
 	if err != nil {
-		l.Close()
 		bgCancel()
-		return nil, fmt.Errorf("open metrics db: %w", err)
+		return nil, errors.Join(fmt.Errorf("open metrics db: %w", err), l.Close())
 	}
 	registerCoreMetrics(mstore)
 	mstore.Run()
 	s.metrics = mstore
+	installSecurityShimsForServer(filepath.Dir(socket))
 	// Probe runners once at startup and cache the result. This populates
 	// agent.list's auth_status without per-call subprocess churn.
 	probeCtx, probeCancel := context.WithTimeout(bgCtx, 10*time.Second)
@@ -150,10 +158,11 @@ func NewServer(socket string) (*Server, error) {
 			model, _ = runners.ModelHint(info.ID)
 		}
 		s.agentsCache = append(s.agentsCache, AgentInfo{
-			ID:         info.ID,
-			Available:  info.Available,
-			AuthStatus: info.AuthStatus,
-			Model:      model,
+			ID:          info.ID,
+			Available:   info.Available,
+			AuthStatus:  info.AuthStatus,
+			Model:       model,
+			Enforcement: info.Enforcement,
 		})
 	}
 	slog.Info("runners probed", "n", len(s.agentsCache))
@@ -178,11 +187,121 @@ func NewServer(socket string) (*Server, error) {
 			}
 		}
 		s.secRunner = security.NewRunner(pdb.Security(), workspaceRoot)
+		runners.SetCommandFirewallProvider(func(agentID, workspace string) runners.CommandFirewall {
+			root := strings.TrimSpace(workspace)
+			if root == "" {
+				root = s.agentSecurityWorkspace(agentID)
+			}
+			if root == "" {
+				root = workspaceRoot
+				if abs, err := filepath.Abs(root); err == nil {
+					root = abs
+				}
+			}
+			mode, posture := security.ModeWarn, security.PostureUnknown
+			if status, err := pdb.Security().SecurityStatus(root); err == nil {
+				mode = security.Mode(status.Mode)
+				posture = security.Posture(status.Posture)
+			}
+			return runners.StaticCommandFirewall{
+				Policy: firewall.Policy{
+					Mode:                      mode,
+					BlockNetworkDownloadsInCI: true,
+				},
+				RunnerID: agentID,
+				CWD:      root,
+				Posture:  posture,
+				Store:    pdb.Security(),
+			}
+		})
+		runners.SetToolHooksProvider(func(agentID, workspace string) runners.ToolHooks {
+			root := strings.TrimSpace(workspace)
+			if root == "" {
+				root = s.agentSecurityWorkspace(agentID)
+			}
+			if root == "" {
+				root = workspaceRoot
+				if abs, err := filepath.Abs(root); err == nil {
+					root = abs
+				}
+			}
+			return codingToolHooks(pdb.Coding(), agentID, root)
+		})
 		s.secRunner.Start(bgCtx)
+		s.bgWG.Add(1)
+		go func(root string) {
+			defer s.bgWG.Done()
+			if abs, err := filepath.Abs(root); err == nil {
+				root = abs
+			}
+			status, err := pdb.Security().SecurityStatus(root)
+			if err == nil {
+				_, _, required := startupScanState(status, startupScanConfigHash(root))
+				if !required {
+					return
+				}
+			}
+			scanCtx, scanCancel := context.WithTimeout(bgCtx, 5*time.Second)
+			defer scanCancel()
+			if _, err := runStartupSecurityScanWithStore(scanCtx, pdb.Security(), root, false, s.activeAgent()); err != nil {
+				slog.Warn("security: startup scan failed", "err", err)
+			}
+		}(workspaceRoot)
 	}
 
 	go s.statusBroadcaster()
 	return s, nil
+}
+
+func installSecurityShimsForServer(stateDir string) {
+	shimDir := filepath.Join(stateDir, "security-shims")
+	result, err := shims.InstallDefaultCatalog(shimDir)
+	if err != nil {
+		slog.Warn("security command shims unavailable", "err", err)
+		runners.SetBrokerPathProvider(nil)
+		return
+	}
+	runners.SetBrokerPathProvider(func(agentID string) string {
+		switch agentID {
+		case runners.AgentIDClaude, runners.AgentIDCodex, runners.AgentIDCopilot, runners.AgentIDGemini, runners.AgentIDPool:
+			return result.Dir
+		default:
+			return ""
+		}
+	})
+	slog.Info("security command shims ready", "dir", result.Dir, "n", len(result.Paths), "replaced", result.Replaced)
+}
+
+func (s *Server) trackAgentSecurityWorkspace(agentID, workspace string) {
+	agentID = strings.TrimSpace(agentID)
+	workspace = strings.TrimSpace(workspace)
+	if s == nil || agentID == "" || workspace == "" {
+		return
+	}
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	if s.agentSecurityWorkspaces == nil {
+		s.agentSecurityWorkspaces = make(map[string]string)
+	}
+	s.agentSecurityWorkspaces[agentID] = workspace
+}
+
+func (s *Server) agentSecurityWorkspace(agentID string) string {
+	if s == nil {
+		return ""
+	}
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	return s.agentSecurityWorkspaces[strings.TrimSpace(agentID)]
+}
+
+func (s *Server) activeAgent() string {
+	if s == nil {
+		return ""
+	}
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	return s.currentAgent
 }
 
 // Serve accepts connections until Shutdown is called.
@@ -206,7 +325,11 @@ func (s *Server) Serve() error {
 //   - `STREAM <id> <offset>` → sidecar attach for an existing stream.
 func (s *Server) handle(conn net.Conn) {
 	defer s.wg.Done()
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			slog.Debug("conn close err", "err", err)
+		}
+	}()
 
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -247,16 +370,12 @@ func (s *Server) processLine(enc *json.Encoder, line []byte) {
 func (s *Server) handleSidecar(conn net.Conn, preamble []byte) {
 	var streamID, lastOffset int64
 	if _, err := fmt.Sscanf(string(preamble), "STREAM %d %d", &streamID, &lastOffset); err != nil {
-		conn.Write([]byte(fmt.Sprintf(
-			`{"t":"err","code":%d,"msg":"invalid stream attach line"}`+"\n",
-			ErrInvalidParams)))
+		_, _ = fmt.Fprintf(conn, `{"t":"err","code":%d,"msg":"invalid stream attach line"}`+"\n", ErrInvalidParams)
 		return
 	}
 	stream, ok := s.streams.Get(streamID)
 	if !ok {
-		conn.Write([]byte(fmt.Sprintf(
-			`{"t":"err","code":%d,"msg":"stream_not_found_or_attach_timeout"}`+"\n",
-			ErrStreamAttachTimeout)))
+		_, _ = fmt.Fprintf(conn, `{"t":"err","code":%d,"msg":"stream_not_found_or_attach_timeout"}`+"\n", ErrStreamAttachTimeout)
 		return
 	}
 	if err := stream.Attach(conn, lastOffset); err != nil {
@@ -266,7 +385,9 @@ func (s *Server) handleSidecar(conn net.Conn, preamble []byte) {
 	slog.Debug("sidecar attached", "stream_id", streamID, "last_offset", lastOffset)
 	// Block until the conn closes. We don't expect more bytes from the
 	// sidecar — it's server-push-only.
-	io.Copy(io.Discard, conn)
+	if _, err := io.Copy(io.Discard, conn); err != nil && !errors.Is(err, net.ErrClosed) {
+		slog.Debug("sidecar drain err", "err", err, "stream_id", streamID)
+	}
 }
 
 // statusBroadcaster ticks at 1 Hz and pushes a Status snapshot to every
@@ -307,12 +428,6 @@ func (s *Server) registerStatusSubscriber(stream *Stream) {
 	s.statusMu.Unlock()
 }
 
-func (s *Server) unregisterStatusSubscriber(id int64) {
-	s.statusMu.Lock()
-	delete(s.statusSubscribers, id)
-	s.statusMu.Unlock()
-}
-
 // Shutdown stops accepting new connections and waits for active handlers to
 // drain. Idempotent.
 func (s *Server) Shutdown() {
@@ -320,8 +435,13 @@ func (s *Server) Shutdown() {
 		return
 	}
 	s.bgCancel()
-	s.listener.Close()
+	runners.SetCommandFirewallProvider(nil)
+	runners.SetToolHooksProvider(nil)
+	if err := s.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		slog.Warn("listener close", "err", err)
+	}
 	s.wg.Wait()
+	s.bgWG.Wait()
 	if s.metrics != nil {
 		if err := s.metrics.Close(); err != nil {
 			slog.Warn("metrics store close", "err", err)

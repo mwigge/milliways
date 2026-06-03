@@ -28,6 +28,26 @@ import (
 	"github.com/mwigge/milliways/internal/rpc"
 )
 
+func stripANSICodesForTest(s string) string {
+	// Strip CSI SGR sequences (the most common ANSI escape codes)
+	var result strings.Builder
+	inEscape := false
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\x1b' {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			if s[i] == 'm' {
+				inEscape = false
+			}
+			continue
+		}
+		result.WriteByte(s[i])
+	}
+	return result.String()
+}
+
 func TestDrainStreamRecordsModelEvent(t *testing.T) {
 	stream := make(chan []byte, 2)
 	sess := &chatSession{
@@ -520,7 +540,7 @@ func TestPrintLandingIsConciseStartupSurface(t *testing.T) {
 			t.Fatalf("landing should be concise; found %q in:\n%s", absent, got)
 		}
 	}
-	for _, want := range []string{"milliways ", "daemon", "clients", "/1 claude", "/7 pool", "/help all commands", "/agents auth status"} {
+	for _, want := range []string{"milliways ", "daemon", "clients", "/1 minimax", "/8 pool", "/help all commands", "/agents auth status"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("landing missing %q; got:\n%s", want, got)
 		}
@@ -545,7 +565,7 @@ func TestPrintHelpDoesNotRepeatStartupBanner(t *testing.T) {
 			t.Fatalf("help should not repeat startup banner; found %q in:\n%s", absent, got)
 		}
 	}
-	for _, want := range []string{"milliways chat commands", "Clients:", "/1 claude", "/7 pool", "Client install / upgrade:", "/install-local-server", "Terminal setup:", "cockpit-hint.txt"} {
+	for _, want := range []string{"milliways chat commands", "Clients:", "/1 minimax", "/8 pool", "Client install / upgrade:", "/install-local-server", "Terminal setup:", "cockpit-hint.txt"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("help missing %q; got:\n%s", want, got)
 		}
@@ -585,8 +605,8 @@ func TestChooseStartProviderPrefersExplicitThenDefaultThenAuthOK(t *testing.T) {
 	if got := chooseStartProvider("", "", "minimax", statuses); got != "minimax" {
 		t.Fatalf("default start provider = %q, want minimax", got)
 	}
-	if got := chooseStartProvider("", "", "", statuses); got != "codex" {
-		t.Fatalf("auth-ok start provider = %q, want first auth-ok codex", got)
+	if got := chooseStartProvider("", "", "", statuses); got != "minimax" {
+		t.Fatalf("auth-ok start provider = %q, want first auth-ok minimax", got)
 	}
 }
 
@@ -642,7 +662,7 @@ func TestChatPromptFormat(t *testing.T) {
 	}
 
 	cases := map[string]string{
-		"":        "[select: /1 claude · /2 codex · /4 minimax · /help] ▶ ",
+		"":        "[select: /1 minimax · /2 berget · /3 claude · /help] ▶ ",
 		"claude":  "claude ▶ ",
 		"local":   "local ▶ ",
 		"minimax": "minimax ▶ ",
@@ -1179,7 +1199,7 @@ func TestChatSwitchableAgentsCoversDaemonRegistry(t *testing.T) {
 	t.Parallel()
 
 	expected := map[string]bool{
-		"claude": true, "codex": true, "copilot": true,
+		"berget": true, "claude": true, "codex": true, "copilot": true,
 		"gemini": true, "local": true, "minimax": true, "pool": true,
 	}
 	if got := len(chatSwitchableAgents); got != len(expected) {
@@ -1678,8 +1698,10 @@ func TestPrintBriefingBlock_TruncatesLongLines(t *testing.T) {
 	for _, line := range strings.Split(got, "\n") {
 		// strip the sidebar prefix "  │ " (4 bytes) before measuring content
 		content := strings.TrimPrefix(line, "  │ ")
+		// strip ANSI color codes before measuring — they add bytes but no display width
+		content = stripANSICodesForTest(content)
 		if len(content) > 100 {
-			t.Errorf("line too long (%d bytes): %q", len(content), content)
+			t.Errorf("line too long (%d bytes): %q", len(content), line)
 		}
 	}
 }

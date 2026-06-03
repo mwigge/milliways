@@ -82,6 +82,7 @@ func main() {
 	watchMs := fs.Int("debounce-ms", 250, "debounce milliseconds for status --watch (min interval between writes)")
 	watchFlag := fs.Bool("watch", false, "watch mode for status: subscribe and write atomic status.cur")
 	agentID := fs.String("agent", "", "agent_id (for `bridge`, `open`, `context`, `context-render`)")
+	workspace := fs.String("workspace", "", "workspace root (for `open`)")
 	handleFlag := fs.Int64("handle", 0, "agent handle (for `bridge` / `apply`)")
 	metricName := fs.String("metric", "", "metric name (for `metrics`)")
 	metricTier := fs.String("tier", "raw", "tier: raw|hourly|daily|weekly|monthly (for `metrics`)")
@@ -92,7 +93,9 @@ func main() {
 	allFlag := fs.Bool("all", false, "aggregate across all agents (for `context`)")
 	chartKind := fs.String("kind", "", "chart kind: sparkline|bars (for `chart`)")
 	chartData := fs.String("data", "", "chart input as JSON (for `chart`)")
-	fs.Parse(rest)
+	if err := fs.Parse(rest); err != nil {
+		os.Exit(2)
+	}
 	if *socket == "" {
 		*socket = defaultSocket()
 	}
@@ -127,7 +130,13 @@ func main() {
 		if *agentID == "" {
 			die("open requires --agent <agent_id>")
 		}
-		callJSON(*socket, "agent.open", map[string]any{"agent_id": *agentID})
+		params := map[string]any{"agent_id": *agentID}
+		if strings.TrimSpace(*workspace) != "" {
+			params["workspace"] = strings.TrimSpace(*workspace)
+		} else if cwd, err := os.Getwd(); err == nil {
+			params["workspace"] = cwd
+		}
+		callJSON(*socket, "agent.open", params)
 	case "bridge":
 		if *handleFlag == 0 {
 			die("bridge requires --handle <id>; obtain via `milliwaysctl open --agent <id>`")
@@ -176,7 +185,7 @@ func main() {
 		if err != nil {
 			die("dial %s: %v", *socket, err)
 		}
-		defer c.Close()
+		defer func() { _ = c.Close() }() //nolint:errcheck // best-effort RPC cleanup after command completes
 		var appendRes any
 		if err := c.Call("history.append", map[string]any{"agent_id": *agentID, "payload": payload, "max_lines": 1000}, &appendRes); err != nil {
 			die("history.append: %v", err)
@@ -195,7 +204,7 @@ func main() {
 		if err != nil {
 			die("dial %s: %v", *socket, err)
 		}
-		defer cGet.Close()
+		defer func() { _ = cGet.Close() }() //nolint:errcheck // best-effort RPC cleanup after command completes
 		var res any
 		if err := cGet.Call("history.get", map[string]any{"agent_id": *agentID, "limit": limit}, &res); err != nil {
 			die("history.get: %v", err)
@@ -234,7 +243,7 @@ func callJSON(socket, method string, params any) {
 	if err != nil {
 		die("dial %s: %v", socket, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }() //nolint:errcheck // best-effort RPC cleanup after command completes
 	var result any
 	if err := c.Call(method, params, &result); err != nil {
 		die("%s: %v", method, err)
@@ -251,7 +260,7 @@ func subscribeStatus(socket string) {
 	if err != nil {
 		die("dial %s: %v", socket, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }() //nolint:errcheck // best-effort RPC cleanup after stream exits
 	events, cancel, err := c.Subscribe("status.subscribe", nil)
 	if err != nil {
 		die("subscribe: %v", err)
@@ -273,7 +282,7 @@ func watchStatus(socket, stateDir string, debounceMs int) {
 	if err != nil {
 		die("dial %s: %v", socket, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }() //nolint:errcheck // best-effort RPC cleanup after watch exits
 	events, cancel, err := c.Subscribe("status.subscribe", nil)
 	if err != nil {
 		die("subscribe: %v", err)
@@ -319,13 +328,13 @@ func watchStatus(socket, stateDir string, debounceMs int) {
 				return
 			}
 			if _, err := f.Write(append(b, '\n')); err != nil {
-				f.Close()
+				if closeErr := f.Close(); closeErr != nil {
+					slog.Warn("watchStatus: close tmp after write error", "err", closeErr)
+				}
 				slog.Warn("watchStatus: write tmp", "err", err)
 				return
 			}
-			if err := f.Sync(); err != nil {
-				// best effort
-			}
+			_ = f.Sync()
 			if err := f.Close(); err != nil {
 				slog.Warn("watchStatus: close tmp", "err", err)
 				return
@@ -391,10 +400,69 @@ func watchStatus(socket, stateDir string, debounceMs int) {
 }
 
 // observeConfig holds the static list of available agents shown in the status bar.
-var observeAgents = []string{"claude", "codex", "copilot", "minimax", "gemini", "local", "pool"}
+var observeAgents = []string{"claude", "codex", "copilot", "minimax", "kimi", "deepseek", "gemini", "local", "pool"}
+
+func normalizeObserveSecurityStatus(result map[string]any) map[string]any {
+	if len(result) == 0 {
+		return nil
+	}
+	mode := stringMapField(result, "mode")
+	posture := strings.ToLower(strings.TrimSpace(firstStringField(result, "state", "posture", "level")))
+	warnings := intMapField(result, "warnings", "warn_count", "warning_count")
+	blocks := intMapField(result, "blocks", "block_count", "blocked_count")
+	if blocks > 0 {
+		posture = "block"
+	} else if boolMapField(result, "startup_scan_required", "startup_scan_stale") {
+		posture = "warn"
+	} else if warnings > 0 && posture == "" {
+		posture = "warn"
+	} else if posture == "" {
+		posture = "ok"
+	}
+	installed, _ := result["installed"].(bool)
+	enabled, _ := result["enabled"].(bool)
+	out := map[string]any{
+		"posture":                posture,
+		"warnings":               warnings,
+		"blocks":                 blocks,
+		"mode":                   mode,
+		"installed":              installed,
+		"enabled":                enabled,
+		"active_client":          stringMapField(result, "active_client"),
+		"workspace":              stringMapField(result, "workspace"),
+		"security_workspace":     stringMapField(result, "security_workspace"),
+		"startup_scan_completed": boolMapField(result, "startup_scan_completed"),
+		"startup_scan_required":  boolMapField(result, "startup_scan_required"),
+		"startup_scan_stale":     boolMapField(result, "startup_scan_stale"),
+	}
+	for _, key := range []string{
+		"startup_scan_completed_at",
+		"last_startup_scan_at",
+		"last_dependency_scan_at",
+	} {
+		if value := stringMapField(result, key); value != "" {
+			out[key] = value
+		}
+	}
+	if enforcement, ok := result["client_enforcement"]; ok {
+		out["client_enforcement"] = enforcement
+	}
+	if scanners, ok := result["scanners"]; ok {
+		out["scanners"] = scanners
+	}
+	return out
+}
+
+func fetchObserveSecurityStatus(c *rpc.Client) map[string]any {
+	var result map[string]any
+	if err := c.Call("security.status", map[string]any{}, &result); err != nil {
+		return nil
+	}
+	return normalizeObserveSecurityStatus(result)
+}
 
 // runObserve writes a compact JSON status to ${stateDir}/observe.cur every debounceMs.
-// Format: {"v":"<version>","p":"<cwd>","c":"<current_agent>","a":["claude","codex","copilot","minimax","gemini","local","pool"]}
+// Format: {"v":"<version>","p":"<cwd>","c":"<current_agent>","a":["claude","codex","copilot","minimax","gemini","local","pool"],"sec":{"posture":"ok|warn|block"}}
 //
 // This file is read by the wezterm Lua sidecar to render the full status bar:
 //
@@ -412,7 +480,7 @@ func runObserve(socket, stateDir string, debounceMs int) {
 	if err != nil {
 		die("dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }() //nolint:errcheck // best-effort RPC cleanup after observe exits
 
 	events, cancel, err := c.Subscribe("status.subscribe", nil)
 	if err != nil {
@@ -422,7 +490,9 @@ func runObserve(socket, stateDir string, debounceMs int) {
 
 	// Also grab the agent list once.
 	var agentList []map[string]any
-	c.Call("agent.list", nil, &agentList)
+	if err := c.Call("agent.list", nil, &agentList); err != nil {
+		slog.Warn("observe: agent.list", "err", err)
+	}
 
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		die("state dir: %v", err)
@@ -448,6 +518,8 @@ func runObserve(socket, stateDir string, debounceMs int) {
 	updates := make(chan []byte, 128)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	var securityStatus map[string]any
+	var lastSecurityPoll time.Time
 
 	// ppid watcher — exit if orphaned.
 	go func() {
@@ -486,8 +558,6 @@ func runObserve(socket, stateDir string, debounceMs int) {
 
 	// writer goroutine with debounce.
 	go func() {
-		var mu sync.Mutex
-		var pending []byte
 		var lastWrite time.Time
 		writeNow := func(b []byte) {
 			f, err := os.Create(tmpPath)
@@ -496,7 +566,9 @@ func runObserve(socket, stateDir string, debounceMs int) {
 				return
 			}
 			if _, err := f.Write(append(b, '\n')); err != nil {
-				f.Close()
+				if closeErr := f.Close(); closeErr != nil {
+					slog.Warn("observe: close tmp after write error", "err", closeErr)
+				}
 				slog.Warn("observe: write tmp", "err", err)
 				return
 			}
@@ -522,13 +594,9 @@ func runObserve(socket, stateDir string, debounceMs int) {
 				if !ok {
 					return
 				}
-				mu.Lock()
-				pending = ev
 				if time.Since(lastWrite) >= interval {
-					writeNow(pending)
-					pending = nil
+					writeNow(ev)
 				}
-				mu.Unlock()
 			}
 		}
 	}()
@@ -537,13 +605,14 @@ func runObserve(socket, stateDir string, debounceMs int) {
 		var frame struct {
 			T        string `json:"t"`
 			Snapshot struct {
-				Proto       any     `json:"proto"`
-				ActiveAgent *string `json:"active_agent"`
-				TokensIn    int     `json:"tokens_in"`
-				TokensOut   int     `json:"tokens_out"`
-				CostUSD     float64 `json:"cost_usd"`
-				QuotaPct    float64 `json:"quota_pct"`
-				Errors5m    int     `json:"errors_5m"`
+				Proto             any            `json:"proto"`
+				ActiveAgent       *string        `json:"active_agent"`
+				TokensIn          int            `json:"tokens_in"`
+				TokensOut         int            `json:"tokens_out"`
+				CostUSD           float64        `json:"cost_usd"`
+				QuotaPct          float64        `json:"quota_pct"`
+				Errors5m          int            `json:"errors_5m"`
+				ClientEnforcement map[string]any `json:"client_enforcement"`
 			} `json:"snapshot"`
 		}
 		if err := json.Unmarshal(ev, &frame); err != nil {
@@ -568,6 +637,19 @@ func runObserve(socket, stateDir string, debounceMs int) {
 			"cost":   frame.Snapshot.CostUSD,
 			"quota":  frame.Snapshot.QuotaPct,
 			"errors": frame.Snapshot.Errors5m,
+		}
+		if time.Since(lastSecurityPoll) >= 5*time.Second {
+			securityStatus = fetchObserveSecurityStatus(c)
+			lastSecurityPoll = time.Now()
+		}
+		if len(securityStatus) > 0 {
+			if _, ok := securityStatus["client_enforcement"]; !ok && len(frame.Snapshot.ClientEnforcement) > 0 {
+				securityStatus["client_enforcement"] = frame.Snapshot.ClientEnforcement
+			}
+			status["sec"] = securityStatus
+		}
+		if len(frame.Snapshot.ClientEnforcement) > 0 {
+			status["client_enforcement"] = frame.Snapshot.ClientEnforcement
 		}
 		// Include woke_ago (seconds) for 5 minutes after a detected wake.
 		if !wokeAt.IsZero() {
@@ -603,7 +685,7 @@ func bridge(socket string, handle int64) {
 	if err != nil {
 		die("dial: %v", err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }() //nolint:errcheck // best-effort RPC cleanup after bridge exits
 
 	events, cancel, err := c.Subscribe("agent.stream", map[string]any{"handle": handle})
 	if err != nil {
@@ -619,7 +701,7 @@ func bridge(socket string, handle int64) {
 			fmt.Fprintf(os.Stderr, "bridge: send-dial: %v\n", err)
 			return
 		}
-		defer sendClient.Close()
+		defer func() { _ = sendClient.Close() }() //nolint:errcheck // best-effort RPC cleanup when stdin bridge exits
 		buf := make([]byte, 4096)
 		for {
 			n, err := os.Stdin.Read(buf)
@@ -658,7 +740,10 @@ func bridge(socket string, handle int64) {
 		case "data":
 			bytes, err := base64.StdEncoding.DecodeString(msg.B64)
 			if err == nil {
-				os.Stdout.Write(bytes)
+				if _, err := os.Stdout.Write(bytes); err != nil {
+					fmt.Fprintf(os.Stderr, "bridge: stdout: %v\n", err)
+					return
+				}
 			}
 		case "end":
 			return
@@ -678,7 +763,7 @@ func apply(socket string, handle int64, index int, outPath string) {
 	if err != nil {
 		die("dial %s: %v", socket, err)
 	}
-	defer c.Close()
+	defer func() { _ = c.Close() }() //nolint:errcheck // best-effort RPC cleanup after apply completes
 
 	var result struct {
 		Blocks []struct {
@@ -766,16 +851,18 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  history-summary --agent <id> [--index N]    — compact cost+token summary for wezterm status")
 	fmt.Fprintln(os.Stderr, "  local <verb> [args...]                     — local-model bootstrap (try `milliwaysctl local --help`)")
 	fmt.Fprintln(os.Stderr, "  opsx <verb> [args...]                      — openspec wrapper (try `milliwaysctl opsx --help`)")
-	fmt.Fprintln(os.Stderr, "  install <client>                           — install upstream CLI (claude|codex|copilot|gemini|local)")
+	fmt.Fprintln(os.Stderr, "  install <client>                           — install/setup client (claude|codex|copilot|minimax|kimi|deepseek|gemini|local)")
 	fmt.Fprintln(os.Stderr, "  upgrade [--check] [--yes] [--version <tag>] — upgrade milliways to the latest release")
 	fmt.Fprintln(os.Stderr, "  codegraph <verb> [args...]                 — CodeGraph index management (try `milliwaysctl codegraph --help`)")
 	fmt.Fprintln(os.Stderr, "  check                                      — health check — verify all features are installed")
 	fmt.Fprintln(os.Stderr, "  parallel list                              — list recent parallel dispatch groups")
 	fmt.Fprintln(os.Stderr, "  parallel status <group-id>                 — show per-slot status for a group")
 	fmt.Fprintln(os.Stderr, "  parallel consensus <group-id>              — print the consensus aggregate summary")
-	fmt.Fprintln(os.Stderr, "  security list [--include-accepted]         — list active security findings (CVE/OSV)")
-	fmt.Fprintln(os.Stderr, "  security show <cve-id>                     — show full CVE detail")
-	fmt.Fprintln(os.Stderr, "  security accept <cve-id> --package <name> --reason <text> --expires <YYYY-MM-DD>")
+	fmt.Fprintln(os.Stderr, "  security status                            — show Secure MilliWays posture")
+	fmt.Fprintln(os.Stderr, "  security startup-scan [--strict]           — run startup posture scan")
+	fmt.Fprintln(os.Stderr, "  security cra | cra-scaffold | sbom         — CRA readiness and evidence")
+	fmt.Fprintln(os.Stderr, "  security client <name> | command-check --  — client profile and command firewall")
+	fmt.Fprintln(os.Stderr, "  security list/show/accept                  — CVE/OSV finding management")
 	fmt.Fprintln(os.Stderr, "  daemon stop                                — stop the running milliwaysd")
 }
 

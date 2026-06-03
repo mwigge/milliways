@@ -15,7 +15,9 @@
 package conversation
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -112,5 +114,57 @@ func TestAppendTurnWithContext_StoresReposAccessed(t *testing.T) {
 	}
 	if !slices.Equal(c.Transcript[0].ReposAccessed, repos) {
 		t.Fatalf("ReposAccessed = %v, want %v", c.Transcript[0].ReposAccessed, repos)
+	}
+}
+
+func TestConversationTranscriptIsBoundedByTurns(t *testing.T) {
+	t.Parallel()
+
+	c := New("conv-1", "b1", "initial")
+	for index := 0; index < maxTranscriptTurns+25; index++ {
+		c.AppendTurn(RoleAssistant, "local", fmt.Sprintf("turn-%d", index))
+	}
+
+	if len(c.Transcript) != maxTranscriptTurns {
+		t.Fatalf("len(Transcript) = %d, want %d", len(c.Transcript), maxTranscriptTurns)
+	}
+	if got := c.Transcript[0].Text; got == "initial" || got == "turn-0" {
+		t.Fatalf("oldest transcript turn was not trimmed, first=%q", got)
+	}
+}
+
+func TestConversationTranscriptIsBoundedByBytes(t *testing.T) {
+	t.Parallel()
+
+	c := New("conv-1", "b1", strings.Repeat("x", maxTranscriptChars/2))
+	c.AppendTurn(RoleAssistant, "local", strings.Repeat("y", maxTranscriptChars/2))
+	c.AppendTurn(RoleAssistant, "local", strings.Repeat("z", maxTranscriptChars/2))
+
+	total := 0
+	for _, turn := range c.Transcript {
+		total += len(turn.Text)
+	}
+	if total > maxTranscriptChars {
+		t.Fatalf("transcript bytes = %d, want <= %d", total, maxTranscriptChars)
+	}
+	if len(c.Transcript) != 2 || c.Transcript[0].Text[0] != 'y' || c.Transcript[1].Text[0] != 'z' {
+		t.Fatalf("Transcript = %#v, want newest turns within byte cap", c.Transcript)
+	}
+}
+
+func TestConversationTranscriptKeepsNewestOversizedTurn(t *testing.T) {
+	t.Parallel()
+
+	c := New("conv-1", "b1", "initial")
+	c.AppendTurn(RoleAssistant, "local", strings.Repeat("x", maxTranscriptChars+1))
+
+	if len(c.Transcript) != 1 {
+		t.Fatalf("len(Transcript) = %d, want newest oversized turn only", len(c.Transcript))
+	}
+	if got := len(c.Transcript[0].Text); got != maxTranscriptChars {
+		t.Fatalf("newest turn bytes = %d, want %d", got, maxTranscriptChars)
+	}
+	if strings.Trim(c.Transcript[0].Text, "x") != "" {
+		t.Fatalf("newest turn text was corrupted")
 	}
 }

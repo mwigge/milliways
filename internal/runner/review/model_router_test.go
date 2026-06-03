@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -17,6 +18,9 @@ type modelListResponse struct {
 func newModelsServer(t *testing.T, ids ...string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("path = %q, want /models", r.URL.Path)
+		}
 		resp := modelListResponse{}
 		for _, id := range ids {
 			resp.Data = append(resp.Data, struct {
@@ -27,6 +31,19 @@ func newModelsServer(t *testing.T, ids ...string) *httptest.Server {
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
 			t.Errorf("encode models response: %v", err)
 		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func newModelsStatusServer(t *testing.T, status int) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("path = %q, want /models", r.URL.Path)
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"error":"nope"}`))
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -109,6 +126,56 @@ func TestHTTPModelRouter_Route_QwenReturnsQwenXML(t *testing.T) {
 	}
 	if _, ok := client.(XMLGroupClient); !ok {
 		t.Errorf("client type = %T, want XMLGroupClient (Qwen uses XML client)", client)
+	}
+}
+
+func TestHTTPModelRouter_Route_EndpointAlreadyIncludesV1(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("path = %q, want /v1/models", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(modelListResponse{Data: []struct {
+			ID string `json:"id"`
+		}{{ID: "qwen2.5-coder-7b"}}})
+	}))
+	t.Cleanup(srv.Close)
+	router := NewModelRouter(srv.URL + "/v1")
+
+	_, _, err := router.Route("qwen2.5-coder-7b")
+	if err != nil {
+		t.Fatalf("Route error = %v, want endpoint /v1 to probe /v1/models once", err)
+	}
+}
+
+func TestHTTPModelRouter_Route_ModelsStatusError(t *testing.T) {
+	t.Parallel()
+
+	srv := newModelsStatusServer(t, http.StatusUnauthorized)
+	router := NewModelRouter(srv.URL)
+
+	_, _, err := router.Route("qwen2.5-coder-7b")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 401") {
+		t.Fatalf("Route error = %v, want HTTP 401", err)
+	}
+}
+
+func TestHTTPModelRouter_Route_EmptyAliasUsesFirstModel(t *testing.T) {
+	t.Parallel()
+
+	srv := newModelsServer(t, "qwen2.5-coder-7b", "other")
+	router := NewModelRouter(srv.URL)
+
+	client, caps, err := router.Route("")
+	if err != nil {
+		t.Fatalf("Route: unexpected error: %v", err)
+	}
+	if caps.Alias != "qwen2.5-coder-7b" {
+		t.Fatalf("caps.Alias = %q, want first model", caps.Alias)
+	}
+	if _, ok := client.(XMLGroupClient); !ok {
+		t.Fatalf("client type = %T, want XMLGroupClient", client)
 	}
 }
 

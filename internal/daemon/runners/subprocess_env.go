@@ -28,7 +28,12 @@ package runners
 
 import (
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
+
+	"github.com/mwigge/milliways/internal/security/shims"
 )
 
 var runnerSystemPathFallbacks = []string{
@@ -49,9 +54,10 @@ var runnerSystemPathFallbacks = []string{
 //     → required for the respective CLI to authenticate
 //   - OLLAMA_HOST → required if the user's local CLI workflow involves it
 //
-// Notably absent: MINIMAX_API_KEY, MILLIWAYS_LOCAL_API_KEY, AWS_*,
-// GITHUB_TOKEN, GH_TOKEN — these are not required by any of the CLIs we
-// shell to, so withholding them prevents accidental exfil.
+// Notably absent: MINIMAX_API_KEY, KIMI_API_KEY, MOONSHOT_API_KEY,
+// DEEPSEEK_API_KEY, MILLIWAYS_LOCAL_API_KEY, AWS_*, GITHUB_TOKEN,
+// GH_TOKEN — these are not required by any of the CLIs we shell to, so
+// withholding them prevents accidental exfil.
 var safeRunnerEnvKeys = map[string]bool{
 	"PATH": true, "HOME": true, "USER": true, "SHELL": true,
 	"TERM": true, "LANG": true, "LC_ALL": true, "LC_CTYPE": true,
@@ -63,12 +69,30 @@ var safeRunnerEnvKeys = map[string]bool{
 	// takes effect without restarting the daemon or its subprocesses.
 	"ANTHROPIC_MODEL": true, "OPENAI_MODEL": true, "CODEX_MODEL": true,
 	"CLAUDE_MODEL": true, "GEMINI_MODEL": true, "GOOGLE_MODEL": true,
-	"COPILOT_MODEL": true,
+	"COPILOT_MODEL": true, "KIMI_MODEL": true, "DEEPSEEK_MODEL": true,
 	// Claude Code 2.x runtime identity vars. CLAUDE_CODE_EXECPATH tells the
 	// binary where its versioned install lives (used to locate the credential
 	// store). Without these the daemon subprocess reports "Not logged in" even
 	// though claude works fine in the user's shell.
 	"CLAUDECODE": true, "CLAUDE_CODE_ENTRYPOINT": true, "CLAUDE_CODE_EXECPATH": true,
+}
+
+type controlledRunnerEnvOptions struct {
+	ClientID  string
+	SessionID string
+	Workspace string
+	ShimDir   string
+}
+
+var controlledRunnerSessionCounter atomic.Uint64
+
+func newControlledRunnerSessionID(agentID string) string {
+	n := controlledRunnerSessionCounter.Add(1)
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		agentID = "runner"
+	}
+	return agentID + "-" + strconv.FormatUint(n, 10)
 }
 
 // safeRunnerEnv returns a filtered environment for runner subprocess
@@ -80,6 +104,10 @@ var safeRunnerEnvKeys = map[string]bool{
 // (e.g. ~/.local/bin, /opt/homebrew/bin) are found when milliways is
 // launched from a GUI app bundle whose PATH is minimal.
 func safeRunnerEnv() []string {
+	return controlledRunnerEnv(controlledRunnerEnvOptions{})
+}
+
+func controlledRunnerEnv(opts controlledRunnerEnvOptions) []string {
 	var env []string
 	for _, e := range os.Environ() {
 		key := e
@@ -100,17 +128,62 @@ func safeRunnerEnv() []string {
 				filtered = append(filtered, e)
 			}
 		}
-		env = append(filtered, "PATH="+ensureRunnerSystemPath(p))
+		env = append(filtered, "PATH="+controlledRunnerPath(ensureRunnerSystemPath(p), opts.ShimDir))
 	} else {
 		for i, e := range env {
 			if strings.HasPrefix(e, "PATH=") {
-				env[i] = "PATH=" + ensureRunnerSystemPath(strings.TrimPrefix(e, "PATH="))
-				return env
+				env[i] = "PATH=" + controlledRunnerPath(ensureRunnerSystemPath(strings.TrimPrefix(e, "PATH=")), opts.ShimDir)
+				return appendControlledRunnerMetadata(env, opts)
 			}
 		}
-		env = append(env, "PATH="+ensureRunnerSystemPath(""))
+		env = append(env, "PATH="+controlledRunnerPath(ensureRunnerSystemPath(""), opts.ShimDir))
+	}
+	return appendControlledRunnerMetadata(env, opts)
+}
+
+func controlledExternalCLIEnv(agentID, sessionID, workspace string) []string {
+	return controlledRunnerEnv(controlledRunnerEnvOptions{
+		ClientID:  agentID,
+		SessionID: sessionID,
+		Workspace: workspace,
+		ShimDir:   brokerShimDirForAgent(agentID),
+	})
+}
+
+func controlledRunnerPath(path, shimDir string) string {
+	if shimDir == "" {
+		return path
+	}
+	return shims.PrependPath(path, shimDir)
+}
+
+func appendControlledRunnerMetadata(env []string, opts controlledRunnerEnvOptions) []string {
+	add := func(key, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		env = append(envWithoutKey(env, key), key+"="+value)
+	}
+	add("MILLIWAYS_CLIENT_ID", opts.ClientID)
+	add("MILLIWAYS_SESSION_ID", opts.SessionID)
+	add("MILLIWAYS_WORKSPACE_ROOT", opts.Workspace)
+	if opts.ShimDir != "" {
+		add("MILLIWAYS_SHIM_DIR", opts.ShimDir)
+		add("MILLIWAYS_SHIMS_ENABLED", "1")
 	}
 	return env
+}
+
+func envWithoutKey(env []string, key string) []string {
+	prefix := key + "="
+	out := env[:0]
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, prefix) {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 func ensureRunnerSystemPath(path string) string {
@@ -140,4 +213,78 @@ func splitPath(path string) []string {
 		}
 	}
 	return parts
+}
+
+func resolveRunnerBinary(binary string) string {
+	if binary == "" || strings.ContainsRune(binary, os.PathSeparator) {
+		return binary
+	}
+	if path, err := execLookPathInRunnerPath(binary); err == nil {
+		return path
+	}
+	return binary
+}
+
+func execLookPathInRunnerPath(binary string) (string, error) {
+	for _, dir := range runnerBinarySearchDirs() {
+		candidate := filepath.Join(dir, binary)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
+			return candidate, nil
+		}
+	}
+	return "", os.ErrNotExist
+}
+
+func execLookPathInRunnerPathExcluding(binary string, excludedDirs ...string) (string, error) {
+	excluded := make(map[string]bool, len(excludedDirs))
+	for _, dir := range excludedDirs {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		excluded[filepath.Clean(dir)] = true
+	}
+	for _, dir := range runnerBinarySearchDirs() {
+		if excluded[filepath.Clean(dir)] {
+			continue
+		}
+		candidate := filepath.Join(dir, binary)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
+			return candidate, nil
+		}
+	}
+	return "", os.ErrNotExist
+}
+
+func runnerBinarySearchDirs() []string {
+	var paths []string
+	addPath := func(path string) {
+		paths = append(paths, splitPath(path)...)
+	}
+	addPath(os.Getenv("MILLIWAYS_PATH"))
+	addPath(os.Getenv("PATH"))
+	home := os.Getenv("HOME")
+	if home != "" {
+		paths = append(paths,
+			filepath.Join(home, ".local", "bin"),
+			filepath.Join(home, ".npm-global", "bin"),
+			filepath.Join(home, ".bun", "bin"),
+			filepath.Join(home, "go", "bin"),
+			filepath.Join(home, ".cargo", "bin"),
+		)
+		if matches, err := filepath.Glob(filepath.Join(home, ".nvm", "versions", "node", "*", "bin")); err == nil {
+			paths = append(paths, matches...)
+		}
+	}
+	addPath(ensureRunnerSystemPath(""))
+	seen := make(map[string]bool, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	return out
 }

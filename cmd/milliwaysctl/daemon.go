@@ -60,48 +60,48 @@ func runDaemon(args []string, stdout, stderr io.Writer) int {
 	case "stop":
 		return runDaemonStop(*stateDir, stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "milliwaysctl daemon: unknown verb %q\n", rest[0])
+		_, _ = fmt.Fprintf(stderr, "milliwaysctl daemon: unknown verb %q\n", rest[0])
 		daemonUsage(stderr)
 		return 2
 	}
 }
 
 func daemonUsage(stderr io.Writer) {
-	fmt.Fprintln(stderr, "usage: milliwaysctl daemon <stop> [--state PATH]")
+	_, _ = fmt.Fprintln(stderr, "usage: milliwaysctl daemon <stop> [--state PATH]")
 }
 
 func runDaemonStop(stateDir string, stdout, stderr io.Writer) int {
 	pidPath := filepath.Join(stateDir, "pid")
 	data, err := os.ReadFile(pidPath)
 	if errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintln(stdout, "milliwaysd not running")
+		_, _ = fmt.Fprintln(stdout, "milliwaysd not running")
 		return 0
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "read pid file: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "read pid file: %v\n", err)
 		return 1
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil || pid <= 0 {
-		fmt.Fprintf(stderr, "invalid pid file %s\n", pidPath)
+		_, _ = fmt.Fprintf(stderr, "invalid pid file %s\n", pidPath)
 		return 1
 	}
 	if !daemonProcessAlive(pid) {
 		_ = os.Remove(pidPath)
-		fmt.Fprintln(stdout, "milliwaysd not running")
+		_, _ = fmt.Fprintln(stdout, "milliwaysd not running")
 		return 0
 	}
 	if err := daemonSignalProcess(pid, syscall.SIGTERM); err != nil {
-		fmt.Fprintf(stderr, "stop milliwaysd pid %d: %v\n", pid, err)
+		_, _ = fmt.Fprintf(stderr, "stop milliwaysd pid %d: %v\n", pid, err)
 		return 1
 	}
 	for i := 0; i < 50; i++ {
 		if !daemonProcessAlive(pid) {
-			fmt.Fprintf(stdout, "stopped milliwaysd pid %d\n", pid)
+			_, _ = fmt.Fprintf(stdout, "stopped milliwaysd pid %d\n", pid)
 			return 0
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	fmt.Fprintf(stderr, "milliwaysd pid %d did not stop within 5s\n", pid)
+	_, _ = fmt.Fprintf(stderr, "milliwaysd pid %d did not stop within 5s\n", pid)
 	return 1
 }

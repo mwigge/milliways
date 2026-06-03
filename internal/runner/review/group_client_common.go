@@ -32,21 +32,21 @@ func buildFileContext(files []string, maxLines int) (string, error) {
 		n, err := countLines(path)
 		if err != nil {
 			// File may not exist or be unreadable; record the error but continue.
-			sb.WriteString(fmt.Sprintf("(could not read: %v)\n", err))
+			fmt.Fprintf(&sb, "(could not read: %v)\n", err)
 			continue
 		}
 
 		if n > maxLines {
 			content, err := readLargeFile(path)
 			if err != nil {
-				sb.WriteString(fmt.Sprintf("(could not read large file: %v)\n", err))
+				fmt.Fprintf(&sb, "(could not read large file: %v)\n", err)
 				continue
 			}
 			sb.WriteString(content)
 		} else {
 			data, err := os.ReadFile(path)
 			if err != nil {
-				sb.WriteString(fmt.Sprintf("(could not read: %v)\n", err))
+				fmt.Fprintf(&sb, "(could not read: %v)\n", err)
 				continue
 			}
 			sb.Write(data)
@@ -179,7 +179,7 @@ type chatCompletionResponse struct {
 
 // doChat POSTs a chatRequest to {endpoint}/chat/completions and returns the
 // first choice content string.
-func doChat(ctx context.Context, client *http.Client, endpoint string, payload chatRequest) (string, error) {
+func doChat(ctx context.Context, client *http.Client, endpoint, apiKey string, payload chatRequest) (string, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("marshal request: %w", err)
@@ -191,6 +191,7 @@ func doChat(ctx context.Context, client *http.Client, endpoint string, payload c
 		return "", fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	setReviewAuth(req, apiKey)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -215,6 +216,14 @@ func doChat(ctx context.Context, client *http.Client, endpoint string, payload c
 		return "", fmt.Errorf("no choices in response")
 	}
 	return chatResp.Choices[0].Message.Content, nil
+}
+
+func setReviewAuth(req *http.Request, apiKey string) {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 }
 
 // buildCodeGraphContext fetches caller/callee/impact context from CodeGraph
@@ -264,7 +273,7 @@ func buildCodeGraphContext(ctx context.Context, cg CodeGraphClient, group Group)
 		if fs.score >= 0.5 {
 			centrality = "high-centrality"
 		}
-		sb.WriteString(fmt.Sprintf("- %s: impact score %.2f (%s)\n", fs.name, fs.score, centrality))
+		fmt.Fprintf(&sb, "- %s: impact score %.2f (%s)\n", fs.name, fs.score, centrality)
 	}
 	return sb.String()
 }
@@ -277,7 +286,7 @@ func buildPriorContextBlock(prior PriorContext) string {
 	var sb strings.Builder
 	sb.WriteString("Previously known issues in this area (verify if still present):\n")
 	for _, f := range prior.Findings {
-		sb.WriteString(fmt.Sprintf("- %s: %s in %s: %s\n", f.Severity, f.Symbol, f.File, f.Reason))
+		fmt.Fprintf(&sb, "- %s: %s in %s: %s\n", f.Severity, f.Symbol, f.File, f.Reason)
 	}
 	return sb.String()
 }
