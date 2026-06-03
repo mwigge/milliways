@@ -376,7 +376,7 @@ func runChat(ctx context.Context) error {
 	if !socketReachable(sock, 500*time.Millisecond) {
 		return fmt.Errorf("milliwaysd not reachable at %s — start MilliWays.app or run `milliwaysd &` first", sock)
 	}
-	client, err := rpc.Dial(sock)
+	client, err := rpc.DialWithRetry(sock)
 	if err != nil {
 		return fmt.Errorf("dial milliwaysd: %w", err)
 	}

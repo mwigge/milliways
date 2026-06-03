@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net"
 	"sync/atomic"
+	"time"
 )
 
 // Socket returns the UDS path this client is connected to. Used by
@@ -53,6 +54,44 @@ func Dial(socket string) (*Client, error) {
 	}
 	c.scan.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	return c, nil
+}
+
+// DialWithRetry connects to the milliwaysd UDS at socket with exponential backoff retry.
+// This is useful when the daemon may be restarting and the client wants to wait for it.
+// Default: 3 retries, starting at 100ms backoff, doubling each retry (100ms, 200ms, 400ms).
+func DialWithRetry(socket string) (*Client, error) {
+	return DialWithRetryAttempts(socket, 3, 100*time.Millisecond)
+}
+
+// DialWithRetryAttempts connects with custom retry settings.
+// retries: number of retry attempts (0 = just Dial)
+// initialBackoff: starting backoff duration, doubles each retry
+func DialWithRetryAttempts(socket string, retries int, initialBackoff time.Duration) (*Client, error) {
+	var lastErr error
+	backoff := initialBackoff
+
+	for i := 0; i <= retries; i++ {
+		conn, err := net.Dial("unix", socket)
+		if err == nil {
+			c := &Client{
+				socket: socket,
+				conn:   conn,
+				enc:    json.NewEncoder(conn),
+				scan:   bufio.NewScanner(conn),
+			}
+			c.scan.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+			return c, nil
+		}
+		lastErr = err
+
+		if i < retries {
+			// Don't wait after the last attempt (before retrying)
+			time.Sleep(backoff)
+			backoff *= 2
+		}
+	}
+
+	return nil, fmt.Errorf("dial %s after %d retries: %w", socket, retries, lastErr)
 }
 
 // Close releases the underlying UDS connection.
