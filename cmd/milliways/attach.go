@@ -631,18 +631,14 @@ func deckVisibleProviderRange(total, selected, h int) (int, int) {
 		h = 40
 	}
 	clientBudget := max(3, h-6)
-	maxCards := min(7, max(1, clientBudget/3))
+	maxCards := max(1, clientBudget/3)
 	if maxCards > total || total == 0 {
 		maxCards = total
 	}
 	start := 0
 	if total > maxCards {
-		start = selected - maxCards/2
-		if start < 0 {
-			start = 0
-		}
-		if start+maxCards > total {
-			start = total - maxCards
+		if selected >= maxCards {
+			start = selected - maxCards + 1
 		}
 	}
 	return start, start + maxCards

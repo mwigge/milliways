@@ -15,13 +15,13 @@ func TestLinuxDeckLayoutInvariants(t *testing.T) {
 	lua := string(raw)
 	for _, want := range []string{
 		"key = '1', mods = 'LEADER'",
-		"args = { mwctl_bin, 'open', '--agent', 'berget' }",
-		"key = '2', mods = 'LEADER'",
 		"args = { mwctl_bin, 'open', '--agent', 'minimax' }",
+		"key = '2', mods = 'LEADER'",
+		"args = { mwctl_bin, 'open', '--agent', 'berget' }",
 		"key = '0', mods = 'LEADER'",
 		"args = { mwctl_bin, 'open', '--agent', 'pool' }",
 		"direction = 'Left'",
-		"size = 0.25",
+		"size = 0.20",
 		"args = { mw_bin, 'attach', '--deck', '--right-pane', main_pane_id }",
 		"direction = 'Bottom'",
 		"args = { mwctl_bin, 'observe-render' }",

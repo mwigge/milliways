@@ -206,7 +206,7 @@ func (s *Server) buildStatus() Status {
 }
 
 func clientEnforcementSnapshot() map[string]runners.EnforcementMetadata {
-	agents := []string{"berget", "minimax", "claude", "codex", "copilot", "kimi", "deepseek", "gemini", "local", "pool"}
+	agents := []string{"minimax", "berget", "claude", "codex", "copilot", "kimi", "deepseek", "gemini", "local", "pool"}
 	out := make(map[string]runners.EnforcementMetadata, len(agents))
 	for _, agent := range agents {
 		out[agent] = runners.ClientEnforcementMetadata(agent)
@@ -220,7 +220,7 @@ func (s *Server) buildQuotaSnapshots() []QuotaSnapshot {
 	if s.metrics == nil {
 		return nil
 	}
-	agents := []string{"berget", "minimax", "claude", "codex", "copilot", "kimi", "deepseek", "gemini", "local", "pool"}
+	agents := []string{"minimax", "berget", "claude", "codex", "copilot", "kimi", "deepseek", "gemini", "local", "pool"}
 	r1h := &metrics.Range{From: "-1h"}
 	var out []QuotaSnapshot
 	for _, agent := range agents {

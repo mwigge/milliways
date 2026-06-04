@@ -154,8 +154,8 @@ func friendlyError(prefix string, rawMsg string, err error) string {
 // dispatch table in internal/daemon/agents.go but ordered for the
 // landing-zone display (most-used first).
 var chatSwitchableAgents = []string{
-	"berget",   // /1
-	"minimax",  // /2
+	"minimax",  // /1
+	"berget",   // /2
 	"claude",   // /3
 	"codex",    // /4
 	"copilot",  // /5
@@ -603,7 +603,7 @@ func chatPromptState(agentID, state string) string {
 		arrow = "▶"
 	}
 	if agentID == "" {
-		return "[select: /1 berget · /2 minimax · /3 claude · /help] " + arrow + " "
+		return "[select: /1 minimax · /2 berget · /3 claude · /help] " + arrow + " "
 	}
 	color := agentColor(agentID)
 	thinkColor := agentThinkingColor(agentID)

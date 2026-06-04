@@ -472,8 +472,8 @@ func TestRenderDeckNavigatorSizedShowsOrderedClientWindow(t *testing.T) {
 	t.Parallel()
 
 	providers := []deckProviderInfo{
-		{ID: "berget", AuthStatus: "ok", Status: "idle"},
 		{ID: "minimax", AuthStatus: "ok", Status: "idle"},
+		{ID: "berget", AuthStatus: "ok", Status: "idle"},
 		{ID: "claude", AuthStatus: "ok", Status: "idle"},
 		{ID: "codex", AuthStatus: "ok", Status: "idle"},
 		{ID: "copilot", AuthStatus: "ok", Status: "idle"},
@@ -485,20 +485,18 @@ func TestRenderDeckNavigatorSizedShowsOrderedClientWindow(t *testing.T) {
 	}
 
 	got := stripANSI(renderDeckNavigatorSized(44, 60, providers, 0, "", true, nil))
-	if !strings.Contains(got, "Clients 1-7/10") {
-		t.Fatalf("expected ranged clients heading for scrollable list:\n%s", got)
+	if !strings.Contains(got, "Clients") {
+		t.Fatalf("expected clients heading:\n%s", got)
+	}
+	if strings.Contains(got, "Clients 1-7/10") {
+		t.Fatalf("expected full-height pane to show all clients without fixed seven-row cap:\n%s", got)
 	}
 	if strings.Contains(got, "milliways-deck") {
 		t.Fatalf("expected no redundant deck title line:\n%s", got)
 	}
-	for _, want := range []string{"1 berget idle", "2 minimax idle", "3 claude idle", "4 codex idle", "5 copilot idle", "6 kimi idle", "7 deepseek idle"} {
+	for _, want := range []string{"1 minimax idle", "2 berget idle", "3 claude idle", "4 codex idle", "5 copilot idle", "6 kimi idle", "7 deepseek idle", "8 gemini idle", "9 local idle", "10 pool idle"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected ordered first-window client, missing %q:\n%s", want, got)
-		}
-	}
-	for _, absent := range []string{"8 gemini", "9 local", "10 pool"} {
-		if strings.Contains(got, absent) {
-			t.Fatalf("expected lower clients to be below the first scroll window, found %q:\n%s", absent, got)
 		}
 	}
 	// Quick Menu was removed — verify it is absent.
@@ -634,7 +632,7 @@ func TestOrderDeckProvidersMatchesNumericShortcuts(t *testing.T) {
 	for _, p := range got {
 		ids = append(ids, p.ID)
 	}
-	want := []string{"berget", "minimax", "claude", "codex", "gemini", "pool"}
+	want := []string{"minimax", "berget", "claude", "codex", "gemini", "pool"}
 	if strings.Join(ids, ",") != strings.Join(want, ",") {
 		t.Fatalf("ordered providers = %v, want %v", ids, want)
 	}

@@ -101,7 +101,7 @@ type AggregateContext struct {
 
 // known agent ids served by context.get_all even when no session is open.
 // Keep this in sync with first-class daemon/chat runners.
-var knownContextAgents = []string{"berget", "minimax", "claude", "codex", "copilot", "kimi", "deepseek", "gemini", "local", "pool"}
+var knownContextAgents = []string{"minimax", "berget", "claude", "codex", "copilot", "kimi", "deepseek", "gemini", "local", "pool"}
 
 type contextGetParams struct {
 	AgentID string `json:"agent_id"`

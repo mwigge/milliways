@@ -569,7 +569,7 @@ func TestPrintLandingIsConciseStartupSurface(t *testing.T) {
 		}
 	}
 	plain := stripANSISequences(got)
-	for _, want := range []string{"milliways ", "daemon", "clients", "/1 berget", "/2 minimax", "/10 pool", "/help all commands", "/agents auth status"} {
+	for _, want := range []string{"milliways ", "daemon", "clients", "/1 minimax", "/2 berget", "/10 pool", "/help all commands", "/agents auth status"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("landing missing %q; got:\n%s", want, got)
 		}
@@ -594,7 +594,7 @@ func TestPrintHelpDoesNotRepeatStartupBanner(t *testing.T) {
 			t.Fatalf("help should not repeat startup banner; found %q in:\n%s", absent, got)
 		}
 	}
-	for _, want := range []string{"milliways chat commands", "Basic", "Agent", "Session", "Observability", "Config", "/1 berget", "/2 minimax", "/10 pool", "/install-local-server", "/setup-local-model"} {
+	for _, want := range []string{"milliways chat commands", "Basic", "Agent", "Session", "Observability", "Config", "/1 minimax", "/2 berget", "/10 pool", "/install-local-server", "/setup-local-model"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("help missing %q; got:\n%s", want, got)
 		}
@@ -711,7 +711,7 @@ func TestChatPromptFormat(t *testing.T) {
 	}
 
 	cases := map[string]string{
-		"":        "[select: /1 berget · /2 minimax · /3 claude · /help] ▶ ",
+		"":        "[select: /1 minimax · /2 berget · /3 claude · /help] ▶ ",
 		"claude":  "claude ▶ ",
 		"local":   "local ▶ ",
 		"minimax": "minimax ▶ ",

@@ -482,11 +482,11 @@ config.keys = {
   -- Leader + 1..9,0  →  switch active runner
   {
     key = '1', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'berget' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'minimax' } },
   },
   {
     key = '2', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'minimax' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'berget' } },
   },
   {
     key = '3', mods = 'LEADER',
@@ -780,7 +780,7 @@ wezterm.on('gui-startup', function(cmd)
   local main_pane_id = tostring(main_pane:pane_id())
   local deck_pane = main_pane:split {
     direction = 'Left',
-    size = 0.25,
+    size = 0.20,
     args = { mw_bin, 'attach', '--deck', '--right-pane', main_pane_id },
     set_environment_variables = pane_env,
   }
