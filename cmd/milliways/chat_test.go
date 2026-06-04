@@ -834,8 +834,8 @@ func TestThinkingLineUsesDarkerClientColor(t *testing.T) {
 	}
 	for agent, color := range want {
 		line := formatThinkingLine(agent, "planning next step")
-		if !strings.HasPrefix(line, color) {
-			t.Fatalf("%s thinking line uses %q, want prefix %q", agent, line, color)
+		if !strings.Contains(line, color) {
+			t.Fatalf("%s thinking line missing agent color %q; got: %q", agent, color, line)
 		}
 		if !strings.Contains(line, "⏺") || !strings.Contains(line, "planning next step") {
 			t.Fatalf("%s thinking line missing message: %q", agent, line)

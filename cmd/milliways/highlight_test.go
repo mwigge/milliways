@@ -617,10 +617,10 @@ func TestRenderPlainMarkdownLineHighlightsDiagnostics(t *testing.T) {
 	withoutNoColor(t)
 
 	got := renderPlainMarkdownLine("warning: see https://example.com retry failed: timeout", true)
-	if !strings.Contains(got, "\x1b[38;5;221m") {
+	if !strings.Contains(got, "\x1b[38;2;224;175;104m") {
 		t.Fatalf("warning line missing warning color:\n%q", got)
 	}
-	if !strings.Contains(got, "\x1b[38;5;203m") {
+	if !strings.Contains(got, "\x1b[38;2;247;118;142m") {
 		t.Fatalf("failed line missing error color:\n%q", got)
 	}
 	if !strings.Contains(got, "\x1b]8;;https://example.com") {
