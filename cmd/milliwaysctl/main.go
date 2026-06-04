@@ -406,7 +406,7 @@ func watchStatus(socket, stateDir string, debounceMs int) {
 }
 
 // observeConfig holds the static list of available agents shown in the status bar.
-var observeAgents = []string{"claude", "codex", "copilot", "minimax", "kimi", "deepseek", "gemini", "local", "pool"}
+var observeAgents = []string{"berget", "minimax", "claude", "codex", "copilot", "kimi", "deepseek", "gemini", "local", "pool"}
 
 func normalizeObserveSecurityStatus(result map[string]any) map[string]any {
 	if len(result) == 0 {

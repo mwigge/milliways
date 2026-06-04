@@ -61,6 +61,14 @@ type installSpec struct {
 // landing zone.
 var installSpecs = []installSpec{
 	{
+		client: "berget",
+		info:   "berget is HTTP-only; no CLI to install. Set BERGET_API_KEY (and optionally BERGET_API_URL / BERGET_MODEL) and the runner will work.",
+	},
+	{
+		client: "minimax",
+		info:   "minimax is HTTP-only; no CLI to install. Set MINIMAX_API_KEY (and optionally MINIMAX_API_URL) and the runner will work.",
+	},
+	{
 		client:     "claude",
 		prereq:     "npm",
 		prereqHint: "install Node.js (https://nodejs.org/) — npm ships with it",
@@ -96,10 +104,6 @@ var installSpecs = []installSpec{
 		client:  "local",
 		install: []string{}, // handled specially — shells to local install-server
 		info:    "Installs rs-llmctl + a default coder model. Same as /install-local-server.",
-	},
-	{
-		client: "minimax",
-		info:   "minimax is HTTP-only; no CLI to install. Set MINIMAX_API_KEY (and optionally MINIMAX_API_URL) and the runner will work.",
 	},
 	{
 		client: "kimi",

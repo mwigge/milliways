@@ -13,7 +13,8 @@
 // limitations under the License.
 
 // Package runners probes the local environment for each milliways runner
-// (claude, codex, copilot, gemini, local, minimax, pool). Probing is
+// (berget, minimax, claude, codex, copilot, kimi, deepseek, gemini, local,
+// pool). Probing is
 // intentionally minimal — just enough to populate agent.list's
 // auth_status accurately. Note: opsx is intentionally not probed; it was
 // reclassified as a `milliwaysctl opsx <verb>` subcommand rather than a
@@ -45,10 +46,11 @@ type AgentInfo struct {
 // return immediately.
 func Probe(ctx context.Context) []AgentInfo {
 	probes := []func(context.Context) AgentInfo{
+		probeBerget,
+		probeMinimax,
 		probeClaude,
 		probeCodex,
 		probeCopilot,
-		probeMinimax,
 		probeKimi,
 		probeDeepSeek,
 		probeGemini,
@@ -63,6 +65,15 @@ func Probe(ctx context.Context) []AgentInfo {
 		out = append(out, info)
 	}
 	return out
+}
+
+func probeBerget(context.Context) AgentInfo {
+	info := AgentInfo{ID: AgentIDBerget, AuthStatus: "missing_credentials"}
+	if k := os.Getenv("BERGET_API_KEY"); k != "" {
+		info.Available = true
+		info.AuthStatus = "ok"
+	}
+	return info
 }
 
 func probeClaude(ctx context.Context) AgentInfo {

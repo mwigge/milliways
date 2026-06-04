@@ -146,7 +146,7 @@ func SetToolHooksProvider(fn ToolHooksProvider) {
 func ClientEnforcementMetadata(agentID string) EnforcementMetadata {
 	caps := ClientCapabilitiesForAgent(agentID)
 	switch agentID {
-	case AgentIDMiniMax, AgentIDLocal, AgentIDKimi, AgentIDDeepSeek:
+	case AgentIDBerget, AgentIDMiniMax, AgentIDLocal, AgentIDKimi, AgentIDDeepSeek:
 		return EnforcementMetadata{
 			Level:        EnforcementFull,
 			Label:        "http/local full",
@@ -180,7 +180,7 @@ func ClientEnforcementMetadata(agentID string) EnforcementMetadata {
 // first-class runners and explicit unknowns for agents added outside this build.
 func ClientCapabilitiesForAgent(agentID string) ClientCapabilities {
 	switch agentID {
-	case AgentIDMiniMax, AgentIDLocal, AgentIDKimi, AgentIDDeepSeek:
+	case AgentIDBerget, AgentIDMiniMax, AgentIDLocal, AgentIDKimi, AgentIDDeepSeek:
 		return ClientCapabilities{
 			Tools:            CapabilityRunnerControlled,
 			Permissions:      CapabilityRunnerControlled,

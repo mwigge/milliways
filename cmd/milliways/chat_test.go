@@ -519,8 +519,8 @@ func TestChatHelpEnumeratesKnownCommands(t *testing.T) {
 
 	for _, want := range []string{
 		// Client picker
-		"/1", "/2", "/3", "/4", "/5", "/6", "/7", "/8", "/9",
-		"claude", "codex", "copilot", "deepseek", "gemini", "kimi", "local", "minimax", "pool",
+		"/1", "/2", "/3", "/4", "/5", "/6", "/7", "/8", "/9", "/10",
+		"berget", "claude", "codex", "copilot", "deepseek", "gemini", "kimi", "local", "minimax", "pool",
 		// Full help section
 		"/switch", "/agents", "/quota", "/help", "/exit", "!<cmd>",
 		"/changes", "/diff", "/redo", "/undo",
@@ -569,7 +569,7 @@ func TestPrintLandingIsConciseStartupSurface(t *testing.T) {
 		}
 	}
 	plain := stripANSISequences(got)
-	for _, want := range []string{"milliways ", "daemon", "clients", "/1 claude", "/9 pool", "/help all commands", "/agents auth status"} {
+	for _, want := range []string{"milliways ", "daemon", "clients", "/1 berget", "/2 minimax", "/10 pool", "/help all commands", "/agents auth status"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("landing missing %q; got:\n%s", want, got)
 		}
@@ -594,7 +594,7 @@ func TestPrintHelpDoesNotRepeatStartupBanner(t *testing.T) {
 			t.Fatalf("help should not repeat startup banner; found %q in:\n%s", absent, got)
 		}
 	}
-	for _, want := range []string{"milliways chat commands", "Basic", "Agent", "Session", "Observability", "Config", "/1 claude", "/9 pool", "/install-local-server", "/setup-local-model"} {
+	for _, want := range []string{"milliways chat commands", "Basic", "Agent", "Session", "Observability", "Config", "/1 berget", "/2 minimax", "/10 pool", "/install-local-server", "/setup-local-model"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("help missing %q; got:\n%s", want, got)
 		}
@@ -634,8 +634,8 @@ func TestChooseStartProviderPrefersExplicitThenDefaultThenAuthOK(t *testing.T) {
 	if got := chooseStartProvider("", "", "minimax", statuses); got != "minimax" {
 		t.Fatalf("default start provider = %q, want minimax", got)
 	}
-	if got := chooseStartProvider("", "", "", statuses); got != "codex" {
-		t.Fatalf("auth-ok start provider = %q, want first auth-ok codex", got)
+	if got := chooseStartProvider("", "", "", statuses); got != "minimax" {
+		t.Fatalf("auth-ok start provider = %q, want first auth-ok minimax", got)
 	}
 }
 
@@ -711,7 +711,7 @@ func TestChatPromptFormat(t *testing.T) {
 	}
 
 	cases := map[string]string{
-		"":        "[select: /1 claude · /2 codex · /4 minimax · /help] ▶ ",
+		"":        "[select: /1 berget · /2 minimax · /3 claude · /help] ▶ ",
 		"claude":  "claude ▶ ",
 		"local":   "local ▶ ",
 		"minimax": "minimax ▶ ",
@@ -921,7 +921,7 @@ func TestInterruptPromptIsPlainLanguage(t *testing.T) {
 
 func TestBuildCompleterIncludesCurrentShortcutsAndInstallTargets(t *testing.T) {
 	items := buildCompleter("minimax")
-	for _, want := range []string{"/8", "/9", "/install minimax", "/install kimi", "/install deepseek"} {
+	for _, want := range []string{"/1", "/2", "/9", "/10", "/install berget", "/install minimax", "/install kimi", "/install deepseek"} {
 		if !slices.Contains(items, want) {
 			t.Fatalf("buildCompleter() missing %q in %#v", want, items)
 		}
@@ -1077,11 +1077,11 @@ func TestParseDigitInRange(t *testing.T) {
 		{"1", 1, 9, 1, true},
 		{"9", 1, 9, 9, true},
 		{"4", 1, 9, 4, true},
-		{"0", 1, 9, 0, false},  // below range
-		{"10", 1, 9, 0, false}, // above range and multi-digit
-		{"", 1, 9, 0, false},   // empty
-		{"a", 1, 9, 0, false},  // non-digit
-		{"42", 1, 9, 0, false}, // multi-digit unsupported
+		{"0", 1, 9, 0, false}, // below range
+		{"10", 1, 10, 10, true},
+		{"", 1, 9, 0, false},  // empty
+		{"a", 1, 9, 0, false}, // non-digit
+		{"42", 1, 10, 0, false},
 	}
 	for _, c := range cases {
 		got, ok := parseDigitInRange(c.s, c.lo, c.hi)
@@ -1282,7 +1282,7 @@ func TestChatSwitchableAgentsCoversDaemonRegistry(t *testing.T) {
 	expected := map[string]bool{
 		"claude": true, "codex": true, "copilot": true,
 		"gemini": true, "local": true, "minimax": true, "pool": true,
-		"kimi": true, "deepseek": true,
+		"kimi": true, "deepseek": true, "berget": true,
 	}
 	if got := len(chatSwitchableAgents); got != len(expected) {
 		t.Errorf("chatSwitchableAgents len = %d, want %d", got, len(expected))
@@ -1565,11 +1565,11 @@ func TestHandleSlash_Smoke(t *testing.T) {
 	wantOutput := []string{
 		"/help", "/agents", "/quota",
 		"/changes", "/diff", "/redo",
-		"/login", "/login minimax",
+		"/login", "/login berget", "/login minimax",
 		"/briefing",
-		"/model", "/model minimax",
-		"/1", "/2", "/3", "/4", "/5", "/6", "/7", "/8", "/9",
-		"/claude", "/codex", "/copilot", "/minimax",
+		"/model", "/model berget", "/model minimax",
+		"/1", "/2", "/3", "/4", "/5", "/6", "/7", "/8", "/9", "/10",
+		"/berget", "/claude", "/codex", "/copilot", "/minimax",
 		"/kimi", "/deepseek", "/gemini", "/local", "/pool",
 		"/switch claude",
 		"/install",

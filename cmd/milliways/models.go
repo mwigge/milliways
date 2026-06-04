@@ -32,6 +32,9 @@ import (
 // developer API; Claude Code OAuth ≠ Anthropic API). Updated with each
 // milliways release to track current CLI model offerings.
 var knownModels = map[string][]string{
+	"berget": {
+		"gemma-4-31B-it",
+	},
 	// Codex model list from the codex CLI's interactive /model picker.
 	// ChatGPT OAuth tokens are scoped for chatgpt.com, not api.openai.com.
 	"codex": {
@@ -149,7 +152,7 @@ func (c *modelCache) Models(agentID string) []string {
 // RefreshAsync starts a background goroutine to refresh the model cache for
 // all runners at startup so /model shows live data without blocking.
 func (c *modelCache) RefreshAsync() {
-	for _, agentID := range []string{"claude", "codex", "copilot", "gemini", "minimax", "kimi", "deepseek"} {
+	for _, agentID := range []string{"berget", "minimax", "claude", "codex", "copilot", "kimi", "deepseek", "gemini"} {
 		go func(id string) { c.Models(id) }(agentID)
 	}
 }
@@ -159,6 +162,7 @@ func (c *modelCache) RefreshAsync() {
 // use knownModels as the fallback.
 //
 // Auth strategy per runner:
+//   - berget:   BERGET_API_KEY env var → live API call
 //   - minimax:  MINIMAX_API_KEY env var → live API call
 //   - kimi:     KIMI_API_KEY or MOONSHOT_API_KEY env var → live API call
 //   - deepseek: DEEPSEEK_API_KEY env var → live API call
@@ -171,6 +175,9 @@ func (c *modelCache) RefreshAsync() {
 //     (Claude Code OAuth is scoped for Claude Code, not api.anthropic.com)
 func (c *modelCache) fetch(agentID string) []string {
 	switch agentID {
+	case "berget":
+		return c.fetchOpenAIAt("https://api.berget.ai/v1/models", os.Getenv("BERGET_API_KEY"))
+
 	case "minimax":
 		return c.fetchMiniMax(os.Getenv("MINIMAX_API_KEY"))
 

@@ -81,6 +81,18 @@ func TestExternalCLIProbesUseRunnerBinarySearchPath(t *testing.T) {
 	}
 }
 
+func TestProbeBergetUsesAPIKey(t *testing.T) {
+	t.Setenv("BERGET_API_KEY", "test-key")
+
+	info := probeBerget(context.Background())
+	if !info.Available {
+		t.Fatalf("probeBerget Available = false, want true")
+	}
+	if info.AuthStatus != "ok" {
+		t.Fatalf("probeBerget AuthStatus = %q, want ok", info.AuthStatus)
+	}
+}
+
 func TestProbeSkipsShimBinaryWhenResolvingExternalCLI(t *testing.T) {
 	SetBrokerPathProvider(nil)
 	t.Cleanup(func() { SetBrokerPathProvider(nil) })

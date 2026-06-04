@@ -31,6 +31,7 @@ var genAISystem = map[string]string{
 	AgentIDClaude:   "anthropic",
 	AgentIDCodex:    "openai",
 	AgentIDCopilot:  "github_copilot",
+	AgentIDBerget:   "berget",
 	AgentIDGemini:   "google",
 	AgentIDPool:     "poolside",
 	AgentIDMiniMax:  "minimax",
@@ -145,6 +146,11 @@ func currentModel(agentID string) string {
 			return m
 		}
 		return minimaxDefaultModel
+	case AgentIDBerget:
+		if m := strings.TrimSpace(os.Getenv("BERGET_MODEL")); m != "" {
+			return m
+		}
+		return openAICompatibleConfigs[AgentIDBerget].DefaultModel
 	case AgentIDKimi:
 		if m := strings.TrimSpace(os.Getenv("KIMI_MODEL")); m != "" {
 			return m

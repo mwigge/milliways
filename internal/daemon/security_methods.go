@@ -2377,6 +2377,16 @@ func clientProfileConfigPaths(workspace, home, configDir, client string) []strin
 		addWorkspace(".pool/settings.json")
 		addConfig(filepath.Join("pool", "config.json"))
 		addConfig(filepath.Join("pool", "settings.json"))
+	case clientprofiles.ClientBerget:
+		if home != "" {
+			add(filepath.Join(home, ".berget", "config.json"))
+			add(filepath.Join(home, ".berget", "settings.json"))
+		}
+		addWorkspace(".berget/config.json")
+		addWorkspace(".berget/settings.json")
+		addConfig(filepath.Join("berget", "config.json"))
+		addConfig(filepath.Join("berget", "settings.json"))
+		addConfig(filepath.Join("milliways", "local.env"))
 	case clientprofiles.ClientMiniMax:
 		if home != "" {
 			add(filepath.Join(home, ".minimax", "config.json"))
@@ -2435,6 +2445,8 @@ func clientProfileEnvKeys(client string) []string {
 		return []string{"GEMINI_FLAGS", "GEMINI_ARGS"}
 	case clientprofiles.ClientPool:
 		return []string{"POOL_FLAGS", "POOL_ARGS"}
+	case clientprofiles.ClientBerget:
+		return []string{"BERGET_FLAGS", "BERGET_ARGS"}
 	case clientprofiles.ClientMiniMax:
 		return []string{"MINIMAX_FLAGS", "MINIMAX_ARGS"}
 	case clientprofiles.ClientKimi:

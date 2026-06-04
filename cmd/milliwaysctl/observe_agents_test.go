@@ -22,7 +22,7 @@ import (
 func TestObserveAgentsMatchesDeckOrder(t *testing.T) {
 	t.Parallel()
 
-	want := []string{"claude", "codex", "copilot", "minimax", "kimi", "deepseek", "gemini", "local", "pool"}
+	want := []string{"berget", "minimax", "claude", "codex", "copilot", "kimi", "deepseek", "gemini", "local", "pool"}
 	if strings.Join(observeAgents, ",") != strings.Join(want, ",") {
 		t.Fatalf("observeAgents = %v, want %v", observeAgents, want)
 	}

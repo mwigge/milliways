@@ -49,6 +49,7 @@ const (
 	ClientCopilot  = "copilot"
 	ClientGemini   = "gemini"
 	ClientPool     = "pool"
+	ClientBerget   = "berget"
 	ClientMiniMax  = "minimax"
 	ClientKimi     = "kimi"
 	ClientDeepSeek = "deepseek"
@@ -109,6 +110,7 @@ func NewAll(opts Options) []ClientProfileCheck {
 		New(ClientCopilot, opts),
 		New(ClientGemini, opts),
 		New(ClientPool, opts),
+		New(ClientBerget, opts),
 		New(ClientMiniMax, opts),
 		New(ClientKimi, opts),
 		New(ClientDeepSeek, opts),
@@ -151,6 +153,8 @@ func (p profileCheck) Check(ctx context.Context, workspace string) ProfileResult
 		warnings = p.checkGemini(ctx, workspace)
 	case ClientPool:
 		warnings = p.checkPool(ctx, workspace)
+	case ClientBerget:
+		warnings = p.checkAPIClient(ctx, workspace, ClientBerget, "berget", []string{"BERGET_FLAGS", "BERGET_ARGS"})
 	case ClientMiniMax:
 		warnings = p.checkMiniMax(ctx, workspace)
 	case ClientKimi:
@@ -687,6 +691,14 @@ func secretConfigMarkersForClient(client string) []secretConfigMarker {
 			summary: "MiniMax API key material appears to be stored in a local config file.",
 			keys:    []string{"minimax_api_key=", "minimax-api-key", "\"minimax_api_key\"", "api_key:"},
 			values:  []string{"sk-", "api_key=", "apikey"},
+		}}
+	case ClientBerget:
+		return []secretConfigMarker{{
+			id:      "berget-key-in-config",
+			key:     "BERGET_API_KEY",
+			summary: "Berget API key material appears to be stored in a local config file.",
+			keys:    []string{"berget_api_key=", "berget-api-key", "berget_api_key:", "\"berget_api_key\"", "berget_api_key", "BERGET_API_KEY="},
+			values:  []string{"sk-", "api_key=", "apikey", "bearer"},
 		}}
 	case ClientKimi:
 		return []secretConfigMarker{{

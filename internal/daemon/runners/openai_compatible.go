@@ -49,6 +49,20 @@ type openAICompatibleRunnerConfig struct {
 }
 
 var openAICompatibleConfigs = map[string]openAICompatibleRunnerConfig{
+	AgentIDBerget: {
+		AgentID:           AgentIDBerget,
+		DisplayName:       "Berget",
+		DefaultURL:        "https://api.berget.ai/v1/chat/completions",
+		URLEnv:            "BERGET_API_URL",
+		APIKeyEnvs:        []string{"BERGET_API_KEY"},
+		ModelEnv:          "BERGET_MODEL",
+		DefaultModel:      "gemma-4-31B-it",
+		TimeoutEnv:        "BERGET_TIMEOUT",
+		ToolsEnv:          "BERGET_TOOLS",
+		InputPriceEnv:     "BERGET_INPUT_USD_PER_MTOK",
+		OutputPriceEnv:    "BERGET_OUTPUT_USD_PER_MTOK",
+		MissingKeyMessage: "Berget API key not set - run /login berget to set BERGET_API_KEY",
+	},
 	AgentIDKimi: {
 		AgentID:           AgentIDKimi,
 		DisplayName:       "Kimi",
@@ -79,6 +93,14 @@ var openAICompatibleConfigs = map[string]openAICompatibleRunnerConfig{
 		OutputPriceEnv:    "DEEPSEEK_OUTPUT_USD_PER_MTOK",
 		MissingKeyMessage: "DeepSeek API key not set - run /login deepseek to set it",
 	},
+}
+
+func RunBerget(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
+	RunBergetWithSecurityWorkspace(ctx, input, stream, metrics, "")
+}
+
+func RunBergetWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
+	runOpenAICompatibleSession(ctx, openAICompatibleConfigs[AgentIDBerget], input, stream, metrics, securityWorkspace)
 }
 
 func RunKimi(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {

@@ -403,6 +403,8 @@ func (r *AgentRegistry) OpenWithWorkspace(agentID, securityWorkspace string) (*A
 		go runCodex(sess, mo)
 	case "copilot":
 		go runCopilot(sess, mo)
+	case "berget":
+		go runBerget(sess, mo)
 	case "minimax":
 		go runMiniMax(sess, mo)
 	case "kimi":
@@ -470,6 +472,16 @@ func runCopilot(sess *AgentSession, metrics runners.MetricsObserver) {
 	runners.RunCopilotWithSecurityWorkspace(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics, sess.SecurityWorkspace)
 	sess.closeStreams()
 	slog.Debug("copilot session ended", "handle", sess.Handle)
+}
+
+func runBerget(sess *AgentSession, metrics runners.MetricsObserver) {
+	stream := waitForStream(sess)
+	if stream == nil {
+		return
+	}
+	runners.RunBergetWithSecurityWorkspace(sess.ctx, sess.input, &recordingPusher{stream: stream, sess: sess}, metrics, sess.SecurityWorkspace)
+	sess.closeStreams()
+	slog.Debug("berget session ended", "handle", sess.Handle)
 }
 
 // runMiniMax waits for the sidecar to attach, then hands the session's

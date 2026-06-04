@@ -150,19 +150,20 @@ func friendlyError(prefix string, rawMsg string, err error) string {
 
 // chatSwitchableAgents is the set of runner IDs the user can switch to
 // via the /<name> shorthand, the /N numeric shortcut, or /switch <name>.
-// The order here defines the /1..7 numeric mapping; mirrors the daemon's
+// The order here defines the /1..10 numeric mapping; mirrors the daemon's
 // dispatch table in internal/daemon/agents.go but ordered for the
 // landing-zone display (most-used first).
 var chatSwitchableAgents = []string{
-	"claude",   // /1
-	"codex",    // /2
-	"copilot",  // /3
-	"minimax",  // /4 — matches wezterm Leader+1..4 mapping
-	"kimi",     // /5
-	"deepseek", // /6
-	"gemini",   // /7
-	"local",    // /8
-	"pool",     // /9
+	"berget",   // /1
+	"minimax",  // /2
+	"claude",   // /3
+	"codex",    // /4
+	"copilot",  // /5
+	"kimi",     // /6
+	"deepseek", // /7
+	"gemini",   // /8
+	"local",    // /9
+	"pool",     // /10
 }
 
 // chatCtlAliases maps user-facing slash commands to the milliwaysctl
@@ -314,13 +315,12 @@ func (s *switchableCompleter) set(ac []string) {
 // buildCompleter returns completion candidates for all slash commands.
 // agentID, when non-empty, appends the client's native slash commands so
 // they appear in tab completion while that runner is active.
-// Agent shortcuts (/claude, /gemini, …) and numbered aliases (/1..9) are
+// Agent shortcuts (/claude, /gemini, ...) and numbered aliases (/1..10) are
 // derived from chatSwitchableAgents; ctl aliases from chatCtlAliases.
 func buildCompleter(agentID string) []string {
-	items := []string{
-		// Numbered shortcuts /1../9
-		"/1", "/2", "/3", "/4", "/5", "/6", "/7", "/8", "/9",
-		// Agent name shortcuts
+	items := make([]string, 0, 96)
+	for i := range chatSwitchableAgents {
+		items = append(items, fmt.Sprintf("/%d", i+1))
 	}
 	for _, name := range chatSwitchableAgents {
 		items = append(items, "/"+name)
@@ -332,7 +332,7 @@ func buildCompleter(agentID string) []string {
 		"/parallel", "/parallel --providers", "/scan", "/security", "/security status",
 		"/security cra-scaffold", "/security client", "/security command-check --", "/security warnings", "/help", "/exit",
 		// Install / Upgrade
-		"/install", "/install claude", "/install codex", "/install copilot", "/install minimax", "/install kimi", "/install deepseek", "/install gemini", "/install local",
+		"/install", "/install berget", "/install claude", "/install codex", "/install copilot", "/install minimax", "/install kimi", "/install deepseek", "/install gemini", "/install local",
 		"/install-local-server", "/install-local-gpu-server", "/install-local-gpu-server --dry-run",
 		"/install-local-gpu-server --accel vulkan", "/install-local-gpu-server --accel hip", "/install-local-gpu-server --accel cuda", "/install-local-swap",
 		"/upgrade", "/upgrade --check", "/upgrade --yes", "/upgrade --version",
@@ -603,7 +603,7 @@ func chatPromptState(agentID, state string) string {
 		arrow = "▶"
 	}
 	if agentID == "" {
-		return "[select: /1 claude · /2 codex · /4 minimax · /help] " + arrow + " "
+		return "[select: /1 berget · /2 minimax · /3 claude · /help] " + arrow + " "
 	}
 	color := agentColor(agentID)
 	thinkColor := agentThinkingColor(agentID)
@@ -1753,13 +1753,19 @@ func (l *chatLoop) anyBusy() bool {
 	return false
 }
 
-// parseDigitInRange returns (n, true) if s is a single digit in
-// [lo, hi], else (0, false).
+// parseDigitInRange returns (n, true) if s is a decimal number in [lo, hi],
+// else (0, false).
 func parseDigitInRange(s string, lo, hi int) (int, bool) {
-	if len(s) != 1 || s[0] < '0' || s[0] > '9' {
+	if s == "" {
 		return 0, false
 	}
-	n := int(s[0] - '0')
+	n := 0
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			return 0, false
+		}
+		n = n*10 + int(ch-'0')
+	}
 	if n < lo || n > hi {
 		return 0, false
 	}
@@ -3773,6 +3779,8 @@ func agentColor(name string) string {
 		return ""
 	}
 	switch name {
+	case "berget":
+		return "\033[38;5;208m" // orange
 	case "claude":
 		return "\033[97m" // pearl white (bright white)
 	case "codex":
@@ -3803,6 +3811,8 @@ func agentThinkingColor(name string) string {
 		return ""
 	}
 	switch name {
+	case "berget":
+		return "\033[38;5;166m" // muted orange
 	case "claude":
 		return "\033[38;5;250m" // muted pearl
 	case "codex":
@@ -3944,7 +3954,7 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintln(l.out)
 
 	fmt.Fprintf(l.out, "%sAgent%s\n", accent, reset)
-	fmt.Fprintf(l.out, "%s▸%s  /install <client>        claude · codex · copilot · minimax · kimi · deepseek · gemini · local\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /install <client>        berget · minimax · claude · codex · copilot · kimi · deepseek · gemini · local\n", dim, reset)
 	fmt.Fprintf(l.out, "%s▸%s  /upgrade [--check|--yes|--version <tag>]  upgrade milliways\n", dim, reset)
 	fmt.Fprintf(l.out, "%s▸%s  /install-local-server [--accel vulkan|hip|cuda]  bootstrap rs-llmctl\n", dim, reset)
 	fmt.Fprintf(l.out, "%s▸%s  /install-local-gpu-server  detect NVIDIA/AMD GPU + largest fitting model\n", dim, reset)
@@ -4007,6 +4017,21 @@ type modelSpec struct {
 // runnerModelSpec returns the full model spec for a runner.
 func runnerModelSpec(agentID string) modelSpec {
 	switch agentID {
+	case "berget":
+		cur := os.Getenv("BERGET_MODEL")
+		if cur == "" {
+			cur = "gemma-4-31B-it"
+		}
+		ep := os.Getenv("BERGET_API_URL")
+		if ep == "" {
+			ep = "https://api.berget.ai/v1/chat/completions"
+		}
+		return modelSpec{
+			envKey:   "BERGET_MODEL",
+			current:  cur,
+			endpoint: ep,
+			choices:  globalModelCache.Models("berget"),
+		}
 	case "minimax":
 		cur := os.Getenv("MINIMAX_MODEL")
 		if cur == "" {
@@ -4248,6 +4273,7 @@ type loginSpec struct {
 }
 
 var loginSpecs = map[string]loginSpec{
+	"berget":   {envKey: "BERGET_API_KEY"},
 	"claude":   {cliCmd: []string{"claude", "auth", "login"}},
 	"codex":    {cliCmd: []string{"codex", "login"}},
 	"copilot":  {cliCmd: []string{"gh", "auth", "login"}},

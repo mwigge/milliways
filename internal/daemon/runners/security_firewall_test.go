@@ -79,6 +79,7 @@ func TestClientEnforcementMetadata_FirstClassClients(t *testing.T) {
 		{AgentIDCopilot, EnforcementPreflightOnly, true},
 		{AgentIDGemini, EnforcementPreflightOnly, true},
 		{AgentIDPool, EnforcementPreflightOnly, true},
+		{AgentIDBerget, EnforcementFull, false},
 		{AgentIDMiniMax, EnforcementFull, false},
 		{AgentIDLocal, EnforcementFull, false},
 	}
@@ -98,7 +99,7 @@ func TestClientCapabilities_HTTPClientsReportFullRunnerControlledCapabilities(t 
 	SetBrokerPathProvider(nil)
 	t.Cleanup(func() { SetBrokerPathProvider(nil) })
 
-	for _, agent := range []string{AgentIDMiniMax, AgentIDLocal, AgentIDKimi, AgentIDDeepSeek} {
+	for _, agent := range []string{AgentIDBerget, AgentIDMiniMax, AgentIDLocal, AgentIDKimi, AgentIDDeepSeek} {
 		got := ClientCapabilitiesForAgent(agent)
 		if got.EnforcementLevel != EnforcementFull {
 			t.Fatalf("%s enforcement level = %q, want %q", agent, got.EnforcementLevel, EnforcementFull)

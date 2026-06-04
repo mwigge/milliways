@@ -34,6 +34,7 @@ const (
 	AgentIDClaude   = "claude"
 	AgentIDCodex    = "codex"
 	AgentIDCopilot  = "copilot"
+	AgentIDBerget   = "berget"
 	AgentIDMiniMax  = "minimax"
 	AgentIDLocal    = "local"
 	AgentIDGemini   = "gemini"

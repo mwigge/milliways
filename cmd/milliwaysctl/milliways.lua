@@ -8,7 +8,7 @@
 --
 -- Leader key: Ctrl+Space
 --   Leader + a         open milliways agent pane (split below)
---   Leader + 1..7      switch active runner via milliwaysctl open
+--   Leader + 1..9,0    switch active runner via milliwaysctl open
 --   Leader + r         resume modal — shows wake/session summary, re-opens last agent
 --   Leader + k         context overlay
 --   Leader + w         observe-render overlay (metrics/spans)
@@ -69,9 +69,9 @@ config.font               = wezterm.font_with_fallback({
 })
 config.font_size          = 12.0
 config.window_decorations = 'TITLE | RESIZE'
-config.window_background_appearance = 'rgba(26,27,38,0.85)',
-config.hide_tab_bar_if_only_one_tab = true,
-config.use_fancy_tab_bar  = true,
+config.window_background_appearance = 'rgba(26,27,38,0.85)'
+config.hide_tab_bar_if_only_one_tab = true
+config.use_fancy_tab_bar  = true
 config.tab_bar_at_bottom  = false
 config.status_update_interval = 500
 config.window_padding = { left = 12, right = 12, top = 8, bottom = 8 }
@@ -184,10 +184,11 @@ local observe_cur = state_dir .. '/observe.cur'
 -- ── Header status ────────────────────────────────────────────────────────────
 
 local abbrs = {
+  berget  = 'B',
+  minimax = 'M',
   claude  = 'C',
   codex   = 'X',
   copilot = 'Cp',
-  minimax = 'M',
   kimi    = 'K',
   deepseek = 'Ds',
   gemini  = 'G',
@@ -202,10 +203,11 @@ local abbrs = {
 -- tab_fg  = active tab foreground
 -- bar_bg  = status bar background when this client is active
 local client_themes = {
+  berget  = { accent='#e0af68', cursor='#e0af68', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
+  minimax = { accent='#7aa2f7', cursor='#7aa2f7', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
   claude  = { accent='#7dcfff', cursor='#7dcfff', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
   codex   = { accent='#9ece6a', cursor='#9ece6a', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
   copilot = { accent='#e0af68', cursor='#e0af68', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
-  minimax = { accent='#7aa2f7', cursor='#7aa2f7', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
   kimi    = { accent='#bb9af7', cursor='#bb9af7', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
   deepseek = { accent='#9ece6a', cursor='#9ece6a', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
   gemini  = { accent='#f7768e', cursor='#f7768e', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
@@ -477,41 +479,45 @@ config.keys = {
     key = 'z', mods = 'LEADER',
     action = act.SpawnCommandInNewTab { args = { os.getenv('SHELL') or 'zsh' } },
   },
-  -- Leader + 1..7  →  switch active runner
+  -- Leader + 1..9,0  →  switch active runner
   {
     key = '1', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'claude' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'berget' } },
   },
   {
     key = '2', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'codex' } },
-  },
-  {
-    key = '3', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'copilot' } },
-  },
-  {
-    key = '4', mods = 'LEADER',
     action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'minimax' } },
   },
   {
+    key = '3', mods = 'LEADER',
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'claude' } },
+  },
+  {
+    key = '4', mods = 'LEADER',
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'codex' } },
+  },
+  {
     key = '5', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'kimi' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'copilot' } },
   },
   {
     key = '6', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'deepseek' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'kimi' } },
   },
   {
     key = '7', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'gemini' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'deepseek' } },
   },
   {
     key = '8', mods = 'LEADER',
-    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'local' } },
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'gemini' } },
   },
   {
     key = '9', mods = 'LEADER',
+    action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'local' } },
+  },
+  {
+    key = '0', mods = 'LEADER',
     action = act.SpawnCommandInNewTab { args = { mwctl_bin, 'open', '--agent', 'pool' } },
   },
   -- Leader + r  →  resume modal after sleep/wake

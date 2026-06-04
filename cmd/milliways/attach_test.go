@@ -404,7 +404,7 @@ func TestRenderDeckNavigatorShowsRequestedPanels(t *testing.T) {
 
 	wantFragments := []string{
 		"Clients",
-		"codex (preflight-only) act",
+		"codex active",
 		"↑↓ move",
 	}
 	for _, want := range wantFragments {
@@ -414,7 +414,7 @@ func TestRenderDeckNavigatorShowsRequestedPanels(t *testing.T) {
 	}
 }
 
-func TestRenderDeckNavigatorShowsClientProtectionState(t *testing.T) {
+func TestRenderDeckNavigatorOmitsSecurityAndDetailState(t *testing.T) {
 	t.Parallel()
 
 	got := stripANSI(renderDeckNavigatorSized(54, 30, []deckProviderInfo{
@@ -425,15 +425,16 @@ func TestRenderDeckNavigatorShowsClientProtectionState(t *testing.T) {
 		{ID: "unknown", AuthStatus: "ok", Status: "idle"},
 	}, 0, "claude", true, nil))
 
-	for _, want := range []string{
-		"claude (preflight-only)",
-		"minimax (protected)",
-		"custom (unprotected)",
-		"raw (unprotected)",
-		"unknown (unprotected)",
-	} {
+	for _, want := range []string{"claude active", "minimax idle", "custom idle", "raw idle", "unknown idle"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("navigator missing %q:\n%s", want, got)
+			t.Fatalf("navigator missing client row %q:\n%s", want, got)
+		}
+	}
+	for _, absent := range []string{
+		"protected", "preflight", "unprotected", "auth", "model", "turns", "quota", "SEC", "security",
+	} {
+		if strings.Contains(got, absent) {
+			t.Fatalf("navigator should not include detail %q:\n%s", absent, got)
 		}
 	}
 }
@@ -455,41 +456,49 @@ func TestRenderDeckNavigatorSizedKeepsActiveControlsVisible(t *testing.T) {
 	if lines := strings.Count(got, "\r\n"); lines > 22 {
 		t.Fatalf("rendered %d lines, want <= 22:\n%s", lines, got)
 	}
-	for _, want := range []string{"Clients", "pool", "pool (unprotected) active", "↑↓ move"} {
+	for _, want := range []string{"Clients", "pool", "pool active", "↑↓ move"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("render missing %q:\n%s", want, got)
 		}
 	}
-	for _, absent := range []string{"Status", "Observability", "daemon connected"} {
+	for _, absent := range []string{"Status", "Observability", "daemon connected", "protected", "auth", "turns"} {
 		if strings.Contains(got, absent) {
 			t.Fatalf("navigator should not duplicate %q:\n%s", absent, got)
 		}
 	}
 }
 
-func TestRenderDeckNavigatorSizedShowsSevenWhenThereIsRoom(t *testing.T) {
+func TestRenderDeckNavigatorSizedShowsOrderedClientWindow(t *testing.T) {
 	t.Parallel()
 
 	providers := []deckProviderInfo{
+		{ID: "berget", AuthStatus: "ok", Status: "idle"},
+		{ID: "minimax", AuthStatus: "ok", Status: "idle"},
 		{ID: "claude", AuthStatus: "ok", Status: "idle"},
 		{ID: "codex", AuthStatus: "ok", Status: "idle"},
 		{ID: "copilot", AuthStatus: "ok", Status: "idle"},
+		{ID: "kimi", AuthStatus: "ok", Status: "idle"},
+		{ID: "deepseek", AuthStatus: "ok", Status: "idle"},
 		{ID: "gemini", AuthStatus: "ok", Status: "idle"},
-		{ID: "minimax", AuthStatus: "ok", Status: "idle"},
 		{ID: "local", AuthStatus: "ok", Status: "idle"},
 		{ID: "pool", AuthStatus: "ok", Status: "idle"},
 	}
 
-	got := stripANSI(renderDeckNavigatorSized(44, 40, providers, 0, "", true, nil))
-	if strings.Contains(got, "clients 1-") {
-		t.Fatalf("expected all clients without a ranged heading when height allows it:\n%s", got)
+	got := stripANSI(renderDeckNavigatorSized(44, 60, providers, 0, "", true, nil))
+	if !strings.Contains(got, "Clients 1-7/10") {
+		t.Fatalf("expected ranged clients heading for scrollable list:\n%s", got)
 	}
 	if strings.Contains(got, "milliways-deck") {
 		t.Fatalf("expected no redundant deck title line:\n%s", got)
 	}
-	for _, want := range []string{"claude", "codex", "copilot", "gemini", "minimax", "local", "pool"} {
+	for _, want := range []string{"1 berget idle", "2 minimax idle", "3 claude idle", "4 codex idle", "5 copilot idle", "6 kimi idle", "7 deepseek idle"} {
 		if !strings.Contains(got, want) {
-			t.Fatalf("expected all clients, missing %q:\n%s", want, got)
+			t.Fatalf("expected ordered first-window client, missing %q:\n%s", want, got)
+		}
+	}
+	for _, absent := range []string{"8 gemini", "9 local", "10 pool"} {
+		if strings.Contains(got, absent) {
+			t.Fatalf("expected lower clients to be below the first scroll window, found %q:\n%s", absent, got)
 		}
 	}
 	// Quick Menu was removed — verify it is absent.
@@ -499,7 +508,7 @@ func TestRenderDeckNavigatorSizedShowsSevenWhenThereIsRoom(t *testing.T) {
 		}
 	}
 	// Status and observability moved to the bottom-left pane.
-	for _, absent := range []string{"Status", "Observability", "quota"} {
+	for _, absent := range []string{"Status", "Observability", "quota", "protected", "auth", "turns"} {
 		if strings.Contains(got, absent) {
 			t.Fatalf("navigator should not duplicate %q:\n%s", absent, got)
 		}
@@ -593,13 +602,18 @@ func TestRenderDeckNavigatorPlainHasNoANSIOrBoxDrawing(t *testing.T) {
 	for _, want := range []string{
 		"milliways deck",
 		"Clients",
-		"1 claude (unprotected) active auth ok model sonnet",
-		"2 codex (unprotected) thinking auth missing",
+		"1 claude active",
+		"2 codex thinking",
 		"Controls",
 		"up/down move; enter switch; q quit",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("plain deck output missing %q:\n%s", want, got)
+		}
+	}
+	for _, absent := range []string{"unprotected", "protected", "auth", "model", "turn", "quota"} {
+		if strings.Contains(got, absent) {
+			t.Fatalf("plain deck output should not include sidebar detail %q:\n%s", absent, got)
 		}
 	}
 }
@@ -613,13 +627,14 @@ func TestOrderDeckProvidersMatchesNumericShortcuts(t *testing.T) {
 		{ID: "claude"},
 		{ID: "minimax"},
 		{ID: "codex"},
+		{ID: "berget"},
 	}
 	got := orderDeckProviders(providers)
 	var ids []string
 	for _, p := range got {
 		ids = append(ids, p.ID)
 	}
-	want := []string{"claude", "codex", "minimax", "gemini", "pool"}
+	want := []string{"berget", "minimax", "claude", "codex", "gemini", "pool"}
 	if strings.Join(ids, ",") != strings.Join(want, ",") {
 		t.Fatalf("ordered providers = %v, want %v", ids, want)
 	}
@@ -644,7 +659,7 @@ func TestRenderDeckNavigatorObservabilityNoQuickMenu(t *testing.T) {
 		}
 	}
 	// Status and observability moved to the bottom-left pane.
-	for _, absent := range []string{"Observability", "Status", "quota", "auth 2/2"} {
+	for _, absent := range []string{"Observability", "Status", "quota", "auth 2/2", "protected", "unprotected", "model", "turn"} {
 		if strings.Contains(got, absent) {
 			t.Errorf("navigator should not duplicate %q:\n%s", absent, got)
 		}
@@ -661,12 +676,12 @@ func TestRenderDeckNavigatorObservabilityActiveProviders(t *testing.T) {
 	}
 	got := stripANSI(renderDeckNavigator(90, providers, 0, "claude", true, nil))
 
-	for _, want := range []string{"Clients", "claude", "codex", "gemini", "claude (unprotected) thinking"} {
+	for _, want := range []string{"Clients", "claude", "codex", "gemini", "claude thinking"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("navigator missing %q:\n%s", want, got)
 		}
 	}
-	for _, absent := range []string{"31.0k tok", "$0.87", "ttft240ms", "trabcdef12", "◌ idle"} {
+	for _, absent := range []string{"31.0k tok", "$0.87", "ttft240ms", "trabcdef12", "◌ idle", "protected", "unprotected", "auth"} {
 		if strings.Contains(got, absent) {
 			t.Errorf("observability detail %q should be in bottom pane, not navigator:\n%s", absent, got)
 		}

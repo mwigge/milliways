@@ -30,8 +30,8 @@ func TestNewAllIncludesSupportedClients(t *testing.T) {
 
 	opts := testOptions(t)
 	checks := clientprofiles.NewAll(opts)
-	if len(checks) != 9 {
-		t.Fatalf("NewAll returned %d checks, want 9", len(checks))
+	if len(checks) != 10 {
+		t.Fatalf("NewAll returned %d checks, want 10", len(checks))
 	}
 
 	workspace := t.TempDir()
@@ -43,7 +43,7 @@ func TestNewAllIncludesSupportedClients(t *testing.T) {
 			t.Fatalf("Check(%q) error = %q", result.Client, result.Error)
 		}
 	}
-	for _, want := range []string{"claude", "codex", "copilot", "gemini", "pool", "minimax", "kimi", "deepseek", "local"} {
+	for _, want := range []string{"claude", "codex", "copilot", "gemini", "pool", "berget", "minimax", "kimi", "deepseek", "local"} {
 		if !got[want] {
 			t.Fatalf("NewAll missing client %q; got %#v", want, got)
 		}
@@ -211,6 +211,7 @@ func TestAPIClientProfilesDetectKeysInLocalEnv(t *testing.T) {
 KIMI_API_KEY=sk-kimi-test
 MOONSHOT_API_KEY=sk-moonshot-test
 DEEPSEEK_API_KEY=sk-deepseek-test
+BERGET_API_KEY=sk-berget-test
 `)
 	opts := testOptions(t)
 	opts.HomeDir = home
@@ -218,9 +219,11 @@ DEEPSEEK_API_KEY=sk-deepseek-test
 
 	kimi := clientprofiles.New("kimi", opts).Check(context.Background(), workspace)
 	deepseek := clientprofiles.New("deepseek", opts).Check(context.Background(), workspace)
+	berget := clientprofiles.New("berget", opts).Check(context.Background(), workspace)
 
 	assertWarning(t, kimi, "kimi-key-in-config")
 	assertWarning(t, deepseek, "deepseek-key-in-config")
+	assertWarning(t, berget, "berget-key-in-config")
 }
 
 func TestProfilesHonorCanceledContext(t *testing.T) {

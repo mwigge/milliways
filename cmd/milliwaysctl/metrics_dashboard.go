@@ -26,7 +26,7 @@ import (
 	"github.com/mwigge/milliways/internal/rpc"
 )
 
-var dashboardAgents = []string{"claude", "codex", "copilot", "gemini", "pool", "minimax", "kimi", "deepseek", "local"}
+var dashboardAgents = []string{"berget", "minimax", "claude", "codex", "copilot", "kimi", "deepseek", "gemini", "local", "pool"}
 
 type dashWindow struct {
 	label string

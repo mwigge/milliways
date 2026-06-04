@@ -573,13 +573,6 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 		return s + strings.Repeat(" ", max(0, width-dw))
 	}
 	clientLine := func(i int, p deckProviderInfo) string {
-		auth := "auth?"
-		switch p.AuthStatus {
-		case "ok":
-			auth = "auth ok"
-		case "missing_credentials":
-			auth = "auth miss"
-		}
 		status := fallbackStatus(p.Status)
 		if p.ID == active && status == deckStatusIdle {
 			status = "active"
@@ -588,18 +581,7 @@ func renderDeckNavigatorSized(w, h int, providers []deckProviderInfo, selected i
 		if i == selected {
 			prefix = "▶ " + prefix
 		}
-		quotaStr := ""
-		if p.UsedPct > 0 {
-			quotaStr = fmt.Sprintf(" %.0f%%", p.UsedPct)
-		}
-		meta := fmt.Sprintf("turns %d%v", p.Turns, quotaStr)
-		if p.LastError != "" {
-			meta = "err"
-		} else if p.LastThink != "" {
-			meta = "think"
-		}
-		name := fmt.Sprintf("%s (%s)", p.ID, deckProtectionLabel(p))
-		return fmt.Sprintf("%s %s %s %s %s", prefix, name, status, auth, meta)
+		return fmt.Sprintf("%s %s %s", prefix, p.ID, status)
 	}
 	card := func(selected bool, provider, line string) {
 		edgeColor := dim
@@ -773,19 +755,7 @@ func renderDeckNavigatorPlain(providers []deckProviderInfo, active string, polle
 		if p.ID == active && status == deckStatusIdle {
 			status = "active"
 		}
-		auth := "auth?"
-		switch p.AuthStatus {
-		case "ok":
-			auth = "auth ok"
-		case "missing_credentials":
-			auth = "auth missing"
-		}
-		model := p.Model
-		if model == "" {
-			model = "-"
-		}
-		name := fmt.Sprintf("%s (%s)", p.ID, deckProtectionLabel(p))
-		fmt.Fprintf(&b, "  %d %s %s %s model %s turns %d\n", i+1, name, status, auth, model, p.Turns)
+		fmt.Fprintf(&b, "  %d %s %s\n", i+1, p.ID, status)
 	}
 	fmt.Fprintln(&b, "Controls")
 	fmt.Fprintln(&b, "  up/down move; enter switch; q quit")

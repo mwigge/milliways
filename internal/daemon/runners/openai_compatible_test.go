@@ -95,6 +95,77 @@ func TestRunDeepSeek_StreamsUsageAndCost(t *testing.T) {
 	}
 }
 
+func TestRunBerget_StreamsUsageWithConfiguredModel(t *testing.T) {
+	t.Setenv("BERGET_API_KEY", "test-key")
+	t.Setenv("BERGET_MODEL", "gemma-4-31B-it")
+	t.Setenv("BERGET_TOOLS", "off")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if payload["model"] != "gemma-4-31B-it" {
+			t.Fatalf("model = %v", payload["model"])
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"berget-ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":3,\"total_tokens\":7}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+	t.Setenv("BERGET_API_URL", srv.URL)
+
+	pusher := &fakePusher{}
+	obs := &mockObserver{}
+	in := make(chan []byte, 1)
+	in <- []byte("hi")
+	close(in)
+
+	done := make(chan struct{})
+	go func() {
+		RunBerget(context.Background(), in, pusher, obs)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunBerget did not return")
+	}
+
+	if events := pusher.snapshot(); len(events) == 0 || !eventsContainText(events, "berget-ok") {
+		t.Fatalf("events missing berget text: %#v", events)
+	}
+	var sawChunkEnd bool
+	for _, ev := range pusher.snapshot() {
+		if ev["t"] != "chunk_end" {
+			continue
+		}
+		sawChunkEnd = true
+		if ev["input_tokens"] != 4 || ev["output_tokens"] != 3 || ev["total_tokens"] != 7 {
+			t.Fatalf("chunk_end usage = %#v", ev)
+		}
+		if ev["cost_known"] != false {
+			t.Fatalf("cost_known = %#v, want false in %#v", ev["cost_known"], ev)
+		}
+	}
+	if !sawChunkEnd {
+		t.Fatalf("events missing chunk_end: %#v", pusher.snapshot())
+	}
+	if got := obs.counterTotal(MetricTokensIn, AgentIDBerget); got != 4 {
+		t.Fatalf("tokens_in = %v, want 4", got)
+	}
+	if got := obs.counterTotal(MetricTokensOut, AgentIDBerget); got != 3 {
+		t.Fatalf("tokens_out = %v, want 3", got)
+	}
+	if got := obs.counterCount(MetricCostUSD, AgentIDBerget); got != 0 {
+		t.Fatalf("cost observations = %d, want 0 for unknown provider price", got)
+	}
+}
+
 func TestRunKimi_AcceptsMoonshotAPIKeyFallback(t *testing.T) {
 	t.Setenv("KIMI_API_KEY", "")
 	t.Setenv("MOONSHOT_API_KEY", "moonshot-key")

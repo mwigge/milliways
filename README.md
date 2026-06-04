@@ -2,7 +2,7 @@
 
 > Secure MilliWays: all clients in one place, shared memory, shared sessions, one security layer, delivered through one security control plane.
 
-Milliways is an AI terminal for macOS and Linux. Claude, Codex, Pool, Gemini, Copilot, MiniMax, Kimi, DeepSeek, and local models all run from the same workspace, with the same observable control plane around them.
+Milliways is an AI terminal for macOS and Linux. Berget, MiniMax, Claude, Codex, Pool, Gemini, Copilot, Kimi, DeepSeek, and local models all run from the same workspace, with the same observable control plane around them.
 
 Open a tab and you're talking to a runner. Switch runners mid-session with a structured briefing from the active turn log. Hit a quota limit and milliways rotates to the next one automatically. Daemon event history, metrics, project memory, and security posture are persisted and surfaced while you work; the live REPL turn log stays in memory until it is compacted, handed off, or written through the daemon.
 
@@ -17,7 +17,7 @@ Architecture updates: [memory, persistence, and observability](docs/milliways-bl
 | Layer | What Milliways adds |
 |---|---|
 | Startup | First-workspace posture scan for package hooks, client config, task runners, IOC files/domains, user services, and macOS LaunchAgents. |
-| Client switch | Per-client checks for Claude, Codex, Copilot, Gemini, Pool, MiniMax, Kimi, DeepSeek, and local endpoints before handoff. |
+| Client switch | Per-client checks for Berget, MiniMax, Claude, Codex, Copilot, Gemini, Pool, Kimi, DeepSeek, and local endpoints before handoff. |
 | Protection state | Navigation and status surfaces show `protected` only when Milliways has real control-plane coverage for that client; otherwise they show `unprotected` or `preflight-only`. |
 | Command path | Deterministic firewall and broker shims for package installs, persistence, secret reads, exfiltration patterns, network download, shell eval, IOC hits, and complex commands. |
 | Output path | Generated/staged file planning for secrets, SAST, dependency changes, SBOM refresh, and strict/CI blocking. |
@@ -203,7 +203,7 @@ Start the AI terminal with `milliways` (default when no arguments are given). Th
 ```text
 milliways v1.0.1
   /login [client]  set up auth      /help  show all commands      /exit  quit
-  /1 claude  /2 codex  /3 copilot  /4 minimax  /5 kimi  /6 deepseek  /7 gemini  /8 local  /9 pool
+  /1 berget  /2 minimax  /3 claude  /4 codex  /5 copilot  /6 kimi  /7 deepseek  /8 gemini  /9 local  /10 pool
 
 ▶ /claude
 → claude  model: claude-opus-4-5  (claude CLI)
@@ -235,8 +235,8 @@ Tab completion is available for all commands. Type `/` and press Tab to see the 
 
 | Command | Description |
 |---------|-------------|
-| `/claude` `/codex` `/copilot` `/minimax` `/kimi` `/deepseek` `/gemini` `/local` `/pool` | Switch to a runner |
-| `/1` … `/9` | Numeric shortcut for the runner list |
+| `/berget` `/minimax` `/claude` `/codex` `/copilot` `/kimi` `/deepseek` `/gemini` `/local` `/pool` | Switch to a runner |
+| `/1` … `/10` | Numeric shortcut for the runner list |
 | `/switch <runner>` | Same as `/<runner>` |
 | `/model` | Show active model and available choices (fetched live from the provider API) |
 | `/model <name>` | Switch model for the active runner |
@@ -315,7 +315,7 @@ Some runners expose their own slash commands that milliways passes through direc
 /install copilot       # install copilot CLI
 /install gemini        # install gemini CLI
 /install local         # install local model server
-/install berget        # install berget CLI (berget.ai)
+/install berget        # configure BERGET_API_KEY (HTTP runner, no CLI)
 ```
 
 ---
@@ -369,8 +369,8 @@ See `milliways --help` for the canonical authoritative flag/subcommand list. The
 
 | Runner | Color | Best At | Cost |
 |--------|-------|---------|------|
-| minimax | purple | Reasoning, image/music/lyrics generation | Cloud |
 | berget | orange | General purpose, fast responses (berget.ai) | Cloud |
+| minimax | purple | Reasoning, image/music/lyrics generation | Cloud |
 | claude | green | Thinking, planning, code review | Cloud |
 | codex | amber | Agentic coding, tool use | Cloud |
 | kimi | blue | Long-context coding and agent tasks | Cloud |
@@ -631,7 +631,7 @@ When claude hits its limit the terminal shows:
 
 The new runner receives the turn-log briefing inside the re-dispatched user prompt. Exhausted runners are skipped automatically. The exhausted set clears on each new user prompt so runners become available again after a cooling period.
 
-For minimax, kimi, deepseek, and local (HTTP runners with a 100-turn agentic loop), hitting the limit triggers a structured summarisation before rotation:
+For berget, minimax, kimi, deepseek, and local (HTTP runners with a 100-turn agentic loop), hitting the limit triggers a structured summarisation before rotation:
 
 ```
 ────────────────────────────────────────
@@ -755,7 +755,7 @@ Milliways follows the [OpenTelemetry Semantic Conventions for Generative AI](htt
 
 ```
 gen_ai.client.operation (per dispatch)
-  gen_ai.system = "anthropic" | "openai" | "google" | "minimax" | "moonshot" | "deepseek" | "poolside" | "local"
+  gen_ai.system = "berget" | "anthropic" | "openai" | "google" | "minimax" | "moonshot" | "deepseek" | "poolside" | "local"
   gen_ai.operation.name = "chat"
   gen_ai.request.model = "claude-opus-4-5"
   gen_ai.usage.input_tokens = 1200
@@ -769,7 +769,7 @@ gen_ai.client.operation (per dispatch)
         milliways.tool.duration_ms = 142
 ```
 
-CLI runners (claude, codex, copilot, gemini, pool) emit one span per subprocess invocation. HTTP runners (minimax, kimi, deepseek, local) emit one parent span per dispatch plus one child span per tool call in the agentic loop.
+CLI runners (claude, codex, copilot, gemini, pool) emit one span per subprocess invocation. HTTP runners (berget, minimax, kimi, deepseek, local) emit one parent span per dispatch plus one child span per tool call in the agentic loop.
 
 **Configure the OTel export:**
 
@@ -1021,7 +1021,7 @@ Switch at runtime with `/local-temp 0.7` or `/local-temp default` (lets the serv
 
 Secure MilliWays is the release security theme, not a separate binary and not a repository rename: all clients in one place, shared memory, shared sessions, one security layer, delivered through one security control plane.
 
-Milliways wraps Claude, Codex, Copilot, Gemini, Pool, MiniMax, Kimi, DeepSeek, and local models behind one terminal surface. That makes the security model explicit: the runner changes, but the workspace, memory, session handoff, observability, and security posture are managed in one place.
+Milliways wraps Berget, MiniMax, Claude, Codex, Copilot, Gemini, Pool, Kimi, DeepSeek, and local models behind one terminal surface. That makes the security model explicit: the runner changes, but the workspace, memory, session handoff, observability, and security posture are managed in one place.
 
 The control-plane model is business-casual on purpose: MilliWays does the common safety work once, then shares the signal with every client. Startup scan, client profile checks, command policy, generated-output planning, scanner status, CRA evidence, and policy audit events all report through the daemon. The CLI, terminal slash commands, command shims, and observability badges read that same posture instead of asking each AI client to invent a separate view of risk.
 
@@ -1158,7 +1158,7 @@ When startup scan reports a BLOCK finding for AI-agent package compromise indica
 
 ### Tool-loop guardrails
 
-The HTTP-based runners (minimax, kimi, deepseek, local) drive an agentic tool loop that lets the model invoke `bash`, file `read`/`write`/`edit`, `grep`/`glob`, and `web_fetch` on your machine. Milliways applies guardrails by default; the bars can be raised but should not be lowered for shared or multi-tenant deployments.
+The HTTP-based runners (berget, minimax, kimi, deepseek, local) drive an agentic tool loop that lets the model invoke `bash`, file `read`/`write`/`edit`, `grep`/`glob`, and `web_fetch` on your machine. Milliways applies guardrails by default; the bars can be raised but should not be lowered for shared or multi-tenant deployments.
 
 | Constraint | Default | Override | Why |
 |---|---|---|---|
@@ -1169,7 +1169,7 @@ The HTTP-based runners (minimax, kimi, deepseek, local) drive an agentic tool lo
 | **Tool result wrapping** | `<tool_result>...</tool_result>` markers | not overridable | Tool output is wrapped + system prompt declares it untrusted, mitigating prompt-injection via tool fold-back (a model `Read`-ing an attacker-planted file can't smuggle directives). |
 | **Subprocess env** | safelisted (PATH/HOME/USER/SHELL/TERM/LANG/LC_*/TMPDIR/XDG_* + per-CLI auth keys) | edit `safeRunnerEnvKeys` in the source | claude/codex/copilot/gemini/pool subprocesses do not inherit the daemon's full env. Closes the codex-printenv exfil path. |
 | **Codex sandbox** | `--sandbox workspace-write --ask-for-approval on-request` | per-kitchen `cfg.Args` overrides win | Keeps Codex writable inside the workspace while preserving human approval prompts by default. The trade-off is documented in `SECURITY.md`. |
-| **Disable tools entirely** | n/a | `MINIMAX_TOOLS=off`, `KIMI_TOOLS=off`, `DEEPSEEK_TOOLS=off`, `MILLIWAYS_LOCAL_TOOLS=off` | Chat-only mode for the HTTP runners (debugging, comparison testing). |
+| **Disable tools entirely** | n/a | `BERGET_TOOLS=off`, `MINIMAX_TOOLS=off`, `KIMI_TOOLS=off`, `DEEPSEEK_TOOLS=off`, `MILLIWAYS_LOCAL_TOOLS=off` | Chat-only mode for the HTTP runners (debugging, comparison testing). |
 | **Agentic loop turn cap** | 100 | `MILLIWAYS_MAX_TURNS=<n>` | Hard upper bound on assistant→tool→assistant cycles per dispatch; `chunk_end` carries `max_turns_hit:true` when reached. |
 
 CLI-based runners (claude/codex/copilot/gemini/pool) inherit tool execution from their underlying CLI process. Codex's sandbox applies via the kitchen adapter / daemon-side defaults; the others manage their own filesystem/network access.

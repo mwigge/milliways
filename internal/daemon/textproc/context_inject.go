@@ -16,7 +16,7 @@
 // postprocessors that the daemon applies to bytes flowing to/from a
 // runner. The goal is to lift behaviour that used to live inside the
 // REPL (`@`-context injection, `/apply` code-block extraction) into the
-// daemon so every agent — Claude, Codex, MiniMax, Copilot, and any
+// daemon so every agent — Berget, MiniMax, Claude, Codex, Copilot, and any
 // future runner — gets the same treatment without per-runner code.
 package textproc
 

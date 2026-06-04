@@ -42,7 +42,7 @@ func TestRunInstall_UnknownClient(t *testing.T) {
 }
 
 func TestRunInstall_HTTPOnlyClient_PrintsInfo(t *testing.T) {
-	for _, name := range []string{"minimax", "pool"} {
+	for _, name := range []string{"berget", "minimax", "pool"} {
 		t.Run(name, func(t *testing.T) {
 			var stdout bytes.Buffer
 			if rc := runInstall([]string{name}, &stdout, &bytes.Buffer{}); rc != 0 {
@@ -73,7 +73,7 @@ func TestRunInstall_PrereqMissing_ReturnsError(t *testing.T) {
 func TestRunInstall_ListEnumeratesAllClients(t *testing.T) {
 	var stdout bytes.Buffer
 	runInstall([]string{"list"}, &stdout, &bytes.Buffer{})
-	for _, want := range []string{"claude", "codex", "copilot", "gemini", "local", "minimax", "kimi", "deepseek", "pool"} {
+	for _, want := range []string{"berget", "minimax", "claude", "codex", "copilot", "gemini", "local", "kimi", "deepseek", "pool"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("install list missing %q; got:\n%s", want, stdout.String())
 		}

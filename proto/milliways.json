@@ -8,9 +8,10 @@
       "type": "string",
       "description": "Stable identifier for a runner. User-facing ids are lowercase letters; reserved internal ids are prefixed with underscore.",
       "examples": [
+        "berget",
+        "minimax",
         "claude",
         "codex",
-        "minimax",
         "copilot",
         "_observability",
         "_context"
