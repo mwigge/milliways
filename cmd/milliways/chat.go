@@ -3933,6 +3933,7 @@ func (l *chatLoop) printHelp() {
 		accent, dim, reset = "", "", ""
 	}
 
+	fmt.Fprintln(l.out, "milliways chat commands")
 	fmt.Fprintf(l.out, "%sBasic%s\n", accent, reset)
 	fmt.Fprintf(l.out, "%s▸%s  %s\n", dim, reset, formatClientShortcutLine())
 	fmt.Fprintf(l.out, "%s▸%s  /switch <runner>         switch active workspace without handoff\n", dim, reset)
@@ -3948,6 +3949,7 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintf(l.out, "%s▸%s  /install-local-server [--accel vulkan|hip|cuda]  bootstrap rs-llmctl\n", dim, reset)
 	fmt.Fprintf(l.out, "%s▸%s  /install-local-gpu-server  detect NVIDIA/AMD GPU + largest fitting model\n", dim, reset)
 	fmt.Fprintf(l.out, "%s▸%s  /install-local-swap       llama-swap (hot model swap)\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /setup-local-model <repo>  download + register a GGUF model\n", dim, reset)
 	fmt.Fprintf(l.out, "%s▸%s  /list-local-models        show served models · /switch-local-server <kind>\n", dim, reset)
 	fmt.Fprintf(l.out, "%s▸%s  /local-endpoint <url>     point at a different OpenAI-compatible backend\n", dim, reset)
 	fmt.Fprintf(l.out, "%s▸%s  /local-temp <0.0–2.0|default> · /local-max-tokens <N|off> · /local-hot on|off\n", dim, reset)

@@ -568,13 +568,14 @@ func TestPrintLandingIsConciseStartupSurface(t *testing.T) {
 			t.Fatalf("landing should be concise; found %q in:\n%s", absent, got)
 		}
 	}
+	plain := stripANSISequences(got)
 	for _, want := range []string{"milliways ", "daemon", "clients", "/1 claude", "/9 pool", "/help all commands", "/agents auth status"} {
-		if !strings.Contains(got, want) {
+		if !strings.Contains(plain, want) {
 			t.Fatalf("landing missing %q; got:\n%s", want, got)
 		}
 	}
-	if lines := strings.Count(got, "\n"); lines > 6 {
-		t.Fatalf("landing line count = %d, want <= 6:\n%s", lines, got)
+	if lines := strings.Count(plain, "\n"); lines > 6 {
+		t.Fatalf("landing line count = %d, want <= 6:\n%s", lines, plain)
 	}
 }
 
@@ -593,7 +594,7 @@ func TestPrintHelpDoesNotRepeatStartupBanner(t *testing.T) {
 			t.Fatalf("help should not repeat startup banner; found %q in:\n%s", absent, got)
 		}
 	}
-	for _, want := range []string{"milliways chat commands", "Clients:", "/1 claude", "/9 pool", "Client install / upgrade:", "/install-local-server", "Terminal setup:", "cockpit-hint.txt"} {
+	for _, want := range []string{"milliways chat commands", "Basic", "Agent", "Session", "Observability", "Config", "/1 claude", "/9 pool", "/install-local-server", "/setup-local-model"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("help missing %q; got:\n%s", want, got)
 		}
