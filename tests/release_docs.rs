@@ -69,12 +69,14 @@ fn chat_shortcut_documentation_matches_current_runner_count() {
     assert_contains_all(
         README,
         &[
-            "/1 claude",
-            "/5 kimi",
-            "/6 deepseek",
-            "/8 local",
-            "/9 pool",
-            "`/1` … `/9`",
+            "/1 berget",
+            "/2 minimax",
+            "/3 claude",
+            "/6 kimi",
+            "/7 deepseek",
+            "/9 local",
+            "/10 pool",
+            "`/1` … `/10`",
         ],
     );
 }
@@ -84,7 +86,7 @@ fn runner_and_loop_contracts_are_current() {
     assert_contains_all(
         README,
         &[
-            "MiniMax, Kimi, DeepSeek, and local models",
+            "Berget, MiniMax, Claude, Codex, Pool, Gemini, Copilot, Kimi, DeepSeek, and local models",
             "Agentic loop turn cap",
             "| **Agentic loop turn cap** | 100 | `MILLIWAYS_MAX_TURNS=<n>` |",
             "Download, register for llama-swap, and activate/update the current local server when possible",
