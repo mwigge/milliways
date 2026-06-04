@@ -598,7 +598,7 @@ func chatPrompt(agentID string) string {
 }
 
 func chatPromptState(agentID, state string) string {
-	arrow := "\033[1;38;5;82m▶\033[0m"
+	arrow := "\033[38;2;122;162;247m▶\033[0m"
 	if !ansiEnabled() {
 		arrow = "▶"
 	}
@@ -1283,10 +1283,13 @@ func streamTextWidth() int {
 
 func formatThinkingLineWidth(agentID, msg string, width int) string {
 	dim := agentThinkingColor(agentID)
+	cyan := "\033[38;2;125;207;255m"
 	colorEnabled := ansiEnabled()
 	reset := "\033[0m"
 	if !colorEnabled {
 		reset = ""
+		cyan = ""
+		dim = ""
 	}
 	msg = strings.TrimSpace(msg)
 	if msg == "" {
@@ -1308,10 +1311,12 @@ func formatThinkingLineWidth(agentID, msg string, width int) string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString(dim)
 		if i == 0 {
+			b.WriteString(cyan)
 			b.WriteString(prefix)
+			b.WriteString(dim)
 		} else {
+			b.WriteString(dim)
 			b.WriteString(continuation)
 		}
 		b.WriteString(line)
@@ -3845,24 +3850,59 @@ func (l *chatLoop) printLanding() {
 	if os.Getenv("MILLIWAYS_DECK_MODE") == "1" {
 		return
 	}
-	fmt.Fprintln(l.out, "milliways "+welcomeVersion()+" — chat")
+	accent := "\033[38;2;122;162;247m"
+	dim := "\033[38;2;92;99;112m"
+	reset := "\033[0m"
+	if !ansiEnabled() {
+		accent, dim, reset = "", "", ""
+	}
+
 	state := probeDaemonForWelcome(700 * time.Millisecond)
-	fmt.Fprintln(l.out, "  daemon  "+state.daemonLine)
-	fmt.Fprintln(l.out, "  clients "+formatClientShortcutLine())
+
+	version := welcomeVersion()
+	versionLen := len(version)
+	// Box width big enough for "╭─ milliways v0.7.4 — chat ─────────────────────────╮"
+	boxWidth := 50
+	leftPad := (boxWidth - 9 - versionLen) / 2
+	rightPad := boxWidth - 9 - versionLen - leftPad
+
+	fmt.Fprintf(l.out, "%s╭─%s milliways %s%s%s %s─%s╮\n",
+		dim, strings.Repeat("─", leftPad), accent, version, dim, strings.Repeat("─", rightPad), reset)
+	fmt.Fprintf(l.out, "%s│%s  daemon   %s%s%s\n",
+		dim, reset, dim, state.daemonLine, reset)
+	fmt.Fprintf(l.out, "%s│%s  clients  %s%s%s\n",
+		dim, reset, dim, formatClientShortcutLineColored(), reset)
+
 	l.ringMu.Lock()
 	ring := append([]string(nil), l.ring...)
 	l.ringMu.Unlock()
 	if len(ring) > 0 {
-		fmt.Fprintf(l.out, "  ring    %s  (/ring to change)\n", strings.Join(ring, " → "))
+		fmt.Fprintf(l.out, "%s│%s  ring     %s%s  %s(/ring to change)%s\n",
+			dim, reset, accent, strings.Join(ring, " → "), dim, reset)
 	}
-	fmt.Fprintln(l.out, "  help    /help all commands · /agents auth status · /exit quit")
-	fmt.Fprintln(l.out)
+	fmt.Fprintf(l.out, "%s│%s  help     %s%s%s\n",
+		dim, reset, dim, "/help all commands · /agents auth status · /exit quit", reset)
+	fmt.Fprintf(l.out, "%s╰%s╯\n%s",
+		dim, strings.Repeat("─", boxWidth), reset)
 }
 
 func formatClientShortcutLine() string {
 	var parts []string
 	for i, name := range chatSwitchableAgents {
 		parts = append(parts, fmt.Sprintf("/%d %s", i+1, name))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func formatClientShortcutLineColored() string {
+	var parts []string
+	for i, name := range chatSwitchableAgents {
+		color := agentColor(name)
+		reset := "\033[0m"
+		if color == "" {
+			reset = ""
+		}
+		parts = append(parts, fmt.Sprintf("/%d %s%s%s", i+1, color, name, reset))
 	}
 	return strings.Join(parts, " · ")
 }
@@ -3886,123 +3926,71 @@ func (l *chatLoop) printQuota() {
 // printHelp shows the full command reference. Kept separate from
 // printLanding so the startup banner stays minimal.
 func (l *chatLoop) printHelp() {
-	fmt.Fprintln(l.out, "milliways chat commands")
+	accent := "\033[38;2;122;162;247m"
+	dim := "\033[38;2;92;99;112m"
+	reset := "\033[0m"
+	if !ansiEnabled() {
+		accent, dim, reset = "", "", ""
+	}
+
+	fmt.Fprintf(l.out, "%sBasic%s\n", accent, reset)
+	fmt.Fprintf(l.out, "%s▸%s  %s\n", dim, reset, formatClientShortcutLine())
+	fmt.Fprintf(l.out, "%s▸%s  /switch <runner>         switch active workspace without handoff\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /takeover <runner>       hand off active context to another runner\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /<runner> <prompt>       start work in that client without stealing focus\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  !<cmd>                  run a shell command inline\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /help | /exit            show this reference · exit (Ctrl+D also works)\n", dim, reset)
 	fmt.Fprintln(l.out)
 
-	fmt.Fprintln(l.out, "Clients:")
-	fmt.Fprintln(l.out, "  "+formatClientShortcutLine())
-	fmt.Fprintln(l.out, "  /switch <runner>              switch active workspace without handoff")
-	fmt.Fprintln(l.out, "  /takeover <runner>            hand off active context to another runner")
-	fmt.Fprintln(l.out, "  /<runner> <prompt>            start work in that client without stealing focus")
+	fmt.Fprintf(l.out, "%sAgent%s\n", accent, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /install <client>        claude · codex · copilot · minimax · kimi · deepseek · gemini · local\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /upgrade [--check|--yes|--version <tag>]  upgrade milliways\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /install-local-server [--accel vulkan|hip|cuda]  bootstrap rs-llmctl\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /install-local-gpu-server  detect NVIDIA/AMD GPU + largest fitting model\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /install-local-swap       llama-swap (hot model swap)\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /list-local-models        show served models · /switch-local-server <kind>\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /local-endpoint <url>     point at a different OpenAI-compatible backend\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /local-temp <0.0–2.0|default> · /local-max-tokens <N|off> · /local-hot on|off\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /opsx-list|status|show|archive|validate  OpenSpec workflow\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /repoindex [path]         index repo with CodeGraph\n", dim, reset)
 	fmt.Fprintln(l.out)
 
-	fmt.Fprintln(l.out, "Client install / upgrade:")
-	fmt.Fprintln(l.out, "  /install <client>             claude | codex | copilot | minimax | kimi | deepseek | gemini | local")
-	fmt.Fprintln(l.out, "  /install                      list supported install routes")
-	fmt.Fprintln(l.out, "  /upgrade                      upgrade milliways to the latest release")
-	fmt.Fprintln(l.out, "  /upgrade --check              check if a newer version is available (no install)")
-	fmt.Fprintln(l.out, "  /upgrade --yes                upgrade without confirmation prompt")
-	fmt.Fprintln(l.out, "  /upgrade --version <tag>      upgrade to a specific version (e.g. v1.3.0)")
+	fmt.Fprintf(l.out, "%sSession%s\n", accent, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /model [name]             list/switch models for active runner\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /agents                  list clients with auth status\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /quota                   current quota snapshot\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /approvals                list pending approvals · /approve|/deny <id> [reason]\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /login [client]           auth setup — API key prompt or CLI steps\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /metrics                  live token/cost/ops dashboard\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /briefing                 re-show last /takeover handoff\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /scan                    scan workspace CVEs · /security <status|cra-scaffold|client|command-check|warnings>\n", dim, reset)
 	fmt.Fprintln(l.out)
 
-	fmt.Fprintln(l.out, "Terminal setup:")
-	fmt.Fprintln(l.out, "  wezterm config                ~/.local/share/milliways/wezterm.lua")
-	fmt.Fprintf(l.out, "  setup note                    %s\n", cockpitHintPath(stateDir()))
-	fmt.Fprintln(l.out, "  relink config                 ln -sf ~/.local/share/milliways/wezterm.lua ~/.config/wezterm/wezterm.lua")
+	fmt.Fprintf(l.out, "%sObservability%s\n", accent, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /parallel [--watch] [--providers p1,p2] <prompt>  run across providers concurrently\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /parallel-view [--watch] <group-id>  side-by-side + consensus\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /blocks                   show prompt/response blocks with IDs\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /jump <id>                open a full block\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /search <text> [client:<name>]  search blocks\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /copy-last [response|prompt|block|code]  copy via terminal clipboard\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /history [limit] [client]  show session/saved runner history\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /cost                    token usage per runner (last hour)\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /trace [limit]            show recent daemon/agent spans\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /changes | /diff         show tracked agent changes (no-op when storage absent)\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /retry                   re-send last user prompt\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /redo                    replay stored redo (no-op when absent)\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /undo                    drop last user+assistant turn pair (local context only)\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /ring                    show auto-rotation ring · /ring <r1,r2,…>|off\n", dim, reset)
 	fmt.Fprintln(l.out)
 
-	fmt.Fprintln(l.out, "Local-model bootstrap:")
-	fmt.Fprintln(l.out, "  /install-local-server         install rs-llmctl + default coder model")
-	fmt.Fprintln(l.out, "  /install-local-gpu-server     detect NVIDIA/AMD GPU + install largest fitting model")
-	fmt.Fprintln(l.out, "    --accel vulkan              force Vulkan GPU backend")
-	fmt.Fprintln(l.out, "    --accel hip                 force AMD ROCm/HIP backend")
-	fmt.Fprintln(l.out, "    --accel cuda                force NVIDIA CUDA backend")
-	fmt.Fprintln(l.out, "  /install-local-swap           install llama-swap (hot model swap)")
-	fmt.Fprintln(l.out, "  /list-local-models            show models the active backend serves")
-	fmt.Fprintln(l.out, "  /switch-local-server <kind>   rs-llmctl | llama-server | llama-swap | ollama | vllm | lmstudio")
-	fmt.Fprintln(l.out, "  /download-local-model <repo>  fetch a GGUF from HuggingFace")
-	fmt.Fprintln(l.out, "  /setup-local-model <repo>     download, register, and activate when possible")
-	fmt.Fprintln(l.out)
-	fmt.Fprintln(l.out, "Local-model tuning (runtime, survives daemon restart):")
-	fmt.Fprintln(l.out, "  /local-endpoint <url>         point at a different OpenAI-compatible backend")
-	fmt.Fprintln(l.out, "  /local-temp <0.0–2.0|default> sampling temperature; default lets the server choose")
-	fmt.Fprintln(l.out, "  /local-max-tokens <N|off>     cap reply length; off means unlimited")
-	fmt.Fprintln(l.out, "  /local-hot on|off             keep models resident in llama-swap (on) or TTL-evict (off)")
-	fmt.Fprintln(l.out)
-	fmt.Fprintln(l.out, "Runner PATH:")
-	fmt.Fprintln(l.out, "  /path                         show the PATH used by all runner subprocesses")
-	fmt.Fprintln(l.out, "  /path <value>                 set a persistent PATH override (useful when launched from GUI)")
-	fmt.Fprintln(l.out, "  /path reset                   remove the override, fall back to inherited PATH")
-	fmt.Fprintln(l.out)
-
-	fmt.Fprintln(l.out, "OpenSpec:")
-	fmt.Fprintln(l.out, "  /opsx-list                    list openspec changes")
-	fmt.Fprintln(l.out, "  /opsx-status <change>         show change progress")
-	fmt.Fprintln(l.out, "  /opsx-show <change>           show full change detail")
-	fmt.Fprintln(l.out, "  /opsx-archive <change>        archive a completed change")
-	fmt.Fprintln(l.out, "  /opsx-validate <change>       validate a change's spec")
-	fmt.Fprintln(l.out)
-
-	fmt.Fprintln(l.out, "CodeGraph:")
-	fmt.Fprintln(l.out, "  /repoindex [path]             index the current repo with CodeGraph (default: cwd)")
-	fmt.Fprintln(l.out)
-
-	fmt.Fprintln(l.out, "Session:")
-	fmt.Fprintln(l.out, "  /model                        list models for active runner + switch instructions")
-	fmt.Fprintln(l.out, "  /model <name>                 switch model live (minimax / kimi / deepseek / local)")
-	fmt.Fprintln(l.out, "  /agents                       list clients with live auth status")
-	fmt.Fprintln(l.out, "  /quota                        current quota snapshot")
-	_, _ = fmt.Fprintln(l.out, "  /approvals                    list pending live tool approvals")
-	_, _ = fmt.Fprintln(l.out, "  /approve <id> [reason]        approve a pending tool request")
-	_, _ = fmt.Fprintln(l.out, "  /deny <id> [reason]           deny a pending tool request")
-	fmt.Fprintln(l.out, "  /metrics                      live metrics dashboard (token usage, costs, ops)")
-	fmt.Fprintln(l.out, "  /briefing                     re-show the full context handed off on last /takeover")
-	fmt.Fprintln(l.out, "  /login [client]               auth setup — API key prompt or CLI steps")
-	fmt.Fprintln(l.out, "  /scan                         scan workspace dependencies for known CVEs")
-	fmt.Fprintln(l.out, "  /security status              show Secure MilliWays posture")
-	fmt.Fprintln(l.out, "  /security cra-scaffold        create missing CRA evidence files")
-	fmt.Fprintln(l.out, "  /security client <name>       check per-client security profile")
-	fmt.Fprintln(l.out, "  /security command-check -- <cmd>  evaluate a command before running it")
-	fmt.Fprintln(l.out, "  /security warnings            show active security warnings")
-	fmt.Fprintln(l.out, "  /help                         show this command reference")
-	fmt.Fprintln(l.out, "  /exit                         exit (Ctrl+D also works)")
-	fmt.Fprintln(l.out, "  !<cmd>                        run a shell command inline")
-	fmt.Fprintln(l.out)
-	fmt.Fprintln(l.out, "Parallel dispatch:")
-	fmt.Fprintln(l.out, "  /parallel [--watch] [--providers list] <prompt>  run prompt across multiple providers concurrently")
-	fmt.Fprintln(l.out, "    providers: comma-separated list, e.g. claude,codex,local")
-	fmt.Fprintln(l.out, "    omit --providers to use all available providers")
-	fmt.Fprintln(l.out, "    --watch renders live grouped output, agreement, differences, and consensus")
-	fmt.Fprintln(l.out, "  /parallel-view [--watch] <group-id>  side-by-side provider output + consensus")
-	fmt.Fprintln(l.out)
-
-	fmt.Fprintln(l.out, "Context management:")
-	fmt.Fprintln(l.out, "  /blocks                       show prompt/response blocks with IDs")
-	fmt.Fprintln(l.out, "  /jump <id>                    open a full block")
-	fmt.Fprintln(l.out, "  /search <text> [client:<name>] search blocks")
-	fmt.Fprintln(l.out, "  /copy-last [response|prompt|block|code] copy last block via terminal clipboard")
-	fmt.Fprintln(l.out, "  /history [limit] [client]      show session and saved runner history")
-	fmt.Fprintln(l.out, "  /cost                         token usage per runner (last hour)")
-	fmt.Fprintln(l.out, "  /trace [limit]                show recent daemon/agent spans")
-	fmt.Fprintln(l.out, "  /changes                      show tracked coding-agent changes (no-op when storage is absent)")
-	fmt.Fprintln(l.out, "  /diff                         show tracked coding-agent diff (no-op when storage is absent)")
-	fmt.Fprintln(l.out, "  /retry                        re-send the last user prompt")
-	fmt.Fprintln(l.out, "  /redo                         replay a stored redo when available (no-op when storage is absent)")
-	fmt.Fprintln(l.out, "  /undo                         drop the last user+assistant turn pair from local context only; does not revert files")
-	fmt.Fprintln(l.out)
-
-	fmt.Fprintln(l.out, "Runner rotation:")
-	fmt.Fprintln(l.out, "  /ring                         show the current rotation ring and exhausted runners")
-	fmt.Fprintln(l.out, "  /ring <r1,r2,...>             set the auto-rotation order (e.g. /ring claude,codex,minimax)")
-	fmt.Fprintln(l.out, "  /ring off                     disable auto-rotation")
-	fmt.Fprintln(l.out)
-
-	fmt.Fprintln(l.out, "Artifacts (all runners):")
-	fmt.Fprintln(l.out, "  /pptx <topic>                 generate a PowerPoint via python-pptx (saved to cwd)")
-	fmt.Fprintln(l.out, "  /drawio <topic>               generate a draw.io diagram XML (saved to cwd)")
-	fmt.Fprintln(l.out, "  /review [focus]               code review the current git diff")
-	fmt.Fprintln(l.out, "  /compact                      summarise + compact the session context")
-	fmt.Fprintln(l.out, "  /clear                        wipe the local context window")
+	fmt.Fprintf(l.out, "%sConfig%s\n", accent, reset)
+	fmt.Fprintf(l.out, "%s▸%s  wezterm config           %s\n", dim, reset, "~/.local/share/milliways/wezterm.lua")
+	fmt.Fprintf(l.out, "%s▸%s  /path [value|reset]      show/set/reset PATH override for runner subprocesses\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /pptx <topic>            generate PowerPoint (saved to cwd)\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /drawio <topic>          generate draw.io XML (saved to cwd)\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /review [focus]          code review current git diff\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /compact                 summarise + compact session context\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /clear                   wipe the local context window\n", dim, reset)
 	fmt.Fprintln(l.out)
 }
 

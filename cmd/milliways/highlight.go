@@ -80,12 +80,12 @@ func renderInlinePlainText(text string) string {
 
 func renderDiagnosticWord(match string) string {
 	lower := strings.ToLower(match)
-	color := "\033[38;5;81m"
+	color := "\033[38;2;133;190;74m"
 	switch {
 	case strings.HasPrefix(lower, "error"), strings.HasPrefix(lower, "failed"), strings.HasPrefix(lower, "failure"):
-		color = "\033[38;5;203m"
+		color = "\033[38;2;247;118;142m"
 	case strings.HasPrefix(lower, "warn"):
-		color = "\033[38;5;221m"
+		color = "\033[38;2;224;175;104m"
 	}
 	return color + "\033[1m" + match + "\033[0m"
 }
@@ -337,15 +337,15 @@ func renderHeadingLine(trimmed string, addNewline bool) (string, bool) {
 	width := plainMarkdownWrapWidth()
 	switch level {
 	case 1:
-		style = "\033[1;38;5;255m" // bold bright white
+		style = "\033[38;2;122;162;247m"
 		ruleChar = "═"
 	case 2:
-		style = "\033[1;38;5;252m" // bold light gray
+		style = "\033[38;2;187;154;247m"
 		ruleChar = "─"
 	case 3:
-		style = "\033[1;38;5;249m" // bold medium gray
+		style = "\033[38;2;158;206;106m"
 	default:
-		style = "\033[38;5;246m" // dim gray, no bold
+		style = "\033[38;2;192;202;245m"
 	}
 	reset := "\033[0m"
 	if !ansiEnabled() {
@@ -360,7 +360,7 @@ func renderHeadingLine(trimmed string, addNewline bool) (string, bool) {
 		ruleWidth := min(displayWidth(text), width)
 		b.WriteByte('\n')
 		if ansiEnabled() {
-			b.WriteString("\033[38;5;240m")
+			b.WriteString("\033[38;2;92;99;112m")
 		}
 		b.WriteString(strings.Repeat(ruleChar, ruleWidth))
 		if ansiEnabled() {
@@ -1026,8 +1026,8 @@ func codePanelLabel(lang string) string {
 func renderCodePanelTop(lang string, contentWidth int) string {
 	label := truncateCodePanelLabel(codePanelLabel(lang), contentWidth+2)
 	const (
-		border = "\033[38;5;243m"
-		title  = "\033[38;5;252m"
+		border = "\033[38;2;92;99;112m"
+		title  = "\033[38;2;122;162;247m"
 		reset  = "\033[0m"
 	)
 	var b strings.Builder
@@ -1055,7 +1055,7 @@ func renderHighlightedCodePanelLine(line string, contentWidth int) string {
 	line = truncateANSIVisible(line, contentWidth)
 	pad := contentWidth - displayWidth(line)
 	const (
-		border = "\033[38;5;243m"
+		border = "\033[38;2;92;99;112m"
 		reset  = "\033[0m"
 	)
 	var b strings.Builder
@@ -1077,7 +1077,7 @@ func renderHighlightedCodePanelLine(line string, contentWidth int) string {
 
 func renderCodePanelBottom(contentWidth int) string {
 	const (
-		border = "\033[38;5;243m"
+		border = "\033[38;2;92;99;112m"
 		reset  = "\033[0m"
 	)
 	var b strings.Builder
