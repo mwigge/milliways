@@ -33,31 +33,48 @@ config.unix_domains = {}
 
 -- ── Appearance ──────────────────────────────────────────────────────────────
 
--- Black background, phosphor green text — matches the terminal's own color palette.
+-- TokyoNight-Storm palette — soft blue-white on dark navy.
 config.colors = {
-  foreground = '#4db51f',   -- phosphor green
-  background = '#000000',
-  cursor_bg  = '#4db51f',
-  cursor_fg  = '#000000',
-  selection_bg = '#1a3d0a',
-  selection_fg = '#80d040',
+  foreground = '#c0caf5',   -- soft blue-white
+  background = '#1a1b26',   -- dark navy
+  cursor_bg  = '#7aa2f7',  -- accent blue
+  cursor_fg  = '#1a1b26',
+  cursor_border = '#7aa2f7',
+  selection_bg = '#292e42', -- dark selection
+  selection_fg = '#c0caf5', -- light text
   ansi = {
-    '#1a1a1a', '#cc2222', '#4db51f', '#9a8a00',
-    '#1a6abf', '#7a3faa', '#1a9090', '#b0b0a0',
+    '#1a1b26',  -- black (background)
+    '#f7768e',  -- red (error)
+    '#9ece6a',  -- green (ok)
+    '#e0af68',  -- yellow (warn)
+    '#7aa2f7',  -- blue (accent)
+    '#bb9af7',  -- magenta
+    '#7dcfff',  -- cyan
+    '#c0caf5',  -- white (foreground)
   },
   brights = {
-    '#3a3a3a', '#ee4444', '#80d040', '#cfc000',
-    '#4499ee', '#aa66dd', '#22bbbb', '#e8e8d8',
+    '#5c6370',  -- bright black (dim)
+    '#f7768e',  -- bright red
+    '#9ece6a',  -- bright green
+    '#e0af68',  -- bright yellow
+    '#7aa2f7',  -- bright blue
+    '#bb9af7',  -- bright magenta
+    '#7dcfff',  -- bright cyan
+    '#acb0c0',  -- bright white
   },
 }
-config.font               = wezterm.font('JetBrains Mono', { weight = 'Regular' })
+config.font               = wezterm.font_with_fallback({
+  { family = 'JetBrains Mono', weight = 'Medium', stretch = 'Normal', style = 'Normal',
+    font_features = { { name = 'Calt', value = 1 }, { name = 'Liga', value = 1 } } },
+})
 config.font_size          = 12.0
 config.window_decorations = 'TITLE | RESIZE'
-config.hide_tab_bar_if_only_one_tab = false
-config.use_fancy_tab_bar  = false
+config.window_background_appearance = 'rgba(26,27,38,0.85)',
+config.hide_tab_bar_if_only_one_tab = true,
+config.use_fancy_tab_bar  = true,
 config.tab_bar_at_bottom  = false
 config.status_update_interval = 500
-config.window_padding = { left = 6, right = 6, top = 4, bottom = 4 }
+config.window_padding = { left = 12, right = 12, top = 8, bottom = 8 }
 config.check_for_updates = false
 config.bypass_mouse_reporting_modifiers = 'SHIFT'
 
@@ -185,17 +202,17 @@ local abbrs = {
 -- tab_fg  = active tab foreground
 -- bar_bg  = status bar background when this client is active
 local client_themes = {
-  claude  = { accent='#f4f1e8', cursor='#f4f1e8', tab_bg='#24231f', tab_fg='#fffaf0', bar_bg='#151410' },
-  codex   = { accent='#ffb454', cursor='#ffb454', tab_bg='#2b1a00', tab_fg='#ffd08a', bar_bg='#180f00' },
-  copilot = { accent='#5f8cff', cursor='#5f8cff', tab_bg='#071633', tab_fg='#a9c2ff', bar_bg='#040b1a' },
-  minimax = { accent='#af87d7', cursor='#af87d7', tab_bg='#21132f', tab_fg='#d7b8ff', bar_bg='#130a1c' },
-  kimi    = { accent='#87afff', cursor='#87afff', tab_bg='#061733', tab_fg='#b8d2ff', bar_bg='#030b1a' },
-  deepseek = { accent='#00d75f', cursor='#00d75f', tab_bg='#052414', tab_fg='#8affb8', bar_bg='#021209' },
-  gemini  = { accent='#ff8700', cursor='#ff8700', tab_bg='#2b1300', tab_fg='#ffbd66', bar_bg='#170a00' },
-  ['local'] = { accent='#d70000', cursor='#d70000', tab_bg='#2a0000', tab_fg='#ff8a8a', bar_bg='#150000' },
-  pool    = { accent='#87d7ff', cursor='#87d7ff', tab_bg='#061c2a', tab_fg='#b8e7ff', bar_bg='#031018' },
+  claude  = { accent='#7dcfff', cursor='#7dcfff', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
+  codex   = { accent='#9ece6a', cursor='#9ece6a', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
+  copilot = { accent='#e0af68', cursor='#e0af68', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
+  minimax = { accent='#7aa2f7', cursor='#7aa2f7', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
+  kimi    = { accent='#bb9af7', cursor='#bb9af7', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
+  deepseek = { accent='#9ece6a', cursor='#9ece6a', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
+  gemini  = { accent='#f7768e', cursor='#f7768e', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
+  ['local'] = { accent='#85b94e', cursor='#85b94e', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
+  pool    = { accent='#5c6370', cursor='#5c6370', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' },
 }
-local default_theme = { accent='#4db51f', cursor='#4db51f', tab_bg='#1d2021', tab_fg='#ebdbb2', bar_bg='#1d2021' }
+local default_theme = { accent='#7aa2f7', cursor='#7aa2f7', tab_bg='#1a1b26', tab_fg='#c0caf5', bar_bg='#16161e' }
 
 local last_client = ''
 local last_security_banner_key = ''
@@ -364,8 +381,8 @@ wezterm.on('update-status', function(window, _pane)
             intensity = 'Bold',
           },
           inactive_tab = {
-            bg_color = '#1d2021',
-            fg_color = '#7c6f64',
+            bg_color = '#1a1b26',
+            fg_color = '#5c6370',
           },
         },
       },
@@ -380,58 +397,58 @@ wezterm.on('update-status', function(window, _pane)
   if woke_ago then
     local mins = math.floor(woke_ago / 60)
     local label = mins > 0 and (mins .. 'm') or '<1m'
-    table.insert(cells, { Foreground = { Color = '#fe8019' } })
+    table.insert(cells, { Foreground = { Color = '#e0af68' } })
     table.insert(cells, { Text = ' ⚡ woke ' .. label .. ' ago ' })
-    table.insert(cells, { Foreground = { Color = '#504945' } })
-    table.insert(cells, { Text = '│' })
+    table.insert(cells, { Foreground = { Color = '#5c6370' } })
+    table.insert(cells, { Text = '  ' })
   end
 
-  table.insert(cells, { Foreground = { Color = '#83a598' } })
+  table.insert(cells, { Foreground = { Color = '#5c6370' } })
   table.insert(cells, { Text = ' ≈≈ MW ' .. ver .. ' ' })
-  table.insert(cells, { Foreground = { Color = '#504945' } })
-  table.insert(cells, { Text = '│' })
-  table.insert(cells, { Foreground = { Color = '#a89984' } })
+  table.insert(cells, { Foreground = { Color = '#5c6370' } })
+  table.insert(cells, { Text = '  ' })
+  table.insert(cells, { Foreground = { Color = '#acb0c0' } })
   table.insert(cells, { Text = ' ' .. cwd .. ' ' })
-  table.insert(cells, { Foreground = { Color = '#504945' } })
-  table.insert(cells, { Text = '│' })
+  table.insert(cells, { Foreground = { Color = '#5c6370' } })
+  table.insert(cells, { Text = '  ' })
 
   if current ~= '' then
     table.insert(cells, { Foreground = { Color = theme.accent } })
     table.insert(cells, { Text = ' ●' .. current .. ' ' })
   else
-    table.insert(cells, { Foreground = { Color = '#504945' } })
+    table.insert(cells, { Foreground = { Color = '#5c6370' } })
     table.insert(cells, { Text = ' ○— ' })
   end
 
   if tokens_in > 0 or tokens_out > 0 or cost > 0 then
-    table.insert(cells, { Foreground = { Color = '#504945' } })
-    table.insert(cells, { Text = '│' })
-    table.insert(cells, { Foreground = { Color = '#8ec07c' } })
+    table.insert(cells, { Foreground = { Color = '#5c6370' } })
+    table.insert(cells, { Text = '  ' })
+    table.insert(cells, { Foreground = { Color = '#9ece6a' } })
     table.insert(cells, { Text = ' ' .. format_count(tokens_in) .. '↑/' .. format_count(tokens_out) .. '↓ tok ' })
     table.insert(cells, { Foreground = { Color = theme.accent } })
     table.insert(cells, { Text = format_cost(cost) .. ' ' })
   end
 
   if errors > 0 then
-    table.insert(cells, { Foreground = { Color = '#504945' } })
-    table.insert(cells, { Text = '│' })
-    table.insert(cells, { Foreground = { Color = '#fb4934' } })
+    table.insert(cells, { Foreground = { Color = '#5c6370' } })
+    table.insert(cells, { Text = '  ' })
+    table.insert(cells, { Foreground = { Color = '#f7768e' } })
     table.insert(cells, { Text = ' err:' .. tostring(math.floor(errors)) .. ' ' })
   end
 
   if sec then
-    table.insert(cells, { Foreground = { Color = '#504945' } })
-    table.insert(cells, { Text = '│' })
+    table.insert(cells, { Foreground = { Color = '#5c6370' } })
+    table.insert(cells, { Text = '  ' })
     table.insert(cells, { Foreground = { Color = sec.color } })
     table.insert(cells, { Text = ' ' .. sec.label .. ' ' })
   end
 
-  table.insert(cells, { Foreground = { Color = '#504945' } })
-  table.insert(cells, { Text = '│' })
+  table.insert(cells, { Foreground = { Color = '#5c6370' } })
+  table.insert(cells, { Text = '  ' })
 
   for i, agent in ipairs(agents) do
     local abbr = abbrs[agent] or agent:sub(1, 1):upper()
-    local fg   = (agent == current) and theme.accent or '#7c6f64'
+    local fg   = (agent == current) and theme.accent or '#5c6370'
     table.insert(cells, { Foreground = { Color = fg } })
     table.insert(cells, { Text = ' ' .. i .. ':' .. abbr })
   end
@@ -698,8 +715,8 @@ wezterm.on('format-tab-title', function(tab, _tabs, _panes, _cfg, _hover, max_wi
   title = ' ' .. title .. ' '
   local is_active = tab.is_active
   return {
-    { Background = { Color = is_active and '#504945' or '#1d2021' } },
-    { Foreground = { Color = is_active and '#ebdbb2' or '#a89984' } },
+    { Background = { Color = is_active and '#5c6370' or '#1a1b26' } },
+    { Foreground = { Color = is_active and '#c0caf5' or '#5c6370' } },
     { Text = title },
   }
 end)
