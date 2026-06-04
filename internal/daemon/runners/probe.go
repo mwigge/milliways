@@ -46,8 +46,8 @@ type AgentInfo struct {
 // return immediately.
 func Probe(ctx context.Context) []AgentInfo {
 	probes := []func(context.Context) AgentInfo{
-		probeBerget,
 		probeMinimax,
+		probeBerget,
 		probeClaude,
 		probeCodex,
 		probeCopilot,

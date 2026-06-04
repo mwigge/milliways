@@ -69,7 +69,7 @@ config.font               = wezterm.font_with_fallback({
 })
 config.font_size          = 12.0
 config.window_decorations = 'TITLE | RESIZE'
-config.window_background_appearance = 'rgba(26,27,38,0.85)'
+config.window_background_opacity = 0.85
 config.hide_tab_bar_if_only_one_tab = true
 config.use_fancy_tab_bar  = true
 config.tab_bar_at_bottom  = false
@@ -787,7 +787,7 @@ wezterm.on('gui-startup', function(cmd)
   if deck_pane then
     deck_pane:split {
       direction = 'Bottom',
-      size = 0.25,
+      size = 0.50,
       args = { mwctl_bin, 'observe-render' },
       set_environment_variables = pane_env,
     }

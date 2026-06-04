@@ -95,6 +95,7 @@ var historyAgents = map[string]bool{
 	"gemini":   true,
 	"pool":     true,
 	"minimax":  true,
+	"berget":   true,
 	"kimi":     true,
 	"deepseek": true,
 	"local":    true,

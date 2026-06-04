@@ -20,10 +20,12 @@ func TestLinuxDeckLayoutInvariants(t *testing.T) {
 		"args = { mwctl_bin, 'open', '--agent', 'berget' }",
 		"key = '0', mods = 'LEADER'",
 		"args = { mwctl_bin, 'open', '--agent', 'pool' }",
+		"window_background_opacity = 0.85",
 		"direction = 'Left'",
 		"size = 0.20",
 		"args = { mw_bin, 'attach', '--deck', '--right-pane', main_pane_id }",
 		"direction = 'Bottom'",
+		"size = 0.50",
 		"args = { mwctl_bin, 'observe-render' }",
 		"apply_startup_window_state(window)",
 		":maximize()",
@@ -39,6 +41,7 @@ func TestLinuxDeckLayoutInvariants(t *testing.T) {
 	for _, blocked := range []string{
 		"toggle_fullscreen",
 		"MILLIWAYS_NO_FULLSCREEN",
+		"window_background_appearance",
 	} {
 		if strings.Contains(lua, blocked) {
 			t.Fatalf("milliways.lua uses blocking fullscreen invariant %q", blocked)

@@ -76,6 +76,14 @@ func TestBuildStatusIncludesClientEnforcement(t *testing.T) {
 	}
 }
 
+func TestHistoryAgentsIncludesFirstClassRunners(t *testing.T) {
+	for _, agent := range []string{"minimax", "berget", "claude", "codex", "copilot", "kimi", "deepseek", "gemini", "local", "pool"} {
+		if !historyAgents[agent] {
+			t.Fatalf("historyAgents missing %q", agent)
+		}
+	}
+}
+
 func TestCapabilitiesGetReportsClientToolContracts(t *testing.T) {
 	runners.SetBrokerPathProvider(nil)
 	t.Cleanup(func() { runners.SetBrokerPathProvider(nil) })

@@ -18,6 +18,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -90,6 +91,18 @@ func TestProbeBergetUsesAPIKey(t *testing.T) {
 	}
 	if info.AuthStatus != "ok" {
 		t.Fatalf("probeBerget AuthStatus = %q, want ok", info.AuthStatus)
+	}
+}
+
+func TestProbeOrderMatchesDeckShortcuts(t *testing.T) {
+	gotInfos := Probe(context.Background())
+	got := make([]string, 0, len(gotInfos))
+	for _, info := range gotInfos {
+		got = append(got, info.ID)
+	}
+	want := []string{"minimax", "berget", "claude", "codex", "copilot", "kimi", "deepseek", "gemini", "local", "pool"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("Probe order = %v, want %v", got, want)
 	}
 }
 
