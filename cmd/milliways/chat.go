@@ -132,10 +132,9 @@ func friendlyError(prefix string, rawMsg string, err error) string {
 		return msg
 	}
 
-	// RPC errors
-	if strings.Contains(lowerRaw, "rpc error") || strings.Contains(lowerRaw, "call") {
-		msg = prefix + "request queued"
-		msg += "\n  → Waiting for current response to complete; your message will be processed next"
+	if strings.Contains(lowerRaw, "agent turn already in progress") {
+		msg = prefix + "response still in progress"
+		msg += "\n  → Wait for the current response, switch to another active client, or use /cancel"
 		return msg
 	}
 
@@ -164,6 +163,18 @@ var chatSwitchableAgents = []string{
 	"gemini",   // /8
 	"local",    // /9
 	"pool",     // /10
+}
+
+func chatNoClientPickedHint() string {
+	limit := min(3, len(chatSwitchableAgents))
+	examples := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		examples = append(examples, fmt.Sprintf("/%d (%s)", i+1, chatSwitchableAgents[i]))
+	}
+	if len(examples) == 0 {
+		return "✗ no client picked yet — use /help for the full list"
+	}
+	return "✗ no client picked yet — type " + strings.Join(examples, ", ") + " etc, or /help for the full list"
 }
 
 // chatCtlAliases maps user-facing slash commands to the milliwaysctl
@@ -3567,7 +3578,7 @@ func (l *chatLoop) handleLocalHot(args string) {
 // the next runner.
 func (l *chatLoop) handlePrompt(prompt string) {
 	if l.sess == nil {
-		fmt.Fprintln(l.errw, "✗ no client picked yet — type /1 (claude), /2 (codex), /4 (minimax), /8 (local) etc, or /help for the full list")
+		fmt.Fprintln(l.errw, chatNoClientPickedHint())
 		return
 	}
 	l.ringMu.Lock()

@@ -502,6 +502,27 @@ func TestFriendlyErrorRewritesDecodeInternals(t *testing.T) {
 	}
 }
 
+func TestFriendlyErrorDoesNotMaskGenericRPCErrorsAsQueued(t *testing.T) {
+	got := friendlyError("✗ open minimax: ", "", fmt.Errorf("rpc error -32602: security startup gate: context deadline exceeded"))
+	if strings.Contains(got, "request queued") {
+		t.Fatalf("friendlyError masked RPC error as queued: %q", got)
+	}
+	for _, want := range []string{"security startup gate", "context deadline exceeded"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("friendlyError missing %q in %q", want, got)
+		}
+	}
+}
+
+func TestFriendlyErrorExplainsTurnAlreadyInProgress(t *testing.T) {
+	got := friendlyError("✗ send: ", "", fmt.Errorf("rpc error -32602: agent turn already in progress"))
+	for _, want := range []string{"response still in progress", "/cancel"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("friendlyError missing %q in %q", want, got)
+		}
+	}
+}
+
 // TestChatHelpEnumeratesKnownCommands asserts /help lists the user-facing
 // surface (numeric runners, named runners, local-bootstrap, opsx,
 // switch/agents/quota/help/exit, !cmd). Regression guard against
@@ -1295,6 +1316,20 @@ func TestChatSwitchableAgentsCoversDaemonRegistry(t *testing.T) {
 	}
 	for missing := range expected {
 		t.Errorf("chatSwitchableAgents missing %q", missing)
+	}
+}
+
+func TestNoClientPickedHintUsesCurrentShortcutOrder(t *testing.T) {
+	got := chatNoClientPickedHint()
+	for _, want := range []string{"/1 (minimax)", "/2 (berget)", "/3 (claude)"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("hint missing %q: %s", want, got)
+		}
+	}
+	for _, stale := range []string{"/1 (claude)", "/2 (codex)", "/4 (minimax)"} {
+		if strings.Contains(got, stale) {
+			t.Fatalf("hint contains stale shortcut %q: %s", stale, got)
+		}
 	}
 }
 

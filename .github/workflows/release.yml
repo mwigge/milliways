@@ -90,9 +90,11 @@ jobs:
           grep -q '^Exec=.*milliways-term --config-file ' "$root/share/applications/dev.milliways.MilliWays.desktop"
           grep -q "direction = 'Left'" "$root/share/milliways/wezterm.lua"
           grep -q "direction = 'Bottom'" "$root/share/milliways/wezterm.lua"
-          grep -q "size = 0.25" "$root/share/milliways/wezterm.lua"
+          grep -q "size = 0.50" "$root/share/milliways/wezterm.lua"
+          grep -q "window_background_opacity = 0.85" "$root/share/milliways/wezterm.lua"
           grep -q "args = { mw_bin, 'attach', '--deck', '--right-pane', main_pane_id }" "$root/share/milliways/wezterm.lua"
           grep -q "args = { mwctl_bin, 'observe-render' }" "$root/share/milliways/wezterm.lua"
+          ! grep -q "window_background_appearance" "$root/share/milliways/wezterm.lua"
           ! grep -q "MILLIWAYS_WEZTERM_CLI" "$root/share/milliways/wezterm.lua"
 
       - name: Run Secure MilliWays release smoke

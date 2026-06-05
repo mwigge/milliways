@@ -194,8 +194,13 @@ func (s *Server) ensureStartupSecurityGate(ctx context.Context, agentID, workspa
 	}
 	_, _, required := startupScanState(status, startupScanConfigHash(workspace))
 	if required {
-		if _, err := s.runStartupSecurityScan(ctx, workspace, mode == security.ModeStrict || mode == security.ModeCI); err != nil {
-			return workspace, fmt.Errorf("security startup gate: %w", err)
+		strictGate := mode == security.ModeStrict || mode == security.ModeCI
+		if _, err := s.runStartupSecurityScan(ctx, workspace, strictGate); err != nil {
+			if strictGate {
+				return workspace, fmt.Errorf("security startup gate: %w", err)
+			}
+			slog.Warn("security startup gate scan failed; allowing agent.open in warn mode", "agent", agentID, "workspace", workspace, "err", err)
+			return workspace, nil
 		}
 		status, err = store.SecurityStatus(workspace)
 		if err != nil {

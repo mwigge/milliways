@@ -175,6 +175,43 @@ func TestStartupSecurityGateRunsRequiredScanAndPreservesStrictMode(t *testing.T)
 	}
 }
 
+func TestStartupSecurityGateAllowsWarnModeScanFailure(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	if err := db.Security().SetWorkspaceStatus(workspace, string(security.ModeWarn), "minimax"); err != nil {
+		t.Fatalf("SetWorkspaceStatus: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s := &Server{pantryDB: db, currentAgent: "minimax", spans: observability.NewRing(10)}
+	gotWorkspace, err := s.ensureStartupSecurityGate(ctx, "minimax", workspace)
+	if err != nil {
+		t.Fatalf("ensureStartupSecurityGate warn mode err = %v, want nil", err)
+	}
+	if gotWorkspace != workspace {
+		t.Fatalf("workspace = %q, want %q", gotWorkspace, workspace)
+	}
+}
+
+func TestStartupSecurityGateBlocksStrictModeScanFailure(t *testing.T) {
+	db := openSecurityMethodTestDB(t)
+	workspace := t.TempDir()
+	t.Setenv("MILLIWAYS_WORKSPACE_ROOT", workspace)
+	if err := db.Security().SetWorkspaceStatus(workspace, string(security.ModeStrict), "codex"); err != nil {
+		t.Fatalf("SetWorkspaceStatus: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	s := &Server{pantryDB: db, currentAgent: "codex", spans: observability.NewRing(10)}
+	_, err := s.ensureStartupSecurityGate(ctx, "codex", workspace)
+	if err == nil || !strings.Contains(err.Error(), "security startup gate") {
+		t.Fatalf("ensureStartupSecurityGate err = %v, want strict scan failure", err)
+	}
+}
+
 func TestStartupSecurityGateBlocksStrictBlockFindings(t *testing.T) {
 	db := openSecurityMethodTestDB(t)
 	workspace := t.TempDir()
