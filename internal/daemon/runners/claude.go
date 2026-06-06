@@ -218,6 +218,8 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		"--output-format", "stream-json",
 		"--verbose",
 	}
+	// Register the local_code MCP tool when a local LLM server is reachable.
+	args = append(args, claudeLocalCoderArgs()...)
 	if cwd != "" {
 		args = append(args, "--add-dir", cwd)
 	}

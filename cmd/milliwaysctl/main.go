@@ -81,6 +81,9 @@ func main() {
 	if sub == "daemon" {
 		os.Exit(runDaemon(rest, os.Stdout, os.Stderr))
 	}
+	if sub == "mcp-localcoder" {
+		os.Exit(runMCPLocalCoder(rest))
+	}
 
 	fs := flag.NewFlagSet(sub, flag.ExitOnError)
 	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
