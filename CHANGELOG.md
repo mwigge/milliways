@@ -4,6 +4,31 @@ All notable changes to milliways. Follows [Keep a Changelog](https://keepachange
 
 ---
 
+## [1.0.51] — 2026-06-06
+
+### Added
+- **Toolkit bundle injection** — on startup, milliways scans `CLAUDE.md` and `.claude/{skills,rules,agents,commands}/*.md` and injects the bundle as `<toolkit_context>` into every Claude prompt, giving the agent access to project context and skills automatically.
+- **Claude local-coder MCP bridge** — when `MILLIWAYS_LOCAL_ENDPOINT` is reachable, Claude receives `--mcp-config` and `--append-system-prompt` wiring in a `local_code` MCP tool backed by the on-device LLM; Claude delegates implementation tasks to the local model and falls back if it's too slow or low quality.
+- **`milliwaysctl mcp-localcoder`** — minimal JSON-RPC 2.0 MCP server (stdio) that proxies `local_code` tool calls to the local OpenAI-compatible endpoint.
+- **Apple Silicon / mlx-lm install** — `/install-local-mlx` (`milliwaysctl local install-mlx`) installs `mlx-lm`, sets the endpoint, and prints Gemma 4 12B startup commands; recommended over llama.cpp on Apple Silicon.
+- **`/install-local-gpu-server --accel metal`** — Metal acceleration flag supported; Apple Silicon VRAM budget raised to 70% (vs 45% for discrete GPU) to account for unified memory.
+- **Gemma 4 model catalog** — three Gemma 4 entries added: `Gemma-4-E4B` (9.7 GB, 128K context), `Gemma-4-12B` (7.7 GB, 256K), `Gemma-4-26B-A4B` (17.5 GB MoE, 256K). All include Ollama pull tags and MLX community repo hints.
+- **Ollama integration hints** — Gemma 3/4 catalog entries carry an `Ollama` field; `/install-gpu-server` and `/install-local-mlx` now print `ollama pull <tag>` as a zero-config Metal-accelerated alternative.
+
+### Changed
+- **K/V cache quantization** — llama-server launcher now includes `--cache-type-k q8_0 --cache-type-v q4_0`, reducing KV cache VRAM by ~60% and enabling significantly longer context windows.
+- **Model-aware context sizing** — `contextSizeForVRAMAndModel` computes actual KV cache headroom (VRAM − model size − 1.5 GB overhead) using calibrated per-token cost with cache quant applied; 12 GB Apple gets 65 K (was 16 K), 32 GB Apple gets 131 K (was 65 K), 48 GB+ gets 262 K.
+- **Context window scaling** — `contextSizeForVRAM` was replaced; context is now selected from actual residual VRAM rather than VRAM tiers alone.
+
+### Fixed
+- **Arrow key handling** — ESC + CSI sequences (↑↓←→) now detected before `waitReadable` poll via `br.Buffered() > 0`; buffered bytes were already in userspace but the kernel fd showed empty, causing arrow keys to abort the stream.
+- **Observability frame compactness** — performance section hidden when `RequestCount == 0`; idle frames stay within the 19-line limit.
+- **Quota time-to-limit window** — `formatTimeToLimit` now falls back to `parseQuotaWindow(q.Window)` when `UsedDaily` is nil, fixing incorrect 24 h display for 1 h quota windows.
+- **Metrics failure rate cap** — `observeRequest` + `observeOperationDuration` added to claude, codex, and gemini runners so failure rate can never exceed 100%.
+- **Scanner installs** — gitleaks updated to v8 module path, osv-scanner to v2 binary name, pool corrected to `npm install` (not `go install`).
+
+---
+
 ## [1.0.9] — 2026-05-11
 
 ### Added
