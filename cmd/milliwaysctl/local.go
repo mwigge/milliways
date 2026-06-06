@@ -184,12 +184,15 @@ func runLocalInstallGPUServer(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "local install-gpu-server: %v\n", err)
 		return 2
 	}
-	ctxSize := contextSizeForVRAM(gpu.VRAMGB)
+	ctxSize := contextSizeForVRAMAndModel(gpu.VRAMGB, model.sizeGB())
 	_, _ = fmt.Fprintf(stdout, "GPU: %s (%s, %.1fGB VRAM)\n", gpu.Name, gpu.Vendor, gpu.VRAMGB)
 	fmt.Fprintf(stdout, "Model: %s (%s %s, %.1fGB)\n", model.Name, model.Repo, model.Quant, model.sizeGB())
 	fmt.Fprintf(stdout, "Accel: %s\n", accel)
 	if os.Getenv("CTX_SIZE") == "" {
 		_, _ = fmt.Fprintf(stdout, "Context: %d tokens\n", ctxSize)
+	}
+	if model.Ollama != "" {
+		_, _ = fmt.Fprintf(stdout, "\nZero-config alternative — Ollama: ollama pull %s && /switch-local-server ollama\n", model.Ollama)
 	}
 	if dryRun {
 		return 0
@@ -1276,6 +1279,7 @@ type catalogEntry struct {
 	MinRAM string `json:"min_ram_gb"`
 	Tools  bool   `json:"tool_use"`
 	Think  bool   `json:"reasoning"`
+	Ollama string `json:"ollama,omitempty"` // Ollama pull tag, e.g. "gemma4:12b"
 	Note   string `json:"note"`
 }
 
@@ -1386,21 +1390,40 @@ func selectGPUCatalogModelForVendor(vramGB float64, vendor string) (catalogEntry
 	return best, nil
 }
 
-// contextSizeForVRAM returns a context window token budget scaled to
-// available VRAM. KV cache is the main constraint: ~0.5MB per token for
-// typical 8B models at float16.
-func contextSizeForVRAM(vramGB float64) int {
+// contextSizeForVRAMAndModel computes the context window token budget from
+// total VRAM and the model's on-disk size. It assumes the launcher applies
+// K/V cache quantization (--cache-type-k q8_0 --cache-type-v q4_0), which
+// reduces KV memory to ~37.5% of fp16 baseline.
+//
+// Formula calibrated against Gemma 3/4 benchmarks:
+// KV cost ≈ modelGB × 0.005 MB/token with cache quant.
+// A 10% safety margin is applied before selecting the nearest supported size.
+func contextSizeForVRAMAndModel(totalVRAMGB, modelGB float64) int {
+	const overheadGB = 1.5 // Metal/CUDA driver + activations + scratch buffers
+	kvBudgetGB := totalVRAMGB - modelGB - overheadGB
+	if kvBudgetGB < 0.5 {
+		return 4096
+	}
+	kvPerTokenMB := modelGB * 0.005
+	if kvPerTokenMB < 0.008 {
+		kvPerTokenMB = 0.008 // floor for very small models
+	}
+	maxTokens := int(kvBudgetGB * 1024 / kvPerTokenMB * 0.9)
 	switch {
-	case vramGB >= 48:
+	case maxTokens >= 262144:
+		return 262144
+	case maxTokens >= 131072:
 		return 131072
-	case vramGB >= 24:
+	case maxTokens >= 65536:
 		return 65536
-	case vramGB >= 16:
+	case maxTokens >= 32768:
 		return 32768
-	case vramGB >= 12:
+	case maxTokens >= 16384:
 		return 16384
-	default:
+	case maxTokens >= 8192:
 		return 8192
+	default:
+		return 4096
 	}
 }
 
@@ -1747,17 +1770,20 @@ var builtinCatalog = []catalogEntry{
 	{
 		Name: "Gemma-3-4B", Repo: "unsloth/gemma-3-4b-it-GGUF",
 		Quant: "Q4_K_M", SizeGB: "2.6", MinRAM: "6",
-		Tools: true, Think: true, Note: "Compact Gemma 3. Fast on Apple Silicon; Ollama: gemma3:4b; MLX: mlx-community/gemma-3-4b-it-4bit.",
+		Tools: true, Think: true, Ollama: "gemma3:4b",
+		Note: "Compact Gemma 3. Fast on Apple Silicon; MLX: mlx-community/gemma-3-4b-it-4bit.",
 	},
 	{
 		Name: "Gemma-3-12B", Repo: "unsloth/gemma-3-12b-it-GGUF",
 		Quant: "Q4_K_M", SizeGB: "7.7", MinRAM: "12",
-		Tools: true, Think: true, Note: "★ Best for Apple Silicon M1/M2/M3. Ollama: gemma3:12b; MLX: mlx-community/gemma-3-12b-it-4bit.",
+		Tools: true, Think: true, Ollama: "gemma3:12b",
+		Note: "★ Best for Apple Silicon M1/M2/M3. MLX: mlx-community/gemma-3-12b-it-4bit.",
 	},
 	{
 		Name: "Gemma-3-27B", Repo: "unsloth/gemma-3-27b-it-GGUF",
 		Quant: "Q4_K_M", SizeGB: "16.5", MinRAM: "24",
-		Tools: true, Think: true, Note: "High-quality reasoning. Apple Silicon 32GB+. Ollama: gemma3:27b; MLX: mlx-community/gemma-3-27b-it-4bit.",
+		Tools: true, Think: true, Ollama: "gemma3:27b",
+		Note: "High-quality reasoning. Apple Silicon 32GB+. MLX: mlx-community/gemma-3-27b-it-4bit.",
 	},
 	// Gemma 4 — Google's 2025 multimodal family. 128K-256K context, vision+text,
 	// native tool use. QAT GGUF (quantization-aware training) available from
@@ -1765,17 +1791,20 @@ var builtinCatalog = []catalogEntry{
 	{
 		Name: "Gemma-4-E4B", Repo: "unsloth/gemma-4-E4B-it-GGUF",
 		Quant: "Q4_K_M", SizeGB: "9.7", MinRAM: "12",
-		Tools: true, Think: true, Note: "Edge 4B — 128K context, vision+text. Best for 12-16GB machines. Ollama: gemma4:e4b; MLX: mlx-community/gemma-4-e4b-it-OptiQ-4bit.",
+		Tools: true, Think: true, Ollama: "gemma4:e4b",
+		Note: "Edge 4B — 128K context, vision+text. Best for 12-16GB machines. MLX: mlx-community/gemma-4-e4b-it-OptiQ-4bit.",
 	},
 	{
 		Name: "Gemma-4-12B", Repo: "unsloth/gemma-4-12b-it-GGUF",
 		Quant: "Q4_K_M", SizeGB: "7.7", MinRAM: "12",
-		Tools: true, Think: true, Note: "★ Best Gemma 4 for 16-32GB. 256K context, vision+text. Ollama: gemma4:12b; MLX: mlx-community/gemma-4-12B-it-8bit.",
+		Tools: true, Think: true, Ollama: "gemma4:12b",
+		Note: "★ Best Gemma 4 for 16-32GB. 256K context, vision+text. MLX: mlx-community/gemma-4-12B-it-8bit.",
 	},
 	{
 		Name: "Gemma-4-26B-A4B", Repo: "unsloth/gemma-4-26B-A4B-it-GGUF",
 		Quant: "Q4_K_M", SizeGB: "17.5", MinRAM: "24",
-		Tools: true, Think: true, Note: "MoE: 26B total, 3.8B active — fast inference. 256K context. Ollama: gemma4:26b; MLX: mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit.",
+		Tools: true, Think: true, Ollama: "gemma4:26b",
+		Note: "MoE: 26B total, 3.8B active — fast inference. 256K context. MLX: mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit.",
 	},
 }
 
