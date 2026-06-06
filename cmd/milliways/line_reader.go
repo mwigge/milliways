@@ -66,6 +66,7 @@ type chatLineReader struct {
 	rows             int
 	promptHidden     bool
 	inBracketedPaste bool
+	pastePreview     string
 	history          []string
 	histPos          int
 }
@@ -264,6 +265,9 @@ func (r *chatLineReader) writeSubmittedLineLocked(line string) {
 	// down but does not return to column 0, which makes the next status or
 	// streamed response start under the submitted prompt.
 	display := strings.ReplaceAll(line, "\n", "\r\n")
+	if r.pastePreview != "" {
+		display = r.pastePreview
+	}
 	fmt.Fprintf(r.out, "%s%s\r\n", r.prompt, display)
 }
 
@@ -299,6 +303,9 @@ func (r *chatLineReader) handleCSI(param string, final rune) {
 	case final == '~' && param == "201":
 		r.mu.Lock()
 		r.inBracketedPaste = false
+		if n := len(r.buf); n > 200 || strings.Count(string(r.buf), "\n") > 2 {
+			r.pastePreview = fmt.Sprintf("[pasted %d chars]", n)
+		}
 		r.redrawLocked()
 		r.mu.Unlock()
 	case final == 'A':
@@ -332,6 +339,7 @@ func (r *chatLineReader) historyMove(delta int) {
 		next = len(r.history)
 	}
 	r.histPos = next
+	r.pastePreview = ""
 	if r.histPos == len(r.history) {
 		r.buf = nil
 	} else {
@@ -400,6 +408,7 @@ func (r *chatLineReader) EndExternalOutput() {
 func (r *chatLineReader) insertRune(ch rune) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.pastePreview = ""
 	r.insertRunesLocked([]rune{ch})
 	if !r.inBracketedPaste {
 		r.redrawLocked()
@@ -430,6 +439,7 @@ func (r *chatLineReader) backspace() {
 	if r.cursor <= 0 || len(r.buf) == 0 {
 		return
 	}
+	r.pastePreview = ""
 	r.buf = append(r.buf[:r.cursor-1], r.buf[r.cursor:]...)
 	r.cursor--
 	r.redrawLocked()
@@ -441,6 +451,7 @@ func (r *chatLineReader) deleteAtCursor() {
 	if r.cursor < 0 || r.cursor >= len(r.buf) {
 		return
 	}
+	r.pastePreview = ""
 	r.buf = append(r.buf[:r.cursor], r.buf[r.cursor+1:]...)
 	r.redrawLocked()
 }
@@ -506,11 +517,17 @@ func (r *chatLineReader) redrawLocked() {
 	}
 	r.clearPromptLocked()
 	_, _ = fmt.Fprint(r.out, r.prompt) //nolint:errcheck // best-effort terminal redraw
+	displayBuf := r.buf
+	displayCursor := r.cursor
+	if r.pastePreview != "" {
+		displayBuf = []rune(r.pastePreview)
+		displayCursor = len(displayBuf)
+	}
 	// In raw mode \n moves down without returning to column 0; use \r\n.
-	_, _ = fmt.Fprint(r.out, strings.ReplaceAll(string(r.buf), "\n", "\r\n")) //nolint:errcheck // best-effort terminal redraw
+	_, _ = fmt.Fprint(r.out, strings.ReplaceAll(string(displayBuf), "\n", "\r\n")) //nolint:errcheck // best-effort terminal redraw
 
-	r.rows = bufTotalRows(r.prompt, r.buf, width)
-	cursorRow, cursorCol := bufCursorPos(r.prompt, r.buf, r.cursor, width)
+	r.rows = bufTotalRows(r.prompt, displayBuf, width)
+	cursorRow, cursorCol := bufCursorPos(r.prompt, displayBuf, displayCursor, width)
 	endRow := r.rows - 1
 	if endRow > cursorRow {
 		_, _ = fmt.Fprintf(r.out, "\033[%dA", endRow-cursorRow) //nolint:errcheck // best-effort terminal cursor movement
@@ -527,7 +544,11 @@ func (r *chatLineReader) clearPromptLocked() {
 	// the current content. r.rows may be stale (too small) when the buffer
 	// grew since the last redraw, but we also need the stored value when the
 	// buffer shrank so we clear the extra rows the previous draw occupied.
-	currentRows := bufTotalRows(r.prompt, r.buf, width)
+	displayBuf := r.buf
+	if r.pastePreview != "" {
+		displayBuf = []rune(r.pastePreview)
+	}
+	currentRows := bufTotalRows(r.prompt, displayBuf, width)
 	rows := r.rows
 	if currentRows > rows {
 		rows = currentRows

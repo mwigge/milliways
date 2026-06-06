@@ -439,10 +439,8 @@ func TestRunLocal_ApprovalGatePlansBeforeTools(t *testing.T) {
 	var sawPrompt, sawNeedsInput bool
 	for _, e := range pusher.snapshot() {
 		switch e["t"] {
-		case "data":
-			b64, _ := e["b64"].(string)
-			raw, _ := base64.StdEncoding.DecodeString(b64)
-			if strings.Contains(string(raw), "reply `y` to implement") {
+		case "approval_prompt":
+			if op, _ := e["operation"].(string); op != "" {
 				sawPrompt = true
 			}
 		case "chunk_end":

@@ -60,6 +60,7 @@ type codexSessionState struct {
 	sessionID           string
 	model               string
 	controlledSessionID string
+	pendingApproval     *approvalGatePending
 }
 
 // RunCodex is the daemon-side codex session loop. It reads prompts from
@@ -109,14 +110,52 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		state.controlledSessionID = newControlledRunnerSessionID(AgentIDCodex)
 	}
 
+	if state.pendingApproval != nil && !planningApprovalGateEnabled() {
+		state.pendingApproval = nil
+	}
+	if state.pendingApproval != nil {
+		if approvalGateExpired(state.pendingApproval.Request, time.Now()) {
+			state.pendingApproval = nil
+			approvalGateExpiredInput(stream)
+			return
+		}
+		approved, rejected := approvalGateDecision(text)
+		switch {
+		case approved:
+			text = approvalGateImplementPrompt(state.pendingApproval.OriginalPrompt, state.pendingApproval.Plan)
+			state.pendingApproval = nil
+		case rejected:
+			state.pendingApproval = nil
+			approvalGateCancelled(stream)
+			return
+		default:
+			original := state.pendingApproval.OriginalPrompt
+			text = approvalGatePlanPrompt(original + "\n\nUser feedback:\n" + text)
+			state.pendingApproval = &approvalGatePending{
+				OriginalPrompt: original,
+				Request:        approvalGateNewRequest(AgentIDCodex, securityWorkspace, original, time.Now()),
+			}
+		}
+	} else if planningApprovalGateEnabled() && approvalGateNeedsPlan(text) {
+		state.pendingApproval = &approvalGatePending{
+			OriginalPrompt: text,
+			Request:        approvalGateNewRequest(AgentIDCodex, securityWorkspace, text, time.Now()),
+		}
+		text = approvalGatePlanPrompt(text)
+	}
+	planningOnly := state.pendingApproval != nil && state.pendingApproval.Plan == ""
+
 	spanCtx, span := startDispatchSpan(parent, AgentIDCodex, "")
 	ctx, cancel := contextWithOptionalTimeout(spanCtx, codexRequestTimeout())
 	defer cancel()
 
 	spanErr := ""
+	chunkEndPushed := false
 	defer func() {
 		endDispatchSpan(span, 0, 0, 0, spanErr)
-		stream.Push(zeroUsageChunkEnd())
+		if !chunkEndPushed {
+			stream.Push(zeroUsageChunkEnd())
+		}
 	}()
 
 	model := codexModelFromEnv()
@@ -209,6 +248,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
 
 	var sawSessionLimit bool
+	var planBuf strings.Builder
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -230,12 +270,15 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		if codexLineSignalsSessionFailure(line) {
 			sawSessionErr.Store(true)
 		}
-		if text, ok := extractCodexThinkingText(line); ok {
-			stream.Push(encodeThinking(text))
+		if t, ok := extractCodexThinkingText(line); ok {
+			stream.Push(encodeThinking(t))
 			continue
 		}
-		if text, ok := extractCodexAssistantText(line); ok {
-			stream.Push(encodeData(text))
+		if t, ok := extractCodexAssistantText(line); ok {
+			if planningOnly {
+				planBuf.WriteString(t)
+			}
+			stream.Push(encodeData(t))
 		}
 	}
 	scanErr := scanner.Err()
@@ -281,6 +324,12 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		observeError(metrics, AgentIDCodex)
 		spanErr = waitErr.Error()
 		stream.Push(map[string]any{"t": "err", "agent": AgentIDCodex, "code": -32010, "msg": exitMsg("codex", waitErr, lines)})
+	}
+	if planningOnly && state.pendingApproval != nil {
+		state.pendingApproval.Plan = strings.TrimSpace(planBuf.String())
+		chunkEnd := zeroUsageChunkEnd()
+		approvalGateNeedsInput(stream, chunkEnd, state.pendingApproval.Request)
+		chunkEndPushed = true
 	}
 }
 

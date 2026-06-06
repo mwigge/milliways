@@ -191,7 +191,14 @@ func approvalGateExpiredInput(stream Pusher) {
 }
 
 func approvalGateNeedsInput(stream Pusher, chunk map[string]any, req approvalGateRequest) {
-	stream.Push(encodeData(approvalGatePrompt(req) + "\n"))
+	stream.Push(map[string]any{
+		"t":         "approval_prompt",
+		"client":    req.Client,
+		"workspace": req.Workspace,
+		"operation": req.Operation,
+		"action":    req.ActionText,
+		"expires":   req.ExpiresAt.Format(time.RFC3339),
+	})
 	chunk["needs_input"] = true
 	chunk["approval_required"] = true
 	chunk["approval_request"] = map[string]any{

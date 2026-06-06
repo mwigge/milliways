@@ -239,12 +239,14 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		stream: stream,
 	}
 
+	toolHooks := toolHooksForAgentWorkspace(AgentIDMiniMax, securityWorkspace)
+	toolHooks.Before = toolUseBeforeHook(stream)
 	result, err := RunAgenticLoop(ctx, client, registry, &messages, LoopOptions{
 		SessionID:              AgentIDMiniMax,
 		Logger:                 slog.Default(),
 		StopOnUserInputRequest: true,
 		CommandFirewall:        commandFirewallForAgentWorkspace(AgentIDMiniMax, securityWorkspace),
-		ToolHooks:              toolHooksForAgentWorkspace(AgentIDMiniMax, securityWorkspace),
+		ToolHooks:              toolHooks,
 	})
 	if err != nil {
 		observeError(metrics, AgentIDMiniMax)

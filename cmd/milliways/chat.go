@@ -1063,6 +1063,21 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 					}
 				}
 			}
+		case "approval_prompt":
+			flushThinking()
+			client, _ := ev["client"].(string)
+			operation, _ := ev["operation"].(string)
+			action, _ := ev["action"].(string)
+			l.beginStreamOutput(sess)
+			_, _ = io.WriteString(l.out, renderApprovalBox(client, operation, action))
+		case "tool_use":
+			flushThinking()
+			name, _ := ev["name"].(string)
+			cmd, _ := ev["cmd"].(string)
+			if name != "" {
+				l.beginStreamOutput(sess)
+				_, _ = io.WriteString(l.out, renderToolUseAction(name, cmd))
+			}
 		case "data":
 			if b64, ok := ev["b64"].(string); ok {
 				if raw, err := base64.StdEncoding.DecodeString(b64); err == nil {

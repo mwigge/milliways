@@ -1052,27 +1052,83 @@ func renderCodePanelLine(line, lang string, contentWidth int) string {
 }
 
 func renderHighlightedCodePanelLine(line string, contentWidth int) string {
-	line = truncateANSIVisible(line, contentWidth)
-	pad := contentWidth - displayWidth(line)
+	segments := wrapANSILine(line, contentWidth)
 	const (
 		border = "\033[38;2;92;99;112m"
 		reset  = "\033[0m"
 	)
 	var b strings.Builder
-	b.WriteString(border)
-	b.WriteString("│")
-	b.WriteString(reset)
-	b.WriteByte(' ')
-	b.WriteString(line)
-	if pad > 0 {
-		b.WriteString(strings.Repeat(" ", pad))
+	for _, seg := range segments {
+		pad := contentWidth - displayWidth(seg)
+		b.WriteString(border)
+		b.WriteString("│")
+		b.WriteString(reset)
+		b.WriteByte(' ')
+		b.WriteString(seg)
+		if pad > 0 {
+			b.WriteString(strings.Repeat(" ", pad))
+		}
+		b.WriteByte(' ')
+		b.WriteString(border)
+		b.WriteString("│")
+		b.WriteString(reset)
+		b.WriteByte('\n')
 	}
-	b.WriteByte(' ')
-	b.WriteString(border)
-	b.WriteString("│")
-	b.WriteString(reset)
-	b.WriteByte('\n')
 	return b.String()
+}
+
+// wrapANSILine splits an ANSI-coloured string into segments each fitting within
+// maxWidth visible columns. Active colour state is replayed at the start of each
+// continuation segment so syntax highlighting does not break at split points.
+func wrapANSILine(s string, maxWidth int) []string {
+	if maxWidth <= 0 || displayWidth(s) <= maxWidth {
+		return []string{s}
+	}
+	var segments []string
+	var cur strings.Builder
+	var state strings.Builder // ANSI escapes active since the last reset
+	visible := 0
+
+	for i := 0; i < len(s); {
+		if s[i] == '\x1b' {
+			j := i + 1
+			if j < len(s) && s[j] == '[' {
+				j++
+			}
+			for j < len(s) && (s[j] < '@' || s[j] > '~') {
+				j++
+			}
+			if j < len(s) {
+				j++
+			}
+			esc := s[i:j]
+			cur.WriteString(esc)
+			if esc == "\033[0m" || esc == "\033[m" {
+				state.Reset()
+			} else {
+				state.WriteString(esc)
+			}
+			i = j
+			continue
+		}
+		if visible >= maxWidth {
+			cur.WriteString("\033[0m")
+			segments = append(segments, cur.String())
+			cur.Reset()
+			visible = 0
+			cur.WriteString(state.String())
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		cur.WriteRune(r)
+		visible++
+		i += size
+	}
+
+	if cur.Len() > 0 {
+		cur.WriteString("\033[0m")
+		segments = append(segments, cur.String())
+	}
+	return segments
 }
 
 func renderCodePanelBottom(contentWidth int) string {
@@ -1200,6 +1256,150 @@ func writePrefixedRenderedMarkdown(out io.Writer, text, prefix string) {
 	for _, line := range strings.Split(rendered, "\n") {
 		_, _ = io.WriteString(out, prefix+line+"\n")
 	}
+}
+
+// renderApprovalBox renders a styled amber box for approval-gate prompts,
+// matching the visual language of Claude Code's permission dialogs.
+// client is the runner id, operation is the kind of action, action is the task text.
+func renderApprovalBox(client, operation, action string) string {
+	const (
+		border  = "\033[38;2;224;175;104m" // TokyoNight warn amber
+		titleC  = "\033[38;2;224;175;104m"
+		dimC    = "\033[38;2;92;99;112m"
+		textC   = "\033[38;2;192;202;245m"
+		reset   = "\033[0m"
+		label   = " approval gate "
+		footer  = " y to proceed · n to cancel · or give feedback"
+	)
+	useANSI := ansiEnabled()
+	bdr, ttl, dm, txt, rst := border, titleC, dimC, textC, reset
+	if !useANSI {
+		bdr, ttl, dm, txt, rst = "", "", "", "", ""
+		_ = ttl
+	}
+
+	w := codePanelMaxContentWidth()
+	if w < 30 {
+		w = 30
+	}
+
+	if client == "" {
+		client = "agent"
+	}
+	if operation == "" {
+		operation = "implement"
+	}
+
+	heading := client + " wants to " + operation
+	if displayWidth(heading) > w {
+		heading = truncateANSIVisible(heading, w)
+	}
+
+	actionLines := wrapPlainForTerminal(action, w-2)
+	if len(actionLines) == 0 {
+		actionLines = []string{action}
+	}
+
+	footerText := footer
+	if displayWidth(footerText) > w {
+		footerText = truncateANSIVisible(footerText, w)
+	}
+
+	boxLine := func(content string, indent bool) string {
+		var row strings.Builder
+		row.WriteString(bdr)
+		row.WriteString("│")
+		row.WriteString(rst)
+		row.WriteByte(' ')
+		if indent {
+			row.WriteString("  ")
+		}
+		row.WriteString(content)
+		usedW := 1 + displayWidth(content)
+		if indent {
+			usedW += 2
+		}
+		pad := w + 1 - usedW
+		if pad > 0 {
+			row.WriteString(strings.Repeat(" ", pad))
+		}
+		row.WriteString(bdr)
+		row.WriteString("│")
+		row.WriteString(rst)
+		row.WriteByte('\n')
+		return row.String()
+	}
+	blankLine := func() string {
+		return bdr + "│" + rst + strings.Repeat(" ", w+2) + bdr + "│" + rst + "\n"
+	}
+
+	var b strings.Builder
+
+	// Top border
+	b.WriteString(bdr)
+	b.WriteString("╭")
+	b.WriteString(ttl)
+	b.WriteString(label)
+	b.WriteString(bdr)
+	b.WriteString(strings.Repeat("─", w+2-displayWidth(label)))
+	b.WriteString("╮")
+	b.WriteString(rst)
+	b.WriteByte('\n')
+
+	// Heading: "claude wants to implement"
+	b.WriteString(boxLine(txt+heading+rst, false))
+	b.WriteString(blankLine())
+
+	// Action lines (indented)
+	for _, al := range actionLines {
+		b.WriteString(boxLine(txt+al+rst, true))
+	}
+	b.WriteString(blankLine())
+
+	// Footer
+	b.WriteString(boxLine(dm+footerText+rst, false))
+
+	// Bottom border
+	b.WriteString(bdr)
+	b.WriteString("╰")
+	b.WriteString(strings.Repeat("─", w+2))
+	b.WriteString("╯")
+	b.WriteString(rst)
+	b.WriteByte('\n')
+
+	return b.String()
+}
+
+// renderToolUseAction renders a compact "Tool: name · command" line for
+// tool-use events surfaced from the claude subprocess JSON stream.
+func renderToolUseAction(name, cmd string) string {
+	const (
+		reset  = "\033[0m"
+		dim    = "\033[38;5;245m"
+		accent = "\033[38;2;224;175;104m"
+		code   = "\033[38;5;117m"
+	)
+	if !ansiEnabled() {
+		if cmd != "" {
+			return "⏺ Tool: " + name + " · " + cmd + "\n"
+		}
+		return "⏺ Tool: " + name + "\n"
+	}
+	var b strings.Builder
+	b.WriteString(dim)
+	b.WriteString("⏺ ")
+	b.WriteString(accent)
+	b.WriteString(name)
+	b.WriteString(reset)
+	if cmd != "" {
+		b.WriteString(dim)
+		b.WriteString(" · ")
+		b.WriteString(code)
+		b.WriteString(cmd)
+		b.WriteString(reset)
+	}
+	b.WriteByte('\n')
+	return b.String()
 }
 
 func writeTerminalStatus(out io.Writer, line string) {

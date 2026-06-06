@@ -230,12 +230,14 @@ func runOpenAICompatibleOnce(parent context.Context, cfg openAICompatibleRunnerC
 		agentID: cfg.AgentID,
 	}
 
+	toolHooks := toolHooksForAgentWorkspace(cfg.AgentID, securityWorkspace)
+	toolHooks.Before = toolUseBeforeHook(stream)
 	result, err := RunAgenticLoop(ctx, client, registry, &messages, LoopOptions{
 		SessionID:              cfg.AgentID,
 		Logger:                 slog.Default(),
 		StopOnUserInputRequest: true,
 		CommandFirewall:        commandFirewallForAgentWorkspace(cfg.AgentID, securityWorkspace),
-		ToolHooks:              toolHooksForAgentWorkspace(cfg.AgentID, securityWorkspace),
+		ToolHooks:              toolHooks,
 	})
 	if err != nil {
 		observeError(metrics, cfg.AgentID)

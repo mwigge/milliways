@@ -65,7 +65,7 @@ config.colors = {
 }
 config.font               = wezterm.font_with_fallback({
   { family = 'JetBrains Mono', weight = 'Medium', stretch = 'Normal', style = 'Normal',
-    font_features = { { name = 'Calt', value = 1 }, { name = 'Liga', value = 1 } } },
+    harfbuzz_features = { 'calt=1', 'liga=1' } },
 })
 config.font_size          = 12.0
 config.window_decorations = 'TITLE | RESIZE'

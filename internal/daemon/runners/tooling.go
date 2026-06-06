@@ -178,6 +178,9 @@ type ToolHooks struct {
 	// Decide runs after tool lookup and argument parsing, before command
 	// firewall and tool execution.
 	Decide ToolDecisionHook
+	// Before fires after Decide/firewall pass, immediately before the tool
+	// executes. Useful for emitting stream notifications without blocking.
+	Before ToolBeforeHook
 	// After runs after tool execution and security gates have produced the
 	// result metadata.
 	After ToolAfterHook
@@ -185,6 +188,10 @@ type ToolHooks struct {
 
 // ToolDecisionHook evaluates one parsed tool call before it executes.
 type ToolDecisionHook func(context.Context, ToolDecisionRequest) (ToolDecisionResult, error)
+
+// ToolBeforeHook is called immediately before a tool executes. It is
+// informational only — return values are intentionally absent.
+type ToolBeforeHook func(ctx context.Context, req ToolDecisionRequest)
 
 // ToolAfterHook receives execution metadata after one tool call finishes.
 type ToolAfterHook func(context.Context, ToolExecutionEvent) error
@@ -690,6 +697,14 @@ func executeOneToolCall(ctx context.Context, registry *tools.Registry, sessionID
 			haveBefore = true
 		}
 	}
+	if hooks.Before != nil {
+		hooks.Before(ctx, ToolDecisionRequest{
+			SessionID: sessionID,
+			Call:      call,
+			ToolName:  call.Name,
+			Args:      args,
+		})
+	}
 	result, err := registry.ExecTool(toolCtx, sessionID, call.Name, args)
 	if err != nil {
 		endToolSpan(toolSpan, err.Error())
@@ -1178,4 +1193,52 @@ func commandFirewallRiskCategories(risks []firewall.Risk) []string {
 		categories = append(categories, string(risk.Category))
 	}
 	return categories
+}
+
+// toolArgsCommand returns a short human-readable summary of what a tool call
+// is doing, for use in stream tool_use indicator events.
+func toolArgsCommand(toolName string, args map[string]any) string {
+	switch strings.ToLower(toolName) {
+	case "bash":
+		if v, _ := args["command"].(string); v != "" {
+			if len(v) > 80 {
+				return v[:80] + "…"
+			}
+			return v
+		}
+	case "read":
+		if v, _ := args["file_path"].(string); v != "" {
+			return v
+		}
+	case "write", "edit", "applypatch", "delete":
+		if v, _ := args["file_path"].(string); v != "" {
+			return v
+		}
+	case "grep":
+		if v, _ := args["pattern"].(string); v != "" {
+			return v
+		}
+	case "glob":
+		if v, _ := args["pattern"].(string); v != "" {
+			return v
+		}
+	case "webfetch":
+		if v, _ := args["url"].(string); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// toolUseBeforeHook returns a ToolBeforeHook that pushes a "tool_use" stream
+// event onto stream. Attach this to LoopOptions.ToolHooks.Before so the TUI
+// can show inline tool-activity indicators for agentic runners.
+func toolUseBeforeHook(stream Pusher) ToolBeforeHook {
+	return func(_ context.Context, req ToolDecisionRequest) {
+		stream.Push(map[string]any{
+			"t":    "tool_use",
+			"name": req.ToolName,
+			"cmd":  toolArgsCommand(req.ToolName, req.Args),
+		})
+	}
 }

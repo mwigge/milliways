@@ -79,8 +79,10 @@ type claudeStreamMessage struct {
 }
 
 type claudeStreamContent struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"`
+	Name  string          `json:"name,omitempty"`   // tool_use
+	Input json.RawMessage `json:"input,omitempty"`  // tool_use
 }
 
 // claudeStreamUsage carries the input/output token accounting block
@@ -92,6 +94,10 @@ type claudeStreamUsage struct {
 	OutputTokens int `json:"output_tokens,omitempty"`
 	CacheRead    int `json:"cache_read_input_tokens,omitempty"`
 	CacheWrite   int `json:"cache_creation_input_tokens,omitempty"`
+}
+
+type claudeSessionState struct {
+	pendingApproval *approvalGatePending
 }
 
 // claudeResult is a small bundle of per-response numbers extracted from
@@ -132,30 +138,74 @@ func RunClaude(ctx context.Context, input <-chan []byte, stream Pusher, metrics 
 
 func RunClaudeWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
 	sessionID := newControlledRunnerSessionID(AgentIDClaude)
+	state := &claudeSessionState{}
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runClaudeOnce(ctx, prompt, stream, metrics, securityWorkspace, sessionID)
+		runClaudeOnce(ctx, prompt, stream, metrics, securityWorkspace, sessionID, state)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
-func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace, sessionID string) {
+func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace, sessionID string, state *claudeSessionState) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		return
 	}
+	if state == nil {
+		state = &claudeSessionState{}
+	}
+
+	if state.pendingApproval != nil && !planningApprovalGateEnabled() {
+		state.pendingApproval = nil
+	}
+	if state.pendingApproval != nil {
+		if approvalGateExpired(state.pendingApproval.Request, time.Now()) {
+			state.pendingApproval = nil
+			approvalGateExpiredInput(stream)
+			return
+		}
+		approved, rejected := approvalGateDecision(text)
+		switch {
+		case approved:
+			text = approvalGateImplementPrompt(state.pendingApproval.OriginalPrompt, state.pendingApproval.Plan)
+			state.pendingApproval = nil
+		case rejected:
+			state.pendingApproval = nil
+			approvalGateCancelled(stream)
+			return
+		default:
+			original := state.pendingApproval.OriginalPrompt
+			text = approvalGatePlanPrompt(original + "\n\nUser feedback:\n" + text)
+			state.pendingApproval = &approvalGatePending{
+				OriginalPrompt: original,
+				Request:        approvalGateNewRequest(AgentIDClaude, securityWorkspace, original, time.Now()),
+			}
+		}
+	} else if planningApprovalGateEnabled() && approvalGateNeedsPlan(text) {
+		state.pendingApproval = &approvalGatePending{
+			OriginalPrompt: text,
+			Request:        approvalGateNewRequest(AgentIDClaude, securityWorkspace, text, time.Now()),
+		}
+		text = approvalGatePlanPrompt(text)
+	}
+	planningOnly := state.pendingApproval != nil && state.pendingApproval.Plan == ""
 
 	// chunkEnd is updated with real cost/tokens before the function returns;
 	// the defer guarantees it is pushed on every exit path including early errors.
 	chunkEnd := map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+	chunkEndPushed := false
 	spanCtx, span := startDispatchSpan(parent, AgentIDClaude, "")
 	ctx, cancel := context.WithTimeout(spanCtx, claudeTimeout)
 	defer cancel()
-	defer func() { stream.Push(chunkEnd) }()
+	defer func() {
+		if !chunkEndPushed {
+			stream.Push(chunkEnd)
+		}
+	}()
 	pushModel(stream, AgentIDClaude)
 
 	cwd := runnerWorkspaceCWD(securityWorkspace)
@@ -229,6 +279,7 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
 
 	var lastResult claudeResult
+	var planBuf strings.Builder
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
@@ -241,8 +292,15 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 			stream.Push(encodeThinking(think))
 			continue
 		}
-		if text, ok := extractAssistantText(line); ok {
-			stream.Push(encodeData(text))
+		if name, cmd, ok := extractToolUse(line); ok {
+			stream.Push(map[string]any{"t": "tool_use", "name": name, "cmd": cmd})
+			continue
+		}
+		if t, ok := extractAssistantText(line); ok {
+			if planningOnly {
+				planBuf.WriteString(t)
+			}
+			stream.Push(encodeData(t))
 			continue
 		}
 		if info, ok := extractRateLimitEvent(line); ok {
@@ -292,6 +350,50 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	if lastResult.cacheWriteTokens > 0 {
 		chunkEnd["cache_write_tokens"] = lastResult.cacheWriteTokens
 	}
+	if planningOnly && state.pendingApproval != nil {
+		state.pendingApproval.Plan = strings.TrimSpace(planBuf.String())
+		approvalGateNeedsInput(stream, chunkEnd, state.pendingApproval.Request)
+		chunkEndPushed = true
+	}
+}
+
+// extractToolUse returns the tool name and a human-readable command summary
+// from an assistant event that contains a tool_use content block.
+func extractToolUse(line string) (name, command string, ok bool) {
+	var evt claudeStreamEvent
+	if err := json.Unmarshal([]byte(line), &evt); err != nil {
+		return "", "", false
+	}
+	if evt.Type != "assistant" || evt.Message == nil {
+		return "", "", false
+	}
+	for _, c := range evt.Message.Content {
+		if c.Type == "tool_use" && c.Name != "" {
+			return c.Name, claudeToolCommand(c.Name, c.Input), true
+		}
+	}
+	return "", "", false
+}
+
+// claudeToolCommand extracts a short human-readable summary of the tool call
+// from the raw JSON input. Handles the most common fields used by Claude Code.
+func claudeToolCommand(toolName string, rawInput json.RawMessage) string {
+	if len(rawInput) == 0 {
+		return ""
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(rawInput, &m); err != nil {
+		return ""
+	}
+	for _, key := range []string{"command", "path", "file_path", "url", "query"} {
+		if v, ok := m[key]; ok {
+			var s string
+			if err := json.Unmarshal(v, &s); err == nil && s != "" {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 // extractAssistantText returns the concatenated text of all `text` content

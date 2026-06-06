@@ -309,6 +309,8 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		}
 	}
 
+	toolHooks := toolHooksForAgentWorkspace(AgentIDLocal, securityWorkspace)
+	toolHooks.Before = toolUseBeforeHook(stream)
 	result, err := RunAgenticLoop(ctx, client, executionRegistry, &messages, LoopOptions{
 		SessionID:              AgentIDLocal,
 		Logger:                 slog.Default(),
@@ -316,7 +318,7 @@ func runLocalOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		Compaction:             CompactionOptions{CtxTokens: ctxTokens},
 		StopOnUserInputRequest: true,
 		CommandFirewall:        commandFirewallForAgentWorkspace(AgentIDLocal, securityWorkspace),
-		ToolHooks:              toolHooksForAgentWorkspace(AgentIDLocal, securityWorkspace),
+		ToolHooks:              toolHooks,
 	})
 	if err != nil {
 		observeError(metrics, AgentIDLocal)
