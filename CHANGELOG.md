@@ -4,6 +4,16 @@ All notable changes to milliways. Follows [Keep a Changelog](https://keepachange
 
 ---
 
+## [1.0.52] — 2026-06-07
+
+### Changed
+- **`/install-local-gpu-server` model replacement** — now detects the currently configured local model (`MILLIWAYS_LOCAL_MODEL`) and compares it against the hardware-recommended pick, printing clear before/after messaging: "currently running X, replacing with Y" or "already running the recommended model".
+
+### Fixed
+- **Model swap on GPU server install** — `install_local.sh`'s `reuse_existing_or_pick_port` previously reused any reachable local server regardless of which model it served, silently discarding the requested `MODEL_ALIAS` and keeping the old model running forever. It now only reuses when the live server already serves the requested model; otherwise it picks a fresh port and installs the recommended model, replacing the active `local.env` configuration.
+
+---
+
 ## [1.0.51] — 2026-06-06
 
 ### Added
