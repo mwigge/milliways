@@ -185,11 +185,22 @@ func runLocalInstallGPUServer(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	ctxSize := contextSizeForVRAMAndModel(gpu.VRAMGB, model.sizeGB())
+	newAlias := strings.ToLower(model.Name)
+	currentAlias := localEnvValue("MILLIWAYS_LOCAL_MODEL")
+
 	_, _ = fmt.Fprintf(stdout, "GPU: %s (%s, %.1fGB VRAM)\n", gpu.Name, gpu.Vendor, gpu.VRAMGB)
-	fmt.Fprintf(stdout, "Model: %s (%s %s, %.1fGB)\n", model.Name, model.Repo, model.Quant, model.sizeGB())
+	fmt.Fprintf(stdout, "Best match for your hardware: %s (%s %s, %.1fGB)\n", model.Name, model.Repo, model.Quant, model.sizeGB())
 	fmt.Fprintf(stdout, "Accel: %s\n", accel)
 	if os.Getenv("CTX_SIZE") == "" {
 		_, _ = fmt.Fprintf(stdout, "Context: %d tokens\n", ctxSize)
+	}
+	switch {
+	case currentAlias == "":
+		_, _ = fmt.Fprintf(stdout, "\nNo local model currently configured — installing %s.\n", model.Name)
+	case currentAlias == newAlias:
+		_, _ = fmt.Fprintf(stdout, "\nAlready running the recommended model for your hardware (%s) — reinstalling/refreshing in place.\n", currentAlias)
+	default:
+		_, _ = fmt.Fprintf(stdout, "\nCurrently running: %s\nReplacing with the better fit for your hardware: %s → switching...\n", currentAlias, model.Name)
 	}
 	if model.Ollama != "" {
 		_, _ = fmt.Fprintf(stdout, "\nZero-config alternative — Ollama: ollama pull %s && /switch-local-server ollama\n", model.Ollama)

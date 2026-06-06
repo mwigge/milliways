@@ -129,12 +129,19 @@ export PATH="/opt/homebrew/bin:$HOME/.local/bin:/usr/local/bin:$PATH"
 # 1. Install rs-llmctl. Legacy llama.cpp helpers remain for swap/setup paths.
 # ---------------------------------------------------------------------------
 reuse_existing_or_pick_port() {
-  # If a compatible backend is already running and reachable, reuse its port
-  # rather than starting a new instance. This handles repeated installs after
-  # the local server is already up.
+  # If a compatible backend is already running, reachable, AND already serving
+  # the requested model (MODEL_ALIAS as resolved by hardware detection / the
+  # caller), reuse its port rather than starting a new instance — this handles
+  # repeated installs after the local server is already up.
+  #
+  # If it is serving a *different* model, this is a model swap: don't reuse —
+  # fall through, pick a fresh port, and install the requested model there.
+  # write_local_env then points milliways at the new endpoint, replacing the
+  # active configuration; the old process is left running but orphaned.
   if port_in_use "$PORT"; then
-    local env_file existing_api_key existing_model models_out
+    local env_file existing_api_key existing_model models_out requested_alias
     local -a auth_args
+    requested_alias="$MODEL_ALIAS"
     env_file="${XDG_CONFIG_HOME:-$HOME/.config}/milliways/local.env"
     existing_api_key="$(sed -n 's/^MILLIWAYS_LOCAL_API_KEY=//p' "$env_file" 2>/dev/null | tail -1 || true)"
     existing_model="$(sed -n 's/^MILLIWAYS_LOCAL_MODEL=//p' "$env_file" 2>/dev/null | tail -1 || true)"
@@ -144,19 +151,22 @@ reuse_existing_or_pick_port() {
     fi
     models_out="$(mktemp)"
     if curl -sf "${auth_args[@]}" "http://${BIND_HOST}:${PORT}/v1/models" >"$models_out" 2>/dev/null &&
-      { [ -z "$existing_model" ] || grep -q "\"${existing_model}\"" "$models_out"; }; then
+      [ -n "$existing_model" ] && [ "$existing_model" = "$requested_alias" ] &&
+      grep -q "\"${existing_model}\"" "$models_out"; then
       rm -f "$models_out"
       ok "OpenAI-compatible local server already running on port $PORT — reusing"
       API_KEY="$existing_api_key"
-      if [ -n "$existing_model" ]; then
-        MODEL_ALIAS="$existing_model"
-      fi
+      MODEL_ALIAS="$existing_model"
       write_local_env
       ok "Endpoint already active: http://${BIND_HOST}:${PORT}/v1"
       exit 0
     fi
     rm -f "$models_out"
-    warn "port $PORT is already in use (likely an SSH tunnel or another dev service)"
+    if [ -n "$existing_model" ] && [ "$existing_model" != "$requested_alias" ]; then
+      warn "port $PORT is serving '$existing_model' — switching to '$requested_alias' on a new port"
+    else
+      warn "port $PORT is already in use (likely an SSH tunnel or another dev service)"
+    fi
     PORT="$(pick_free_port $((PORT + 1)))"
     ok "using port $PORT instead"
   fi
