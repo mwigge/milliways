@@ -32,6 +32,8 @@ import (
 )
 
 var errLineInterrupt = errors.New("line input interrupted")
+var errLineCancel    = errors.New("line input cancelled (queue if busy)")
+var errLineAbort     = errors.New("line input aborted (stop stream)")
 var lineReaderTermWidth = termWidth
 
 type completionProvider interface {
@@ -45,6 +47,8 @@ type chatLineReaderConfig struct {
 	EOFPrompt       string
 	AutoComplete    completionProvider
 	ControlPoll     func() (string, bool)
+	OnCancel        func() error // called when ESC pressed alone (not part of CSI sequence)
+	AbortStream     func()       // called when ESC pressed alone to abort the active stream
 }
 
 type chatLineReader struct {
@@ -56,6 +60,8 @@ type chatLineReader struct {
 	eofPrompt       string
 	completer       completionProvider
 	controlPoll     func() (string, bool)
+	onCancel        func() error
+	AbortStream     func()
 	pipeReader      *bufio.Reader
 
 	mu               sync.Mutex
@@ -81,6 +87,8 @@ func newChatLineReader(cfg chatLineReaderConfig) (*chatLineReader, error) {
 		eofPrompt:       cfg.EOFPrompt,
 		completer:       cfg.AutoComplete,
 		controlPoll:     cfg.ControlPoll,
+		onCancel:        cfg.OnCancel,
+		AbortStream:     cfg.AbortStream,
 	}
 	r.loadHistory()
 	r.histPos = len(r.history)
@@ -233,7 +241,14 @@ func (r *chatLineReader) Readline() (string, error) {
 		case 9:
 			r.applyCompletion()
 		case 27:
-			r.handleEscape(br)
+			// ESC pressed - queue current input if stream is busy, or start of CSI sequence
+			queueIt, err := r.handleEscapeOrCancel(br)
+			if queueIt {
+				return "", errLineCancel
+			}
+			if err != nil {
+				return "", err
+			}
 		case 8, 127:
 			r.backspace()
 		default:
@@ -269,6 +284,24 @@ func (r *chatLineReader) writeSubmittedLineLocked(line string) {
 		display = r.pastePreview
 	}
 	fmt.Fprintf(r.out, "%s%s\r\n", r.prompt, display)
+}
+
+// handleEscapeOrCancel handles ESC keypress.
+// Returns (true, errLineAbort) if ESC was pressed alone (abort stream).
+// Returns (false, nil) if it was the start of a CSI escape sequence.
+func (r *chatLineReader) handleEscapeOrCancel(br *bufio.Reader) (bool, error) {
+	// Wait a short time to see if more bytes arrive (CSI sequence)
+	ready, _ := waitReadable(int(r.in.Fd()), 50*time.Millisecond)
+	if !ready {
+		// No more input within timeout - standalone ESC pressed → abort stream
+		if r.AbortStream != nil {
+			r.AbortStream()
+		}
+		return true, errLineAbort
+	}
+	// More input available - this is a CSI sequence
+	r.handleEscape(br)
+	return false, nil
 }
 
 func (r *chatLineReader) handleEscape(br *bufio.Reader) {

@@ -428,6 +428,9 @@ func runChat(ctx context.Context) error {
 		hintCh:               make(chan hintPayload, 4),
 	}
 
+	// Wire ESC key in line reader to abort active stream
+	rl.AbortStream = func() { loop.abortActiveStream() }
+
 	// Wire palace recall for daemon runner sessions. Resolve the project from
 	// cwd; if a palace exists, connect and inject context on every user prompt.
 	if pc, err := project.ResolveProject(""); err == nil {
@@ -958,6 +961,17 @@ func (l *chatLoop) run(ctx context.Context) error {
 		}
 
 		line, err := l.rl.Readline()
+		if errors.Is(err, errLineCancel) {
+			// ESC pressed - continue to prompt for more input (queue if busy)
+			continue
+		}
+		if errors.Is(err, errLineAbort) {
+			// ESC pressed - abort the active stream and stay in prompt
+			if l.abortActiveStream() {
+				_, _ = fmt.Fprintln(l.errw, "Stream aborted. Continuing prompt.")
+			}
+			continue
+		}
 		if errors.Is(err, errLineInterrupt) {
 			if l.cancelActiveSession() {
 				_, _ = fmt.Fprintln(l.errw, "Active stream cancelled. Use /switch <client> to start again, or /exit to quit.")
@@ -1712,6 +1726,19 @@ func (l *chatLoop) cancelActiveSession() bool {
 	}
 	if l.completer != nil {
 		l.completer.set(buildCompleter(""))
+	}
+	return true
+}
+
+// abortActiveStream cancels the active stream without closing the session.
+// Used for ESC key to abort a runaway stream while staying in the prompt.
+// Returns true if a stream was aborted.
+func (l *chatLoop) abortActiveStream() bool {
+	if l == nil || l.sess == nil {
+		return false
+	}
+	if l.sess.streamCancel != nil {
+		l.sess.streamCancel()
 	}
 	return true
 }
