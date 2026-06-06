@@ -242,15 +242,21 @@ func runLocalInstallMLX(_ []string, stdout, stderr io.Writer) int {
 	}
 	_, _ = fmt.Fprintln(stdout, "✓ mlx-lm installed.")
 	_, _ = fmt.Fprintln(stdout, "")
-	_, _ = fmt.Fprintln(stdout, "Recommended model (Gemma 3 12B — best for Apple Silicon coding):")
+	_, _ = fmt.Fprintln(stdout, "Recommended model (Gemma 4 12B — best for Apple Silicon coding):")
 	_, _ = fmt.Fprintln(stdout, "  python3 -m mlx_lm.server \\")
-	_, _ = fmt.Fprintln(stdout, "    --model mlx-community/gemma-3-12b-it-4bit \\")
+	_, _ = fmt.Fprintln(stdout, "    --model mlx-community/gemma-4-12B-it-8bit \\")
 	_, _ = fmt.Fprintln(stdout, "    --host 127.0.0.1 --port 8765")
 	_, _ = fmt.Fprintln(stdout, "")
-	_, _ = fmt.Fprintln(stdout, "Other good options:")
-	_, _ = fmt.Fprintln(stdout, "  mlx-community/Qwen3-14B-4bit      (strong reasoning + tool use)")
-	_, _ = fmt.Fprintln(stdout, "  mlx-community/gemma-3-27b-it-4bit (32GB+ machines)")
-	_, _ = fmt.Fprintln(stdout, "  mlx-community/gemma-3-4b-it-4bit  (8GB machines, very fast)")
+	_, _ = fmt.Fprintln(stdout, "Other MLX options:")
+	_, _ = fmt.Fprintln(stdout, "  mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit  (32GB+, MoE — fast inference)")
+	_, _ = fmt.Fprintln(stdout, "  mlx-community/gemma-4-e4b-it-OptiQ-4bit      (12-16GB machines)")
+	_, _ = fmt.Fprintln(stdout, "  mlx-community/gemma-3-12b-it-4bit            (proven, lighter memory)")
+	_, _ = fmt.Fprintln(stdout, "  mlx-community/Qwen3-14B-4bit                 (strong reasoning + tool use)")
+	_, _ = fmt.Fprintln(stdout, "")
+	_, _ = fmt.Fprintln(stdout, "Zero-config alternative — Ollama (also uses Metal GPU):")
+	_, _ = fmt.Fprintln(stdout, "  brew install ollama && ollama pull gemma4:12b")
+	_, _ = fmt.Fprintln(stdout, "  ollama serve   # starts on http://127.0.0.1:11434")
+	_, _ = fmt.Fprintln(stdout, "  /switch-local-server ollama   # tell milliways to use Ollama")
 	_, _ = fmt.Fprintln(stdout, "")
 	_, _ = fmt.Fprintln(stdout, "mlx_lm.server is OpenAI-compatible — no other config needed.")
 	_, _ = fmt.Fprintln(stdout, "Endpoint set: "+endpoint)
@@ -885,6 +891,9 @@ func modelServerDefaults(alias string) serverDefaults {
 	case strings.Contains(lower, "hermes"), strings.Contains(lower, "llama"):
 		// Hermes / Llama instruction models — balanced for agentic tool use.
 		return serverDefaults{GPULayers: 99, Temp: 0.20}
+	case strings.Contains(lower, "gemma"):
+		// Gemma 3/4 — low temp for reliable code output; native tool use.
+		return serverDefaults{GPULayers: 99, Temp: 0.20}
 	case strings.Contains(lower, "phi"):
 		// Phi small models — low temp for reliable output.
 		return serverDefaults{GPULayers: 99, Temp: 0.10}
@@ -973,6 +982,8 @@ exec %q \
   --ctx-size %q \
   --n-gpu-layers %d \
   --temp %.2f \
+  --cache-type-k q8_0 \
+  --cache-type-v q4_0 \
   --jinja \
   --flash-attn auto
 `, llamaBin, modelPath, alias, host, port, ctx, md.GPULayers, md.Temp)
@@ -1736,17 +1747,35 @@ var builtinCatalog = []catalogEntry{
 	{
 		Name: "Gemma-3-4B", Repo: "unsloth/gemma-3-4b-it-GGUF",
 		Quant: "Q4_K_M", SizeGB: "2.6", MinRAM: "6",
-		Tools: true, Think: true, Note: "Compact Gemma 3. Fast on Apple Silicon; MLX: mlx-community/gemma-3-4b-it-4bit.",
+		Tools: true, Think: true, Note: "Compact Gemma 3. Fast on Apple Silicon; Ollama: gemma3:4b; MLX: mlx-community/gemma-3-4b-it-4bit.",
 	},
 	{
 		Name: "Gemma-3-12B", Repo: "unsloth/gemma-3-12b-it-GGUF",
 		Quant: "Q4_K_M", SizeGB: "7.7", MinRAM: "12",
-		Tools: true, Think: true, Note: "★ Best for Apple Silicon M1/M2/M3. MLX: mlx-community/gemma-3-12b-it-4bit.",
+		Tools: true, Think: true, Note: "★ Best for Apple Silicon M1/M2/M3. Ollama: gemma3:12b; MLX: mlx-community/gemma-3-12b-it-4bit.",
 	},
 	{
 		Name: "Gemma-3-27B", Repo: "unsloth/gemma-3-27b-it-GGUF",
 		Quant: "Q4_K_M", SizeGB: "16.5", MinRAM: "24",
-		Tools: true, Think: true, Note: "High-quality reasoning. Apple Silicon 32GB+. MLX: mlx-community/gemma-3-27b-it-4bit.",
+		Tools: true, Think: true, Note: "High-quality reasoning. Apple Silicon 32GB+. Ollama: gemma3:27b; MLX: mlx-community/gemma-3-27b-it-4bit.",
+	},
+	// Gemma 4 — Google's 2025 multimodal family. 128K-256K context, vision+text,
+	// native tool use. QAT GGUF (quantization-aware training) available from
+	// google/gemma-4-*-it-qat-q4_0-gguf for higher accuracy.
+	{
+		Name: "Gemma-4-E4B", Repo: "unsloth/gemma-4-E4B-it-GGUF",
+		Quant: "Q4_K_M", SizeGB: "9.7", MinRAM: "12",
+		Tools: true, Think: true, Note: "Edge 4B — 128K context, vision+text. Best for 12-16GB machines. Ollama: gemma4:e4b; MLX: mlx-community/gemma-4-e4b-it-OptiQ-4bit.",
+	},
+	{
+		Name: "Gemma-4-12B", Repo: "unsloth/gemma-4-12b-it-GGUF",
+		Quant: "Q4_K_M", SizeGB: "7.7", MinRAM: "12",
+		Tools: true, Think: true, Note: "★ Best Gemma 4 for 16-32GB. 256K context, vision+text. Ollama: gemma4:12b; MLX: mlx-community/gemma-4-12B-it-8bit.",
+	},
+	{
+		Name: "Gemma-4-26B-A4B", Repo: "unsloth/gemma-4-26B-A4B-it-GGUF",
+		Quant: "Q4_K_M", SizeGB: "17.5", MinRAM: "24",
+		Tools: true, Think: true, Note: "MoE: 26B total, 3.8B active — fast inference. 256K context. Ollama: gemma4:26b; MLX: mlx-community/gemma-4-26B-A4B-it-OptiQ-4bit.",
 	},
 }
 
