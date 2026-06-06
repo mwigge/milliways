@@ -465,6 +465,11 @@ end)
 config.leader = { key = 'Space', mods = 'CTRL', timeout_milliseconds = 1500 }
 
 config.keys = {
+  -- Explicit clipboard bindings so copy/paste work even in raw-mode panes.
+  { key = 'c', mods = 'CTRL|SHIFT', action = act.CopyTo 'Clipboard' },
+  { key = 'v', mods = 'CTRL|SHIFT', action = act.PasteFrom 'Clipboard' },
+  { key = 'Insert', mods = 'SHIFT',  action = act.PasteFrom 'PrimarySelection' },
+
   -- Leader + a  →  open the default (claude) agent pane split below
   {
     key = 'a', mods = 'LEADER',

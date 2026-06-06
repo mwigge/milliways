@@ -157,6 +157,8 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		stream.Push(geminiStartErrorEvent(err))
 		return
 	}
+	reqStart := time.Now()
+	observeRequest(metrics, AgentIDGemini)
 
 	// Capture stderr lines so we can inspect for session-limit signals
 	// once the subprocess exits.
@@ -213,6 +215,7 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		spanErr = waitErr.Error()
 		stream.Push(geminiExitErrorEvent(waitErr, lines))
 	}
+	observeOperationDuration(metrics, AgentIDGemini, time.Since(reqStart).Seconds())
 }
 
 func geminiChunkEndEvent() map[string]any {

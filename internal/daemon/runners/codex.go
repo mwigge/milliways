@@ -205,6 +205,8 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		}
 		return
 	}
+	reqStart := time.Now()
+	observeRequest(metrics, AgentIDCodex)
 
 	// Capture stderr; check for proxy-block and session-limit signals at the end.
 	// sawProxyBlock is sync/atomic.Bool — single field, two goroutines, no
@@ -325,6 +327,7 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		spanErr = waitErr.Error()
 		stream.Push(map[string]any{"t": "err", "agent": AgentIDCodex, "code": -32010, "msg": exitMsg("codex", waitErr, lines)})
 	}
+	observeOperationDuration(metrics, AgentIDCodex, time.Since(reqStart).Seconds())
 	if planningOnly && state.pendingApproval != nil {
 		state.pendingApproval.Plan = strings.TrimSpace(planBuf.String())
 		chunkEnd := zeroUsageChunkEnd()

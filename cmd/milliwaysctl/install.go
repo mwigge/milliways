@@ -115,21 +115,25 @@ var installSpecs = []installSpec{
 	},
 	{
 		client: "pool",
-		info:   "pool connects to the Poolside ACP server. Run `pool login` to authenticate, then use /pool in the chat.",
+		prereq: "npm",
+		prereqHint: "install Node.js (https://nodejs.org/) — npm ships with it",
+		check:   []string{"pool", "--version"},
+		install: []string{"npm", "install", "-g", "@poolside-ai/pool"},
+		info:    "After install: run `pool login` to authenticate (see https://docs.poolside.ai/cli/pool), then use /pool in the chat.",
 	},
 	{
-		client: "scanners",
-		prereq: "go",
+		client:     "scanners",
+		prereq:     "go",
 		prereqHint: "install Go (https://go.dev/) — needed to install security scanners",
-		check:   []string{"gitleaks", "--version"},
-		info:   "Installs gitleaks, govulncheck, osv-scanner, and semgrep to ~/.local/bin/",
+		check:      []string{"gitleaks", "version"},
+		info:       "Installs gitleaks, govulncheck, osv-scanner, and semgrep to $(go env GOPATH)/bin",
 		install: []string{"sh", "-c",
-			"mkdir -p ~/.local/bin && " +
-			"GOBIN=$HOME/go/bin go install github.com/gitleaks/gitleaks/v10@latest && " +
-			"GOBIN=$HOME/go/bin go install golang.org/x/vuln/cmd/govulncheck@latest && " +
-			"GOBIN=$HOME/go/bin go install github.com/google/osv-scanner/cmd/osv-scanner@latest && " +
-			"pip install --user semgrep || pip3 install --user semgrep || true && " +
-			"echo 'Scanners installed to ~/.local/bin — add it to PATH if needed'"},
+			`gobin="$(go env GOPATH)/bin" && mkdir -p "$gobin" && ` +
+				`GOBIN="$gobin" go install github.com/gitleaks/gitleaks/v8@latest && ` +
+				`GOBIN="$gobin" go install golang.org/x/vuln/cmd/govulncheck@latest && ` +
+				`GOBIN="$gobin" go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest && ` +
+				`pip install --user semgrep 2>/dev/null || pip3 install --user semgrep 2>/dev/null || true && ` +
+				`echo "Scanners installed to $gobin — ensure it is on PATH"`},
 	},
 }
 
@@ -230,8 +234,9 @@ func alreadyInstalled(spec installSpec) bool {
 		return strings.Contains(string(out), "gh-copilot")
 	}
 	if spec.client == "scanners" {
-		// Check just gitleaks as proxy for the whole batch
-		out, err := execCommand("gitleaks", "--version").CombinedOutput()
+		// Check just gitleaks as proxy for the whole batch.
+		// gitleaks v8 uses "version" (not "--version").
+		out, err := execCommand("gitleaks", "version").CombinedOutput()
 		return err == nil && len(out) > 0
 	}
 	cmd := execCommand(spec.check[0], spec.check[1:]...)

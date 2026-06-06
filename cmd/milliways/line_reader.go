@@ -290,7 +290,15 @@ func (r *chatLineReader) writeSubmittedLineLocked(line string) {
 // Returns (true, errLineAbort) if ESC was pressed alone (abort stream).
 // Returns (false, nil) if it was the start of a CSI escape sequence.
 func (r *chatLineReader) handleEscapeOrCancel(br *bufio.Reader) (bool, error) {
-	// Wait a short time to see if more bytes arrive (CSI sequence)
+	// Arrow keys (ESC+[+A/B/C/D) arrive as one kernel write, so the '[' and
+	// final byte are already in the bufio buffer when we read the ESC byte.
+	// Check the userspace buffer first before polling the kernel fd — polling
+	// would return "no data" even though the rest of the sequence is buffered.
+	if br.Buffered() > 0 {
+		r.handleEscape(br)
+		return false, nil
+	}
+	// Nothing buffered yet — wait briefly for a CSI sequence to arrive.
 	ready, _ := waitReadable(int(r.in.Fd()), 50*time.Millisecond)
 	if !ready {
 		// No more input within timeout - standalone ESC pressed → abort stream

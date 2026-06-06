@@ -42,7 +42,7 @@ func TestRunInstall_UnknownClient(t *testing.T) {
 }
 
 func TestRunInstall_HTTPOnlyClient_PrintsInfo(t *testing.T) {
-	for _, name := range []string{"berget", "minimax", "pool"} {
+	for _, name := range []string{"berget", "minimax"} {
 		t.Run(name, func(t *testing.T) {
 			var stdout bytes.Buffer
 			if rc := runInstall([]string{name}, &stdout, &bytes.Buffer{}); rc != 0 {

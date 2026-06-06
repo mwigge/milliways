@@ -250,6 +250,8 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		stream.Push(map[string]any{"t": "err", "msg": "claude: could not start — " + installHint("claude")})
 		return
 	}
+	reqStart := time.Now()
+	observeRequest(metrics, AgentIDClaude)
 
 	// Capture stderr so we can inspect for session-limit signals once the
 	// subprocess exits. Lines also go to slog.Debug for ad-hoc debugging.
@@ -339,6 +341,7 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		stream.Push(map[string]any{"t": "err", "agent": AgentIDClaude, "msg": exitMsg("claude", waitErr, lines)})
 	}
 	observeTokens(metrics, AgentIDClaude, lastResult.inputTokens, lastResult.outputTokens, lastResult.costUSD)
+	observeOperationDuration(metrics, AgentIDClaude, time.Since(reqStart).Seconds())
 	endDispatchSpan(span, lastResult.inputTokens, lastResult.outputTokens, lastResult.costUSD, "")
 	chunkEnd["cost_usd"] = lastResult.costUSD
 	chunkEnd["input_tokens"] = lastResult.inputTokens

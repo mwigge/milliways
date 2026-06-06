@@ -381,25 +381,26 @@ func formatObservabilityFrame(now time.Time, spans []observeRenderSpan, usage ob
 	fmt.Fprintf(&b, "│   p50 latency:   %.2fms\n", sum.P50LatencyMS)
 	fmt.Fprintf(&b, "│   p99 latency:   %.2fms\n", sum.P99LatencyMS)
 	fmt.Fprintln(&b, "│")
-	// OpenTelemetry GenAI performance metrics section
-	fmt.Fprintln(&b, "│ performance:")
-	fmt.Fprintf(&b, "│   requests:      %d (last 1h)\n", usage.Status.RequestCount)
-	fmt.Fprintf(&b, "│   failures:       %.1f%%\n", usage.Status.FailureRate)
-	if usage.Status.OperationDuration > 0 {
-		fmt.Fprintf(&b, "│   duration:       %.1fms median\n", usage.Status.OperationDuration)
+	if usage.Status.RequestCount > 0 {
+		fmt.Fprintln(&b, "│ performance:")
+		fmt.Fprintf(&b, "│   requests:      %d (last 1h)\n", usage.Status.RequestCount)
+		fmt.Fprintf(&b, "│   failures:       %.1f%%\n", usage.Status.FailureRate)
+		if usage.Status.OperationDuration > 0 {
+			fmt.Fprintf(&b, "│   duration:       %.1fms median\n", usage.Status.OperationDuration)
+		}
+		if usage.Status.TTFTMedian > 0 {
+			fmt.Fprintf(&b, "│   ttft:          %.1fms median\n", usage.Status.TTFTMedian)
+		}
+		if usage.Status.TPOTMedian > 0 {
+			fmt.Fprintf(&b, "│   tpot:          %.1fms median\n", usage.Status.TPOTMedian)
+		}
+		if usage.Status.RequestModel != "" {
+			fmt.Fprintf(&b, "│   model:         %s\n", truncate(usage.Status.RequestModel, 30))
+		}
+		fmt.Fprintln(&b, "│")
 	}
-	if usage.Status.TTFTMedian > 0 {
-		fmt.Fprintf(&b, "│   ttft:          %.1fms median\n", usage.Status.TTFTMedian)
-	}
-	if usage.Status.TPOTMedian > 0 {
-		fmt.Fprintf(&b, "│   tpot:          %.1fms median\n", usage.Status.TPOTMedian)
-	}
-	if usage.Status.RequestModel != "" {
-		fmt.Fprintf(&b, "│   model:         %s\n", truncate(usage.Status.RequestModel, 30))
-	}
-	fmt.Fprintln(&b, "│")
 	fmt.Fprintln(&b, "│ usage:")
-	fmt.Fprintf(&b, "│   tokens:        in %s / out %s / total %s (last 5m)\n",
+	fmt.Fprintf(&b, "│   tokens:        in %s / out %s / total %s (last 1h)\n",
 		formatObserveTokenCount(usage.Status.TokensIn),
 		formatObserveTokenCount(usage.Status.TokensOut),
 		formatObserveTokenCount(usage.Status.TokensIn+usage.Status.TokensOut))
@@ -464,10 +465,12 @@ func formatObserveSecurity(sec observeRenderSecurity) string {
 	if blocks == 0 {
 		blocks = sec.BlockCount
 	}
+	// Only escalate posture when not suppressed by mode.
+	quiet := mode == "off" || mode == "observe"
 	switch {
-	case blocks > 10:
+	case blocks > 20:
 		posture = "block"
-	case warnings > 0 && posture == "":
+	case warnings > 5 && posture == "" && !quiet:
 		posture = "warn"
 	case posture == "":
 		posture = "ok"
@@ -480,7 +483,7 @@ func formatObserveSecurity(sec observeRenderSecurity) string {
 		label = fmt.Sprintf("SEC WARN %d", warnings)
 	}
 	modeHint := observeSecurityModeHint(mode, blocks)
-	if !sec.Installed {
+	if !sec.Installed && !quiet {
 		if posture == "ok" || posture == "" {
 			label = "SEC WARN"
 		}
@@ -671,28 +674,29 @@ func formatTimeToLimit(quotas []observeRenderQuota) string {
 	seenBurn := false
 	seenUsage := false
 	for _, q := range quotas {
-		// Use 24h used value if available, otherwise fall back to 1h
-		used24h := q.Used
+		// Prefer 24h rolling usage when available; fall back to the window usage.
+		usedVal := q.Used
+		rateWindow := 24 * time.Hour
 		if q.UsedDaily != nil && *q.UsedDaily > 0 {
-			used24h = *q.UsedDaily
+			usedVal = *q.UsedDaily
+		} else if w, ok := parseQuotaWindow(q.Window); ok {
+			rateWindow = w
 		}
-		if used24h > 0 {
+		if usedVal > 0 {
 			seenUsage = true
 		}
 		if q.Cap <= 0 {
 			continue
 		}
 		seenCap = true
-		if used24h >= q.Cap {
+		if usedVal >= q.Cap {
 			return q.AgentID + " limit reached"
 		}
-		// Use 24h window for rate calculation
-		window24h := 24 * time.Hour
-		if !seenBurn && used24h > 0 {
+		if !seenBurn && usedVal > 0 {
 			seenBurn = true
-			ratePerSecond := used24h / window24h.Seconds()
+			ratePerSecond := usedVal / rateWindow.Seconds()
 			if ratePerSecond > 0 {
-				eta := time.Duration(((q.Cap - used24h) / ratePerSecond) * float64(time.Second))
+				eta := time.Duration(((q.Cap - usedVal) / ratePerSecond) * float64(time.Second))
 				if bestAgent == "" || eta < bestETA {
 					bestAgent = q.AgentID
 					bestETA = eta

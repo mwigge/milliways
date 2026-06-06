@@ -272,6 +272,9 @@ func (s *Server) buildStatus() Status {
 	failureRate := 0.0
 	if reqCount > 0 {
 		failureRate = float64(errCount) / float64(reqCount) * 100
+		if failureRate > 100 {
+			failureRate = 100
+		}
 	}
 	opDuration := s.getHistogramMedian("gen_ai.client.operation.duration", r1h)
 	ttft := s.getHistogramMedian("gen_ai.client.operation.time_to_first_chunk", r1h)
@@ -321,8 +324,8 @@ func (s *Server) buildQuotaSnapshots() []QuotaSnapshot {
 	for _, agent := range agents {
 		agentCopy := agent
 
-		// Check if agent has any historical data (30 days)
-		hasHistory := s.getTokenTotal("tokens_in", &agentCopy, r30d) > 0
+		// Check if agent has any historical data (30 days, use daily tier)
+		hasHistory := s.getTokenTotal("tokens_in", &agentCopy, r30d, "daily") > 0
 
 		// Get current 1h usage
 		res, err := s.metrics.RollupGet(metrics.RollupGetParams{
@@ -342,10 +345,11 @@ func (s *Server) buildQuotaSnapshots() []QuotaSnapshot {
 			used += b.Sum
 		}
 
-		// Get 24h/weekly/monthly totals
-		hour24Used := s.getTokenTotal("tokens_in", &agentCopy, r24h)
-		weeklyUsed := s.getTokenTotal("tokens_in", &agentCopy, r1w)
-		monthlyUsed := s.getTokenTotal("tokens_in", &agentCopy, r1m)
+		// Get 24h/weekly/monthly totals using the right aggregation tier so
+		// each window reflects its actual period, not just the 60-min raw buffer.
+		hour24Used := s.getTokenTotal("tokens_in", &agentCopy, r24h, "hourly")
+		weeklyUsed := s.getTokenTotal("tokens_in", &agentCopy, r1w, "daily")
+		monthlyUsed := s.getTokenTotal("tokens_in", &agentCopy, r1m, "daily")
 
 		// Include agent if it has current usage OR historical data
 		if used == 0 && !hasHistory {
@@ -367,13 +371,19 @@ func (s *Server) buildQuotaSnapshots() []QuotaSnapshot {
 }
 
 // getTokenTotal returns the sum of a metric for the given agent and range.
-func (s *Server) getTokenTotal(metric string, agentID *string, rng *metrics.Range) float64 {
+// tier selects the aggregation granularity: "raw" (1h window), "hourly"
+// (24h), "daily" (7d+), "weekly" (months). Falls back to "raw" on error.
+func (s *Server) getTokenTotal(metric string, agentID *string, rng *metrics.Range, tier string) float64 {
 	res, err := s.metrics.RollupGet(metrics.RollupGetParams{
 		Metric:  metric,
-		Tier:    "raw",
+		Tier:    tier,
 		Range:   rng,
 		AgentID: agentID,
 	})
+	if err != nil && tier != "raw" {
+		// Aggregated tiers may be empty if daemon just started; fall back to raw.
+		return s.getTokenTotal(metric, agentID, rng, "raw")
+	}
 	if err != nil {
 		return 0
 	}
