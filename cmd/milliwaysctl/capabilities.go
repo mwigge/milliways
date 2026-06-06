@@ -87,14 +87,15 @@ func renderCapabilities(w io.Writer, result map[string]any) {
 	}
 	sort.Strings(names)
 
-	fmt.Fprintln(w, "client   enforcement     read              write             edit              delete            bash              glob              grep              approvals         memory            observability")
+	fmt.Fprintln(w, "client   enforcement     broker       read              write             edit              delete            bash              glob              grep              list_tree         artifacts         approvals         structured_errors memory            observability")
 	for _, name := range names {
 		meta := mapValue(clients[name])
 		caps := mapField(meta, "capabilities")
 		contract := mapField(caps, "contract")
-		fmt.Fprintf(w, "%-8s %-15s %-17s %-17s %-17s %-17s %-17s %-17s %-17s %-17s %-17s %-17s\n",
+		fmt.Fprintf(w, "%-8s %-15s %-12s %-17s %-17s %-17s %-17s %-17s %-17s %-17s %-17s %-17s %-17s %-17s %-17s %-17s\n",
 			name,
 			firstString(meta, "level"),
+			brokerStatus(meta),
 			firstString(contract, "read"),
 			firstString(contract, "write"),
 			firstString(contract, "edit"),
@@ -102,7 +103,10 @@ func renderCapabilities(w io.Writer, result map[string]any) {
 			firstString(contract, "bash"),
 			firstString(contract, "glob"),
 			firstString(contract, "grep"),
+			firstString(contract, "list_tree"),
+			firstString(contract, "artifacts"),
 			firstString(contract, "approvals"),
+			firstString(contract, "structured_errors"),
 			firstString(caps, "memory"),
 			firstString(caps, "observability"),
 		)
@@ -131,4 +135,20 @@ func firstString(values map[string]any, key string) string {
 		return s
 	}
 	return "unknown"
+}
+
+func brokerStatus(meta map[string]any) string {
+	if strings.TrimSpace(firstString(meta, "broker_path")) != "" && firstString(meta, "broker_path") != "unknown" {
+		return "available"
+	}
+	switch firstString(meta, "level") {
+	case "brokered":
+		return "available"
+	case "preflight-only":
+		return "unavailable"
+	case "full":
+		return "n/a"
+	default:
+		return "unknown"
+	}
 }

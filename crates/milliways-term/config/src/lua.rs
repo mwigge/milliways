@@ -488,6 +488,13 @@ struct LuaFontAttributes {
 
     #[dynamic(default)]
     pub harfbuzz_features: Option<Vec<String>>,
+    // Alias for harfbuzz_features for backwards compatibility.
+    // Ideally we'd simply use serde's aliasing functionality on the
+    // field to support backwards compatibility, but aliases are invisible
+    // to from_lua_value_dynamic, so we do a little fixup here ourselves
+    // in our from_lua impl.
+    #[dynamic(default)]
+    font_features: Option<Vec<String>>,
     #[dynamic(default)]
     pub freetype_load_target: Option<FreeTypeLoadTarget>,
     #[dynamic(default)]
@@ -515,6 +522,13 @@ impl<'lua> FromLua<'lua> for LuaFontAttributes {
                     } else {
                         FontStyle::Normal
                     };
+                }
+                // Merge font_features into harfbuzz_features for backwards compatibility.
+                // If both are set, harfbuzz_features takes precedence.
+                if let Some(ff) = attr.font_features.take() {
+                    if attr.harfbuzz_features.is_none() {
+                        attr.harfbuzz_features = Some(ff);
+                    }
                 }
                 Ok(attr)
             }

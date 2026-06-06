@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/mwigge/milliways/internal/daemon/observability"
 	"github.com/mwigge/milliways/internal/workflow"
@@ -26,9 +27,11 @@ import (
 
 func TestWorkflowNodeWaitApprovalRPCMovesNodeToWaitingApproval(t *testing.T) {
 	store := workflow.NewFileStore(t.TempDir())
+	previousUpdate := time.Date(2026, 5, 19, 9, 0, 0, 0, time.UTC)
 	if err := store.Save(context.Background(), workflow.Workflow{
-		ID:     "wf-wait",
-		Status: workflow.StatusRunning,
+		ID:        "wf-wait",
+		Status:    workflow.StatusRunning,
+		UpdatedAt: previousUpdate,
 		Nodes: []workflow.Node{{
 			ID:     "edit",
 			Type:   workflow.NodeToolCall,
@@ -71,6 +74,9 @@ func TestWorkflowNodeWaitApprovalRPCMovesNodeToWaitingApproval(t *testing.T) {
 	if resp.Result.Node.Error != "write nextgen.md" {
 		t.Fatalf("node error = %q, want approval reason", resp.Result.Node.Error)
 	}
+	if !resp.Result.Workflow.UpdatedAt.After(previousUpdate) {
+		t.Fatalf("workflow updated_at = %v, want after %v", resp.Result.Workflow.UpdatedAt, previousUpdate)
+	}
 
 	stored, err := store.Load(context.Background(), "wf-wait")
 	if err != nil {
@@ -78,6 +84,9 @@ func TestWorkflowNodeWaitApprovalRPCMovesNodeToWaitingApproval(t *testing.T) {
 	}
 	if stored.Nodes[0].Status != workflow.StatusWaitingApproval {
 		t.Fatalf("stored node status = %q, want waiting_approval", stored.Nodes[0].Status)
+	}
+	if !stored.UpdatedAt.Equal(resp.Result.Workflow.UpdatedAt) || !stored.UpdatedAt.After(previousUpdate) {
+		t.Fatalf("stored updated_at = %v, response updated_at = %v, want advanced and persisted", stored.UpdatedAt, resp.Result.Workflow.UpdatedAt)
 	}
 }
 

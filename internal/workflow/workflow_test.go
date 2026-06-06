@@ -157,6 +157,206 @@ func TestReadyNodesUsesCanonicalTrimmedIDs(t *testing.T) {
 	}
 }
 
+func TestReadyNodesSortsByPriorityThenID(t *testing.T) {
+	t.Parallel()
+
+	wf := Workflow{
+		ID: "wf-priority",
+		Nodes: []Node{
+			{ID: "test", Status: StatusQueued, Priority: 5},
+			{ID: "release", Status: StatusQueued, Priority: 10},
+			{ID: "docs", Status: StatusQueued, Priority: 5},
+			{ID: "context", Status: StatusCompleted, Priority: 100},
+		},
+	}
+
+	ready, err := ReadyNodes(wf)
+	if err != nil {
+		t.Fatalf("ReadyNodes returned error: %v", err)
+	}
+	got := []string{ready[0].ID, ready[1].ID, ready[2].ID}
+	want := []string{"release", "docs", "test"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ready order = %#v, want %#v", got, want)
+	}
+}
+
+func TestReportWorkflowSummarizesRepresentativeGraph(t *testing.T) {
+	t.Parallel()
+
+	loggedAt := time.Date(2026, 5, 20, 9, 15, 0, 0, time.UTC)
+	wf := Workflow{
+		ID:     "wf-report",
+		Goal:   "summarize graph",
+		Status: StatusRunning,
+		Nodes: []Node{
+			{
+				ID:        "context",
+				Type:      NodeContext,
+				Status:    StatusCompleted,
+				Memory:    MemoryLink{Reads: []string{"repo"}, Writes: []string{"scan"}},
+				Artifacts: []Artifact{{Kind: ArtifactLog, Path: "logs/context.txt"}},
+				ToolCalls: []ToolCall{{Tool: "grep", Result: "ok"}},
+				Logs:      []LogRecord{{Time: loggedAt, Level: "info", Message: "context ready"}},
+			},
+			{
+				ID:     "approval",
+				Type:   NodeApproval,
+				Status: StatusWaitingApproval,
+				Security: SecurityEnvelope{
+					Operation: "write",
+					Paths:     []string{"internal/workflow/workflow.go"},
+					Approval:  ApprovalRequired,
+					Risk:      "workspace-write",
+				},
+				Error:      "needs file write approval",
+				RetryCount: 1,
+			},
+			{
+				ID:        "test",
+				Type:      NodeVerification,
+				Status:    StatusFailed,
+				Error:     "go test failed",
+				Artifacts: []Artifact{{Kind: ArtifactTest, Path: "test.log"}},
+				Mutations: []FileMutation{{Op: "edit", Path: "internal/workflow/workflow_test.go", Lines: 12}},
+			},
+			{
+				ID:       "summary",
+				Type:     NodeSummary,
+				Status:   StatusQueued,
+				Priority: 8,
+			},
+		},
+		Edges: []Edge{{From: "context", To: "summary"}},
+	}
+
+	got, err := ReportWorkflow(wf)
+	if err != nil {
+		t.Fatalf("ReportWorkflow returned error: %v", err)
+	}
+
+	if got.ID != "wf-report" || got.Goal != "summarize graph" || got.Status != StatusRunning {
+		t.Fatalf("report identity = %#v, want workflow identity", got)
+	}
+	wantCounts := map[Status]int{
+		StatusCompleted:       1,
+		StatusWaitingApproval: 1,
+		StatusFailed:          1,
+		StatusQueued:          1,
+	}
+	if !reflect.DeepEqual(got.NodeCounts, wantCounts) {
+		t.Fatalf("node counts = %#v, want %#v", got.NodeCounts, wantCounts)
+	}
+	if len(got.BlockedApprovals) != 1 || got.BlockedApprovals[0].ID != "approval" || got.BlockedApprovals[0].Operation != "write" || got.BlockedApprovals[0].Approval != ApprovalRequired {
+		t.Fatalf("blocked approvals = %#v, want approval write node", got.BlockedApprovals)
+	}
+	if len(got.FailedNodes) != 1 || got.FailedNodes[0].ID != "test" || got.FailedNodes[0].Error != "go test failed" {
+		t.Fatalf("failed nodes = %#v, want failed test node", got.FailedNodes)
+	}
+	if got.RuntimeCounts != (RuntimeCounts{ToolCalls: 1, Logs: 1, Mutations: 1}) {
+		t.Fatalf("runtime counts = %#v, want one of each", got.RuntimeCounts)
+	}
+	if got.RetryCountTotal != 1 {
+		t.Fatalf("retry total = %d, want 1", got.RetryCountTotal)
+	}
+	if len(got.Artifacts) != 2 || got.Artifacts[0].NodeID != "context" || got.Artifacts[1].NodeID != "test" {
+		t.Fatalf("artifacts = %#v, want context and test artifacts", got.Artifacts)
+	}
+	if len(got.MemoryLinks) != 1 || got.MemoryLinks[0].NodeID != "context" || got.MemoryLinks[0].Reads[0] != "repo" || got.MemoryLinks[0].Writes[0] != "scan" {
+		t.Fatalf("memory links = %#v, want context memory lineage", got.MemoryLinks)
+	}
+	if len(got.ReadyNodes) != 1 || got.ReadyNodes[0].ID != "summary" || got.ReadyNodes[0].Priority != 8 {
+		t.Fatalf("ready nodes = %#v, want summary", got.ReadyNodes)
+	}
+}
+
+func TestReportWorkflowRejectsInvalidWorkflow(t *testing.T) {
+	t.Parallel()
+
+	got, err := ReportWorkflow(Workflow{Nodes: []Node{{ID: "node", Status: StatusQueued}}})
+	if !errors.Is(err, ErrMissingWorkflowID) {
+		t.Fatalf("ReportWorkflow error = %v, want %v", err, ErrMissingWorkflowID)
+	}
+	if !reflect.DeepEqual(got, WorkflowReport{}) {
+		t.Fatalf("ReportWorkflow report = %#v, want zero value on error", got)
+	}
+}
+
+func TestWorkflowEventsReturnsReplayFriendlyEventList(t *testing.T) {
+	t.Parallel()
+
+	createdAt := time.Date(2026, 5, 20, 9, 0, 0, 0, time.UTC)
+	startedAt := time.Date(2026, 5, 20, 9, 5, 0, 0, time.UTC)
+	loggedAt := time.Date(2026, 5, 20, 9, 6, 0, 0, time.UTC)
+	endedAt := time.Date(2026, 5, 20, 9, 10, 0, 0, time.UTC)
+	wf := Workflow{
+		ID:        "wf-events",
+		Goal:      "export event stream",
+		Status:    StatusCompleted,
+		CreatedAt: createdAt,
+		UpdatedAt: endedAt,
+		Nodes: []Node{{
+			ID:        "edit",
+			Status:    StatusCompleted,
+			StartedAt: startedAt,
+			EndedAt:   endedAt,
+			Memory:    MemoryLink{Reads: []string{"repo"}},
+			ToolCalls: []ToolCall{{Tool: "edit", Result: "ok"}},
+			Logs:      []LogRecord{{Time: loggedAt, Message: "patched"}},
+			Mutations: []FileMutation{{Op: "edit", Path: "workflow.go", Lines: 3}},
+			Artifacts: []Artifact{{Kind: ArtifactDiff, Path: "workflow.patch"}},
+		}},
+	}
+
+	got, err := WorkflowEvents(wf)
+	if err != nil {
+		t.Fatalf("WorkflowEvents returned error: %v", err)
+	}
+	wantTypes := []string{
+		"workflow_status",
+		"node_started",
+		"node_status",
+		"memory",
+		"tool_call",
+		"log",
+		"mutation",
+		"artifact",
+		"workflow_updated",
+	}
+	if len(got) != len(wantTypes) {
+		t.Fatalf("events len = %d, want %d: %#v", len(got), len(wantTypes), got)
+	}
+	for i, wantType := range wantTypes {
+		if got[i].Seq != i+1 || got[i].WorkflowID != "wf-events" || got[i].Type != wantType {
+			t.Fatalf("event[%d] = %#v, want seq %d type %s workflow wf-events", i, got[i], i+1, wantType)
+		}
+	}
+	if got[4].ToolCall == nil || got[4].ToolCall.Tool != "edit" {
+		t.Fatalf("tool event = %#v, want edit tool call", got[4])
+	}
+	if got[5].Log == nil || got[5].Log.Message != "patched" || !got[5].Time.Equal(loggedAt) {
+		t.Fatalf("log event = %#v, want patched log with time", got[5])
+	}
+	if got[6].Mutation == nil || got[6].Mutation.Path != "workflow.go" {
+		t.Fatalf("mutation event = %#v, want workflow.go mutation", got[6])
+	}
+	if got[7].Artifact == nil || got[7].Artifact.Kind != ArtifactDiff {
+		t.Fatalf("artifact event = %#v, want diff artifact", got[7])
+	}
+}
+
+func TestWorkflowEventsRejectsInvalidWorkflow(t *testing.T) {
+	t.Parallel()
+
+	got, err := WorkflowEvents(Workflow{ID: "wf-invalid", Nodes: []Node{{ID: "a"}, {ID: "a"}}})
+	if !errors.Is(err, ErrDuplicateNode) {
+		t.Fatalf("WorkflowEvents error = %v, want %v", err, ErrDuplicateNode)
+	}
+	if got != nil {
+		t.Fatalf("WorkflowEvents events = %#v, want nil on error", got)
+	}
+}
+
 func TestStartReadyNodeMovesQueuedReadyNodeToRunning(t *testing.T) {
 	t.Parallel()
 
@@ -752,9 +952,50 @@ func TestCancelWorkflowRejectsInvalidWorkflow(t *testing.T) {
 	}
 }
 
+func TestRecoverInterruptedFailsInFlightNodesAndPreservesWaitingApprovals(t *testing.T) {
+	t.Parallel()
+
+	recoveredAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	wf := Workflow{
+		ID:     "wf-recover",
+		Status: StatusRunning,
+		Nodes: []Node{
+			{ID: "running", Status: StatusRunning},
+			{ID: "resumed", Status: StatusResumed},
+			{ID: "verifying", Status: StatusVerifying},
+			{ID: "approval", Status: StatusWaitingApproval},
+			{ID: "queued", Status: StatusQueued},
+		},
+	}
+
+	got, changed, err := RecoverInterrupted(wf, recoveredAt, "daemon restarted")
+	if err != nil {
+		t.Fatalf("RecoverInterrupted returned error: %v", err)
+	}
+	if !changed {
+		t.Fatal("RecoverInterrupted changed = false, want true")
+	}
+	if got.Status != StatusFailed || !got.UpdatedAt.Equal(recoveredAt) {
+		t.Fatalf("workflow status/updated_at = %q/%v, want failed/%v", got.Status, got.UpdatedAt, recoveredAt)
+	}
+	for _, id := range []string{"running", "resumed", "verifying"} {
+		node := nodeByIDForTest(got.Nodes, id)
+		if node.Status != StatusFailed || node.Error != "daemon restarted" || !node.EndedAt.Equal(recoveredAt) {
+			t.Fatalf("node %s = %#v, want failed recovery marker", id, node)
+		}
+	}
+	if node := nodeByIDForTest(got.Nodes, "approval"); node.Status != StatusWaitingApproval {
+		t.Fatalf("approval node status = %q, want waiting_approval", node.Status)
+	}
+	if wf.Nodes[0].Status != StatusRunning {
+		t.Fatalf("input workflow mutated: %#v", wf.Nodes[0])
+	}
+}
+
 func TestWorkflowJSONRoundTripPreservesContractFields(t *testing.T) {
 	t.Parallel()
 
+	loggedAt := time.Date(2026, 5, 19, 10, 45, 0, 0, time.UTC)
 	wf := Workflow{
 		ID:     "wf-1",
 		Goal:   "ship first slice",
@@ -774,7 +1015,11 @@ func TestWorkflowJSONRoundTripPreservesContractFields(t *testing.T) {
 			},
 			Memory:     MemoryLink{Reads: []string{"repo-context"}, Writes: []string{"approval-decision"}},
 			Artifacts:  []Artifact{{Kind: ArtifactApproval, Ref: "approval:42"}},
+			ToolCalls:  []ToolCall{{Tool: "bash", Args: map[string]string{"cmd": "go test ./internal/workflow"}, Result: "ok", Duration: "1s"}},
+			Logs:       []LogRecord{{Time: loggedAt, Level: "info", Message: "waiting for approval"}},
+			Mutations:  []FileMutation{{Op: "write", Path: "internal/workflow/workflow.go", Lines: 12}},
 			RetryCount: 2,
+			Priority:   7,
 		}},
 	}
 
@@ -795,8 +1040,145 @@ func TestWorkflowJSONRoundTripPreservesContractFields(t *testing.T) {
 	if got.Nodes[0].Artifacts[0].Kind != ArtifactApproval {
 		t.Fatalf("artifact kind = %q, want %q", got.Nodes[0].Artifacts[0].Kind, ArtifactApproval)
 	}
+	if got.Nodes[0].ToolCalls[0].Tool != "bash" || got.Nodes[0].ToolCalls[0].Args["cmd"] != "go test ./internal/workflow" {
+		t.Fatalf("tool calls = %#v, want preserved bash call", got.Nodes[0].ToolCalls)
+	}
+	if !got.Nodes[0].Logs[0].Time.Equal(loggedAt) || got.Nodes[0].Logs[0].Message != "waiting for approval" {
+		t.Fatalf("logs = %#v, want preserved timestamped log", got.Nodes[0].Logs)
+	}
+	if got.Nodes[0].Mutations[0].Op != "write" || got.Nodes[0].Mutations[0].Path != "internal/workflow/workflow.go" || got.Nodes[0].Mutations[0].Lines != 12 {
+		t.Fatalf("mutations = %#v, want preserved file mutation", got.Nodes[0].Mutations)
+	}
 	if got.Nodes[0].RetryCount != 2 {
 		t.Fatalf("retry_count = %d, want 2", got.Nodes[0].RetryCount)
+	}
+	if got.Nodes[0].Priority != 7 {
+		t.Fatalf("priority = %d, want 7", got.Nodes[0].Priority)
+	}
+}
+
+func nodeByIDForTest(nodes []Node, id string) Node {
+	for _, node := range nodes {
+		if node.ID == id {
+			return node
+		}
+	}
+	return Node{}
+}
+
+func TestAppendNodeRuntimeRecordsAppendWithoutMutatingInput(t *testing.T) {
+	t.Parallel()
+
+	updatedAt := time.Date(2026, 5, 19, 10, 30, 0, 0, time.UTC)
+	loggedAt := time.Date(2026, 5, 19, 10, 31, 0, 0, time.UTC)
+	wf := Workflow{
+		ID:        "wf-runtime",
+		Status:    StatusRunning,
+		UpdatedAt: updatedAt,
+		Nodes: []Node{
+			{
+				ID:        " edit ",
+				Status:    StatusRunning,
+				ToolCalls: []ToolCall{{Tool: "grep", Args: map[string]string{"pattern": "Workflow"}}},
+				Logs:      []LogRecord{{Time: updatedAt, Level: "info", Message: "started"}},
+				Mutations: []FileMutation{{Op: "read", Path: "internal/workflow/workflow.go"}},
+			},
+			{ID: "verify", Status: StatusQueued},
+		},
+	}
+
+	withCall, err := AppendNodeToolCall(wf, "edit", ToolCall{
+		Tool:     "bash",
+		Args:     map[string]string{"cmd": "go test ./internal/workflow"},
+		Result:   "ok",
+		Duration: "2s",
+	})
+	if err != nil {
+		t.Fatalf("AppendNodeToolCall returned error: %v", err)
+	}
+	if len(withCall.Nodes[0].ToolCalls) != 2 || withCall.Nodes[0].ToolCalls[1].Tool != "bash" {
+		t.Fatalf("tool calls = %#v, want appended bash call", withCall.Nodes[0].ToolCalls)
+	}
+	if len(wf.Nodes[0].ToolCalls) != 1 {
+		t.Fatalf("original workflow tool calls were mutated: %#v", wf.Nodes[0].ToolCalls)
+	}
+	if !withCall.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("workflow updated_at = %v, want preserved %v", withCall.UpdatedAt, updatedAt)
+	}
+	if !reflect.DeepEqual(withCall.Nodes[1], wf.Nodes[1]) {
+		t.Fatalf("non-target node changed: got %#v, want %#v", withCall.Nodes[1], wf.Nodes[1])
+	}
+
+	withLog, err := AppendNodeLog(wf, "edit", LogRecord{Time: loggedAt, Level: "warn", Message: "approval pending"})
+	if err != nil {
+		t.Fatalf("AppendNodeLog returned error: %v", err)
+	}
+	if len(withLog.Nodes[0].Logs) != 2 || withLog.Nodes[0].Logs[1].Message != "approval pending" {
+		t.Fatalf("logs = %#v, want appended approval log", withLog.Nodes[0].Logs)
+	}
+	if !withLog.UpdatedAt.Equal(loggedAt) {
+		t.Fatalf("workflow updated_at = %v, want log time %v", withLog.UpdatedAt, loggedAt)
+	}
+	if len(wf.Nodes[0].Logs) != 1 || !wf.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("original workflow logs or timestamp were mutated: %#v", wf)
+	}
+
+	withMutation, err := AppendNodeMutation(wf, "edit", FileMutation{Op: "write", Path: "internal/workflow/workflow_test.go", Lines: 24})
+	if err != nil {
+		t.Fatalf("AppendNodeMutation returned error: %v", err)
+	}
+	if len(withMutation.Nodes[0].Mutations) != 2 || withMutation.Nodes[0].Mutations[1].Path != "internal/workflow/workflow_test.go" {
+		t.Fatalf("mutations = %#v, want appended test mutation", withMutation.Nodes[0].Mutations)
+	}
+	if len(wf.Nodes[0].Mutations) != 1 {
+		t.Fatalf("original workflow mutations were mutated: %#v", wf.Nodes[0].Mutations)
+	}
+}
+
+func TestAppendNodeRuntimeRecordsReturnUnknownNode(t *testing.T) {
+	t.Parallel()
+
+	wf := Workflow{
+		ID:     "wf-runtime",
+		Status: StatusRunning,
+		Nodes:  []Node{{ID: "edit", Status: StatusRunning}},
+	}
+	loggedAt := time.Date(2026, 5, 19, 10, 35, 0, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		run  func() (Workflow, error)
+	}{
+		{
+			name: "tool call",
+			run: func() (Workflow, error) {
+				return AppendNodeToolCall(wf, "missing", ToolCall{Tool: "bash"})
+			},
+		},
+		{
+			name: "log",
+			run: func() (Workflow, error) {
+				return AppendNodeLog(wf, "missing", LogRecord{Time: loggedAt, Message: "missing"})
+			},
+		},
+		{
+			name: "mutation",
+			run: func() (Workflow, error) {
+				return AppendNodeMutation(wf, "missing", FileMutation{Op: "write", Path: "missing.go"})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.run()
+			if !errors.Is(err, ErrUnknownNode) {
+				t.Fatalf("%s error = %v, want %v", tt.name, err, ErrUnknownNode)
+			}
+			if !reflect.DeepEqual(got, Workflow{}) {
+				t.Fatalf("%s workflow = %#v, want zero value on error", tt.name, got)
+			}
+		})
 	}
 }
 

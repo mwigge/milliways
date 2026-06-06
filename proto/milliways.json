@@ -393,6 +393,73 @@
       },
       "additionalProperties": false
     },
+    "WorkflowToolCall": {
+      "type": "object",
+      "required": [
+        "tool"
+      ],
+      "properties": {
+        "tool": {
+          "type": "string"
+        },
+        "args": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "result": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "duration": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowLogRecord": {
+      "type": "object",
+      "required": [
+        "time",
+        "message"
+      ],
+      "properties": {
+        "time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "level": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowFileMutation": {
+      "type": "object",
+      "required": [
+        "op",
+        "path"
+      ],
+      "properties": {
+        "op": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "lines": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
     "WorkflowNode": {
       "type": "object",
       "required": [
@@ -431,6 +498,9 @@
           "type": "integer",
           "minimum": 0
         },
+        "priority": {
+          "type": "integer"
+        },
         "security": {
           "$ref": "#/$defs/WorkflowSecurityEnvelope"
         },
@@ -441,6 +511,24 @@
           "type": "array",
           "items": {
             "$ref": "#/$defs/WorkflowArtifact"
+          }
+        },
+        "tool_calls": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowToolCall"
+          }
+        },
+        "logs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowLogRecord"
+          }
+        },
+        "mutations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowFileMutation"
           }
         },
         "started_at": {
@@ -554,6 +642,77 @@
       },
       "additionalProperties": false
     },
+    "WorkflowTemplateSummary": {
+      "type": "object",
+      "description": "One built-in workflow template summary.",
+      "required": [
+        "name",
+        "description",
+        "nodes"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "nodes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowTemplatesResult": {
+      "type": "object",
+      "description": "Response from workflow.templates.",
+      "required": [
+        "templates"
+      ],
+      "properties": {
+        "templates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkflowTemplateSummary"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowCreateParams": {
+      "type": "object",
+      "description": "Params for workflow.create.",
+      "required": [
+        "id",
+        "template"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "template": {
+          "type": "string"
+        },
+        "goal": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowCreateResult": {
+      "type": "object",
+      "description": "Response from workflow.create.",
+      "required": [
+        "workflow"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        }
+      },
+      "additionalProperties": false
+    },
     "WorkflowGetParams": {
       "type": "object",
       "description": "Params for workflow.get.",
@@ -570,6 +729,58 @@
     "WorkflowGetResult": {
       "type": "object",
       "description": "Response from workflow.get.",
+      "required": [
+        "workflow"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowExportParams": {
+      "type": "object",
+      "description": "Params for workflow.export.",
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowExportResult": {
+      "type": "object",
+      "description": "Response from workflow.export.",
+      "required": [
+        "workflow"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowImportParams": {
+      "type": "object",
+      "description": "Params for workflow.import.",
+      "required": [
+        "workflow"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowImportResult": {
+      "type": "object",
+      "description": "Response from workflow.import.",
       "required": [
         "workflow"
       ],
@@ -658,6 +869,49 @@
     "WorkflowNodeStartResult": {
       "type": "object",
       "description": "Response from workflow.node.start.",
+      "required": [
+        "workflow",
+        "node"
+      ],
+      "properties": {
+        "workflow": {
+          "$ref": "#/$defs/Workflow"
+        },
+        "node": {
+          "$ref": "#/$defs/WorkflowNode"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNodeDelegateParams": {
+      "type": "object",
+      "description": "Params for workflow.node.delegate.",
+      "required": [
+        "id",
+        "node_id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "dir": {
+          "type": "string"
+        },
+        "prompt": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WorkflowNodeDelegateResult": {
+      "type": "object",
+      "description": "Response from workflow.node.delegate.",
       "required": [
         "workflow",
         "node"
@@ -1606,6 +1860,15 @@
     "WorkflowArtifact": {
       "$ref": "#/$defs/WorkflowArtifact"
     },
+    "WorkflowToolCall": {
+      "$ref": "#/$defs/WorkflowToolCall"
+    },
+    "WorkflowLogRecord": {
+      "$ref": "#/$defs/WorkflowLogRecord"
+    },
+    "WorkflowFileMutation": {
+      "$ref": "#/$defs/WorkflowFileMutation"
+    },
     "WorkflowNode": {
       "$ref": "#/$defs/WorkflowNode"
     },
@@ -1621,11 +1884,35 @@
     "WorkflowListResult": {
       "$ref": "#/$defs/WorkflowListResult"
     },
+    "WorkflowTemplateSummary": {
+      "$ref": "#/$defs/WorkflowTemplateSummary"
+    },
+    "WorkflowTemplatesResult": {
+      "$ref": "#/$defs/WorkflowTemplatesResult"
+    },
+    "WorkflowCreateParams": {
+      "$ref": "#/$defs/WorkflowCreateParams"
+    },
+    "WorkflowCreateResult": {
+      "$ref": "#/$defs/WorkflowCreateResult"
+    },
     "WorkflowGetParams": {
       "$ref": "#/$defs/WorkflowGetParams"
     },
     "WorkflowGetResult": {
       "$ref": "#/$defs/WorkflowGetResult"
+    },
+    "WorkflowExportParams": {
+      "$ref": "#/$defs/WorkflowExportParams"
+    },
+    "WorkflowExportResult": {
+      "$ref": "#/$defs/WorkflowExportResult"
+    },
+    "WorkflowImportParams": {
+      "$ref": "#/$defs/WorkflowImportParams"
+    },
+    "WorkflowImportResult": {
+      "$ref": "#/$defs/WorkflowImportResult"
     },
     "WorkflowCancelParams": {
       "$ref": "#/$defs/WorkflowCancelParams"
@@ -1644,6 +1931,12 @@
     },
     "WorkflowNodeStartResult": {
       "$ref": "#/$defs/WorkflowNodeStartResult"
+    },
+    "WorkflowNodeDelegateParams": {
+      "$ref": "#/$defs/WorkflowNodeDelegateParams"
+    },
+    "WorkflowNodeDelegateResult": {
+      "$ref": "#/$defs/WorkflowNodeDelegateResult"
     },
     "WorkflowNodeCompleteParams": {
       "$ref": "#/$defs/WorkflowNodeCompleteParams"

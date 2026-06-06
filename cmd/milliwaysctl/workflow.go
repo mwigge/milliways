@@ -20,6 +20,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"sort"
 	"strings"
 
 	"github.com/mwigge/milliways/internal/rpc"
@@ -38,12 +40,26 @@ func runWorkflow(args []string, stdout, stderr io.Writer, socketOverride ...stri
 		return 0
 	case "list":
 		return runWorkflowList(rest, stdout, stderr, socketOverride...)
+	case "templates":
+		return runWorkflowTemplates(rest, stdout, stderr, socketOverride...)
+	case "create":
+		return runWorkflowCreate(rest, stdout, stderr, socketOverride...)
 	case "show":
 		return runWorkflowShow(rest, stdout, stderr, socketOverride...)
+	case "report":
+		return runWorkflowReport(rest, stdout, stderr, socketOverride...)
+	case "replay":
+		return runWorkflowReplay(rest, stdout, stderr, socketOverride...)
+	case "export":
+		return runWorkflowExport(rest, stdout, stderr, socketOverride...)
+	case "import":
+		return runWorkflowImport(rest, stdout, stderr, socketOverride...)
 	case "ready":
 		return runWorkflowReady(rest, stdout, stderr, socketOverride...)
 	case "start":
 		return runWorkflowStart(rest, stdout, stderr, socketOverride...)
+	case "delegate":
+		return runWorkflowDelegate(rest, stdout, stderr, socketOverride...)
 	case "retry":
 		return runWorkflowRetry(rest, stdout, stderr, socketOverride...)
 	case "complete":
@@ -83,6 +99,70 @@ func runWorkflowList(args []string, stdout, stderr io.Writer, socketOverride ...
 		return printWorkflowJSON(stdout, stderr, "workflow list", result)
 	}
 	renderWorkflowList(stdout, result)
+	return 0
+}
+
+func runWorkflowTemplates(args []string, stdout, stderr io.Writer, socketOverride ...string) int {
+	fs := flag.NewFlagSet("workflow templates", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw template list as JSON")
+	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	applyWorkflowSocket(socket, socketOverride)
+
+	result, rc := callWorkflowRPC("workflow templates", "workflow.templates", nil, stderr, *socket)
+	if rc != 0 {
+		return rc
+	}
+	if *asJSON {
+		return printWorkflowJSON(stdout, stderr, "workflow templates", result)
+	}
+	renderWorkflowTemplates(stdout, result)
+	return 0
+}
+
+func runWorkflowCreate(args []string, stdout, stderr io.Writer, socketOverride ...string) int {
+	fs := flag.NewFlagSet("workflow create", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw created workflow result as JSON")
+	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
+	args, jsonAfterArgs := pluckWorkflowJSONFlag(args)
+	var id, goal string
+	args, id = pluckWorkflowFlagValue(args, "--id")
+	args, goal = pluckWorkflowFlagValue(args, "--goal")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if jsonAfterArgs {
+		*asJSON = true
+	}
+	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+		fmt.Fprintln(stderr, "workflow create requires <template>")
+		return 2
+	}
+	if strings.TrimSpace(id) == "" {
+		fmt.Fprintln(stderr, "workflow create requires --id")
+		return 2
+	}
+	applyWorkflowSocket(socket, socketOverride)
+
+	params := map[string]any{
+		"template": strings.TrimSpace(fs.Arg(0)),
+		"id":       strings.TrimSpace(id),
+	}
+	if strings.TrimSpace(goal) != "" {
+		params["goal"] = strings.TrimSpace(goal)
+	}
+	result, rc := callWorkflowRPC("workflow create", "workflow.create", params, stderr, *socket)
+	if rc != 0 {
+		return rc
+	}
+	if *asJSON {
+		return printWorkflowJSON(stdout, stderr, "workflow create", result)
+	}
+	renderWorkflowCreate(stdout, result)
 	return 0
 }
 
@@ -140,6 +220,52 @@ func runWorkflowStart(args []string, stdout, stderr io.Writer, socketOverride ..
 		return printWorkflowJSON(stdout, stderr, "workflow start", result)
 	}
 	renderWorkflowStart(stdout, result)
+	return 0
+}
+
+func runWorkflowDelegate(args []string, stdout, stderr io.Writer, socketOverride ...string) int {
+	fs := flag.NewFlagSet("workflow delegate", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw delegated-node result as JSON")
+	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
+	args, jsonAfterArgs := pluckWorkflowJSONFlag(args)
+	var agent, dir, prompt string
+	args, agent = pluckWorkflowFlagValue(args, "--agent")
+	args, dir = pluckWorkflowFlagValue(args, "--dir")
+	args, prompt = pluckWorkflowFlagValue(args, "--prompt")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if jsonAfterArgs {
+		*asJSON = true
+	}
+	if fs.NArg() != 2 || strings.TrimSpace(fs.Arg(0)) == "" || strings.TrimSpace(fs.Arg(1)) == "" {
+		fmt.Fprintln(stderr, "workflow delegate requires <workflow-id> <node-id>")
+		return 2
+	}
+	applyWorkflowSocket(socket, socketOverride)
+
+	params := map[string]any{
+		"id":      strings.TrimSpace(fs.Arg(0)),
+		"node_id": strings.TrimSpace(fs.Arg(1)),
+	}
+	if strings.TrimSpace(agent) != "" {
+		params["agent"] = strings.TrimSpace(agent)
+	}
+	if strings.TrimSpace(dir) != "" {
+		params["dir"] = strings.TrimSpace(dir)
+	}
+	if strings.TrimSpace(prompt) != "" {
+		params["prompt"] = strings.TrimSpace(prompt)
+	}
+	result, rc := callWorkflowRPC("workflow delegate", "workflow.node.delegate", params, stderr, *socket)
+	if rc != 0 {
+		return rc
+	}
+	if *asJSON {
+		return printWorkflowJSON(stdout, stderr, "workflow delegate", result)
+	}
+	renderWorkflowDelegate(stdout, result)
 	return 0
 }
 
@@ -415,6 +541,145 @@ func runWorkflowShow(args []string, stdout, stderr io.Writer, socketOverride ...
 	return 0
 }
 
+func runWorkflowReport(args []string, stdout, stderr io.Writer, socketOverride ...string) int {
+	fs := flag.NewFlagSet("workflow report", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw workflow graph as JSON")
+	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
+	args, jsonAfterArgs := pluckWorkflowJSONFlag(args)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if jsonAfterArgs {
+		*asJSON = true
+	}
+	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+		fmt.Fprintln(stderr, "workflow report requires <id>")
+		return 2
+	}
+	applyWorkflowSocket(socket, socketOverride)
+
+	result, rc := callWorkflowRPC("workflow report", "workflow.get", map[string]any{"id": strings.TrimSpace(fs.Arg(0))}, stderr, *socket)
+	if rc != 0 {
+		return rc
+	}
+	if *asJSON {
+		return printWorkflowJSON(stdout, stderr, "workflow report", result)
+	}
+	renderWorkflowReport(stdout, result)
+	return 0
+}
+
+func runWorkflowReplay(args []string, stdout, stderr io.Writer, socketOverride ...string) int {
+	fs := flag.NewFlagSet("workflow replay", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw workflow graph as JSON")
+	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
+	args, jsonAfterArgs := pluckWorkflowJSONFlag(args)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if jsonAfterArgs {
+		*asJSON = true
+	}
+	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+		fmt.Fprintln(stderr, "workflow replay requires <id>")
+		return 2
+	}
+	applyWorkflowSocket(socket, socketOverride)
+
+	result, rc := callWorkflowRPC("workflow replay", "workflow.get", map[string]any{"id": strings.TrimSpace(fs.Arg(0))}, stderr, *socket)
+	if rc != 0 {
+		return rc
+	}
+	if *asJSON {
+		return printWorkflowJSON(stdout, stderr, "workflow replay", result)
+	}
+	renderWorkflowReplay(stdout, result)
+	return 0
+}
+
+func runWorkflowExport(args []string, stdout, stderr io.Writer, socketOverride ...string) int {
+	fs := flag.NewFlagSet("workflow export", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	output := fs.String("output", "", "write workflow JSON to path instead of stdout")
+	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
+	var outputPath string
+	args, outputPath = pluckWorkflowFlagValue(args, "--output")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(outputPath) != "" {
+		*output = strings.TrimSpace(outputPath)
+	}
+	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+		fmt.Fprintln(stderr, "workflow export requires <id>")
+		return 2
+	}
+	applyWorkflowSocket(socket, socketOverride)
+
+	result, rc := callWorkflowRPC("workflow export", "workflow.export", map[string]any{"id": strings.TrimSpace(fs.Arg(0))}, stderr, *socket)
+	if rc != 0 {
+		return rc
+	}
+	out, err := json.MarshalIndent(mapField(result, "workflow"), "", "  ")
+	if err != nil {
+		fmt.Fprintf(stderr, "milliwaysctl workflow export: encode workflow: %v\n", err)
+		return 1
+	}
+	if strings.TrimSpace(*output) != "" {
+		if err := os.WriteFile(*output, append(out, '\n'), 0o600); err != nil {
+			fmt.Fprintf(stderr, "milliwaysctl workflow export: write %s: %v\n", *output, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "exported %s to %s\n", firstString(mapField(result, "workflow"), "id"), *output)
+		return 0
+	}
+	fmt.Fprintln(stdout, string(out))
+	return 0
+}
+
+func runWorkflowImport(args []string, stdout, stderr io.Writer, socketOverride ...string) int {
+	fs := flag.NewFlagSet("workflow import", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	asJSON := fs.Bool("json", false, "print raw imported workflow result as JSON")
+	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
+	args, jsonAfterArgs := pluckWorkflowJSONFlag(args)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if jsonAfterArgs {
+		*asJSON = true
+	}
+	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+		fmt.Fprintln(stderr, "workflow import requires <path>")
+		return 2
+	}
+	raw, err := os.ReadFile(strings.TrimSpace(fs.Arg(0)))
+	if err != nil {
+		fmt.Fprintf(stderr, "milliwaysctl workflow import: read %s: %v\n", strings.TrimSpace(fs.Arg(0)), err)
+		return 1
+	}
+	var workflow map[string]any
+	if err := json.Unmarshal(raw, &workflow); err != nil {
+		fmt.Fprintf(stderr, "milliwaysctl workflow import: decode %s: %v\n", strings.TrimSpace(fs.Arg(0)), err)
+		return 1
+	}
+	applyWorkflowSocket(socket, socketOverride)
+
+	result, rc := callWorkflowRPC("workflow import", "workflow.import", map[string]any{"workflow": workflow}, stderr, *socket)
+	if rc != 0 {
+		return rc
+	}
+	if *asJSON {
+		return printWorkflowJSON(stdout, stderr, "workflow import", result)
+	}
+	wf := mapField(result, "workflow")
+	nodes, _ := wf["nodes"].([]any)
+	fmt.Fprintf(stdout, "imported %s status=%s nodes=%d\n", firstString(wf, "id"), firstString(wf, "status"), len(nodes))
+	return 0
+}
+
 func callWorkflowRPC(label, method string, params map[string]any, stderr io.Writer, sock string) (map[string]any, int) {
 	c, err := rpc.Dial(sock)
 	if err != nil {
@@ -459,6 +724,33 @@ func renderWorkflowList(w io.Writer, result map[string]any) {
 	}
 }
 
+func renderWorkflowTemplates(w io.Writer, result map[string]any) {
+	items, _ := result["templates"].([]any)
+	if len(items) == 0 {
+		fmt.Fprintln(w, "no workflow templates")
+		return
+	}
+	fmt.Fprintln(w, "TEMPLATE                    NODES  DESCRIPTION")
+	for _, item := range items {
+		row := mapValue(item)
+		fmt.Fprintf(w, "%-27s %-6s %s\n",
+			firstString(row, "name"),
+			numberString(row["nodes"]),
+			firstString(row, "description"),
+		)
+	}
+}
+
+func renderWorkflowCreate(w io.Writer, result map[string]any) {
+	wf := mapField(result, "workflow")
+	nodes, _ := wf["nodes"].([]any)
+	fmt.Fprintf(w, "created %s status=%s nodes=%d\n",
+		firstString(wf, "id"),
+		firstString(wf, "status"),
+		len(nodes),
+	)
+}
+
 func renderWorkflowShow(w io.Writer, result map[string]any) {
 	wf := mapField(result, "workflow")
 	nodes, _ := wf["nodes"].([]any)
@@ -471,6 +763,130 @@ func renderWorkflowShow(w io.Writer, result map[string]any) {
 	for _, item := range nodes {
 		node := mapValue(item)
 		fmt.Fprintf(w, "  %-16s %-16s %s\n", firstString(node, "id"), firstString(node, "type"), firstString(node, "status"))
+		renderWorkflowNodeDetails(w, node, "    ")
+	}
+}
+
+func renderWorkflowReport(w io.Writer, result map[string]any) {
+	wf := mapField(result, "workflow")
+	nodes, _ := wf["nodes"].([]any)
+	edges, _ := wf["edges"].([]any)
+	counts := map[string]int{}
+	toolCalls, logs, mutations, artifacts := 0, 0, 0, 0
+	waiting := make([]string, 0)
+	failed := make([]string, 0)
+	for _, item := range nodes {
+		node := mapValue(item)
+		status := firstString(node, "status")
+		counts[status]++
+		if status == "waiting_approval" {
+			waiting = append(waiting, firstString(node, "id"))
+		}
+		if status == "failed" {
+			failed = append(failed, firstString(node, "id"))
+		}
+		if items, _ := node["tool_calls"].([]any); len(items) > 0 {
+			toolCalls += len(items)
+		}
+		if items, _ := node["logs"].([]any); len(items) > 0 {
+			logs += len(items)
+		}
+		if items, _ := node["mutations"].([]any); len(items) > 0 {
+			mutations += len(items)
+		}
+		if items, _ := node["artifacts"].([]any); len(items) > 0 {
+			artifacts += len(items)
+		}
+	}
+	fmt.Fprintf(w, "workflow %s report\n", firstString(wf, "id"))
+	fmt.Fprintf(w, "status: %s\n", firstString(wf, "status"))
+	if goal := firstString(wf, "goal"); goal != "unknown" {
+		fmt.Fprintf(w, "goal: %s\n", goal)
+	}
+	fmt.Fprintf(w, "graph: nodes=%d edges=%d\n", len(nodes), len(edges))
+	fmt.Fprintf(w, "nodes: queued=%d running=%d waiting_approval=%d resumed=%d verifying=%d completed=%d failed=%d canceled=%d skipped=%d\n",
+		counts["queued"],
+		counts["running"],
+		counts["waiting_approval"],
+		counts["resumed"],
+		counts["verifying"],
+		counts["completed"],
+		counts["failed"],
+		counts["canceled"],
+		counts["skipped"],
+	)
+	fmt.Fprintf(w, "records: tool_calls=%d logs=%d mutations=%d artifacts=%d\n", toolCalls, logs, mutations, artifacts)
+	if len(waiting) > 0 {
+		fmt.Fprintf(w, "waiting_approval: %s\n", strings.Join(waiting, ","))
+	}
+	if len(failed) > 0 {
+		fmt.Fprintf(w, "failed: %s\n", strings.Join(failed, ","))
+	}
+}
+
+func renderWorkflowReplay(w io.Writer, result map[string]any) {
+	wf := mapField(result, "workflow")
+	nodes, _ := wf["nodes"].([]any)
+	edges, _ := wf["edges"].([]any)
+	incoming := workflowIncomingEdges(edges)
+	fmt.Fprintf(w, "workflow %s replay\n", firstString(wf, "id"))
+	for i, item := range nodes {
+		node := mapValue(item)
+		id := firstString(node, "id")
+		fmt.Fprintf(w, "%d. %s type=%s status=%s", i+1, id, firstString(node, "type"), firstString(node, "status"))
+		if deps := incoming[id]; len(deps) > 0 {
+			fmt.Fprintf(w, " after=%s", strings.Join(deps, ","))
+		}
+		fmt.Fprintln(w)
+		renderWorkflowReplayNode(w, node)
+	}
+}
+
+func renderWorkflowReplayNode(w io.Writer, node map[string]any) {
+	if err := firstString(node, "error"); err != "unknown" {
+		fmt.Fprintf(w, "   error: %s\n", err)
+	}
+	if outputs := workflowStringMap(node["outputs"]); len(outputs) > 0 {
+		fmt.Fprintf(w, "   outputs: %s\n", strings.Join(outputs, " "))
+	}
+	if calls, _ := node["tool_calls"].([]any); len(calls) > 0 {
+		for _, item := range calls {
+			call := mapValue(item)
+			fmt.Fprintf(w, "   tool_call: %s", firstString(call, "tool"))
+			if result := firstString(call, "result"); result != "unknown" {
+				fmt.Fprintf(w, " result=%s", result)
+			}
+			fmt.Fprintln(w)
+		}
+	}
+	if mutations, _ := node["mutations"].([]any); len(mutations) > 0 {
+		for _, item := range mutations {
+			mutation := mapValue(item)
+			fmt.Fprintf(w, "   mutation: %s %s lines=%s\n",
+				firstString(mutation, "op"),
+				firstString(mutation, "path"),
+				numberString(mutation["lines"]),
+			)
+		}
+	}
+	if logs, _ := node["logs"].([]any); len(logs) > 0 {
+		for _, item := range logs {
+			log := mapValue(item)
+			fmt.Fprintf(w, "   log: %s %s\n", firstString(log, "level"), firstString(log, "message"))
+		}
+	}
+	if artifacts, _ := node["artifacts"].([]any); len(artifacts) > 0 {
+		fmt.Fprint(w, "   artifacts:")
+		for _, item := range artifacts {
+			artifact := mapValue(item)
+			fmt.Fprintf(w, " %s", firstString(artifact, "kind"))
+			if path := firstString(artifact, "path"); path != "unknown" {
+				fmt.Fprintf(w, ":%s", path)
+			} else if ref := firstString(artifact, "ref"); ref != "unknown" {
+				fmt.Fprintf(w, ":%s", ref)
+			}
+		}
+		fmt.Fprintln(w)
 	}
 }
 
@@ -489,6 +905,7 @@ func renderWorkflowReady(w io.Writer, result map[string]any) {
 			firstString(node, "status"),
 			firstString(node, "client"),
 		)
+		renderWorkflowNodeDetails(w, node, "  ")
 	}
 }
 
@@ -502,13 +919,68 @@ func renderWorkflowStart(w io.Writer, result map[string]any) {
 	)
 }
 
+func renderWorkflowDelegate(w io.Writer, result map[string]any) {
+	node := mapField(result, "node")
+	fmt.Fprintf(w, "delegated %s status=%s type=%s client=%s\n",
+		firstString(node, "id"),
+		firstString(node, "status"),
+		firstString(node, "type"),
+		firstString(node, "client"),
+	)
+}
+
 func renderWorkflowRetry(w io.Writer, result map[string]any) {
 	node := mapField(result, "node")
 	fmt.Fprintf(w, "retried %s status=%s retry=%s\n",
 		firstString(node, "id"),
 		firstString(node, "status"),
-		numberString(node["retry"]),
+		workflowRetryString(node),
 	)
+}
+
+func renderWorkflowNodeDetails(w io.Writer, node map[string]any, indent string) {
+	if node == nil {
+		return
+	}
+	if retry := workflowRetryString(node); retry != "0" {
+		fmt.Fprintf(w, "%sretry: %s\n", indent, retry)
+	}
+	if priority := numberString(node["priority"]); priority != "0" {
+		fmt.Fprintf(w, "%spriority: %s\n", indent, priority)
+	}
+	if err := firstString(node, "error"); err != "unknown" {
+		fmt.Fprintf(w, "%serror: %s\n", indent, err)
+	}
+	if security := mapField(node, "security"); len(security) > 0 {
+		fmt.Fprintf(w, "%ssecurity: operation=%s approval=%s risk=%s reason=%s paths=%s\n",
+			indent,
+			firstString(security, "operation"),
+			firstString(security, "approval"),
+			firstString(security, "risk"),
+			firstString(security, "reason"),
+			workflowStringList(security["paths"]),
+		)
+	}
+	if memory := mapField(node, "memory"); len(memory) > 0 {
+		fmt.Fprintf(w, "%smemory: reads=%s writes=%s\n",
+			indent,
+			workflowStringList(memory["reads"]),
+			workflowStringList(memory["writes"]),
+		)
+	}
+	if artifacts, _ := node["artifacts"].([]any); len(artifacts) > 0 {
+		fmt.Fprintf(w, "%sartifacts:", indent)
+		for _, item := range artifacts {
+			artifact := mapValue(item)
+			fmt.Fprintf(w, " %s", firstString(artifact, "kind"))
+			if path := firstString(artifact, "path"); path != "unknown" {
+				fmt.Fprintf(w, ":%s", path)
+			} else if ref := firstString(artifact, "ref"); ref != "unknown" {
+				fmt.Fprintf(w, ":%s", ref)
+			}
+		}
+		fmt.Fprintln(w)
+	}
 }
 
 func renderWorkflowComplete(w io.Writer, result map[string]any) {
@@ -622,12 +1094,76 @@ func numberString(value any) string {
 	}
 }
 
+func workflowRetryString(node map[string]any) string {
+	if node == nil {
+		return "0"
+	}
+	if _, ok := node["retry_count"]; ok {
+		return numberString(node["retry_count"])
+	}
+	return numberString(node["retry"])
+}
+
+func workflowStringList(value any) string {
+	items, ok := value.([]any)
+	if !ok || len(items) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+			parts = append(parts, s)
+		}
+	}
+	if len(parts) == 0 {
+		return "none"
+	}
+	return strings.Join(parts, ",")
+}
+
+func workflowStringMap(value any) []string {
+	items, ok := value.(map[string]any)
+	if !ok || len(items) == 0 {
+		return nil
+	}
+	parts := make([]string, 0, len(items))
+	for key, raw := range items {
+		value, ok := raw.(string)
+		if strings.TrimSpace(key) != "" && ok && strings.TrimSpace(value) != "" {
+			parts = append(parts, strings.TrimSpace(key)+"="+strings.TrimSpace(value))
+		}
+	}
+	sort.Strings(parts)
+	return parts
+}
+
+func workflowIncomingEdges(edges []any) map[string][]string {
+	incoming := map[string][]string{}
+	for _, item := range edges {
+		edge := mapValue(item)
+		from := firstString(edge, "from")
+		to := firstString(edge, "to")
+		if from == "unknown" || to == "unknown" {
+			continue
+		}
+		incoming[to] = append(incoming[to], from)
+	}
+	return incoming
+}
+
 func printWorkflowUsage(w io.Writer) {
-	fmt.Fprintln(w, "usage: milliwaysctl workflow <list|show|ready|start|retry|complete|fail|cancel|wait-approval|resume|deny> [--json]")
+	fmt.Fprintln(w, "usage: milliwaysctl workflow <list|templates|create|show|report|replay|export|import|ready|start|delegate|retry|complete|fail|cancel|wait-approval|resume|deny> [--json]")
 	fmt.Fprintln(w, "  list [--json]                           list stored workflow graphs")
+	fmt.Fprintln(w, "  templates [--json]                      list built-in workflow templates")
+	fmt.Fprintln(w, "  create <template> --id <id> [--goal <text>] [--json] create workflow from template")
 	fmt.Fprintln(w, "  show <id> [--json]                      show one stored workflow graph")
+	fmt.Fprintln(w, "  report <id> [--json]                    show compact workflow status and record counts")
+	fmt.Fprintln(w, "  replay <id> [--json]                    show compact workflow node replay from stored graph")
+	fmt.Fprintln(w, "  export <id> [--output <path>]           export one workflow graph as JSON")
+	fmt.Fprintln(w, "  import <path> [--json]                  import one workflow graph from JSON")
 	fmt.Fprintln(w, "  ready <id> [--json]                     show queued nodes with completed dependencies")
 	fmt.Fprintln(w, "  start <workflow-id> <node-id> [--json]  start a ready node")
+	fmt.Fprintln(w, "  delegate <workflow-id> <node-id> [--agent <id>] [--dir <path>] [--prompt <text>] [--json] start delegate node")
 	fmt.Fprintln(w, "  retry <workflow-id> <node-id> [--json]  retry a failed node")
 	fmt.Fprintln(w, "  complete <workflow-id> <node-id> [--json] complete a running node")
 	fmt.Fprintln(w, "  fail <workflow-id> <node-id> --error <message> [--json] fail a running node")

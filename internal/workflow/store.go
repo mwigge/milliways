@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 var (
@@ -156,6 +157,52 @@ func (s *FileStore) List(ctx context.Context) ([]Summary, error) {
 		return summaries[i].ID < summaries[j].ID
 	})
 	return summaries, nil
+}
+
+// Report loads one workflow and returns its compact report.
+func (s *FileStore) Report(ctx context.Context, id string) (WorkflowReport, error) {
+	wf, err := s.Load(ctx, id)
+	if err != nil {
+		return WorkflowReport{}, err
+	}
+	return ReportWorkflow(wf)
+}
+
+// Events loads one workflow and returns its deterministic replay/export events.
+func (s *FileStore) Events(ctx context.Context, id string) ([]WorkflowEvent, error) {
+	wf, err := s.Load(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return WorkflowEvents(wf)
+}
+
+// RecoverInterrupted marks persisted workflows with in-flight nodes as failed
+// after daemon restart. It returns the number of workflow files updated.
+func (s *FileStore) RecoverInterrupted(ctx context.Context, recoveredAt time.Time, reason string) (int, error) {
+	summaries, err := s.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	updatedCount := 0
+	for _, summary := range summaries {
+		wf, err := s.Load(ctx, summary.ID)
+		if err != nil {
+			return updatedCount, err
+		}
+		updated, changed, err := RecoverInterrupted(wf, recoveredAt, reason)
+		if err != nil {
+			return updatedCount, err
+		}
+		if !changed {
+			continue
+		}
+		if err := s.Save(ctx, updated); err != nil {
+			return updatedCount, err
+		}
+		updatedCount++
+	}
+	return updatedCount, nil
 }
 
 func (s *FileStore) pathForID(id string) (string, error) {

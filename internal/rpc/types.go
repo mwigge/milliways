@@ -1092,6 +1092,19 @@ type MilliwaysJson struct {
 	// "WorkflowArtifactKind".
 	WorkflowArtifactKind *WorkflowArtifactKind `json:"WorkflowArtifactKind,omitempty,omitzero" yaml:"WorkflowArtifactKind,omitempty" mapstructure:"WorkflowArtifactKind,omitempty"`
 
+	// WorkflowToolCall corresponds to the JSON schema field "WorkflowToolCall".
+	WorkflowToolCall *WorkflowToolCall `json:"WorkflowToolCall,omitempty,omitzero" yaml:"WorkflowToolCall,omitempty" mapstructure:"WorkflowToolCall,omitempty"`
+
+	// WorkflowLogRecord corresponds to the JSON schema field "WorkflowLogRecord".
+	WorkflowLogRecord *WorkflowLogRecord `json:"WorkflowLogRecord,omitempty,omitzero" yaml:"WorkflowLogRecord,omitempty" mapstructure:"WorkflowLogRecord,omitempty"`
+
+	// WorkflowFileMutation corresponds to the JSON schema field
+	// "WorkflowFileMutation".
+	WorkflowFileMutation *WorkflowFileMutation `json:"WorkflowFileMutation,omitempty,omitzero" yaml:"WorkflowFileMutation,omitempty" mapstructure:"WorkflowFileMutation,omitempty"`
+
+	// WorkflowEdge corresponds to the JSON schema field "WorkflowEdge".
+	WorkflowEdge *WorkflowEdge `json:"WorkflowEdge,omitempty,omitzero" yaml:"WorkflowEdge,omitempty" mapstructure:"WorkflowEdge,omitempty"`
+
 	// WorkflowCancelParams corresponds to the JSON schema field
 	// "WorkflowCancelParams".
 	WorkflowCancelParams *WorkflowCancelParams `json:"WorkflowCancelParams,omitempty,omitzero" yaml:"WorkflowCancelParams,omitempty" mapstructure:"WorkflowCancelParams,omitempty"`
@@ -1100,17 +1113,46 @@ type MilliwaysJson struct {
 	// "WorkflowCancelResult".
 	WorkflowCancelResult *WorkflowCancelResult `json:"WorkflowCancelResult,omitempty,omitzero" yaml:"WorkflowCancelResult,omitempty" mapstructure:"WorkflowCancelResult,omitempty"`
 
-	// WorkflowEdge corresponds to the JSON schema field "WorkflowEdge".
-	WorkflowEdge *WorkflowEdge `json:"WorkflowEdge,omitempty,omitzero" yaml:"WorkflowEdge,omitempty" mapstructure:"WorkflowEdge,omitempty"`
-
 	// WorkflowGetParams corresponds to the JSON schema field "WorkflowGetParams".
 	WorkflowGetParams *WorkflowGetParams `json:"WorkflowGetParams,omitempty,omitzero" yaml:"WorkflowGetParams,omitempty" mapstructure:"WorkflowGetParams,omitempty"`
 
 	// WorkflowGetResult corresponds to the JSON schema field "WorkflowGetResult".
 	WorkflowGetResult *WorkflowGetResult `json:"WorkflowGetResult,omitempty,omitzero" yaml:"WorkflowGetResult,omitempty" mapstructure:"WorkflowGetResult,omitempty"`
 
+	// WorkflowExportParams corresponds to the JSON schema field
+	// "WorkflowExportParams".
+	WorkflowExportParams *WorkflowExportParams `json:"WorkflowExportParams,omitempty,omitzero" yaml:"WorkflowExportParams,omitempty" mapstructure:"WorkflowExportParams,omitempty"`
+
+	// WorkflowExportResult corresponds to the JSON schema field
+	// "WorkflowExportResult".
+	WorkflowExportResult *WorkflowExportResult `json:"WorkflowExportResult,omitempty,omitzero" yaml:"WorkflowExportResult,omitempty" mapstructure:"WorkflowExportResult,omitempty"`
+
+	// WorkflowImportParams corresponds to the JSON schema field
+	// "WorkflowImportParams".
+	WorkflowImportParams *WorkflowImportParams `json:"WorkflowImportParams,omitempty,omitzero" yaml:"WorkflowImportParams,omitempty" mapstructure:"WorkflowImportParams,omitempty"`
+
+	// WorkflowImportResult corresponds to the JSON schema field
+	// "WorkflowImportResult".
+	WorkflowImportResult *WorkflowImportResult `json:"WorkflowImportResult,omitempty,omitzero" yaml:"WorkflowImportResult,omitempty" mapstructure:"WorkflowImportResult,omitempty"`
+
 	// WorkflowListResult corresponds to the JSON schema field "WorkflowListResult".
 	WorkflowListResult *WorkflowListResult `json:"WorkflowListResult,omitempty,omitzero" yaml:"WorkflowListResult,omitempty" mapstructure:"WorkflowListResult,omitempty"`
+
+	// WorkflowTemplateSummary corresponds to the JSON schema field
+	// "WorkflowTemplateSummary".
+	WorkflowTemplateSummary *WorkflowTemplateSummary `json:"WorkflowTemplateSummary,omitempty,omitzero" yaml:"WorkflowTemplateSummary,omitempty" mapstructure:"WorkflowTemplateSummary,omitempty"`
+
+	// WorkflowTemplatesResult corresponds to the JSON schema field
+	// "WorkflowTemplatesResult".
+	WorkflowTemplatesResult *WorkflowTemplatesResult `json:"WorkflowTemplatesResult,omitempty,omitzero" yaml:"WorkflowTemplatesResult,omitempty" mapstructure:"WorkflowTemplatesResult,omitempty"`
+
+	// WorkflowCreateParams corresponds to the JSON schema field
+	// "WorkflowCreateParams".
+	WorkflowCreateParams *WorkflowCreateParams `json:"WorkflowCreateParams,omitempty,omitzero" yaml:"WorkflowCreateParams,omitempty" mapstructure:"WorkflowCreateParams,omitempty"`
+
+	// WorkflowCreateResult corresponds to the JSON schema field
+	// "WorkflowCreateResult".
+	WorkflowCreateResult *WorkflowCreateResult `json:"WorkflowCreateResult,omitempty,omitzero" yaml:"WorkflowCreateResult,omitempty" mapstructure:"WorkflowCreateResult,omitempty"`
 
 	// WorkflowMemoryLink corresponds to the JSON schema field "WorkflowMemoryLink".
 	WorkflowMemoryLink *WorkflowMemoryLink `json:"WorkflowMemoryLink,omitempty,omitzero" yaml:"WorkflowMemoryLink,omitempty" mapstructure:"WorkflowMemoryLink,omitempty"`
@@ -1150,10 +1192,19 @@ type MilliwaysJson struct {
 	// "WorkflowNodeStartResult".
 	WorkflowNodeStartResult *WorkflowNodeStartResult `json:"WorkflowNodeStartResult,omitempty,omitzero" yaml:"WorkflowNodeStartResult,omitempty" mapstructure:"WorkflowNodeStartResult,omitempty"`
 
+	// WorkflowNodeDelegateParams corresponds to the JSON schema field
+	// "WorkflowNodeDelegateParams".
+	WorkflowNodeDelegateParams *WorkflowNodeDelegateParams `json:"WorkflowNodeDelegateParams,omitempty,omitzero" yaml:"WorkflowNodeDelegateParams,omitempty" mapstructure:"WorkflowNodeDelegateParams,omitempty"`
+
+	// WorkflowNodeDelegateResult corresponds to the JSON schema field
+	// "WorkflowNodeDelegateResult".
+	WorkflowNodeDelegateResult *WorkflowNodeDelegateResult `json:"WorkflowNodeDelegateResult,omitempty,omitzero" yaml:"WorkflowNodeDelegateResult,omitempty" mapstructure:"WorkflowNodeDelegateResult,omitempty"`
+
 	// WorkflowNodeType corresponds to the JSON schema field "WorkflowNodeType".
 	WorkflowNodeType *WorkflowNodeType `json:"WorkflowNodeType,omitempty,omitzero" yaml:"WorkflowNodeType,omitempty" mapstructure:"WorkflowNodeType,omitempty"`
 
-	// WorkflowReadyParams corresponds to the JSON schema field "WorkflowReadyParams".
+	// WorkflowReadyParams corresponds to the JSON schema field
+	// "WorkflowReadyParams".
 	WorkflowReadyParams *WorkflowReadyParams `json:"WorkflowReadyParams,omitempty,omitzero" yaml:"WorkflowReadyParams,omitempty" mapstructure:"WorkflowReadyParams,omitempty"`
 
 	// WorkflowReadyResult corresponds to the JSON schema field "WorkflowReadyResult".
@@ -1866,54 +1917,107 @@ func (j *WorkflowArtifact) UnmarshalJSON(value []byte) error {
 	return nil
 }
 
-// Params for workflow.cancel.
-type WorkflowCancelParams struct {
-	// ID corresponds to the JSON schema field "id".
-	ID string `json:"id" yaml:"id" mapstructure:"id"`
+type WorkflowToolCall struct {
+	// Args corresponds to the JSON schema field "args".
+	Args WorkflowToolCallArgs `json:"args,omitempty,omitzero" yaml:"args,omitempty" mapstructure:"args,omitempty"`
 
-	// Reason corresponds to the JSON schema field "reason".
-	Reason *string `json:"reason,omitempty,omitzero" yaml:"reason,omitempty" mapstructure:"reason,omitempty"`
+	// Duration corresponds to the JSON schema field "duration".
+	Duration *string `json:"duration,omitempty,omitzero" yaml:"duration,omitempty" mapstructure:"duration,omitempty"`
+
+	// Error corresponds to the JSON schema field "error".
+	Error *string `json:"error,omitempty,omitzero" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Result corresponds to the JSON schema field "result".
+	Result *string `json:"result,omitempty,omitzero" yaml:"result,omitempty" mapstructure:"result,omitempty"`
+
+	// Tool corresponds to the JSON schema field "tool".
+	Tool string `json:"tool" yaml:"tool" mapstructure:"tool"`
 }
 
+type WorkflowToolCallArgs map[string]string
+
 // UnmarshalJSON implements json.Unmarshaler.
-func (j *WorkflowCancelParams) UnmarshalJSON(value []byte) error {
+func (j *WorkflowToolCall) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in WorkflowCancelParams: required")
+	if _, ok := raw["tool"]; raw != nil && !ok {
+		return fmt.Errorf("field tool in WorkflowToolCall: required")
 	}
-	type Plain WorkflowCancelParams
+	type Plain WorkflowToolCall
 	var plain Plain
 	if err := json.Unmarshal(value, &plain); err != nil {
 		return err
 	}
-	*j = WorkflowCancelParams(plain)
+	*j = WorkflowToolCall(plain)
 	return nil
 }
 
-// Response from workflow.cancel.
-type WorkflowCancelResult struct {
-	// Workflow corresponds to the JSON schema field "workflow".
-	Workflow Workflow `json:"workflow" yaml:"workflow" mapstructure:"workflow"`
+type WorkflowLogRecord struct {
+	// Level corresponds to the JSON schema field "level".
+	Level *string `json:"level,omitempty,omitzero" yaml:"level,omitempty" mapstructure:"level,omitempty"`
+
+	// Message corresponds to the JSON schema field "message".
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Time corresponds to the JSON schema field "time".
+	Time time.Time `json:"time" yaml:"time" mapstructure:"time"`
 }
 
 // UnmarshalJSON implements json.Unmarshaler.
-func (j *WorkflowCancelResult) UnmarshalJSON(value []byte) error {
+func (j *WorkflowLogRecord) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["workflow"]; raw != nil && !ok {
-		return fmt.Errorf("field workflow in WorkflowCancelResult: required")
+	if _, ok := raw["time"]; raw != nil && !ok {
+		return fmt.Errorf("field time in WorkflowLogRecord: required")
 	}
-	type Plain WorkflowCancelResult
+	if _, ok := raw["message"]; raw != nil && !ok {
+		return fmt.Errorf("field message in WorkflowLogRecord: required")
+	}
+	type Plain WorkflowLogRecord
 	var plain Plain
 	if err := json.Unmarshal(value, &plain); err != nil {
 		return err
 	}
-	*j = WorkflowCancelResult(plain)
+	*j = WorkflowLogRecord(plain)
+	return nil
+}
+
+type WorkflowFileMutation struct {
+	// Lines corresponds to the JSON schema field "lines".
+	Lines *int `json:"lines,omitempty,omitzero" yaml:"lines,omitempty" mapstructure:"lines,omitempty"`
+
+	// Op corresponds to the JSON schema field "op".
+	Op string `json:"op" yaml:"op" mapstructure:"op"`
+
+	// Path corresponds to the JSON schema field "path".
+	Path string `json:"path" yaml:"path" mapstructure:"path"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowFileMutation) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["op"]; raw != nil && !ok {
+		return fmt.Errorf("field op in WorkflowFileMutation: required")
+	}
+	if _, ok := raw["path"]; raw != nil && !ok {
+		return fmt.Errorf("field path in WorkflowFileMutation: required")
+	}
+	type Plain WorkflowFileMutation
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	if plain.Lines != nil && 0 > *plain.Lines {
+		return fmt.Errorf("field %s: must be >= %v", "lines", 0)
+	}
+	*j = WorkflowFileMutation(plain)
 	return nil
 }
 
@@ -1994,6 +2098,293 @@ func (j *WorkflowGetResult) UnmarshalJSON(value []byte) error {
 	return nil
 }
 
+// One built-in workflow template summary.
+type WorkflowTemplateSummary struct {
+	// Description corresponds to the JSON schema field "description".
+	Description string `json:"description" yaml:"description" mapstructure:"description"`
+
+	// Name corresponds to the JSON schema field "name".
+	Name string `json:"name" yaml:"name" mapstructure:"name"`
+
+	// Nodes corresponds to the JSON schema field "nodes".
+	Nodes int `json:"nodes" yaml:"nodes" mapstructure:"nodes"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowTemplateSummary) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	for _, field := range []string{"name", "description", "nodes"} {
+		if _, ok := raw[field]; raw != nil && !ok {
+			return fmt.Errorf("field %s in WorkflowTemplateSummary: required", field)
+		}
+	}
+	type Plain WorkflowTemplateSummary
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	if plain.Nodes < 0 {
+		return fmt.Errorf("field %s: must be >= %v", "nodes", 0)
+	}
+	*j = WorkflowTemplateSummary(plain)
+	return nil
+}
+
+// Response from workflow.templates.
+type WorkflowTemplatesResult struct {
+	// Templates corresponds to the JSON schema field "templates".
+	Templates []WorkflowTemplateSummary `json:"templates" yaml:"templates" mapstructure:"templates"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowTemplatesResult) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["templates"]; raw != nil && !ok {
+		return fmt.Errorf("field templates in WorkflowTemplatesResult: required")
+	}
+	type Plain WorkflowTemplatesResult
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowTemplatesResult(plain)
+	return nil
+}
+
+// Params for workflow.create.
+type WorkflowCreateParams struct {
+	// Goal corresponds to the JSON schema field "goal".
+	Goal *string `json:"goal,omitempty,omitzero" yaml:"goal,omitempty" mapstructure:"goal,omitempty"`
+
+	// ID corresponds to the JSON schema field "id".
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// Template corresponds to the JSON schema field "template".
+	Template string `json:"template" yaml:"template" mapstructure:"template"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowCreateParams) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["id"]; raw != nil && !ok {
+		return fmt.Errorf("field id in WorkflowCreateParams: required")
+	}
+	if _, ok := raw["template"]; raw != nil && !ok {
+		return fmt.Errorf("field template in WorkflowCreateParams: required")
+	}
+	type Plain WorkflowCreateParams
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowCreateParams(plain)
+	return nil
+}
+
+// Response from workflow.create.
+type WorkflowCreateResult struct {
+	// Workflow corresponds to the JSON schema field "workflow".
+	Workflow Workflow `json:"workflow" yaml:"workflow" mapstructure:"workflow"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowCreateResult) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["workflow"]; raw != nil && !ok {
+		return fmt.Errorf("field workflow in WorkflowCreateResult: required")
+	}
+	type Plain WorkflowCreateResult
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowCreateResult(plain)
+	return nil
+}
+
+// Params for workflow.export.
+type WorkflowExportParams struct {
+	// ID corresponds to the JSON schema field "id".
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowExportParams) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["id"]; raw != nil && !ok {
+		return fmt.Errorf("field id in WorkflowExportParams: required")
+	}
+	type Plain WorkflowExportParams
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowExportParams(plain)
+	return nil
+}
+
+// Response from workflow.export.
+type WorkflowExportResult struct {
+	// Workflow corresponds to the JSON schema field "workflow".
+	Workflow Workflow `json:"workflow" yaml:"workflow" mapstructure:"workflow"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowExportResult) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["workflow"]; raw != nil && !ok {
+		return fmt.Errorf("field workflow in WorkflowExportResult: required")
+	}
+	type Plain WorkflowExportResult
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowExportResult(plain)
+	return nil
+}
+
+// Params for workflow.import.
+type WorkflowImportParams struct {
+	// Workflow corresponds to the JSON schema field "workflow".
+	Workflow Workflow `json:"workflow" yaml:"workflow" mapstructure:"workflow"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowImportParams) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["workflow"]; raw != nil && !ok {
+		return fmt.Errorf("field workflow in WorkflowImportParams: required")
+	}
+	type Plain WorkflowImportParams
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowImportParams(plain)
+	return nil
+}
+
+// Response from workflow.import.
+type WorkflowImportResult struct {
+	// Workflow corresponds to the JSON schema field "workflow".
+	Workflow Workflow `json:"workflow" yaml:"workflow" mapstructure:"workflow"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowImportResult) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["workflow"]; raw != nil && !ok {
+		return fmt.Errorf("field workflow in WorkflowImportResult: required")
+	}
+	type Plain WorkflowImportResult
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowImportResult(plain)
+	return nil
+}
+
+// Params for workflow.cancel.
+type WorkflowCancelParams struct {
+	// ID corresponds to the JSON schema field "id".
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// Reason corresponds to the JSON schema field "reason".
+	Reason *string `json:"reason,omitempty,omitzero" yaml:"reason,omitempty" mapstructure:"reason,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowCancelParams) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["id"]; raw != nil && !ok {
+		return fmt.Errorf("field id in WorkflowCancelParams: required")
+	}
+	type Plain WorkflowCancelParams
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowCancelParams(plain)
+	return nil
+}
+
+// Response from workflow.cancel.
+type WorkflowCancelResult struct {
+	// Workflow corresponds to the JSON schema field "workflow".
+	Workflow Workflow `json:"workflow" yaml:"workflow" mapstructure:"workflow"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowCancelResult) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["workflow"]; raw != nil && !ok {
+		return fmt.Errorf("field workflow in WorkflowCancelResult: required")
+	}
+	type Plain WorkflowCancelResult
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowCancelResult(plain)
+	return nil
+}
+
+// Params for workflow.ready.
+type WorkflowReadyParams struct {
+	// ID corresponds to the JSON schema field "id".
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowReadyParams) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["id"]; raw != nil && !ok {
+		return fmt.Errorf("field id in WorkflowReadyParams: required")
+	}
+	type Plain WorkflowReadyParams
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowReadyParams(plain)
+	return nil
+}
+
 // Response from workflow.list.
 type WorkflowListResult struct {
 	// Workflows corresponds to the JSON schema field "workflows".
@@ -2048,11 +2439,20 @@ type WorkflowNode struct {
 	// Inputs corresponds to the JSON schema field "inputs".
 	Inputs WorkflowNodeInputs `json:"inputs,omitempty,omitzero" yaml:"inputs,omitempty" mapstructure:"inputs,omitempty"`
 
+	// Logs corresponds to the JSON schema field "logs".
+	Logs []WorkflowLogRecord `json:"logs,omitempty,omitzero" yaml:"logs,omitempty" mapstructure:"logs,omitempty"`
+
 	// Memory corresponds to the JSON schema field "memory".
 	Memory *WorkflowMemoryLink `json:"memory,omitempty,omitzero" yaml:"memory,omitempty" mapstructure:"memory,omitempty"`
 
+	// Mutations corresponds to the JSON schema field "mutations".
+	Mutations []WorkflowFileMutation `json:"mutations,omitempty,omitzero" yaml:"mutations,omitempty" mapstructure:"mutations,omitempty"`
+
 	// Outputs corresponds to the JSON schema field "outputs".
 	Outputs WorkflowNodeOutputs `json:"outputs,omitempty,omitzero" yaml:"outputs,omitempty" mapstructure:"outputs,omitempty"`
+
+	// Priority corresponds to the JSON schema field "priority".
+	Priority *int `json:"priority,omitempty,omitzero" yaml:"priority,omitempty" mapstructure:"priority,omitempty"`
 
 	// RetryCount corresponds to the JSON schema field "retry_count".
 	RetryCount *int `json:"retry_count,omitempty,omitzero" yaml:"retry_count,omitempty" mapstructure:"retry_count,omitempty"`
@@ -2066,8 +2466,83 @@ type WorkflowNode struct {
 	// Status corresponds to the JSON schema field "status".
 	Status WorkflowStatus `json:"status" yaml:"status" mapstructure:"status"`
 
+	// ToolCalls corresponds to the JSON schema field "tool_calls".
+	ToolCalls []WorkflowToolCall `json:"tool_calls,omitempty,omitzero" yaml:"tool_calls,omitempty" mapstructure:"tool_calls,omitempty"`
+
 	// Type corresponds to the JSON schema field "type".
 	Type *WorkflowNodeType `json:"type,omitempty,omitzero" yaml:"type,omitempty" mapstructure:"type,omitempty"`
+}
+
+type WorkflowNodeInputs map[string]string
+
+type WorkflowNodeOutputs map[string]string
+
+type WorkflowNodeType string
+
+const WorkflowNodeTypeAgent WorkflowNodeType = "agent"
+const WorkflowNodeTypeApproval WorkflowNodeType = "approval"
+const WorkflowNodeTypeCommit WorkflowNodeType = "commit"
+const WorkflowNodeTypeContext WorkflowNodeType = "context"
+const WorkflowNodeTypeGoal WorkflowNodeType = "goal"
+const WorkflowNodeTypeRelease WorkflowNodeType = "release"
+const WorkflowNodeTypeSummary WorkflowNodeType = "summary"
+const WorkflowNodeTypeToolCall WorkflowNodeType = "tool_call"
+const WorkflowNodeTypeVerification WorkflowNodeType = "verification"
+
+var enumValues_WorkflowNodeType = []interface{}{
+	"goal",
+	"context",
+	"agent",
+	"tool_call",
+	"approval",
+	"verification",
+	"commit",
+	"release",
+	"summary",
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowNodeType) UnmarshalJSON(value []byte) error {
+	var v string
+	if err := json.Unmarshal(value, &v); err != nil {
+		return err
+	}
+	var ok bool
+	for _, expected := range enumValues_WorkflowNodeType {
+		if reflect.DeepEqual(v, expected) {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_WorkflowNodeType, v)
+	}
+	*j = WorkflowNodeType(v)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowNode) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["id"]; raw != nil && !ok {
+		return fmt.Errorf("field id in WorkflowNode: required")
+	}
+	if _, ok := raw["status"]; raw != nil && !ok {
+		return fmt.Errorf("field status in WorkflowNode: required")
+	}
+	type Plain WorkflowNode
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	if plain.RetryCount != nil && 0 > *plain.RetryCount {
+		return fmt.Errorf("field %s: must be >= %v", "retry_count", 0)
+	}
+	*j = WorkflowNode(plain)
+	return nil
 }
 
 // Params for workflow.node.complete.
@@ -2082,10 +2557,8 @@ type WorkflowNodeCompleteParams struct {
 	NodeID string `json:"node_id" yaml:"node_id" mapstructure:"node_id"`
 
 	// Outputs corresponds to the JSON schema field "outputs".
-	Outputs WorkflowNodeCompleteParamsOutputs `json:"outputs,omitempty,omitzero" yaml:"outputs,omitempty" mapstructure:"outputs,omitempty"`
+	Outputs map[string]string `json:"outputs,omitempty,omitzero" yaml:"outputs,omitempty" mapstructure:"outputs,omitempty"`
 }
-
-type WorkflowNodeCompleteParamsOutputs map[string]string
 
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *WorkflowNodeCompleteParams) UnmarshalJSON(value []byte) error {
@@ -2126,11 +2599,11 @@ func (j *WorkflowNodeCompleteResult) UnmarshalJSON(value []byte) error {
 	if err := json.Unmarshal(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["node"]; raw != nil && !ok {
-		return fmt.Errorf("field node in WorkflowNodeCompleteResult: required")
-	}
 	if _, ok := raw["workflow"]; raw != nil && !ok {
 		return fmt.Errorf("field workflow in WorkflowNodeCompleteResult: required")
+	}
+	if _, ok := raw["node"]; raw != nil && !ok {
+		return fmt.Errorf("field node in WorkflowNodeCompleteResult: required")
 	}
 	type Plain WorkflowNodeCompleteResult
 	var plain Plain
@@ -2138,72 +2611,6 @@ func (j *WorkflowNodeCompleteResult) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	*j = WorkflowNodeCompleteResult(plain)
-	return nil
-}
-
-// Params for workflow.node.deny.
-type WorkflowNodeDenyParams struct {
-	// ID corresponds to the JSON schema field "id".
-	ID string `json:"id" yaml:"id" mapstructure:"id"`
-
-	// NodeID corresponds to the JSON schema field "node_id".
-	NodeID string `json:"node_id" yaml:"node_id" mapstructure:"node_id"`
-
-	// Reason corresponds to the JSON schema field "reason".
-	Reason string `json:"reason" yaml:"reason" mapstructure:"reason"`
-}
-
-// UnmarshalJSON implements json.Unmarshaler.
-func (j *WorkflowNodeDenyParams) UnmarshalJSON(value []byte) error {
-	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
-		return err
-	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in WorkflowNodeDenyParams: required")
-	}
-	if _, ok := raw["node_id"]; raw != nil && !ok {
-		return fmt.Errorf("field node_id in WorkflowNodeDenyParams: required")
-	}
-	if _, ok := raw["reason"]; raw != nil && !ok {
-		return fmt.Errorf("field reason in WorkflowNodeDenyParams: required")
-	}
-	type Plain WorkflowNodeDenyParams
-	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
-		return err
-	}
-	*j = WorkflowNodeDenyParams(plain)
-	return nil
-}
-
-// Response from workflow.node.deny.
-type WorkflowNodeDenyResult struct {
-	// Node corresponds to the JSON schema field "node".
-	Node WorkflowNode `json:"node" yaml:"node" mapstructure:"node"`
-
-	// Workflow corresponds to the JSON schema field "workflow".
-	Workflow Workflow `json:"workflow" yaml:"workflow" mapstructure:"workflow"`
-}
-
-// UnmarshalJSON implements json.Unmarshaler.
-func (j *WorkflowNodeDenyResult) UnmarshalJSON(value []byte) error {
-	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
-		return err
-	}
-	if _, ok := raw["node"]; raw != nil && !ok {
-		return fmt.Errorf("field node in WorkflowNodeDenyResult: required")
-	}
-	if _, ok := raw["workflow"]; raw != nil && !ok {
-		return fmt.Errorf("field workflow in WorkflowNodeDenyResult: required")
-	}
-	type Plain WorkflowNodeDenyResult
-	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
-		return err
-	}
-	*j = WorkflowNodeDenyResult(plain)
 	return nil
 }
 
@@ -2225,14 +2632,14 @@ func (j *WorkflowNodeFailParams) UnmarshalJSON(value []byte) error {
 	if err := json.Unmarshal(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["error"]; raw != nil && !ok {
-		return fmt.Errorf("field error in WorkflowNodeFailParams: required")
-	}
 	if _, ok := raw["id"]; raw != nil && !ok {
 		return fmt.Errorf("field id in WorkflowNodeFailParams: required")
 	}
 	if _, ok := raw["node_id"]; raw != nil && !ok {
 		return fmt.Errorf("field node_id in WorkflowNodeFailParams: required")
+	}
+	if _, ok := raw["error"]; raw != nil && !ok {
+		return fmt.Errorf("field error in WorkflowNodeFailParams: required")
 	}
 	type Plain WorkflowNodeFailParams
 	var plain Plain
@@ -2258,11 +2665,11 @@ func (j *WorkflowNodeFailResult) UnmarshalJSON(value []byte) error {
 	if err := json.Unmarshal(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["node"]; raw != nil && !ok {
-		return fmt.Errorf("field node in WorkflowNodeFailResult: required")
-	}
 	if _, ok := raw["workflow"]; raw != nil && !ok {
 		return fmt.Errorf("field workflow in WorkflowNodeFailResult: required")
+	}
+	if _, ok := raw["node"]; raw != nil && !ok {
+		return fmt.Errorf("field node in WorkflowNodeFailResult: required")
 	}
 	type Plain WorkflowNodeFailResult
 	var plain Plain
@@ -2270,70 +2677,6 @@ func (j *WorkflowNodeFailResult) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	*j = WorkflowNodeFailResult(plain)
-	return nil
-}
-
-type WorkflowNodeInputs map[string]string
-
-type WorkflowNodeOutputs map[string]string
-
-// Params for workflow.node.resume.
-type WorkflowNodeResumeParams struct {
-	// ID corresponds to the JSON schema field "id".
-	ID string `json:"id" yaml:"id" mapstructure:"id"`
-
-	// NodeID corresponds to the JSON schema field "node_id".
-	NodeID string `json:"node_id" yaml:"node_id" mapstructure:"node_id"`
-}
-
-// UnmarshalJSON implements json.Unmarshaler.
-func (j *WorkflowNodeResumeParams) UnmarshalJSON(value []byte) error {
-	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
-		return err
-	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in WorkflowNodeResumeParams: required")
-	}
-	if _, ok := raw["node_id"]; raw != nil && !ok {
-		return fmt.Errorf("field node_id in WorkflowNodeResumeParams: required")
-	}
-	type Plain WorkflowNodeResumeParams
-	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
-		return err
-	}
-	*j = WorkflowNodeResumeParams(plain)
-	return nil
-}
-
-// Response from workflow.node.resume.
-type WorkflowNodeResumeResult struct {
-	// Node corresponds to the JSON schema field "node".
-	Node WorkflowNode `json:"node" yaml:"node" mapstructure:"node"`
-
-	// Workflow corresponds to the JSON schema field "workflow".
-	Workflow Workflow `json:"workflow" yaml:"workflow" mapstructure:"workflow"`
-}
-
-// UnmarshalJSON implements json.Unmarshaler.
-func (j *WorkflowNodeResumeResult) UnmarshalJSON(value []byte) error {
-	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
-		return err
-	}
-	if _, ok := raw["node"]; raw != nil && !ok {
-		return fmt.Errorf("field node in WorkflowNodeResumeResult: required")
-	}
-	if _, ok := raw["workflow"]; raw != nil && !ok {
-		return fmt.Errorf("field workflow in WorkflowNodeResumeResult: required")
-	}
-	type Plain WorkflowNodeResumeResult
-	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
-		return err
-	}
-	*j = WorkflowNodeResumeResult(plain)
 	return nil
 }
 
@@ -2382,11 +2725,11 @@ func (j *WorkflowNodeRetryResult) UnmarshalJSON(value []byte) error {
 	if err := json.Unmarshal(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["node"]; raw != nil && !ok {
-		return fmt.Errorf("field node in WorkflowNodeRetryResult: required")
-	}
 	if _, ok := raw["workflow"]; raw != nil && !ok {
 		return fmt.Errorf("field workflow in WorkflowNodeRetryResult: required")
+	}
+	if _, ok := raw["node"]; raw != nil && !ok {
+		return fmt.Errorf("field node in WorkflowNodeRetryResult: required")
 	}
 	type Plain WorkflowNodeRetryResult
 	var plain Plain
@@ -2394,6 +2737,30 @@ func (j *WorkflowNodeRetryResult) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	*j = WorkflowNodeRetryResult(plain)
+	return nil
+}
+
+// Response from workflow.ready.
+type WorkflowReadyResult struct {
+	// Nodes corresponds to the JSON schema field "nodes".
+	Nodes []WorkflowNode `json:"nodes" yaml:"nodes" mapstructure:"nodes"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *WorkflowReadyResult) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["nodes"]; raw != nil && !ok {
+		return fmt.Errorf("field nodes in WorkflowReadyResult: required")
+	}
+	type Plain WorkflowReadyResult
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	*j = WorkflowReadyResult(plain)
 	return nil
 }
 
@@ -2442,11 +2809,11 @@ func (j *WorkflowNodeStartResult) UnmarshalJSON(value []byte) error {
 	if err := json.Unmarshal(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["node"]; raw != nil && !ok {
-		return fmt.Errorf("field node in WorkflowNodeStartResult: required")
-	}
 	if _, ok := raw["workflow"]; raw != nil && !ok {
 		return fmt.Errorf("field workflow in WorkflowNodeStartResult: required")
+	}
+	if _, ok := raw["node"]; raw != nil && !ok {
+		return fmt.Errorf("field node in WorkflowNodeStartResult: required")
 	}
 	type Plain WorkflowNodeStartResult
 	var plain Plain
@@ -2457,85 +2824,47 @@ func (j *WorkflowNodeStartResult) UnmarshalJSON(value []byte) error {
 	return nil
 }
 
-type WorkflowNodeType string
+// Params for workflow.node.delegate.
+type WorkflowNodeDelegateParams struct {
+	// Agent corresponds to the JSON schema field "agent".
+	Agent *string `json:"agent,omitempty,omitzero" yaml:"agent,omitempty" mapstructure:"agent,omitempty"`
 
-const WorkflowNodeTypeAgent WorkflowNodeType = "agent"
-const WorkflowNodeTypeApproval WorkflowNodeType = "approval"
-const WorkflowNodeTypeCommit WorkflowNodeType = "commit"
-const WorkflowNodeTypeContext WorkflowNodeType = "context"
-const WorkflowNodeTypeGoal WorkflowNodeType = "goal"
-const WorkflowNodeTypeRelease WorkflowNodeType = "release"
-const WorkflowNodeTypeSummary WorkflowNodeType = "summary"
-const WorkflowNodeTypeToolCall WorkflowNodeType = "tool_call"
-const WorkflowNodeTypeVerification WorkflowNodeType = "verification"
+	// Dir corresponds to the JSON schema field "dir".
+	Dir *string `json:"dir,omitempty,omitzero" yaml:"dir,omitempty" mapstructure:"dir,omitempty"`
 
-var enumValues_WorkflowNodeType = []interface{}{
-	"goal",
-	"context",
-	"agent",
-	"tool_call",
-	"approval",
-	"verification",
-	"commit",
-	"release",
-	"summary",
-}
-
-// UnmarshalJSON implements json.Unmarshaler.
-func (j *WorkflowNodeType) UnmarshalJSON(value []byte) error {
-	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
-		return err
-	}
-	var ok bool
-	for _, expected := range enumValues_WorkflowNodeType {
-		if reflect.DeepEqual(v, expected) {
-			ok = true
-			break
-		}
-	}
-	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_WorkflowNodeType, v)
-	}
-	*j = WorkflowNodeType(v)
-	return nil
-}
-
-// Params for workflow.node.wait_approval.
-type WorkflowNodeWaitApprovalParams struct {
 	// ID corresponds to the JSON schema field "id".
 	ID string `json:"id" yaml:"id" mapstructure:"id"`
 
 	// NodeID corresponds to the JSON schema field "node_id".
 	NodeID string `json:"node_id" yaml:"node_id" mapstructure:"node_id"`
 
-	// Reason corresponds to the JSON schema field "reason".
-	Reason *string `json:"reason,omitempty,omitzero" yaml:"reason,omitempty" mapstructure:"reason,omitempty"`
+	// Prompt corresponds to the JSON schema field "prompt".
+	Prompt *string `json:"prompt,omitempty,omitzero" yaml:"prompt,omitempty" mapstructure:"prompt,omitempty"`
 }
 
 // UnmarshalJSON implements json.Unmarshaler.
-func (j *WorkflowNodeWaitApprovalParams) UnmarshalJSON(value []byte) error {
+func (j *WorkflowNodeDelegateParams) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(value, &raw); err != nil {
 		return err
 	}
 	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in WorkflowNodeWaitApprovalParams: required")
+		return fmt.Errorf("field id in WorkflowNodeDelegateParams: required")
 	}
 	if _, ok := raw["node_id"]; raw != nil && !ok {
-		return fmt.Errorf("field node_id in WorkflowNodeWaitApprovalParams: required")
+		return fmt.Errorf("field node_id in WorkflowNodeDelegateParams: required")
 	}
-	type Plain WorkflowNodeWaitApprovalParams
+	type Plain WorkflowNodeDelegateParams
 	var plain Plain
 	if err := json.Unmarshal(value, &plain); err != nil {
 		return err
 	}
-	*j = WorkflowNodeWaitApprovalParams(plain)
+	*j = WorkflowNodeDelegateParams(plain)
 	return nil
 }
 
-// Response from workflow.node.wait_approval.
-type WorkflowNodeWaitApprovalResult struct {
+// Response from workflow.node.delegate.
+type WorkflowNodeDelegateResult struct {
 	// Node corresponds to the JSON schema field "node".
 	Node WorkflowNode `json:"node" yaml:"node" mapstructure:"node"`
 
@@ -2544,95 +2873,23 @@ type WorkflowNodeWaitApprovalResult struct {
 }
 
 // UnmarshalJSON implements json.Unmarshaler.
-func (j *WorkflowNodeWaitApprovalResult) UnmarshalJSON(value []byte) error {
+func (j *WorkflowNodeDelegateResult) UnmarshalJSON(value []byte) error {
 	var raw map[string]interface{}
 	if err := json.Unmarshal(value, &raw); err != nil {
 		return err
-	}
-	if _, ok := raw["node"]; raw != nil && !ok {
-		return fmt.Errorf("field node in WorkflowNodeWaitApprovalResult: required")
 	}
 	if _, ok := raw["workflow"]; raw != nil && !ok {
-		return fmt.Errorf("field workflow in WorkflowNodeWaitApprovalResult: required")
+		return fmt.Errorf("field workflow in WorkflowNodeDelegateResult: required")
 	}
-	type Plain WorkflowNodeWaitApprovalResult
+	if _, ok := raw["node"]; raw != nil && !ok {
+		return fmt.Errorf("field node in WorkflowNodeDelegateResult: required")
+	}
+	type Plain WorkflowNodeDelegateResult
 	var plain Plain
 	if err := json.Unmarshal(value, &plain); err != nil {
 		return err
 	}
-	*j = WorkflowNodeWaitApprovalResult(plain)
-	return nil
-}
-
-// UnmarshalJSON implements json.Unmarshaler.
-func (j *WorkflowNode) UnmarshalJSON(value []byte) error {
-	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
-		return err
-	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in WorkflowNode: required")
-	}
-	if _, ok := raw["status"]; raw != nil && !ok {
-		return fmt.Errorf("field status in WorkflowNode: required")
-	}
-	type Plain WorkflowNode
-	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
-		return err
-	}
-	if plain.RetryCount != nil && 0 > *plain.RetryCount {
-		return fmt.Errorf("field %s: must be >= %v", "retry_count", 0)
-	}
-	*j = WorkflowNode(plain)
-	return nil
-}
-
-// Params for workflow.ready.
-type WorkflowReadyParams struct {
-	// ID corresponds to the JSON schema field "id".
-	ID string `json:"id" yaml:"id" mapstructure:"id"`
-}
-
-// UnmarshalJSON implements json.Unmarshaler.
-func (j *WorkflowReadyParams) UnmarshalJSON(value []byte) error {
-	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
-		return err
-	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in WorkflowReadyParams: required")
-	}
-	type Plain WorkflowReadyParams
-	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
-		return err
-	}
-	*j = WorkflowReadyParams(plain)
-	return nil
-}
-
-// Response from workflow.ready.
-type WorkflowReadyResult struct {
-	// Nodes corresponds to the JSON schema field "nodes".
-	Nodes []WorkflowNode `json:"nodes" yaml:"nodes" mapstructure:"nodes"`
-}
-
-// UnmarshalJSON implements json.Unmarshaler.
-func (j *WorkflowReadyResult) UnmarshalJSON(value []byte) error {
-	var raw map[string]interface{}
-	if err := json.Unmarshal(value, &raw); err != nil {
-		return err
-	}
-	if _, ok := raw["nodes"]; raw != nil && !ok {
-		return fmt.Errorf("field nodes in WorkflowReadyResult: required")
-	}
-	type Plain WorkflowReadyResult
-	var plain Plain
-	if err := json.Unmarshal(value, &plain); err != nil {
-		return err
-	}
-	*j = WorkflowReadyResult(plain)
+	*j = WorkflowNodeDelegateResult(plain)
 	return nil
 }
 
@@ -2763,3 +3020,41 @@ func (j *Workflow) UnmarshalJSON(value []byte) error {
 }
 
 type StatusActiveAgent_0 = AgentID
+
+// Params for workflow.node.wait_approval.
+type WorkflowNodeWaitApprovalParams struct {
+	ID     string `json:"id" yaml:"id" mapstructure:"id"`
+	NodeID string `json:"node_id" yaml:"node_id" mapstructure:"node_id"`
+	Reason string `json:"reason,omitempty" yaml:"reason,omitempty" mapstructure:"reason,omitempty"`
+}
+
+// Response from workflow.node.wait_approval.
+type WorkflowNodeWaitApprovalResult struct {
+	Node     WorkflowNode `json:"node" yaml:"node" mapstructure:"node"`
+	Workflow Workflow     `json:"workflow" yaml:"workflow" mapstructure:"workflow"`
+}
+
+// Params for workflow.node.resume.
+type WorkflowNodeResumeParams struct {
+	ID     string `json:"id" yaml:"id" mapstructure:"id"`
+	NodeID string `json:"node_id" yaml:"node_id" mapstructure:"node_id"`
+}
+
+// Response from workflow.node.resume.
+type WorkflowNodeResumeResult struct {
+	Node     WorkflowNode `json:"node" yaml:"node" mapstructure:"node"`
+	Workflow Workflow     `json:"workflow" yaml:"workflow" mapstructure:"workflow"`
+}
+
+// Params for workflow.node.deny.
+type WorkflowNodeDenyParams struct {
+	ID     string `json:"id" yaml:"id" mapstructure:"id"`
+	NodeID string `json:"node_id" yaml:"node_id" mapstructure:"node_id"`
+	Reason string `json:"reason" yaml:"reason" mapstructure:"reason"`
+}
+
+// Response from workflow.node.deny.
+type WorkflowNodeDenyResult struct {
+	Node     WorkflowNode `json:"node" yaml:"node" mapstructure:"node"`
+	Workflow Workflow     `json:"workflow" yaml:"workflow" mapstructure:"workflow"`
+}

@@ -116,8 +116,11 @@ func TestClientCapabilities_HTTPClientsReportFullRunnerControlledCapabilities(t 
 		if got.Contract.Write != CapabilityRunnerControlled || got.Contract.Edit != CapabilityRunnerControlled || got.Contract.Delete != CapabilityRunnerControlled {
 			t.Fatalf("%s file mutation contract = %#v, want runner-controlled writes/edits/deletes", agent, got.Contract)
 		}
-		if got.Contract.Bash != CapabilityRunnerControlled || got.Contract.Glob != CapabilityRunnerControlled || got.Contract.Grep != CapabilityRunnerControlled {
-			t.Fatalf("%s tool contract = %#v, want runner-controlled bash/glob/grep", agent, got.Contract)
+		if got.Contract.Read != CapabilityRunnerControlled || got.Contract.Bash != CapabilityRunnerControlled || got.Contract.Glob != CapabilityRunnerControlled || got.Contract.Grep != CapabilityRunnerControlled || got.Contract.ListTree != CapabilityRunnerControlled {
+			t.Fatalf("%s tool contract = %#v, want runner-controlled read/bash/glob/grep/list_tree", agent, got.Contract)
+		}
+		if got.Contract.Artifacts != CapabilityRunnerControlled || got.Contract.StructuredErrors != CapabilityRunnerControlled {
+			t.Fatalf("%s structured contract = %#v, want runner-controlled artifacts/structured_errors", agent, got.Contract)
 		}
 		if got.Contract.Approvals != CapabilityRunnerControlled {
 			t.Fatalf("%s approvals contract = %#v, want runner-controlled approvals", agent, got.Contract)
@@ -133,14 +136,20 @@ func TestClientCapabilities_ExternalClientsReflectPreflightAndBrokeredLabels(t *
 	if preflight.EnforcementLevel != EnforcementPreflightOnly {
 		t.Fatalf("codex enforcement = %q, want %q", preflight.EnforcementLevel, EnforcementPreflightOnly)
 	}
-	if preflight.Tools != CapabilityExternal || preflight.Permissions != CapabilityPreflightOnly || preflight.FileChanges != CapabilityPreflightOnly {
-		t.Fatalf("codex preflight capabilities = %#v, want external tools and preflight controls", preflight)
+	if preflight.Tools != CapabilityNative || preflight.Permissions != CapabilityPreflightOnly || preflight.FileChanges != CapabilityPreflightOnly {
+		t.Fatalf("codex preflight capabilities = %#v, want native tools and preflight controls", preflight)
 	}
-	if preflight.Contract.Write != CapabilityExternal || preflight.Contract.Bash != CapabilityExternal {
-		t.Fatalf("codex preflight contract = %#v, want external writes/bash until brokered", preflight.Contract)
+	if preflight.Contract.Read != CapabilityNative || preflight.Contract.Glob != CapabilityNative || preflight.Contract.Grep != CapabilityNative || preflight.Contract.ListTree != CapabilityNative {
+		t.Fatalf("codex preflight discovery contract = %#v, want native read/glob/grep/list_tree", preflight.Contract)
+	}
+	if preflight.Contract.Write != CapabilityPreflightOnly || preflight.Contract.Edit != CapabilityPreflightOnly || preflight.Contract.Delete != CapabilityPreflightOnly || preflight.Contract.Bash != CapabilityPreflightOnly {
+		t.Fatalf("codex preflight mutation contract = %#v, want preflight-only writes/edits/deletes/bash", preflight.Contract)
 	}
 	if preflight.Contract.Approvals != CapabilityPreflightOnly {
 		t.Fatalf("codex preflight approvals = %#v, want preflight-only approvals", preflight.Contract)
+	}
+	if preflight.Contract.Artifacts != CapabilityUnsupported || preflight.Contract.StructuredErrors != CapabilityUnsupported {
+		t.Fatalf("codex preflight structured contract = %#v, want unsupported artifacts/structured_errors", preflight.Contract)
 	}
 
 	SetBrokerPathProvider(func(agentID string) string {
@@ -163,6 +172,9 @@ func TestClientCapabilities_ExternalClientsReflectPreflightAndBrokeredLabels(t *
 	if brokered.Contract.Bash != CapabilityBrokered || brokered.Contract.Glob != CapabilityBrokered || brokered.Contract.Grep != CapabilityBrokered {
 		t.Fatalf("codex brokered tool contract = %#v, want brokered bash/glob/grep", brokered.Contract)
 	}
+	if brokered.Contract.ListTree != CapabilityBrokered || brokered.Contract.Artifacts != CapabilityBrokered || brokered.Contract.StructuredErrors != CapabilityBrokered || brokered.Contract.Approvals != CapabilityBrokered {
+		t.Fatalf("codex brokered structured contract = %#v, want brokered list_tree/artifacts/structured_errors/approvals", brokered.Contract)
+	}
 }
 
 func TestClientCapabilities_UnknownAgentIsFutureSafe(t *testing.T) {
@@ -173,7 +185,7 @@ func TestClientCapabilities_UnknownAgentIsFutureSafe(t *testing.T) {
 	if got.Tools != CapabilityUnknown || got.Permissions != CapabilityUnknown || got.FileChanges != CapabilityUnknown {
 		t.Fatalf("unknown capabilities = %#v, want unknown coding controls", got)
 	}
-	if got.Contract.Write != CapabilityUnknown || got.Contract.Bash != CapabilityUnknown || got.Contract.Approvals != CapabilityUnknown {
+	if got.Contract.Write != CapabilityUnknown || got.Contract.Bash != CapabilityUnknown || got.Contract.ListTree != CapabilityUnknown || got.Contract.Artifacts != CapabilityUnknown || got.Contract.Approvals != CapabilityUnknown || got.Contract.StructuredErrors != CapabilityUnknown {
 		t.Fatalf("unknown contract = %#v, want unknown tool contract", got.Contract)
 	}
 }

@@ -277,14 +277,24 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		})
 	case "workflow.list":
 		s.workflowList(enc, req)
+	case "workflow.templates":
+		s.workflowTemplates(enc, req)
+	case "workflow.create":
+		s.workflowCreate(enc, req)
 	case "workflow.get":
 		s.workflowGet(enc, req)
+	case "workflow.export":
+		s.workflowExport(enc, req)
+	case "workflow.import":
+		s.workflowImport(enc, req)
 	case "workflow.ready":
 		s.workflowReady(enc, req)
 	case "workflow.cancel":
 		s.workflowCancel(enc, req)
 	case "workflow.node.start":
 		s.workflowNodeStart(enc, req)
+	case "workflow.node.delegate":
+		s.workflowNodeDelegate(enc, req)
 	case "workflow.node.complete":
 		s.workflowNodeComplete(enc, req)
 	case "workflow.node.fail":

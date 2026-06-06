@@ -105,6 +105,9 @@ type Server struct {
 
 	// workflowStore persists next-generation agent workflow graphs.
 	workflowStore *workflow.FileStore
+	// workflowDelegateRunner runs background delegate work for workflow nodes.
+	// nil uses the production orchestrator delegate script path.
+	workflowDelegateRunner func(context.Context, string, string, string) (string, error)
 
 	// secRunner manages background OSV scanning. nil when pantryDB is nil.
 	secRunner *security.Runner
@@ -173,6 +176,11 @@ func NewServer(socket string) (*Server, error) {
 
 	s.historyQuota = NewHistoryQuota()
 	s.workflowStore = workflow.NewFileStore(filepath.Join(filepath.Dir(socket), "workflows"))
+	if recovered, err := s.workflowStore.RecoverInterrupted(bgCtx, time.Now().UTC(), "daemon restarted before node completed"); err != nil {
+		slog.Warn("workflow: restart recovery failed", "err", err)
+	} else if recovered > 0 {
+		slog.Info("workflow: recovered interrupted nodes", "workflows", recovered)
+	}
 
 	pantryPath := filepath.Join(filepath.Dir(socket), "milliways.db")
 	pdb, pdbErr := pantry.Open(pantryPath)
