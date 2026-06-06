@@ -70,6 +70,8 @@ func runLocal(args []string, stdout, stderr io.Writer) int {
 		return runLocalInstallServer(rest, stdout, stderr)
 	case "install-gpu-server":
 		return runLocalInstallGPUServer(rest, stdout, stderr)
+	case "install-mlx":
+		return runLocalInstallMLX(rest, stdout, stderr)
 	case "install-swap":
 		return runLocalInstallSwap(rest, stdout, stderr)
 	case "list-models":
@@ -110,8 +112,9 @@ func printLocalUsage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, "usage: milliwaysctl local <verb> [args...]")
 	_, _ = fmt.Fprintln(w, "verbs:")
 	_, _ = fmt.Fprintln(w, "  install-server                     install rs-llmctl + default model")
-	_, _ = fmt.Fprintln(w, "  install-gpu-server [--dry-run] [--accel auto|vulkan|cuda|hip]")
-	_, _ = fmt.Fprintln(w, "                                      detect NVIDIA/AMD GPU and install the largest fitting model")
+	_, _ = fmt.Fprintln(w, "  install-gpu-server [--dry-run] [--accel auto|vulkan|cuda|hip|metal]")
+	_, _ = fmt.Fprintln(w, "                                      detect GPU (NVIDIA/AMD/Apple Silicon) and install the largest fitting model")
+	_, _ = fmt.Fprintln(w, "  install-mlx                        Apple Silicon only: install mlx-lm for faster on-device inference")
 	_, _ = fmt.Fprintln(w, "  install-swap [--hot]               install llama-swap (hot-swap setup)")
 	_, _ = fmt.Fprintln(w, "  list-models                        list models exposed by the configured backend")
 	_, _ = fmt.Fprintln(w, "  switch-server <kind>               kind = rs-llmctl | llama-server | llama-swap | ollama | vllm | lmstudio")
@@ -171,7 +174,7 @@ func runLocalInstallGPUServer(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "local install-gpu-server: %v\n", err)
 		return 1
 	}
-	model, err := selectGPUCatalogModel(gpu.VRAMGB)
+	model, err := selectGPUCatalogModelForVendor(gpu.VRAMGB, gpu.Vendor)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "local install-gpu-server: %v\n", err)
 		return 1
@@ -181,11 +184,12 @@ func runLocalInstallGPUServer(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "local install-gpu-server: %v\n", err)
 		return 2
 	}
+	ctxSize := contextSizeForVRAM(gpu.VRAMGB)
 	_, _ = fmt.Fprintf(stdout, "GPU: %s (%s, %.1fGB VRAM)\n", gpu.Name, gpu.Vendor, gpu.VRAMGB)
 	fmt.Fprintf(stdout, "Model: %s (%s %s, %.1fGB)\n", model.Name, model.Repo, model.Quant, model.sizeGB())
 	fmt.Fprintf(stdout, "Accel: %s\n", accel)
 	if os.Getenv("CTX_SIZE") == "" {
-		_, _ = fmt.Fprintln(stdout, "Context: 8192 tokens")
+		_, _ = fmt.Fprintf(stdout, "Context: %d tokens\n", ctxSize)
 	}
 	if dryRun {
 		return 0
@@ -202,12 +206,57 @@ func runLocalInstallGPUServer(args []string, stdout, stderr io.Writer) int {
 		"MILLIWAYS_GPU_VRAM_GB": fmt.Sprintf("%.1f", gpu.VRAMGB),
 	}
 	if os.Getenv("CTX_SIZE") == "" {
-		env["CTX_SIZE"] = "8192"
+		env["CTX_SIZE"] = fmt.Sprintf("%d", ctxSize)
 	}
 	if code := runInstallScriptWithEnv("scripts/install_local.sh", env, stdout, stderr); code != 0 {
 		return code
 	}
 	return activateLocalInstall(stdout, stderr)
+}
+
+// runLocalInstallMLX installs mlx-lm for Apple Silicon Macs and prints
+// instructions for starting the server and downloading a model.
+func runLocalInstallMLX(_ []string, stdout, stderr io.Writer) int {
+	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		_, _ = fmt.Fprintln(stderr, "mlx-lm requires Apple Silicon (macOS arm64); use /install-local-gpu-server on other platforms")
+		return 1
+	}
+	if _, err := exec.LookPath("python3"); err != nil {
+		_, _ = fmt.Fprintln(stderr, "python3 not found — install via Homebrew: brew install python")
+		return 1
+	}
+	_, _ = fmt.Fprintln(stdout, "→ installing mlx-lm (Apple Silicon on-device inference)...")
+	cmd := execCommand("python3", "-m", "pip", "install", "--upgrade", "mlx-lm")
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	if err := cmd.Run(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "pip install mlx-lm failed: %v\n", err)
+		return 1
+	}
+	// Configure milliways to point at the mlx_lm.server default port.
+	endpoint := "http://127.0.0.1:8765/v1"
+	if envPath, err := configPath("local.env"); err == nil {
+		if err2 := updateLocalEnvFile(envPath, map[string]string{"MILLIWAYS_LOCAL_ENDPOINT": endpoint}, nil); err2 != nil {
+			_, _ = fmt.Fprintf(stderr, "warning: could not persist endpoint to local.env: %v\n", err2)
+		}
+	}
+	_, _ = fmt.Fprintln(stdout, "✓ mlx-lm installed.")
+	_, _ = fmt.Fprintln(stdout, "")
+	_, _ = fmt.Fprintln(stdout, "Recommended model (Gemma 3 12B — best for Apple Silicon coding):")
+	_, _ = fmt.Fprintln(stdout, "  python3 -m mlx_lm.server \\")
+	_, _ = fmt.Fprintln(stdout, "    --model mlx-community/gemma-3-12b-it-4bit \\")
+	_, _ = fmt.Fprintln(stdout, "    --host 127.0.0.1 --port 8765")
+	_, _ = fmt.Fprintln(stdout, "")
+	_, _ = fmt.Fprintln(stdout, "Other good options:")
+	_, _ = fmt.Fprintln(stdout, "  mlx-community/Qwen3-14B-4bit      (strong reasoning + tool use)")
+	_, _ = fmt.Fprintln(stdout, "  mlx-community/gemma-3-27b-it-4bit (32GB+ machines)")
+	_, _ = fmt.Fprintln(stdout, "  mlx-community/gemma-3-4b-it-4bit  (8GB machines, very fast)")
+	_, _ = fmt.Fprintln(stdout, "")
+	_, _ = fmt.Fprintln(stdout, "mlx_lm.server is OpenAI-compatible — no other config needed.")
+	_, _ = fmt.Fprintln(stdout, "Endpoint set: "+endpoint)
+	_, _ = fmt.Fprintln(stdout, "")
+	_, _ = fmt.Fprintln(stdout, "After starting the server, use /local in milliways.")
+	return 0
 }
 
 func runLocalInstallSwap(args []string, stdout, stderr io.Writer) int {
@@ -515,6 +564,8 @@ func localEndpointForKind(kind string) (string, error) {
 	switch kind {
 	case "rs-llmctl", "llama-server", "llama-swap":
 		return "http://127.0.0.1:8765/v1", nil
+	case "mlx-lm", "mlx":
+		return "http://127.0.0.1:8765/v1", nil
 	case "ollama":
 		return "http://127.0.0.1:11434/v1", nil
 	case "vllm":
@@ -522,7 +573,7 @@ func localEndpointForKind(kind string) (string, error) {
 	case "lmstudio":
 		return "http://127.0.0.1:1234/v1", nil
 	default:
-		return "", fmt.Errorf("unknown backend kind %q (supported: rs-llmctl, llama-server, llama-swap, ollama, vllm, lmstudio)", kind)
+		return "", fmt.Errorf("unknown backend kind %q (supported: rs-llmctl, llama-server, llama-swap, mlx-lm, ollama, vllm, lmstudio)", kind)
 	}
 }
 
@@ -1292,15 +1343,22 @@ func hasHIPToolchain() bool {
 }
 
 func selectGPUCatalogModel(vramGB float64) (catalogEntry, error) {
+	return selectGPUCatalogModelForVendor(vramGB, "")
+}
+
+func selectGPUCatalogModelForVendor(vramGB float64, vendor string) (catalogEntry, error) {
 	if vramGB <= 0 {
 		return catalogEntry{}, fmt.Errorf("GPU VRAM is unknown; install rocm-smi or nvidia-smi, or use /setup-model manually")
 	}
-	// Leave room for KV cache, driver allocations, desktop compositor, and
-	// llama.cpp graph buffers. GGUF file size is not a full residency estimate,
-	// especially with Vulkan and large contexts, so keep the automatic pick
-	// conservative. Users can still install a bigger model explicitly with
-	// /setup-model when they know their box can hold it.
-	budget := vramGB * 0.45
+	// Apple Silicon uses unified memory shared between CPU and GPU. KV-cache
+	// and Metal overhead are lighter than discrete GPU, so we can use a larger
+	// fraction of total memory. Discrete GPUs have heavier driver/compositor
+	// overhead, so stay conservative.
+	budgetFraction := 0.45
+	if strings.EqualFold(vendor, "apple") {
+		budgetFraction = 0.70
+	}
+	budget := vramGB * budgetFraction
 	var best catalogEntry
 	for _, entry := range builtinCatalog {
 		size := entry.sizeGB()
@@ -1315,6 +1373,24 @@ func selectGPUCatalogModel(vramGB float64) (catalogEntry, error) {
 		return catalogEntry{}, fmt.Errorf("no curated GGUF model fits %.1fGB VRAM with safety headroom; try /setup-model Phi-3.5-mini", vramGB)
 	}
 	return best, nil
+}
+
+// contextSizeForVRAM returns a context window token budget scaled to
+// available VRAM. KV cache is the main constraint: ~0.5MB per token for
+// typical 8B models at float16.
+func contextSizeForVRAM(vramGB float64) int {
+	switch {
+	case vramGB >= 48:
+		return 131072
+	case vramGB >= 24:
+		return 65536
+	case vramGB >= 16:
+		return 32768
+	case vramGB >= 12:
+		return 16384
+	default:
+		return 8192
+	}
 }
 
 func detectBestLocalGPU() (localGPUInfo, error) {
@@ -1654,6 +1730,23 @@ var builtinCatalog = []catalogEntry{
 		Name: "CodeLlama-13B", Repo: "TheBloke/CodeLlama-13B-Instruct-GGUF",
 		Quant: "Q4_K_M", SizeGB: "7.9", MinRAM: "10",
 		Note: "Specialised code completion. No structured tool use.",
+	},
+	// Gemma 3 — strong general + coding, native tool use, excellent on Apple Silicon.
+	// MLX variants available at mlx-community/gemma-3-{4b,12b,27b}-it-4bit.
+	{
+		Name: "Gemma-3-4B", Repo: "unsloth/gemma-3-4b-it-GGUF",
+		Quant: "Q4_K_M", SizeGB: "2.6", MinRAM: "6",
+		Tools: true, Think: true, Note: "Compact Gemma 3. Fast on Apple Silicon; MLX: mlx-community/gemma-3-4b-it-4bit.",
+	},
+	{
+		Name: "Gemma-3-12B", Repo: "unsloth/gemma-3-12b-it-GGUF",
+		Quant: "Q4_K_M", SizeGB: "7.7", MinRAM: "12",
+		Tools: true, Think: true, Note: "★ Best for Apple Silicon M1/M2/M3. MLX: mlx-community/gemma-3-12b-it-4bit.",
+	},
+	{
+		Name: "Gemma-3-27B", Repo: "unsloth/gemma-3-27b-it-GGUF",
+		Quant: "Q4_K_M", SizeGB: "16.5", MinRAM: "24",
+		Tools: true, Think: true, Note: "High-quality reasoning. Apple Silicon 32GB+. MLX: mlx-community/gemma-3-27b-it-4bit.",
 	},
 }
 

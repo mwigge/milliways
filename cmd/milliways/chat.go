@@ -196,6 +196,7 @@ var chatCtlAliases = map[string][]string{
 	// Local-model bootstrap
 	"install-local-server":     {"local", "install-server"},
 	"install-local-gpu-server": {"local", "install-gpu-server"},
+	"install-local-mlx":        {"local", "install-mlx"},
 	"install-local-swap":       {"local", "install-swap"},
 	"list-local-models":        {"local", "list-models"},
 	"switch-local-server":      {"local", "switch-server"},
@@ -346,10 +347,11 @@ func buildCompleter(agentID string) []string {
 		// Install / Upgrade
 		"/install", "/install berget", "/install claude", "/install codex", "/install copilot", "/install minimax", "/install kimi", "/install deepseek", "/install gemini", "/install local",
 		"/install-local-server", "/install-local-gpu-server", "/install-local-gpu-server --dry-run",
-		"/install-local-gpu-server --accel vulkan", "/install-local-gpu-server --accel hip", "/install-local-gpu-server --accel cuda", "/install-local-swap",
+		"/install-local-gpu-server --accel vulkan", "/install-local-gpu-server --accel hip", "/install-local-gpu-server --accel cuda",
+		"/install-local-gpu-server --accel metal", "/install-local-mlx", "/install-local-swap",
 		"/upgrade", "/upgrade --check", "/upgrade --yes", "/upgrade --version",
 		"/list-local-models", "/switch-local-server", "/switch-local-server rs-llmctl", "/switch-local-server llama-server",
-		"/switch-local-server llama-swap", "/switch-local-server ollama", "/switch-local-server vllm",
+		"/switch-local-server llama-swap", "/switch-local-server mlx-lm", "/switch-local-server ollama", "/switch-local-server vllm",
 		"/switch-local-server lmstudio", "/download-local-model", "/download-model", "/setup-local-model",
 		"/setup-model", "/setup-model list", "/setup-model refresh", "/list-models-catalog",
 		"/refresh-model-catalog", "/swap", "/swap hot", "/swap cold",
@@ -1941,7 +1943,7 @@ func (l *chatLoop) runCtl(args []string) bool {
 
 func isLocalInstallAlias(verb string) bool {
 	switch verb {
-	case "install-local-server", "install-local-gpu-server", "install-local-swap":
+	case "install-local-server", "install-local-gpu-server", "install-local-mlx", "install-local-swap":
 		return true
 	default:
 		return false
@@ -4074,8 +4076,9 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintf(l.out, "%sAgent%s\n", accent, reset)
 	fmt.Fprintf(l.out, "%s▸%s  /install <client>        berget · minimax · claude · codex · copilot · kimi · deepseek · gemini · local\n", dim, reset)
 	fmt.Fprintf(l.out, "%s▸%s  /upgrade [--check|--yes|--version <tag>]  upgrade milliways\n", dim, reset)
-	fmt.Fprintf(l.out, "%s▸%s  /install-local-server [--accel vulkan|hip|cuda]  bootstrap rs-llmctl\n", dim, reset)
-	fmt.Fprintf(l.out, "%s▸%s  /install-local-gpu-server  detect NVIDIA/AMD GPU + largest fitting model\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /install-local-server [--accel vulkan|hip|cuda|metal]  bootstrap rs-llmctl\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /install-local-gpu-server  detect GPU (NVIDIA/AMD/Apple Silicon) + largest fitting model\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /install-local-mlx        Apple Silicon: install mlx-lm for faster on-device inference\n", dim, reset)
 	fmt.Fprintf(l.out, "%s▸%s  /install-local-swap       llama-swap (hot model swap)\n", dim, reset)
 	fmt.Fprintf(l.out, "%s▸%s  /setup-local-model <repo>  download + register a GGUF model\n", dim, reset)
 	fmt.Fprintf(l.out, "%s▸%s  /list-local-models        show served models · /switch-local-server <kind>\n", dim, reset)
