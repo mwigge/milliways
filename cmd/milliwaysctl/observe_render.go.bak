@@ -383,7 +383,7 @@ func formatObservabilityFrame(now time.Time, spans []observeRenderSpan, usage ob
 	fmt.Fprintln(&b, "│")
 	// OpenTelemetry GenAI performance metrics section
 	fmt.Fprintln(&b, "│ performance:")
-	fmt.Fprintf(&b, "│   requests:      %d (last 1h)\n", usage.Status.RequestCount)
+	fmt.Fprintf(&b, "│   requests:      %d (last 5m)\n", usage.Status.RequestCount)
 	fmt.Fprintf(&b, "│   failures:       %.1f%%\n", usage.Status.FailureRate)
 	if usage.Status.OperationDuration > 0 {
 		fmt.Fprintf(&b, "│   duration:       %.1fms median\n", usage.Status.OperationDuration)

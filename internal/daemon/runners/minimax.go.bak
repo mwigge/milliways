@@ -241,7 +241,6 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 
 	toolHooks := toolHooksForAgentWorkspace(AgentIDMiniMax, securityWorkspace)
 	toolHooks.Before = toolUseBeforeHook(stream)
-	reqStart := time.Now()
 	result, err := RunAgenticLoop(ctx, client, registry, &messages, LoopOptions{
 		SessionID:              AgentIDMiniMax,
 		Logger:                 slog.Default(),
@@ -251,17 +250,12 @@ func runMiniMaxOnce(parent context.Context, prompt []byte, stream Pusher, metric
 	})
 	if err != nil {
 		observeError(metrics, AgentIDMiniMax)
-		observeRequest(metrics, AgentIDMiniMax)
 		endDispatchSpan(span, 0, 0, 0, err.Error())
 		stream.Push(classifyDispatchError(AgentIDMiniMax, err))
 		stream.Push(zeroUsageChunkEnd())
 		return
 	}
 	state.messages = messages
-
-	// Record operation duration
-	opDuration := time.Since(reqStart).Seconds()
-	observeOperationDuration(metrics, AgentIDMiniMax, opDuration)
 
 	usage := &openaiStreamUsage{
 		PromptTokens:     result.TotalUsage.PromptTokens,

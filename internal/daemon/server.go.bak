@@ -490,10 +490,4 @@ func registerCoreMetrics(m *metrics.Store) {
 	must(m.Register("tokens_in", metrics.KindCounter))
 	must(m.Register("tokens_out", metrics.KindCounter))
 	must(m.Register("cost_usd", metrics.KindCounter))
-	// OpenTelemetry GenAI metrics (gen_ai.client.*)
-	// See: https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-metrics/
-	must(m.Register("gen_ai.client.request.count", metrics.KindCounter))
-	must(m.Register("gen_ai.client.operation.duration", metrics.KindHistogram))
-	must(m.Register("gen_ai.client.operation.time_to_first_chunk", metrics.KindHistogram))
-	must(m.Register("gen_ai.client.operation.time_per_output_chunk", metrics.KindHistogram))
 }

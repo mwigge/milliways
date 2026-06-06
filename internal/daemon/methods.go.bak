@@ -265,6 +265,8 @@ func (s *Server) buildStatus() Status {
 	if curAgent != "" {
 		activeAgent = &curAgent
 	}
+	r5m := &metrics.Range{From: "-5min"}
+	
 	// Compute GenAI performance metrics from histograms (last 1h)
 	r1h := &metrics.Range{From: "-1h"}
 	reqCount, _ := s.getMetricCount("gen_ai.client.request.count", r1h)

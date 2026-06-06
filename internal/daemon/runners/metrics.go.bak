@@ -90,38 +90,6 @@ func observeError(m MetricsObserver, agentID string) {
 	m.ObserveCounter(MetricErrorCount, agentID, 1)
 }
 
-// observeRequest pushes a single request count tick for GenAI operations.
-func observeRequest(m MetricsObserver, agentID string) {
-	if m == nil {
-		return
-	}
-	m.ObserveCounter(MetricRequestCount, agentID, 1)
-}
-
-// observeOperationDuration records the total operation duration in seconds.
-func observeOperationDuration(m MetricsObserver, agentID string, durationSeconds float64) {
-	if m == nil {
-		return
-	}
-	m.ObserveHistogram(MetricOperationDuration, agentID, durationSeconds)
-}
-
-// observeTTFT records time-to-first-token in seconds (streaming).
-func observeTTFT(m MetricsObserver, agentID string, ttftSeconds float64) {
-	if m == nil {
-		return
-	}
-	m.ObserveHistogram(MetricTimeToFirstToken, agentID, ttftSeconds)
-}
-
-// observeTPOT records time-per-output-token in seconds (streaming).
-func observeTPOT(m MetricsObserver, agentID string, tpotSeconds float64) {
-	if m == nil {
-		return
-	}
-	m.ObserveHistogram(MetricTimePerOutputToken, agentID, tpotSeconds)
-}
-
 func zeroUsageChunkEnd() map[string]any {
 	return map[string]any{
 		"t":             "chunk_end",
