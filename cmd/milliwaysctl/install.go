@@ -117,6 +117,20 @@ var installSpecs = []installSpec{
 		client: "pool",
 		info:   "pool connects to the Poolside ACP server. Run `pool login` to authenticate, then use /pool in the chat.",
 	},
+	{
+		client: "scanners",
+		prereq: "go",
+		prereqHint: "install Go (https://go.dev/) — needed to install security scanners",
+		check:   []string{"gitleaks", "--version"},
+		info:   "Installs gitleaks, govulncheck, osv-scanner, and semgrep to ~/.local/bin/",
+		install: []string{"sh", "-c",
+			"mkdir -p ~/.local/bin && " +
+			"GOBIN=$HOME/go/bin go install github.com/gitleaks/gitleaks/v10@latest && " +
+			"GOBIN=$HOME/go/bin go install golang.org/x/vuln/cmd/govulncheck@latest && " +
+			"GOBIN=$HOME/go/bin go install github.com/google/osv-scanner/cmd/osv-scanner@latest && " +
+			"pip install --user semgrep || pip3 install --user semgrep || true && " +
+			"echo 'Scanners installed to ~/.local/bin — add it to PATH if needed'"},
+	},
 }
 
 // installSpecByClient returns the spec for client or false.
@@ -205,6 +219,8 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 //
 // Special case for copilot: `gh extension list` always exits 0; we
 // have to scan the output for "github/gh-copilot".
+//
+// Special case for scanners: check gitleaks only (first of the batch).
 func alreadyInstalled(spec installSpec) bool {
 	if spec.client == "copilot" {
 		out, err := execCommand("gh", "extension", "list").CombinedOutput()
@@ -212,6 +228,11 @@ func alreadyInstalled(spec installSpec) bool {
 			return false
 		}
 		return strings.Contains(string(out), "gh-copilot")
+	}
+	if spec.client == "scanners" {
+		// Check just gitleaks as proxy for the whole batch
+		out, err := execCommand("gitleaks", "--version").CombinedOutput()
+		return err == nil && len(out) > 0
 	}
 	cmd := execCommand(spec.check[0], spec.check[1:]...)
 	if err := cmd.Run(); err != nil {
