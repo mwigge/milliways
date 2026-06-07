@@ -517,13 +517,17 @@ patch_rs_llmctl_config() {
   escaped_alias="$(toml_escape "$MODEL_ALIAS")"
   escaped_path="$(toml_escape "$MODEL_PATH")"
   escaped_family="$(toml_escape "$MODEL_FAMILY")"
-  awk -v port="$PORT" -v worker="$((PORT + 10000))" \
+  awk -v port="$PORT" -v worker="$((PORT + 10000))" -v ctx="$CTX_SIZE" \
     -v alias="$escaped_alias" -v model_path="$escaped_path" -v family="$escaped_family" '
     /^\[\[models\]\]/ { skip_model = 1; next }
     skip_model && /^\[/ { skip_model = 0 }
     !skip_model {
       if ($0 ~ /^port = /) { print "port = " port; next }
       if ($0 ~ /^worker_base_port = /) { print "worker_base_port = " worker; next }
+      # rs-llmctl defaults context_size to 8192 — far too small for agentic
+      # coding (tool definitions + system prompt alone can eat 20-40K tokens).
+      # Always apply the hardware-computed CTX_SIZE here.
+      if ($0 ~ /^context_size = /) { print "context_size = " ctx; next }
       print
     }
     END {
