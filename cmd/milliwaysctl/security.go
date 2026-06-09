@@ -164,7 +164,7 @@ func printSecurityUsage(w io.Writer) {
 	fmt.Fprintln(w, "    classify output or diff paths into requested scan types without running scanners")
 	fmt.Fprintln(w, "  precommit-plan [--json] [--staged <path> ...]")
 	fmt.Fprintln(w, "    plan scans for staged commit files without running scanners")
-	fmt.Fprintln(w, "  install-scanner        install osv-scanner via 'go install'")
+	fmt.Fprintln(w, "  install-scanner       install all security scanners (osv-scanner, gitleaks, govulncheck, semgrep)")
 }
 
 // securityListResult is the wire type for security.list RPC result.
@@ -1926,20 +1926,141 @@ func renderSecurityRulePacks(raw any) string {
 	return rendered
 }
 
-// runInstallScanner installs osv-scanner via go install.
-func runInstallScanner(stdout, stderr io.Writer) int {
-	fmt.Fprintln(stdout, "[security] installing osv-scanner via go install...")
-	fmt.Fprintln(stdout, "  running: go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest")
+// scannerInstallSpec describes one scanner to install.
+type scannerInstallSpec struct {
+	name       string
+	binary     string
+	installCmd []string
+	brew       string
+	docURL     string
+}
 
-	cmd := execCommand("go", "install", "github.com/google/osv-scanner/v2/cmd/osv-scanner@latest")
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(stderr, "[security] install failed: %v\n", err)
-		fmt.Fprintln(stderr, "  manual install: go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest")
-		fmt.Fprintln(stderr, "  or: brew install osv-scanner")
+var scannerInstallSpecs = []scannerInstallSpec{
+	{
+		name:       "osv-scanner",
+		binary:     "osv-scanner",
+		installCmd: []string{"go", "install", "github.com/google/osv-scanner/v2/cmd/osv-scanner@latest"},
+		brew:       "osv-scanner",
+		docURL:     "github.com/google/osv-scanner",
+	},
+	{
+		name:       "gitleaks",
+		binary:     "gitleaks",
+		installCmd: []string{"brew", "install", "gitleaks"},
+		brew:       "gitleaks",
+		docURL:     "github.com/gitleaks/gitleaks",
+	},
+	{
+		name:       "govulncheck",
+		binary:     "govulncheck",
+		installCmd: []string{"go", "install", "golang.org/x/vuln/cmd/govulncheck@latest"},
+		brew:       "",
+		docURL:     "golang.org/x/vuln/cmd/govulncheck",
+	},
+	{
+		name:       "semgrep",
+		binary:     "semgrep",
+		installCmd: []string{"npm", "install", "-g", "semgrep"},
+		brew:       "semgrep",
+		docURL:     "github.com/semgrep/semgrep",
+	},
+}
+
+// runInstallScanner installs all supported security scanners.
+// It tries go install first (for Go-based tools), then brew, then npm.
+// Partial failures are reported but don't abort the whole run.
+func runInstallScanner(stdout, stderr io.Writer) int {
+	installed := 0
+	failed := 0
+
+	for _, spec := range scannerInstallSpecs {
+		path, err := exec.LookPath(spec.binary)
+		if err == nil {
+			fmt.Fprintf(stdout, "[security] %s already installed: %s\n", spec.name, path)
+			installed++
+			continue
+		}
+
+		fmt.Fprintf(stdout, "[security] installing %s...\n", spec.name)
+
+		var tryCmds [][]string
+
+		// Try in order: go install → brew → npm
+		switch {
+		case spec.binary == "osv-scanner" || spec.binary == "govulncheck":
+			tryCmds = [][]string{spec.installCmd}
+			if spec.binary == "osv-scanner" {
+				tryCmds = append(tryCmds, []string{"brew", "install", spec.brew})
+			}
+		case spec.brew != "":
+			tryCmds = [][]string{
+				[]string{"brew", "install", spec.brew},
+				spec.installCmd, // fallback for gitleaks via brew
+			}
+		case spec.binary == "semgrep":
+			tryCmds = [][]string{
+				[]string{"npm", "install", "-g", "semgrep"},
+				[]string{"pip", "install", "semgrep"},
+				[]string{"brew", "install", "semgrep"},
+			}
+		}
+
+		var lastErr error
+		for _, args := range tryCmds {
+			cmd := execCommand(args[0], args[1:]...)
+			cmd.Stdout = stdout
+			cmd.Stderr = stderr
+			if err := cmd.Run(); err != nil {
+				lastErr = err
+				continue
+			}
+			lastErr = nil
+			break
+		}
+
+		if lastErr != nil {
+			fmt.Fprintf(stderr, "[security] failed to install %s: %v\n", spec.name, lastErr)
+			fmt.Fprintf(stderr, "  manual install: see %s\n", spec.docURL)
+			failed++
+			continue
+		}
+
+		// Verify installation — check standard install paths
+		paths := []string{spec.binary}
+		if home, err := os.UserHomeDir(); err == nil {
+			paths = append(paths,
+				filepath.Join(home, "go", "bin", spec.binary),
+				filepath.Join(home, ".npm-global", "bin", spec.binary),
+				filepath.Join(home, ".npm-global", "lib", "node_modules", ".bin", spec.binary),
+				filepath.Join(home, ".local", "bin", spec.binary),
+				filepath.Join(home, ".cargo", "bin", spec.binary),
+			)
+		}
+		for _, p := range paths {
+			if _, err := os.Stat(p); err == nil {
+				path = p
+				break
+			}
+		}
+		if path != "" {
+			fmt.Fprintf(stdout, "[security] %s installed: %s\n", spec.name, path)
+			installed++
+		} else {
+			fmt.Fprintf(stderr, "[security] %s installed but not on PATH — add Go/npm/bin to PATH\n", spec.name)
+			installed++
+		}
+	}
+
+	fmt.Fprintf(stdout, "\n[security] scanners: %d installed, %d failed\n", installed, failed)
+	if failed > 0 {
+		fmt.Fprintln(stderr, "  restart milliwaysd after installing scanners")
+	}
+	if installed == len(scannerInstallSpecs) {
+		fmt.Fprintln(stdout, "[security] all scanners ready. Restart milliwaysd to start scanning.")
+		return 0
+	}
+	if failed > 0 && installed == 0 {
 		return 1
 	}
-	fmt.Fprintln(stdout, "[security] osv-scanner installed. Restart milliwaysd to start scanning.")
-	return 0
+	return 0 // partial success is ok
 }
