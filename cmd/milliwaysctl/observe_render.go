@@ -403,32 +403,32 @@ func formatObservabilityFrame(now time.Time, spans []observeRenderSpan, usage ob
 	fmt.Fprintf(&b, "│   p50 latency:   %.2fms\n", sum.P50LatencyMS)
 	fmt.Fprintf(&b, "│   p99 latency:   %.2fms\n", sum.P99LatencyMS)
 	fmt.Fprintln(&b, "│")
+	fmt.Fprintln(&b, "│ performance:")
 	if usage.Status.RequestCount > 0 {
-		fmt.Fprintln(&b, "│ performance:")
 		fmt.Fprintf(&b, "│   requests:      %d (last 1h)\n", usage.Status.RequestCount)
-		fmt.Fprintf(&b, "│   failures:       %.1f%%\n", usage.Status.FailureRate)
+		fmt.Fprintf(&b, "│   failures:      %.1f%%\n", usage.Status.FailureRate)
 		if usage.Status.OperationDuration > 0 {
-			fmt.Fprintf(&b, "│   duration:       %.1fms median\n", usage.Status.OperationDuration)
+			fmt.Fprintf(&b, "│   duration:      %.1fms median\n", usage.Status.OperationDuration)
 		}
 		if usage.Status.TTFTMedian > 0 {
-			fmt.Fprintf(&b, "│   ttft:          %.1fms median\n", usage.Status.TTFTMedian)
+			fmt.Fprintf(&b, "│   ttft:         %.1fms median\n", usage.Status.TTFTMedian)
 		}
 		if usage.Status.TPOTMedian > 0 {
-			fmt.Fprintf(&b, "│   tpot:          %.1fms median\n", usage.Status.TPOTMedian)
+			fmt.Fprintf(&b, "│   tpot:         %.1fms median\n", usage.Status.TPOTMedian)
 		}
 		if usage.Status.RequestModel != "" {
-			fmt.Fprintf(&b, "│   model:         %s\n", truncate(usage.Status.RequestModel, 30))
+			fmt.Fprintf(&b, "│   model:        %s\n", truncate(usage.Status.RequestModel, 30))
 		}
-		fmt.Fprintln(&b, "│")
+	} else {
+		fmt.Fprintln(&b, "│   -- no requests in last 1h")
 	}
+	fmt.Fprintln(&b, "│")
 	if routing := formatRoutingSection(usage); routing != "" {
 		fmt.Fprintln(&b, "│")
 		fmt.Fprint(&b, routing)
-	}
-	if len(usage.Status.PerProviderStats) > 0 {
 		fmt.Fprintln(&b, "│")
-		fmt.Fprint(&b, formatProvidersTable(usage.Status.PerProviderStats))
 	}
+	fmt.Fprint(&b, formatProvidersTable(usage.Status.PerProviderStats))
 	qs := usage.Status.QualitySignals
 	if qs.Pass > 0 || qs.Rework > 0 || qs.Fail > 0 {
 		fmt.Fprintln(&b, "│")

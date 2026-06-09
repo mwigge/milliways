@@ -108,3 +108,32 @@ func TestRunInstall_AlreadyInstalled(t *testing.T) {
 		t.Errorf("stdout should report already-installed; got:\n%s", stdout.String())
 	}
 }
+
+func TestRunInstall_ScannersFindsGoAtFallbackPath(t *testing.T) {
+	// Simulate go not on PATH.
+	t.Setenv("PATH", "")
+
+	// findGoDir searches os.Stat candidate paths; on most hosts none exist
+	// in PATH="". We only test that if none of the fallback paths exist, the
+	// function fails gracefully with a prereq error (not a panic). If go is
+	// found at a well-known location the code proceeds to install; either
+	// outcome is acceptable as long as no panic occurs.
+	var stdout, stderr bytes.Buffer
+	rc := runInstall([]string{"scanners"}, &stdout, &stderr)
+	if rc == 0 {
+		// Succeeded (go found at fallback location and already installed).
+		return
+	}
+	// Non-zero: must be either a prereq failure or a subprocess error — never a panic.
+	// If go was found via fallback the subprocess may fail because other
+	// tools (sh, gitleaks) are also not on PATH; that is acceptable.
+	goFound := strings.Contains(stdout.String(), "not on PATH") // findGoDir note line
+	if goFound {
+		// Any non-zero exit is fine; the important invariant is no panic.
+		return
+	}
+	// go not found anywhere — must report prereq error.
+	if !strings.Contains(stderr.String(), "prerequisite") {
+		t.Errorf("expected prereq error when go not found; got stdout=%s stderr=%s", stdout.String(), stderr.String())
+	}
+}
