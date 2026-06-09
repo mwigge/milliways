@@ -69,10 +69,14 @@ func shellQuote(s string) string {
 }
 
 func codexRecorderScript(argsFile, body string) string {
+	// Records argv (tab-separated, one CALL line per invocation) and appends
+	// the prompt delivered on stdin to a sidecar "<argsFile>.stdin" file so
+	// tests can assert the prompt is piped rather than passed as an argument.
 	return "#!/bin/sh\n" +
 		"printf 'CALL' >> " + shellQuote(argsFile) + "\n" +
 		"for arg in \"$@\"; do printf '\\t%s' \"$arg\" >> " + shellQuote(argsFile) + "; done\n" +
 		"printf '\\n' >> " + shellQuote(argsFile) + "\n" +
+		"cat >> " + shellQuote(argsFile+".stdin") + "\n" +
 		body + "\n"
 }
 
@@ -300,8 +304,9 @@ func TestBuildCodexCmdArgs_DefaultsAreRootFlags(t *testing.T) {
 	if got := args[len(args)-2]; got != "--" {
 		t.Errorf("penultimate arg = %q, want --; args=%v", got, args)
 	}
-	if got := args[len(args)-1]; got != "do it" {
-		t.Errorf("last arg = %q, want prompt", got)
+	// The prompt is delivered on stdin; argv carries the "-" stdin sentinel.
+	if got := args[len(args)-1]; got != "-" {
+		t.Errorf("last arg = %q, want - (stdin sentinel)", got)
 	}
 }
 
@@ -342,8 +347,8 @@ func TestBuildCodexCmdArgs_ResumeUsesSessionID(t *testing.T) {
 	if !codexArgsContainPair(args, "--model", "gpt-5") {
 		t.Fatalf("resume model arg missing: %v", args)
 	}
-	if !containsCodexSubsequence(args, []string{"thread-abc", "--", "next prompt"}) {
-		t.Fatalf("resume session/prompt tail missing: %v", args)
+	if !containsCodexSubsequence(args, []string{"thread-abc", "--", "-"}) {
+		t.Fatalf("resume session/stdin-sentinel tail missing: %v", args)
 	}
 	if indexCodexArg(args, "-C") >= 0 {
 		t.Fatalf("resume args should not include exec-only -C flag: %v", args)
@@ -681,8 +686,11 @@ func TestRunCodex_StreamsJSONAndRecordsArgs(t *testing.T) {
 	if !containsCodexSubsequence(calls[0], []string{"--ask-for-approval", "on-request", "exec", "--json", "--color", "never", "--skip-git-repo-check"}) {
 		t.Fatalf("first call missing expected argv shape: %v", calls[0])
 	}
-	if calls[0][len(calls[0])-1] != "say hi" {
-		t.Fatalf("prompt arg = %q, want say hi; args=%v", calls[0][len(calls[0])-1], calls[0])
+	if calls[0][len(calls[0])-1] != "-" {
+		t.Fatalf("prompt arg = %q, want - (stdin sentinel); args=%v", calls[0][len(calls[0])-1], calls[0])
+	}
+	if got := readCodexStdin(t, argsFile); got != "say hi" {
+		t.Fatalf("stdin = %q, want say hi (prompt must be piped, not argv)", got)
 	}
 }
 
@@ -704,7 +712,7 @@ func TestRunCodex_ResumesAfterSessionID(t *testing.T) {
 		t.Fatalf("first call should be fresh exec, got %v", calls[0])
 	}
 	if !containsCodexSubsequence(calls[1], []string{"exec", "resume", "--json", "--skip-git-repo-check"}) ||
-		!containsCodexSubsequence(calls[1], []string{"thread-abc", "--", "second"}) {
+		!containsCodexSubsequence(calls[1], []string{"thread-abc", "--", "-"}) {
 		t.Fatalf("second call should resume thread-abc, got %v", calls[1])
 	}
 }
@@ -835,6 +843,17 @@ func readCodexArgCalls(t *testing.T, path string) [][]string {
 		calls = append(calls, parts[1:])
 	}
 	return calls
+}
+
+// readCodexStdin returns the prompt the recorder captured on stdin (written to
+// the "<argsFile>.stdin" sidecar by codexRecorderScript).
+func readCodexStdin(t *testing.T, argsFile string) string {
+	t.Helper()
+	raw, err := os.ReadFile(argsFile + ".stdin")
+	if err != nil {
+		t.Fatalf("read stdin file: %v", err)
+	}
+	return strings.TrimRight(string(raw), "\n")
 }
 
 func indexCodexArg(args []string, want string) int {

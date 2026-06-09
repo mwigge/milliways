@@ -28,6 +28,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/mwigge/milliways/internal/provider"
@@ -463,6 +464,27 @@ func installHint(binary string) string {
 		return "check https://poolside.ai for the Poolside CLI install instructions"
 	default:
 		return "check that " + binary + " is installed and on PATH"
+	}
+}
+
+// runnerStartHint produces a user-facing hint for a failed runner
+// exec.Cmd.Start. The install hint is only shown when the binary is genuinely
+// missing; any other failure (a too-large argument list, a permission error,
+// a bad working directory) surfaces the real error instead of misleadingly
+// telling the user to reinstall a CLI that is already installed.
+func runnerStartHint(binary string, err error) string {
+	switch {
+	case err == nil, errors.Is(err, exec.ErrNotFound), errors.Is(err, os.ErrNotExist):
+		// The binary is genuinely missing — point at the installer.
+		return installHint(binary)
+	case errors.Is(err, syscall.E2BIG):
+		// execve refused the argument list: the prompt (including the
+		// injected toolkit bundle) exceeds the kernel's per-argument limit
+		// (MAX_ARG_STRLEN, 128 KiB). Reinstalling won't help — the fix is a
+		// smaller toolkit bundle or delivering the prompt on stdin.
+		return "prompt too large for the command line — reduce the toolkit bundle (CLAUDE.md / .claude skills) or run milliways from a directory with less context"
+	default:
+		return strings.TrimSpace(err.Error())
 	}
 }
 

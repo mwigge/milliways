@@ -223,9 +223,17 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	if cwd != "" {
 		args = append(args, "--add-dir", cwd)
 	}
-	// "--" stops flag parsing so --add-dir (variadic) does not consume the prompt.
-	args = append(args, "--", text)
-	cmd := exec.CommandContext(ctx, resolveRunnerBinary(claudeBinary), args...)
+	bin := resolveRunnerBinary(claudeBinary)
+	cmd := exec.CommandContext(ctx, bin, args...)
+	// Deliver the prompt on stdin rather than as a command-line argument.
+	// milliways prepends the toolkit bundle (CLAUDE.md + .claude/{skills,
+	// rules,agents,commands}) to every prompt, which routinely exceeds the
+	// kernel's per-argument limit (MAX_ARG_STRLEN, 128 KiB). As a single argv
+	// element that overflow makes execve fail with E2BIG, which previously
+	// surfaced as a misleading "could not start — npm install" error even
+	// though claude was installed. stdin has no such limit. In --print mode
+	// with no positional prompt, claude reads the prompt from stdin.
+	cmd.Stdin = strings.NewReader(text)
 	cmd.Env = controlledRunnerEnv(controlledRunnerEnvOptions{
 		ClientID:  AgentIDClaude,
 		SessionID: sessionID,
@@ -251,7 +259,8 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	}
 	if err := cmd.Start(); err != nil {
 		observeError(metrics, AgentIDClaude)
-		stream.Push(map[string]any{"t": "err", "msg": "claude: could not start — " + installHint("claude")})
+		slog.Error("claude: subprocess failed to start", "err", err, "binary", bin)
+		stream.Push(map[string]any{"t": "err", "msg": "claude: could not start — " + runnerStartHint("claude", err)})
 		return
 	}
 	reqStart := time.Now()

@@ -32,9 +32,16 @@ var poolBinary = "pool"
 // poolArgsBuilder constructs the argv passed to the Poolside CLI for a given
 // prompt and working directory. Default builds the headless invocation
 // `pool exec -p <prompt> --directory <dir>`. Tests can swap it.
-var poolArgsBuilder = func(prompt, dir string) []string {
+var poolArgsBuilder = func(promptFile, dir string) []string {
 	// --output markdown: clean markdown output without indented thinking blocks.
-	args := []string{"exec", "--output", "markdown", "-p", prompt}
+	//
+	// The prompt is written to promptFile and passed via -f rather than inline
+	// with -p: pool reads the prompt from a file, which sidesteps the kernel
+	// per-argument size limit (MAX_ARG_STRLEN, 128 KiB → execve E2BIG) that
+	// `-p <prompt>` hits once the injected toolkit bundle makes the prompt
+	// large. (Unlike claude/codex/gemini, the pool CLI has no stdin prompt
+	// mode, but it does support -f.)
+	args := []string{"exec", "--output", "markdown", "-f", promptFile}
 	if dir != "" {
 		args = append(args, "--directory", dir)
 	}
@@ -44,6 +51,29 @@ var poolArgsBuilder = func(prompt, dir string) []string {
 // poolChunkSize is the raw stdout buffer size; each Read up to this size
 // becomes one {"t":"data","b64":...} event.
 const poolChunkSize = 4 * 1024
+
+// writePoolPromptFile stages prompt text in a private temp file for `pool exec
+// -f`. os.CreateTemp creates the file 0600, so the prompt (which may carry
+// project context) is not world-readable; the returned cleanup removes it once
+// the subprocess has finished reading it.
+func writePoolPromptFile(text string) (string, func(), error) {
+	f, err := os.CreateTemp("", "milliways-pool-prompt-*.txt")
+	if err != nil {
+		return "", func() {}, err
+	}
+	name := f.Name()
+	cleanup := func() { _ = os.Remove(name) }
+	if _, err := f.WriteString(text); err != nil {
+		_ = f.Close()
+		cleanup()
+		return "", func() {}, err
+	}
+	if err := f.Close(); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	return name, cleanup, nil
+}
 
 // RunPool drains the input channel, spawning one
 // `pool exec -p <prompt>` subprocess per prompt. Stdout
@@ -121,7 +151,17 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 		spanErr = "security profile blocked handoff"
 		return
 	}
-	cmd := exec.CommandContext(ctx, resolveRunnerBinary(poolBinary), poolArgsBuilder(text, cwd)...)
+	promptFile, cleanupPrompt, err := writePoolPromptFile(text)
+	if err != nil {
+		observeError(metrics, AgentIDPool)
+		spanErr = err.Error()
+		slog.Error("pool: could not stage prompt file", "err", err)
+		stream.Push(poolStartErrorEvent("pool: could not start — " + runnerStartHint("pool", err)))
+		return
+	}
+	defer cleanupPrompt()
+
+	cmd := exec.CommandContext(ctx, resolveRunnerBinary(poolBinary), poolArgsBuilder(promptFile, cwd)...)
 	cmd.Env = controlledExternalCLIEnvWithTelemetry(ctx, AgentIDPool, sessionID, cwd, tel)
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -147,7 +187,7 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 		if ctx.Err() != nil {
 			stream.Push(classifyDispatchError(AgentIDPool, ctx.Err()))
 		} else {
-			stream.Push(poolStartErrorEvent("pool: could not start — " + installHint("pool")))
+			stream.Push(poolStartErrorEvent("pool: could not start — " + runnerStartHint("pool", err)))
 		}
 		return
 	}

@@ -38,16 +38,23 @@ var geminiArgsBuilder = func(prompt string) []string {
 }
 
 // geminiDefaultArgs builds the argv for a normal gemini invocation.
+//
+// The prompt is delivered on stdin, not in argv: gemini's `-p`/`--prompt`
+// value is "appended to input on stdin", so an empty `-p ""` selects
+// non-interactive (headless) mode while the actual prompt — which includes
+// the injected toolkit bundle and can exceed the kernel per-argument limit
+// (MAX_ARG_STRLEN, 128 KiB) — is piped instead, avoiding execve E2BIG.
+//
 // The -y flag auto-approves all tool use (YOLO mode). MilliWays does not
 // enable it by default; set MILLIWAYS_GEMINI_YOLO=on or =true only when you
 // explicitly want the external CLI to bypass its own confirmations.
-func geminiDefaultArgs(prompt string) []string {
+func geminiDefaultArgs(_ string) []string {
 	yolo := os.Getenv("MILLIWAYS_GEMINI_YOLO")
 	yoloOn := strings.EqualFold(yolo, "on") || strings.EqualFold(yolo, "true") || strings.EqualFold(yolo, "1")
 	if yoloOn {
-		return []string{"-p", prompt, "-y"}
+		return []string{"-p", "", "-y"}
 	}
-	return []string{"-p", prompt}
+	return []string{"-p", ""}
 }
 
 // geminiChunkSize is the raw stdout buffer size; each Read up to this size
@@ -127,6 +134,9 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		return
 	}
 	cmd := exec.CommandContext(ctx, resolveRunnerBinary(geminiBinary), geminiArgsBuilder(text)...)
+	// Prompt is piped on stdin (argv carries only `-p ""` to select headless
+	// mode); see geminiDefaultArgs for why. Avoids execve E2BIG on large prompts.
+	cmd.Stdin = strings.NewReader(text)
 	cmd.Env = controlledExternalCLIEnvWithTelemetry(ctx, AgentIDGemini, sessionID, cwd, tel)
 	if cwd != "" {
 		cmd.Dir = cwd
@@ -253,10 +263,7 @@ func geminiContextErrorEvent(err error) map[string]any {
 }
 
 func geminiStartErrorEvent(err error) map[string]any {
-	msg := "gemini: could not start — " + installHint("gemini")
-	if err != nil {
-		msg += " (" + scrubBearer(err.Error()) + ")"
-	}
+	msg := "gemini: could not start — " + scrubBearer(runnerStartHint("gemini", err))
 	return map[string]any{
 		"t":     "err",
 		"agent": AgentIDGemini,
