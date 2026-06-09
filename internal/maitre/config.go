@@ -16,12 +16,21 @@ package maitre
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/mwigge/milliways/internal/recipe"
 	"gopkg.in/yaml.v3"
 )
+
+// TelemetryConfig holds Scope B opt-in observability settings.
+// Set signoz_endpoint to enable OTEL_* injection into CLI subprocesses.
+type TelemetryConfig struct {
+	SignozEndpoint  string `yaml:"signoz_endpoint"`
+	EnhancedTracing bool   `yaml:"enhanced_tracing"`
+}
 
 // Config represents the carte.yaml configuration.
 type Config struct {
@@ -30,6 +39,7 @@ type Config struct {
 	Ledger              LedgerConfig             `yaml:"ledger"`
 	Recipes             map[string][]recipe.Step `yaml:"recipes"`
 	ProjectContextLimit int                      `yaml:"project_context_limit" json:"project_context_limit"`
+	Telemetry           TelemetryConfig          `yaml:"telemetry"`
 }
 
 // HTTPClientConfig describes an HTTP API-based kitchen.
@@ -93,6 +103,39 @@ type LedgerConfig struct {
 
 // RecipeStep is a type alias for recipe.Step for backwards compatibility.
 type RecipeStep = recipe.Step
+
+// validateSignozEndpoint rejects URLs that are not safe OTLP targets.
+// Allows http/https to localhost, RFC1918 addresses, and public hosts.
+// Blocks cloud metadata endpoints to prevent SSRF via carte.yaml.
+func validateSignozEndpoint(s string) error {
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("scheme must be http or https, got %q", u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("host is required")
+	}
+	// Block cloud metadata endpoints — these are not valid OTLP targets and
+	// accepting them would allow config-based SSRF.
+	blockedHosts := []string{
+		"169.254.169.254",
+		"metadata.google.internal",
+		"metadata.goog",
+		"instance-data",
+	}
+	lower := strings.ToLower(host)
+	for _, blocked := range blockedHosts {
+		if lower == blocked {
+			return fmt.Errorf("host %q is not allowed as an OTLP endpoint", host)
+		}
+	}
+	return nil
+}
 
 // DefaultConfigDir returns ~/.config/milliways.
 func DefaultConfigDir() string {
@@ -161,6 +204,17 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if fileCfg.ProjectContextLimit > 0 {
 		defaults.ProjectContextLimit = fileCfg.ProjectContextLimit
+	}
+
+	// Telemetry: file fields override zero values
+	if fileCfg.Telemetry.SignozEndpoint != "" {
+		if err := validateSignozEndpoint(fileCfg.Telemetry.SignozEndpoint); err != nil {
+			return nil, fmt.Errorf("telemetry.signoz_endpoint: %w", err)
+		}
+		defaults.Telemetry.SignozEndpoint = fileCfg.Telemetry.SignozEndpoint
+	}
+	if fileCfg.Telemetry.EnhancedTracing {
+		defaults.Telemetry.EnhancedTracing = true
 	}
 
 	return defaults, nil

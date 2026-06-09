@@ -135,6 +135,12 @@ func TestExtractMutationMetadata(t *testing.T) {
 	if err := os.WriteFile(path, []byte("hello\nworld\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// containedPath resolves symlinks, so on macOS /var → /private/var.
+	// Resolve the expected path to match.
+	wantPath := path
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		wantPath = resolved
+	}
 
 	meta, ok, err := ExtractMutationMetadata("Edit", map[string]any{
 		"path":       path,
@@ -150,8 +156,8 @@ func TestExtractMutationMetadata(t *testing.T) {
 	if meta.Operation != OperationEdit {
 		t.Fatalf("operation = %q, want edit", meta.Operation)
 	}
-	if meta.Path != path {
-		t.Fatalf("path = %q, want %q", meta.Path, path)
+	if meta.Path != wantPath {
+		t.Fatalf("path = %q, want %q", meta.Path, wantPath)
 	}
 	if !meta.BeforeExists || meta.BeforeHash == "" {
 		t.Fatalf("before metadata missing: %+v", meta)

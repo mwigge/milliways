@@ -38,7 +38,14 @@ type fakeChatRPCRequest struct {
 
 func startFakeChatRPC(t *testing.T, handler func(fakeChatRPCRequest) any) (*rpc.Client, *[]fakeChatRPCRequest) {
 	t.Helper()
-	sock := filepath.Join(t.TempDir(), "milliwaysd.sock")
+	// Use os.MkdirTemp with default base ("") so the socket path stays
+	// under /tmp/mwXXXXXX/s.sock — well within macOS's 104-byte UDS limit.
+	dir, err := os.MkdirTemp("", "mw")
+	if err != nil {
+		t.Fatalf("mkdirtemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "s.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen fake rpc: %v", err)

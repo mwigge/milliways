@@ -59,6 +59,22 @@ type observeRenderFrame struct {
 	Spans []observeRenderSpan `json:"spans"`
 }
 
+type observeRenderProviderStat struct {
+	AgentID      string  `json:"agent_id"`
+	Turns        int     `json:"turns"`
+	TokensIn     int     `json:"tokens_in"`
+	TokensOut    int     `json:"tokens_out"`
+	CostUSD      float64 `json:"cost_usd"`
+	P50LatencyMS float64 `json:"p50_latency_ms"`
+}
+
+type observeRenderQualitySignals struct {
+	Pass        int    `json:"pass"`
+	Rework      int    `json:"rework"`
+	Fail        int    `json:"fail"`
+	LastOutcome string `json:"last_outcome,omitempty"`
+}
+
 type observeRenderStatus struct {
 	ActiveAgent       *string                             `json:"active_agent"`
 	TokensIn          int                                 `json:"tokens_in"`
@@ -69,11 +85,17 @@ type observeRenderStatus struct {
 	// OpenTelemetry GenAI performance metrics
 	RequestCount      int     `json:"request_count"`
 	FailureRate       float64 `json:"failure_rate"`
-	TTFTMedian        float64 `json:"ttft_median"`         // time to first token median (ms)
-	TPOTMedian        float64 `json:"tpot_median"`         // time per output token median (ms)
-	OperationDuration float64 `json:"operation_duration"`    // operation duration median (ms)
-	RequestModel      string  `json:"request_model"`        // gen_ai.request.model
-	ResponseModel     string  `json:"response_model"`      // gen_ai.response.model
+	TTFTMedian        float64 `json:"ttft_median"`        // time to first token median (ms)
+	TPOTMedian        float64 `json:"tpot_median"`        // time per output token median (ms)
+	OperationDuration float64 `json:"operation_duration"` // operation duration median (ms)
+	RequestModel      string  `json:"request_model"`      // gen_ai.request.model
+	ResponseModel     string  `json:"response_model"`     // gen_ai.response.model
+	// Per-provider breakdown and routing
+	PerProviderStats []observeRenderProviderStat `json:"per_provider_stats,omitempty"`
+	ActiveProvider   string                      `json:"active_provider,omitempty"`
+	RoutingReason    string                      `json:"routing_reason,omitempty"`
+	SessionCostUSD   float64                     `json:"session_cost_usd"`
+	QualitySignals   observeRenderQualitySignals `json:"quality_signals"`
 }
 
 type observeRenderQuota struct {
@@ -399,6 +421,19 @@ func formatObservabilityFrame(now time.Time, spans []observeRenderSpan, usage ob
 		}
 		fmt.Fprintln(&b, "│")
 	}
+	if routing := formatRoutingSection(usage); routing != "" {
+		fmt.Fprintln(&b, "│")
+		fmt.Fprint(&b, routing)
+	}
+	if len(usage.Status.PerProviderStats) > 0 {
+		fmt.Fprintln(&b, "│")
+		fmt.Fprint(&b, formatProvidersTable(usage.Status.PerProviderStats))
+	}
+	qs := usage.Status.QualitySignals
+	if qs.Pass > 0 || qs.Rework > 0 || qs.Fail > 0 {
+		fmt.Fprintln(&b, "│")
+		fmt.Fprint(&b, formatQualityRow(qs))
+	}
 	fmt.Fprintln(&b, "│ usage:")
 	fmt.Fprintf(&b, "│   tokens:        in %s / out %s / total %s (last 1h)\n",
 		formatObserveTokenCount(usage.Status.TokensIn),
@@ -442,6 +477,64 @@ func formatObservabilityFrame(now time.Time, spans []observeRenderSpan, usage ob
 	fmt.Fprintf(&b, "│   %s\n", charts.KittyEscape(png, 0))
 	fmt.Fprintln(&b, "╰──")
 	return b.String()
+}
+
+// formatRoutingSection renders the active provider, routing reason, and session cost.
+// Returns an empty string when no provider is active and no session cost is recorded.
+func formatRoutingSection(usage observeRenderUsage) string {
+	s := usage.Status
+	if s.ActiveProvider == "" && s.SessionCostUSD == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintln(&b, "│ routing:")
+	if s.ActiveProvider != "" {
+		fmt.Fprintf(&b, "│   provider:      %s\n", s.ActiveProvider)
+	}
+	if s.RoutingReason != "" {
+		fmt.Fprintf(&b, "│   reason:        %s\n", truncateObserveText(s.RoutingReason, 60))
+	}
+	fmt.Fprintf(&b, "│   session cost:  %s\n", formatObserveCost(s.SessionCostUSD))
+	return b.String()
+}
+
+// formatProvidersTable renders one row per provider from the 48h daily aggregates.
+// Returns "│ -- no data" when the slice is empty.
+func formatProvidersTable(stats []observeRenderProviderStat) string {
+	if len(stats) == 0 {
+		return "│ providers (48h): -- no data\n"
+	}
+	var b strings.Builder
+	fmt.Fprintln(&b, "│ providers (48h):")
+	for _, s := range stats {
+		latency := ""
+		if s.P50LatencyMS > 0 {
+			latency = fmt.Sprintf("  %5.0fms p50", s.P50LatencyMS)
+		}
+		fmt.Fprintf(&b, "│   %-10s %3d turns  %6s in / %5s out  %s%s\n",
+			truncateObserveText(s.AgentID, 10),
+			s.Turns,
+			formatObserveTokenCount(s.TokensIn),
+			formatObserveTokenCount(s.TokensOut),
+			formatObserveCost(s.CostUSD),
+			latency,
+		)
+	}
+	return b.String()
+}
+
+// formatQualityRow renders the delegate outcome counters.
+// Returns "│ quality: -- no delegates" when all counts are zero.
+func formatQualityRow(q observeRenderQualitySignals) string {
+	if q.Pass == 0 && q.Rework == 0 && q.Fail == 0 {
+		return "│ quality: -- no delegates\n"
+	}
+	last := ""
+	if q.LastOutcome != "" {
+		last = fmt.Sprintf("  last: %s", q.LastOutcome)
+	}
+	return fmt.Sprintf("│ quality: pass %d  rework %d  fail %d%s\n",
+		q.Pass, q.Rework, q.Fail, last)
 }
 
 func observeSecurityWorkspace(sec observeRenderSecurity) string {

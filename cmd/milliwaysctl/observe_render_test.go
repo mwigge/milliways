@@ -436,3 +436,158 @@ func linspace(start, end int) []float64 {
 	}
 	return out
 }
+
+// --- Task 6.6: format function unit tests ---
+
+func TestFormatRoutingSectionEmptyWhenNoProvider(t *testing.T) {
+	t.Parallel()
+	got := formatRoutingSection(observeRenderUsage{})
+	if got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+func TestFormatRoutingSectionShowsProvider(t *testing.T) {
+	t.Parallel()
+	usage := observeRenderUsage{
+		Status: observeRenderStatus{
+			ActiveProvider: "claude",
+			RoutingReason:  "user preference",
+			SessionCostUSD: 0.12,
+		},
+	}
+	got := formatRoutingSection(usage)
+	for _, want := range []string{"routing:", "claude", "user preference", "$0.12"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("formatRoutingSection missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestFormatRoutingSectionShowsSessionCostEvenWithoutProvider(t *testing.T) {
+	t.Parallel()
+	usage := observeRenderUsage{
+		Status: observeRenderStatus{SessionCostUSD: 0.50},
+	}
+	got := formatRoutingSection(usage)
+	if !strings.Contains(got, "session cost") {
+		t.Errorf("expected session cost in output, got %q", got)
+	}
+}
+
+func TestFormatRoutingSectionSkipsEmptyReason(t *testing.T) {
+	t.Parallel()
+	usage := observeRenderUsage{
+		Status: observeRenderStatus{ActiveProvider: "codex"},
+	}
+	got := formatRoutingSection(usage)
+	if strings.Contains(got, "reason:") {
+		t.Errorf("should not render reason line when empty, got %q", got)
+	}
+}
+
+func TestFormatProvidersTableNoDataPlaceholder(t *testing.T) {
+	t.Parallel()
+	got := formatProvidersTable(nil)
+	if !strings.Contains(got, "no data") {
+		t.Errorf("expected 'no data' placeholder, got %q", got)
+	}
+}
+
+func TestFormatProvidersTableRendersRow(t *testing.T) {
+	t.Parallel()
+	stats := []observeRenderProviderStat{
+		{AgentID: "claude", Turns: 5, TokensIn: 1200, TokensOut: 400, CostUSD: 0.08},
+	}
+	got := formatProvidersTable(stats)
+	for _, want := range []string{"providers", "claude", "5", "1.2k", "400", "$0.08"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("formatProvidersTable missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestFormatProvidersTableRendersMultipleRows(t *testing.T) {
+	t.Parallel()
+	stats := []observeRenderProviderStat{
+		{AgentID: "claude", Turns: 3, TokensIn: 1000, TokensOut: 200, CostUSD: 0.05},
+		{AgentID: "codex", Turns: 1, TokensIn: 500, TokensOut: 100, CostUSD: 0.01},
+	}
+	got := formatProvidersTable(stats)
+	if !strings.Contains(got, "claude") || !strings.Contains(got, "codex") {
+		t.Errorf("expected both agents in output:\n%s", got)
+	}
+}
+
+func TestFormatProvidersTableShowsLatencyWhenNonZero(t *testing.T) {
+	t.Parallel()
+	stats := []observeRenderProviderStat{
+		{AgentID: "gemini", Turns: 1, P50LatencyMS: 45.5},
+	}
+	got := formatProvidersTable(stats)
+	if !strings.Contains(got, "p50") {
+		t.Errorf("expected p50 label when latency set, got %q", got)
+	}
+}
+
+func TestFormatQualityRowNoDelegatesPlaceholder(t *testing.T) {
+	t.Parallel()
+	got := formatQualityRow(observeRenderQualitySignals{})
+	if !strings.Contains(got, "no delegates") {
+		t.Errorf("expected placeholder, got %q", got)
+	}
+}
+
+func TestFormatQualityRowShowsCounts(t *testing.T) {
+	t.Parallel()
+	q := observeRenderQualitySignals{Pass: 5, Rework: 1, Fail: 0, LastOutcome: "pass"}
+	got := formatQualityRow(q)
+	for _, want := range []string{"quality:", "pass 5", "rework 1", "fail 0", "last: pass"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("formatQualityRow missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestFormatQualityRowOmitsLastOutcomeWhenEmpty(t *testing.T) {
+	t.Parallel()
+	q := observeRenderQualitySignals{Pass: 1, Rework: 0, Fail: 0}
+	got := formatQualityRow(q)
+	if strings.Contains(got, "last:") {
+		t.Errorf("should not render 'last:' when LastOutcome is empty, got %q", got)
+	}
+}
+
+func TestFormatObservabilityFrameIncludesNewSections(t *testing.T) {
+	t.Parallel()
+	fixedNow := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+	usage := observeRenderUsage{
+		Status: observeRenderStatus{
+			ActiveProvider: "claude",
+			SessionCostUSD: 0.25,
+			PerProviderStats: []observeRenderProviderStat{
+				{AgentID: "claude", Turns: 3, TokensIn: 1000, TokensOut: 300, CostUSD: 0.25},
+			},
+			QualitySignals: observeRenderQualitySignals{Pass: 2, Rework: 1, Fail: 0, LastOutcome: "pass"},
+		},
+	}
+	got := formatObservabilityFrame(fixedNow, nil, usage)
+	for _, want := range []string{
+		"routing:", "claude",
+		"providers (48h):", "3",
+		"quality:", "pass 2", "rework 1",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("formatObservabilityFrame missing %q", want)
+		}
+	}
+	// Sections appear before "usage:"
+	routingIdx := strings.Index(got, "routing:")
+	usageIdx := strings.Index(got, "usage:")
+	if routingIdx == -1 || usageIdx == -1 {
+		t.Fatalf("routing or usage section missing from frame")
+	}
+	if routingIdx > usageIdx {
+		t.Errorf("routing section should appear before usage section")
+	}
+}

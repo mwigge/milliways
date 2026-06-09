@@ -81,8 +81,8 @@ type claudeStreamMessage struct {
 type claudeStreamContent struct {
 	Type  string          `json:"type"`
 	Text  string          `json:"text,omitempty"`
-	Name  string          `json:"name,omitempty"`   // tool_use
-	Input json.RawMessage `json:"input,omitempty"`  // tool_use
+	Name  string          `json:"name,omitempty"`  // tool_use
+	Input json.RawMessage `json:"input,omitempty"` // tool_use
 }
 
 // claudeStreamUsage carries the input/output token accounting block
@@ -133,24 +133,24 @@ const claudeTimeout = 5 * time.Minute
 //   - When `input` is closed, RunClaude pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
 func RunClaude(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
-	RunClaudeWithSecurityWorkspace(ctx, input, stream, metrics, "")
+	RunClaudeWithSecurityWorkspace(ctx, input, stream, metrics, "", TelemetryEnv{})
 }
 
-func RunClaudeWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
+func RunClaudeWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string, tel TelemetryEnv) {
 	sessionID := newControlledRunnerSessionID(AgentIDClaude)
 	state := &claudeSessionState{}
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runClaudeOnce(ctx, prompt, stream, metrics, securityWorkspace, sessionID, state)
+		runClaudeOnce(ctx, prompt, stream, metrics, securityWorkspace, sessionID, state, tel)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
-func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace, sessionID string, state *claudeSessionState) {
+func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace, sessionID string, state *claudeSessionState, tel TelemetryEnv) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		return
@@ -231,6 +231,8 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		SessionID: sessionID,
 		Workspace: cwd,
 		ShimDir:   brokerShimDirForAgent(AgentIDClaude),
+		Ctx:       ctx,
+		Telemetry: tel,
 	})
 	if cwd != "" {
 		cmd.Dir = cwd

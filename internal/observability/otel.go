@@ -104,6 +104,10 @@ type otelState struct {
 	dispatchTotal    metric.Int64Counter
 	dispatchDuration metric.Float64Histogram
 	failoverTotal    metric.Int64Counter
+	// Delegate outcome counters — one per outcome value.
+	delegateOutcomePass   metric.Int64Counter
+	delegateOutcomeRework metric.Int64Counter
+	delegateOutcomeFail   metric.Int64Counter
 	// exporterKind records which exporter backend was selected: "otlp" or "stdout".
 	exporterKind string
 }
@@ -184,40 +188,9 @@ func defaultOTelInitOTLP(endpoint string) (otelState, error) {
 		return otelState{}, fmt.Errorf("otlp metric exporter: %w", err)
 	}
 
-	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(traceExporter))
-	reader := sdkmetric.NewPeriodicReader(metricExporter)
-	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-
-	otel.SetTracerProvider(tracerProvider)
-	otel.SetMeterProvider(meterProvider)
-
-	meter := otel.GetMeterProvider().Meter(instrumentationName)
-	dispatchTotal, err := meter.Int64Counter("milliways.dispatch.total")
-	if err != nil {
-		return otelState{}, err
-	}
-	dispatchDuration, err := meter.Float64Histogram(
-		"milliways.dispatch.duration_seconds",
-		metric.WithUnit("s"),
-	)
-	if err != nil {
-		return otelState{}, err
-	}
-	failoverTotal, err := meter.Int64Counter("milliways.failover.total")
-	if err != nil {
-		return otelState{}, err
-	}
-
-	return otelState{
-		tracerProvider:   tracerProvider,
-		meterProvider:    meterProvider,
-		tracer:           otel.GetTracerProvider().Tracer(instrumentationName),
-		meter:            meter,
-		dispatchTotal:    dispatchTotal,
-		dispatchDuration: dispatchDuration,
-		failoverTotal:    failoverTotal,
-		exporterKind:     "otlp",
-	}, nil
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(traceExporter))
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter)))
+	return buildOTelState(tp, mp, "otlp")
 }
 
 // defaultOTelInitStdout configures stdout exporters (the original behaviour).
@@ -231,12 +204,17 @@ func defaultOTelInitStdout() (otelState, error) {
 		return otelState{}, err
 	}
 
-	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(traceExporter))
-	reader := sdkmetric.NewPeriodicReader(metricExporter)
-	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(traceExporter))
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExporter)))
+	return buildOTelState(tp, mp, "stdout")
+}
 
-	otel.SetTracerProvider(tracerProvider)
-	otel.SetMeterProvider(meterProvider)
+// buildOTelState wires tp and mp into the global OTel registry, creates the
+// shared instruments, and returns the populated otelState. Both init paths
+// share this logic to avoid drift.
+func buildOTelState(tp *sdktrace.TracerProvider, mp *sdkmetric.MeterProvider, kind string) (otelState, error) {
+	otel.SetTracerProvider(tp)
+	otel.SetMeterProvider(mp)
 
 	meter := otel.GetMeterProvider().Meter(instrumentationName)
 	dispatchTotal, err := meter.Int64Counter("milliways.dispatch.total")
@@ -254,17 +232,36 @@ func defaultOTelInitStdout() (otelState, error) {
 	if err != nil {
 		return otelState{}, err
 	}
-
+	pass, rework, fail, err := registerDelegateOutcomeCounters(meter)
+	if err != nil {
+		return otelState{}, err
+	}
 	return otelState{
-		tracerProvider:   tracerProvider,
-		meterProvider:    meterProvider,
-		tracer:           otel.GetTracerProvider().Tracer(instrumentationName),
-		meter:            meter,
-		dispatchTotal:    dispatchTotal,
-		dispatchDuration: dispatchDuration,
-		failoverTotal:    failoverTotal,
-		exporterKind:     "stdout",
+		tracerProvider:        tp,
+		meterProvider:         mp,
+		tracer:                otel.GetTracerProvider().Tracer(instrumentationName),
+		meter:                 meter,
+		dispatchTotal:         dispatchTotal,
+		dispatchDuration:      dispatchDuration,
+		failoverTotal:         failoverTotal,
+		delegateOutcomePass:   pass,
+		delegateOutcomeRework: rework,
+		delegateOutcomeFail:   fail,
+		exporterKind:          kind,
 	}, nil
+}
+
+func registerDelegateOutcomeCounters(m metric.Meter) (pass, rework, fail metric.Int64Counter, err error) {
+	pass, err = m.Int64Counter("milliways.delegate.outcome.pass")
+	if err != nil {
+		return
+	}
+	rework, err = m.Int64Counter("milliways.delegate.outcome.rework")
+	if err != nil {
+		return
+	}
+	fail, err = m.Int64Counter("milliways.delegate.outcome.fail")
+	return
 }
 
 func newNoopOTelState() otelState {
@@ -272,13 +269,17 @@ func newNoopOTelState() otelState {
 	dispatchTotal, _ := meter.Int64Counter("milliways.dispatch.total")
 	dispatchDuration, _ := meter.Float64Histogram("milliways.dispatch.duration_seconds", metric.WithUnit("s"))
 	failoverTotal, _ := meter.Int64Counter("milliways.failover.total")
+	pass, rework, fail, _ := registerDelegateOutcomeCounters(meter)
 
 	return otelState{
-		tracer:           noop.NewTracerProvider().Tracer(instrumentationName),
-		meter:            meter,
-		dispatchTotal:    dispatchTotal,
-		dispatchDuration: dispatchDuration,
-		failoverTotal:    failoverTotal,
+		tracer:                noop.NewTracerProvider().Tracer(instrumentationName),
+		meter:                 meter,
+		dispatchTotal:         dispatchTotal,
+		dispatchDuration:      dispatchDuration,
+		failoverTotal:         failoverTotal,
+		delegateOutcomePass:   pass,
+		delegateOutcomeRework: rework,
+		delegateOutcomeFail:   fail,
 	}
 }
 
@@ -491,6 +492,24 @@ func StartAgentDecideSpan(ctx context.Context, sessionID string, options []strin
 		attribute.StringSlice(AttrDecisionOptions, append([]string(nil), options...)),
 		attribute.String(AttrDecisionChoice, choice),
 	)
+}
+
+// RecordDelegateOutcome increments the appropriate delegate outcome counter.
+// outcome must be "pass", "rework", or "fail"; unknown values are ignored.
+func RecordDelegateOutcome(ctx context.Context, outcome string) {
+	_ = MustOtel()
+	state := otelGlobalState
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	switch outcome {
+	case "pass":
+		state.delegateOutcomePass.Add(ctx, 1)
+	case "rework":
+		state.delegateOutcomeRework.Add(ctx, 1)
+	case "fail":
+		state.delegateOutcomeFail.Add(ctx, 1)
+	}
 }
 
 // Shutdown flushes and stops the shared providers.

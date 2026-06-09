@@ -50,6 +50,24 @@ type ProtoVersion struct {
 	Minor int `json:"minor"`
 }
 
+// QualitySignals aggregates delegate outcome counts since daemon start.
+type QualitySignals struct {
+	Pass        int    `json:"pass"`
+	Rework      int    `json:"rework"`
+	Fail        int    `json:"fail"`
+	LastOutcome string `json:"last_outcome,omitempty"`
+}
+
+// ProviderStat holds per-agent usage aggregates for the current daily bucket.
+type ProviderStat struct {
+	AgentID      string  `json:"agent_id"`
+	Turns        int     `json:"turns"`
+	TokensIn     int     `json:"tokens_in"`
+	TokensOut    int     `json:"tokens_out"`
+	CostUSD      float64 `json:"cost_usd"`
+	P50LatencyMS float64 `json:"p50_latency_ms"`
+}
+
 type Status struct {
 	Proto             ProtoVersion                           `json:"proto"`
 	ActiveAgent       *string                                `json:"active_agent"`
@@ -68,6 +86,13 @@ type Status struct {
 	OperationDuration float64 `json:"operation_duration"`
 	RequestModel      string  `json:"request_model"`
 	ResponseModel     string  `json:"response_model"`
+	// Delegation quality signals
+	QualitySignals QualitySignals `json:"quality_signals"`
+	// Per-provider usage breakdown for today's daily bucket
+	PerProviderStats []ProviderStat `json:"per_provider_stats,omitempty"`
+	ActiveProvider   string         `json:"active_provider,omitempty"`
+	RoutingReason    string         `json:"routing_reason,omitempty"`
+	SessionCostUSD   float64        `json:"session_cost_usd"`
 }
 
 type AgentInfo struct {
@@ -94,6 +119,14 @@ type RoutingDecision struct {
 	Selected   string   `json:"selected"`
 	Considered []string `json:"considered,omitempty"`
 	Reason     string   `json:"reason,omitempty"`
+}
+
+// coreAgentIDs is the canonical list of agents used for per-provider metrics,
+// quota snapshots, and enforcement metadata. Order is stable; do not sort.
+var coreAgentIDs = []string{
+	"claude", "codex", "copilot", "gemini",
+	"minimax", "berget", "kimi", "deepseek",
+	"local", "pool",
 }
 
 // historyAgents is the allowlist for history.append agent_ids.
@@ -279,7 +312,19 @@ func (s *Server) buildStatus() Status {
 	opDuration := s.getHistogramMedian("gen_ai.client.operation.duration", r1h)
 	ttft := s.getHistogramMedian("gen_ai.client.operation.time_to_first_chunk", r1h)
 	tpot := s.getHistogramMedian("gen_ai.client.operation.time_per_output_chunk", r1h)
-	
+
+	qualitySignals := s.buildQualitySignals()
+
+	// Use a 48h window so both today's and yesterday's midnight-aligned daily
+	// buckets are included regardless of when in the day buildStatus is called.
+	rDaily := &metrics.Range{From: "-48h"}
+	perProvider := s.buildPerProviderStats(rDaily)
+	sessionCost := s.buildSessionCostUSD(rDaily)
+
+	s.statusMu.Lock()
+	routingReason := s.lastRoutingReason
+	s.statusMu.Unlock()
+
 	return Status{
 		Proto:             ProtoVersion{Major: ProtoMajor, Minor: ProtoMinor},
 		ActiveAgent:       activeAgent,
@@ -295,13 +340,105 @@ func (s *Server) buildStatus() Status {
 		TTFTMedian:        ttft * 1000, // convert s to ms
 		TPOTMedian:        tpot * 1000,
 		OperationDuration: opDuration * 1000,
+		QualitySignals: qualitySignals,
+		PerProviderStats: perProvider,
+		ActiveProvider:   curAgent,
+		RoutingReason:    routingReason,
+		SessionCostUSD:   sessionCost,
 	}
 }
 
+// buildQualitySignals returns delegate outcome counters and the most recently
+// completed outcome (the actual last, not the dominant).
+func (s *Server) buildQualitySignals() QualitySignals {
+	lastOutcome := ""
+	if p := s.lastDelegateOutcome.Load(); p != nil {
+		lastOutcome = *p
+	}
+	return QualitySignals{
+		Pass:        int(s.delegatePass.Load()),
+		Rework:      int(s.delegateRework.Load()),
+		Fail:        int(s.delegateFail.Load()),
+		LastOutcome: lastOutcome,
+	}
+}
+
+// buildPerProviderStats returns per-agent usage aggregates from the daily metrics bucket.
+// Only agents with non-zero token activity are included. Turns is approximated by the
+// number of token-recording observations stored in the daily tier.
+func (s *Server) buildPerProviderStats(r *metrics.Range) []ProviderStat {
+	if s.metrics == nil {
+		return nil
+	}
+	var stats []ProviderStat
+	for _, agentID := range coreAgentIDs {
+		id := agentID
+		tokIn := s.getTokenTotal("tokens_in", &id, r, "daily")
+		if tokIn == 0 {
+			continue
+		}
+		tokOut := s.getTokenTotal("tokens_out", &id, r, "daily")
+		cost := s.getTokenTotal("cost_usd", &id, r, "daily")
+		turns := s.getAgentTurns(&id, r)
+		stats = append(stats, ProviderStat{
+			AgentID:      agentID,
+			Turns:        turns,
+			TokensIn:     int(tokIn),
+			TokensOut:    int(tokOut),
+			CostUSD:      cost,
+			P50LatencyMS: 0,
+		})
+	}
+	return stats
+}
+
+// buildSessionCostUSD returns the total cost_usd across all providers for today's daily bucket.
+func (s *Server) buildSessionCostUSD(r *metrics.Range) float64 {
+	if s.metrics == nil {
+		return 0
+	}
+	res, err := s.metrics.RollupGet(metrics.RollupGetParams{
+		Metric: "cost_usd",
+		Tier:   "daily",
+		Range:  r,
+	})
+	if err != nil {
+		slog.Debug("metrics: buildSessionCostUSD", "err", err)
+		return 0
+	}
+	var total float64
+	for _, b := range res.Buckets {
+		total += b.Sum
+	}
+	return total
+}
+
+// getAgentTurns returns the number of dispatch turns for an agent in the given range.
+// Uses the count of tokens_in observations as a proxy for turns.
+func (s *Server) getAgentTurns(agentID *string, r *metrics.Range) int {
+	if s.metrics == nil {
+		return 0
+	}
+	res, err := s.metrics.RollupGet(metrics.RollupGetParams{
+		Metric:  "tokens_in",
+		Tier:    "daily",
+		Range:   r,
+		AgentID: agentID,
+	})
+	if err != nil {
+		slog.Debug("metrics: getAgentTurns", "err", err)
+		return 0
+	}
+	var total int64
+	for _, b := range res.Buckets {
+		total += b.Count
+	}
+	return int(total)
+}
+
 func clientEnforcementSnapshot() map[string]runners.EnforcementMetadata {
-	agents := []string{"minimax", "berget", "claude", "codex", "copilot", "kimi", "deepseek", "gemini", "local", "pool"}
-	out := make(map[string]runners.EnforcementMetadata, len(agents))
-	for _, agent := range agents {
+	out := make(map[string]runners.EnforcementMetadata, len(coreAgentIDs))
+	for _, agent := range coreAgentIDs {
 		out[agent] = runners.ClientEnforcementMetadata(agent)
 	}
 	return out
@@ -313,7 +450,6 @@ func (s *Server) buildQuotaSnapshots() []QuotaSnapshot {
 	if s.metrics == nil {
 		return nil
 	}
-	agents := []string{"minimax", "berget", "claude", "codex", "copilot", "kimi", "deepseek", "gemini", "local", "pool"}
 	r1h := &metrics.Range{From: "-1h"}
 	r24h := &metrics.Range{From: "-24h"}
 	r1w := &metrics.Range{From: "-1w"}
@@ -321,7 +457,7 @@ func (s *Server) buildQuotaSnapshots() []QuotaSnapshot {
 	// Wider range to detect if agent has ever had historical data
 	r30d := &metrics.Range{From: "-30d"}
 	var out []QuotaSnapshot
-	for _, agent := range agents {
+	for _, agent := range coreAgentIDs {
 		agentCopy := agent
 
 		// Check if agent has any historical data (30 days, use daily tier)

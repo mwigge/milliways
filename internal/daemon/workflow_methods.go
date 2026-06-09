@@ -315,6 +315,16 @@ func (s *Server) finishWorkflowDelegate(ctx context.Context, store *workflow.Fil
 	}
 	output, runErr := runner(ctx, agent, dir, prompt)
 	endedAt := time.Now().UTC()
+
+	outcome := "pass"
+	if runErr != nil {
+		outcome = "fail"
+	} else if strings.Contains(strings.ToLower(output), "stall") ||
+		strings.Contains(strings.ToLower(output), "no commits appear for 300s") {
+		outcome = "rework"
+	}
+	s.recordDelegateOutcome(outcome)
+
 	wf, err := store.Load(context.Background(), workflowID)
 	if err != nil {
 		return
