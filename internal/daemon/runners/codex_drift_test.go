@@ -39,13 +39,14 @@ func TestBuildCodexCmdArgs_DefaultsInjectSandboxAndApproval(t *testing.T) {
 	if idxApproval := slices.Index(args, "--ask-for-approval"); idxApproval < 0 || idxApproval > idxExec {
 		t.Errorf("--ask-for-approval should be a root flag before exec: %v", args)
 	}
-	// Prompt must come after the -- sentinel.
+	// The "-" stdin sentinel must come after the -- separator (the prompt
+	// itself is piped on stdin, not passed as an argument).
 	idx := slices.Index(args, "--")
 	if idx < 0 || idx >= len(args)-1 {
-		t.Errorf("-- sentinel not before prompt: %v", args)
+		t.Errorf("-- separator not before stdin sentinel: %v", args)
 	}
-	if got := args[len(args)-1]; got != "do the thing" {
-		t.Errorf("last arg = %q, want %q (prompt)", got, "do the thing")
+	if got := args[len(args)-1]; got != "-" {
+		t.Errorf("last arg = %q, want %q (stdin sentinel)", got, "-")
 	}
 }
 

@@ -26,21 +26,22 @@ import (
 )
 
 func TestPoolArgsBuilder_DefaultCommand(t *testing.T) {
-	got := poolArgsBuilder("hello pool", "/tmp/project")
-	want := []string{"exec", "--output", "markdown", "-p", "hello pool", "--directory", "/tmp/project"}
+	// The prompt is delivered via -f <file>; the builder receives the file path.
+	got := poolArgsBuilder("/tmp/prompt.txt", "/tmp/project")
+	want := []string{"exec", "--output", "markdown", "-f", "/tmp/prompt.txt", "--directory", "/tmp/project"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("poolArgsBuilder() = %v, want %v", got, want)
 	}
 
-	got = poolArgsBuilder("hello pool", "")
-	want = []string{"exec", "--output", "markdown", "-p", "hello pool"}
+	got = poolArgsBuilder("/tmp/prompt.txt", "")
+	want = []string{"exec", "--output", "markdown", "-f", "/tmp/prompt.txt"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("poolArgsBuilder(empty dir) = %v, want %v", got, want)
 	}
 }
 
 func TestPoolArgsBuilder_AutoAllowDisabledByDefault(t *testing.T) {
-	got := poolArgsBuilder("hello pool", "/tmp/project")
+	got := poolArgsBuilder("/tmp/prompt.txt", "/tmp/project")
 	for _, arg := range got {
 		if arg == "--unsafe-auto-allow" {
 			t.Fatalf("poolArgsBuilder() must not inject --unsafe-auto-allow: %v", got)
@@ -225,6 +226,62 @@ func TestRunPool_StreamsStdout(t *testing.T) {
 	}
 	if dataAt < 0 || chunkEndAt < dataAt || endAt < chunkEndAt {
 		t.Errorf("event order data/chunk_end/end invalid: data=%d chunk_end=%d end=%d events=%v", dataAt, chunkEndAt, endAt, events)
+	}
+}
+
+func TestRunPool_StagesPromptToFile(t *testing.T) {
+	clearPoolTimeoutEnv(t)
+	recorder := filepath.Join(t.TempDir(), "staged-path.txt")
+	// Fake pool: find the -f <file> argument, record its path, and echo its
+	// contents — proving the prompt is delivered via a file, not argv.
+	script := "#!/bin/sh\n" +
+		"f=''\n" +
+		"while [ \"$#\" -gt 0 ]; do\n" +
+		"  if [ \"$1\" = \"-f\" ]; then f=\"$2\"; fi\n" +
+		"  shift\n" +
+		"done\n" +
+		"printf '%s' \"$f\" > " + shellQuote(recorder) + "\n" +
+		"cat \"$f\"\n"
+	binPath := filepath.Join(t.TempDir(), "pool")
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake pool: %v", err)
+	}
+	prev := poolBinary
+	poolBinary = binPath
+	defer func() { poolBinary = prev }()
+
+	pusher := &fakePusher{}
+	obs := &mockObserver{}
+	in := make(chan []byte, 1)
+	in <- []byte("stage me please")
+	close(in)
+	done := make(chan struct{})
+	go func() {
+		RunPool(context.Background(), in, pusher, obs)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("RunPool did not return")
+	}
+
+	var data string
+	for _, e := range pusher.snapshot() {
+		if e["t"] == "data" {
+			data += decodePoolData(t, e)
+		}
+	}
+	if !strings.Contains(data, "stage me please") {
+		t.Fatalf("prompt not delivered via -f file; pool stdout = %q", data)
+	}
+	// The staged temp file must be cleaned up after the run.
+	staged, err := os.ReadFile(recorder)
+	if err != nil {
+		t.Fatalf("read recorder: %v", err)
+	}
+	if _, err := os.Stat(string(staged)); !os.IsNotExist(err) {
+		t.Fatalf("staged prompt file %q not cleaned up (stat err=%v)", string(staged), err)
 	}
 }
 

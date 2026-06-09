@@ -189,6 +189,13 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 }
 
 func buildCopilotCmdArgs(prompt, cwd string) []string {
+	// NOTE: unlike claude/codex/gemini (stdin) and pool (-f file), the GitHub
+	// Copilot CLI has no off-argv prompt input — it ignores piped stdin when
+	// -p is given and has no prompt-file flag (github/copilot-cli#683, #1046).
+	// So the prompt stays inline here and a very large prompt (toolkit bundle
+	// + user text > MAX_ARG_STRLEN, 128 KiB) will fail to start with E2BIG;
+	// runnerStartHint surfaces that honestly. Revisit if upstream adds stdin.
+	//
 	// --add-dir scopes file search to the project directory, avoiding system
 	// paths that produce permission errors when file search expands broadly.
 	args := []string{"-p", prompt}
@@ -261,7 +268,7 @@ func copilotStderrSignalsLimit(lines []string) bool {
 }
 
 func copilotStartError(stage string, err error) map[string]any {
-	msg := "copilot: could not start — " + installHint("gh")
+	msg := "copilot: could not start — " + runnerStartHint("gh", err)
 	if stage != "start" {
 		msg = "copilot: failed to start — try again"
 	}

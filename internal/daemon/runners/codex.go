@@ -18,7 +18,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -171,6 +170,12 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		return
 	}
 	cmd := exec.CommandContext(ctx, resolveRunnerBinary(codexBinary), buildCodexCmdArgsWithSession(text, cwd, codexModelExtraArgs(model), state.sessionID)...)
+	// Deliver the prompt on stdin (the argv carries the "-" sentinel). The
+	// injected toolkit bundle can push the prompt past the kernel per-arg
+	// limit (MAX_ARG_STRLEN, 128 KiB), which makes execve fail with E2BIG;
+	// stdin has no such limit. `codex exec` reads instructions from stdin
+	// when the prompt argument is "-".
+	cmd.Stdin = strings.NewReader(text)
 	cmd.Env = controlledRunnerEnv(controlledRunnerEnvOptions{
 		ClientID:  AgentIDCodex,
 		SessionID: state.controlledSessionID,
@@ -377,7 +382,11 @@ func buildCodexCmdArgs(prompt, cwd string, extra []string) []string {
 // Without --sandbox/--ask-for-approval, recent codex CLI versions can vary by
 // installation. MilliWays pins a writable sandbox while preserving human
 // approval instead of silently enabling full auto-approval.
-func buildCodexCmdArgsWithSession(prompt, cwd string, extra []string, sessionID string) []string {
+// The prompt itself is delivered on the subprocess stdin, not in argv: the
+// "-" sentinel tells `codex exec` to read instructions from stdin, which
+// avoids the kernel per-argument size limit (E2BIG) for large prompts.
+func buildCodexCmdArgsWithSession(_, cwd string, extra []string, sessionID string) []string {
+	const stdinPromptArg = "-"
 	rootArgs, execExtra := codexSplitRootArgs(extra)
 	if !codexHasAnyFlag(extra, "--sandbox", "-s", "--full-auto", "--dangerously-bypass-approvals-and-sandbox") {
 		rootArgs = append(rootArgs, "--sandbox", "workspace-write")
@@ -390,7 +399,7 @@ func buildCodexCmdArgsWithSession(prompt, cwd string, extra []string, sessionID 
 	if sessionID != "" {
 		args = append(args, "exec", "resume", "--json", "--skip-git-repo-check")
 		args = append(args, execExtra...)
-		args = append(args, sessionID, "--", prompt)
+		args = append(args, sessionID, "--", stdinPromptArg)
 		return args
 	}
 
@@ -399,7 +408,7 @@ func buildCodexCmdArgsWithSession(prompt, cwd string, extra []string, sessionID 
 		args = append(args, "-C", cwd)
 	}
 	args = append(args, execExtra...)
-	args = append(args, "--", prompt)
+	args = append(args, "--", stdinPromptArg)
 	return args
 }
 
@@ -451,10 +460,8 @@ func codexHasFlag(args []string, flag string) bool {
 
 func classifyCodexStartError(err error) map[string]any {
 	msg := "codex: failed to start — try again"
-	if errors.Is(err, exec.ErrNotFound) {
-		msg = "codex: could not start — " + installHint("codex")
-	} else if err != nil {
-		msg = "codex: failed to start — " + scrubBearer(err.Error())
+	if err != nil {
+		msg = "codex: could not start — " + scrubBearer(runnerStartHint("codex", err))
 	}
 	return map[string]any{
 		"t":     "err",
