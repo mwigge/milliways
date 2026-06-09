@@ -10,6 +10,10 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # Use `|` (not `,`) between proxies so Go falls through on ANY fetch error
+  # — including transient proxy.golang.org stream errors — not only 404/410.
+  # A flaky module download must not fail a release (see the v1.0.55 smoke).
+  GOPROXY: https://proxy.golang.org|https://goproxy.io|direct
 
 jobs:
   release:
@@ -22,6 +26,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+
+      # Pre-fetch all modules into the cache the build + smoke steps share
+      # (/tmp/mw-gomodcache), retrying on transient proxy failures so a flaky
+      # download fails here (cheap, retryable) rather than mid-release.
+      - name: Warm Go module cache (retry on flaky proxy)
+        run: |
+          retry() { local n=1; until "$@"; do [ "$n" -ge 3 ] && return 1; echo "::warning::go module fetch attempt $n failed; retrying in $((n*20))s"; sleep $((n*20)); n=$((n+1)); done; }
+          export GOMODCACHE=/tmp/mw-gomodcache
+          retry go mod download
 
       # ── Linux desktop terminal binaries ─────────────────────────────────
       - name: Build Linux terminal binaries
@@ -99,9 +112,11 @@ jobs:
 
       - name: Run Secure MilliWays release smoke
         run: |
-          GOCACHE=/tmp/mw-gocache GOMODCACHE=/tmp/mw-gomodcache go test ./cmd/milliways ./cmd/milliwaysctl ./internal/daemon ./internal/security/... -count=1
+          retry() { local n=1; until "$@"; do [ "$n" -ge 3 ] && return 1; echo "::warning::attempt $n failed; retrying in $((n*20))s"; sleep $((n*20)); n=$((n+1)); done; }
+          export GOCACHE=/tmp/mw-gocache GOMODCACHE=/tmp/mw-gomodcache
+          retry go test ./cmd/milliways ./cmd/milliwaysctl ./internal/daemon ./internal/security/... -count=1
           cargo test --test release_docs
-          GOCACHE=/tmp/mw-gocache GOMODCACHE=/tmp/mw-gomodcache bash tests/smoke/smoke_security_release.sh
+          retry bash tests/smoke/smoke_security_release.sh
 
       # ── Package agent toolkit bundle (if sibling repo is present) ────────
       - name: Package agent toolkit bundle
@@ -164,6 +179,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+
+      - name: Warm Go module cache (retry on flaky proxy)
+        run: |
+          retry() { local n=1; until "$@"; do [ "$n" -ge 3 ] && return 1; echo "::warning::go module fetch attempt $n failed; retrying in $((n*20))s"; sleep $((n*20)); n=$((n+1)); done; }
+          retry go mod download
 
       # ── macOS binaries (darwin/arm64 + darwin/amd64) ─────────────────────
       # CGO_ENABLED=1 is required for SQLite (mattn/go-sqlite3).
