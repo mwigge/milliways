@@ -32,7 +32,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -147,6 +149,27 @@ func installSpecByClient(client string) (installSpec, bool) {
 	return installSpec{}, false
 }
 
+// findGoDir returns the directory containing the go binary if it can be
+// located outside the current PATH, or an empty string if not found.
+// The caller should prepend the returned directory to PATH when spawning
+// the install subprocess.
+func findGoDir() string {
+	homeDir, _ := os.UserHomeDir()
+	candidates := []string{
+		"/usr/local/go/bin/go",
+		"/opt/homebrew/bin/go",                              // Homebrew on Apple Silicon
+		"/usr/local/bin/go",                                 // Homebrew on Intel Mac
+		filepath.Join(homeDir, "go", "bin", "go"),           // default GOPATH
+		filepath.Join(homeDir, ".local", "go", "bin", "go"), // alternative user install
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return filepath.Dir(c)
+		}
+	}
+	return ""
+}
+
 // runInstall dispatches `milliwaysctl install <client>` and returns the
 // process exit code. Pulled out so chat.go (via the ctl alias) and the
 // CLI both go through the same code path.
@@ -185,11 +208,21 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Prereq check.
+	var extraPathDir string // non-empty: prepend to subprocess PATH
 	if spec.prereq != "" {
 		if _, err := exec.LookPath(spec.prereq); err != nil {
-			_, _ = fmt.Fprintf(stderr, "milliwaysctl install %s: prerequisite %q not on PATH\n", spec.client, spec.prereq)
-			_, _ = fmt.Fprintf(stderr, "  → %s\n", spec.prereqHint)
-			return 1
+			// For the "go" prereq, check well-known install locations before
+			// failing — Go is often installed but not on the shell PATH.
+			if spec.prereq == "go" {
+				extraPathDir = findGoDir()
+			}
+			if extraPathDir == "" {
+				_, _ = fmt.Fprintf(stderr, "milliwaysctl install %s: prerequisite %q not on PATH\n", spec.client, spec.prereq)
+				_, _ = fmt.Fprintf(stderr, "  → %s\n", spec.prereqHint)
+				return 1
+			}
+			// Found at a non-PATH location — proceed with augmented PATH.
+			_, _ = fmt.Fprintf(stdout, "note: %s found at %s (not on PATH); adding to subprocess PATH\n", spec.prereq, extraPathDir)
 		}
 	}
 
@@ -206,6 +239,10 @@ func runInstall(args []string, stdout, stderr io.Writer) int {
 	cmd := execCommand(spec.install[0], spec.install[1:]...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	if extraPathDir != "" {
+		augmented := extraPathDir + string(os.PathListSeparator) + os.Getenv("PATH")
+		cmd.Env = append(os.Environ(), "PATH="+augmented)
+	}
 	if err := cmd.Run(); err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {

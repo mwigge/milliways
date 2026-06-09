@@ -336,7 +336,7 @@ func TestFormatObservabilityFrame_StaysCompact(t *testing.T) {
 	if !strings.Contains(got, "latest: rpc.observe.latest") {
 		t.Fatalf("frame missing compact latest span:\n%s", got)
 	}
-	if lines := strings.Count(got, "\n"); lines > 19 {
+	if lines := strings.Count(got, "\n"); lines > 24 {
 		t.Fatalf("frame too tall for lower-left pane: %d lines\n%s", lines, got)
 	}
 }
@@ -555,6 +555,45 @@ func TestFormatQualityRowOmitsLastOutcomeWhenEmpty(t *testing.T) {
 	got := formatQualityRow(q)
 	if strings.Contains(got, "last:") {
 		t.Errorf("should not render 'last:' when LastOutcome is empty, got %q", got)
+	}
+}
+
+func TestFormatObservabilityFrameAlwaysShowsPerformanceSection(t *testing.T) {
+	t.Parallel()
+	// No requests recorded — performance section must still appear with placeholder.
+	got := formatObservabilityFrame(time.Now(), nil, observeRenderUsage{})
+	if !strings.Contains(got, "performance:") {
+		t.Errorf("performance section missing when RequestCount=0:\n%s", got)
+	}
+	if !strings.Contains(got, "no requests") {
+		t.Errorf("expected 'no requests' placeholder when RequestCount=0:\n%s", got)
+	}
+}
+
+func TestFormatObservabilityFrameAlwaysShowsProvidersSection(t *testing.T) {
+	t.Parallel()
+	// No per-provider stats — providers section must still appear with placeholder.
+	got := formatObservabilityFrame(time.Now(), nil, observeRenderUsage{})
+	if !strings.Contains(got, "providers") {
+		t.Errorf("providers section missing when PerProviderStats empty:\n%s", got)
+	}
+}
+
+func TestFormatObservabilityFrameShowsPerformanceDataWhenPresent(t *testing.T) {
+	t.Parallel()
+	usage := observeRenderUsage{
+		Status: observeRenderStatus{
+			RequestCount:      42,
+			FailureRate:       2.5,
+			OperationDuration: 350.0,
+			TTFTMedian:        120.0,
+		},
+	}
+	got := formatObservabilityFrame(time.Now(), nil, usage)
+	for _, want := range []string{"performance:", "42", "2.5%", "350.0ms", "120.0ms"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("formatObservabilityFrame missing %q in performance section:\n%s", want, got)
+		}
 	}
 }
 
