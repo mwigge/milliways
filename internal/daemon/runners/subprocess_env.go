@@ -27,6 +27,8 @@ package runners
 // into an internal/sandbox package is a follow-up).
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -34,6 +36,7 @@ import (
 	"sync/atomic"
 
 	"github.com/mwigge/milliways/internal/security/shims"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var runnerSystemPathFallbacks = []string{
@@ -75,6 +78,26 @@ var safeRunnerEnvKeys = map[string]bool{
 	// store). Without these the daemon subprocess reports "Not logged in" even
 	// though claude works fine in the user's shell.
 	"CLAUDECODE": true, "CLAUDE_CODE_ENTRYPOINT": true, "CLAUDE_CODE_EXECPATH": true,
+	// OpenTelemetry passthrough — none of these are credential-bearing.
+	// Allows users to configure OTLP export from their shell without daemon
+	// restarts. Milliways-injected values (TRACEPARENT, Scope B bundle) take
+	// precedence via envWithoutKey before append.
+	"CLAUDE_CODE_ENABLE_TELEMETRY": true, "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": true,
+	"OTEL_TRACES_EXPORTER": true, "OTEL_METRICS_EXPORTER": true, "OTEL_LOGS_EXPORTER": true,
+	"OTEL_EXPORTER_OTLP_PROTOCOL": true, "OTEL_EXPORTER_OTLP_ENDPOINT": true,
+	"OTEL_SERVICE_NAME": true, "OTEL_RESOURCE_ATTRIBUTES": true,
+	"OTEL_METRIC_EXPORT_INTERVAL": true, "OTEL_LOGS_EXPORT_INTERVAL": true, "OTEL_TRACES_EXPORT_INTERVAL": true,
+	"TRACEPARENT": true, "TRACESTATE": true,
+}
+
+// TelemetryEnv carries Scope B OTLP injection settings derived from carte.yaml.
+// Zero value disables all milliways-injected OTEL vars (shell passthrough still applies).
+type TelemetryEnv struct {
+	SignozEndpoint  string // OTLP endpoint, e.g. "http://localhost:4317"
+	EnhancedTracing bool   // injects CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1 when true
+	AgentID         string // used to set OTEL_SERVICE_NAME=milliways-{AgentID}
+	SessionID       string // used in OTEL_RESOURCE_ATTRIBUTES
+	Kitchen         string // used in OTEL_RESOURCE_ATTRIBUTES
 }
 
 type controlledRunnerEnvOptions struct {
@@ -82,6 +105,8 @@ type controlledRunnerEnvOptions struct {
 	SessionID string
 	Workspace string
 	ShimDir   string
+	Ctx       context.Context // for TRACEPARENT injection; nil = no injection
+	Telemetry TelemetryEnv
 }
 
 var controlledRunnerSessionCounter atomic.Uint64
@@ -141,12 +166,21 @@ func controlledRunnerEnv(opts controlledRunnerEnvOptions) []string {
 	return appendControlledRunnerMetadata(env, opts)
 }
 
-func controlledExternalCLIEnv(agentID, sessionID, workspace string) []string {
+func controlledExternalCLIEnv(ctx context.Context, agentID, sessionID, workspace string) []string {
+	return controlledExternalCLIEnvWithTelemetry(ctx, agentID, sessionID, workspace, TelemetryEnv{})
+}
+
+func controlledExternalCLIEnvWithTelemetry(ctx context.Context, agentID, sessionID, workspace string, tel TelemetryEnv) []string {
+	tel.AgentID = agentID
+	tel.SessionID = sessionID
+	tel.Kitchen = agentID
 	return controlledRunnerEnv(controlledRunnerEnvOptions{
 		ClientID:  agentID,
 		SessionID: sessionID,
 		Workspace: workspace,
 		ShimDir:   brokerShimDirForAgent(agentID),
+		Ctx:       ctx,
+		Telemetry: tel,
 	})
 }
 
@@ -172,9 +206,86 @@ func appendControlledRunnerMetadata(env []string, opts controlledRunnerEnvOption
 		add("MILLIWAYS_SHIM_DIR", opts.ShimDir)
 		add("MILLIWAYS_SHIMS_ENABLED", "1")
 	}
+	env = appendTraceContext(env, opts.Ctx)
+	tel := opts.Telemetry
+	if tel.AgentID == "" {
+		tel.AgentID = opts.ClientID
+	}
+	if tel.SessionID == "" {
+		tel.SessionID = opts.SessionID
+	}
+	if tel.Kitchen == "" {
+		tel.Kitchen = opts.ClientID
+	}
+	env = appendScopeB(env, tel)
 	return env
 }
 
+// appendTraceContext injects TRACEPARENT (and TRACESTATE when non-empty) from
+// the active span in ctx. When ctx is nil or carries no valid span, nothing is
+// injected. Milliways-derived values always replace any inherited shell value.
+func appendTraceContext(env []string, ctx context.Context) []string {
+	if ctx == nil {
+		return env
+	}
+	sc := trace.SpanFromContext(ctx).SpanContext()
+	if !sc.IsValid() {
+		return env
+	}
+	traceparent := fmt.Sprintf("00-%s-%s-%s",
+		sc.TraceID().String(),
+		sc.SpanID().String(),
+		sc.TraceFlags().String(),
+	)
+	env = append(envWithoutKey(env, "TRACEPARENT"), "TRACEPARENT="+traceparent)
+	if ts := sc.TraceState().String(); ts != "" {
+		env = append(envWithoutKey(env, "TRACESTATE"), "TRACESTATE="+ts)
+	}
+	return env
+}
+
+// appendScopeB injects the Scope B OTLP bundle when tel.SignozEndpoint is set.
+// Milliways-derived values override any shell-set OTEL_* vars.
+func appendScopeB(env []string, tel TelemetryEnv) []string {
+	if strings.TrimSpace(tel.SignozEndpoint) == "" {
+		return env
+	}
+	set := func(key, value string) {
+		env = append(envWithoutKey(env, key), key+"="+value)
+	}
+	set("CLAUDE_CODE_ENABLE_TELEMETRY", "1")
+	set("OTEL_TRACES_EXPORTER", "otlp")
+	set("OTEL_METRICS_EXPORTER", "otlp")
+	set("OTEL_LOGS_EXPORTER", "otlp")
+	set("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+	set("OTEL_EXPORTER_OTLP_ENDPOINT", tel.SignozEndpoint)
+	if tel.EnhancedTracing {
+		set("CLAUDE_CODE_ENHANCED_TELEMETRY_BETA", "1")
+	}
+	if agentID := strings.TrimSpace(tel.AgentID); agentID != "" {
+		set("OTEL_SERVICE_NAME", "milliways-"+agentID)
+	}
+	attrs := buildOTelResourceAttributes(tel)
+	if attrs != "" {
+		set("OTEL_RESOURCE_ATTRIBUTES", attrs)
+	}
+	return env
+}
+
+func buildOTelResourceAttributes(tel TelemetryEnv) string {
+	var parts []string
+	if k := strings.TrimSpace(tel.Kitchen); k != "" {
+		parts = append(parts, "milliways.kitchen="+k)
+	}
+	if s := strings.TrimSpace(tel.SessionID); s != "" {
+		parts = append(parts, "milliways.session_id="+s)
+	}
+	return strings.Join(parts, ",")
+}
+
+// envWithoutKey filters env in-place (reusing the backing array) and returns
+// the entries that do not have the given key prefix. Callers must not retain
+// a reference to the original slice after this call.
 func envWithoutKey(env []string, key string) []string {
 	prefix := key + "="
 	out := env[:0]

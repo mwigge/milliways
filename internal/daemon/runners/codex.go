@@ -81,23 +81,23 @@ type codexSessionState struct {
 //   - When `input` is closed, RunCodex pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
 func RunCodex(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
-	RunCodexWithSecurityWorkspace(ctx, input, stream, metrics, "")
+	RunCodexWithSecurityWorkspace(ctx, input, stream, metrics, "", TelemetryEnv{})
 }
 
-func RunCodexWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
+func RunCodexWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string, tel TelemetryEnv) {
 	state := &codexSessionState{controlledSessionID: newControlledRunnerSessionID(AgentIDCodex)}
 	for prompt := range input {
 		if stream == nil {
 			continue
 		}
-		runCodexOnce(ctx, prompt, stream, metrics, state, securityWorkspace)
+		runCodexOnce(ctx, prompt, stream, metrics, state, securityWorkspace, tel)
 	}
 	if stream != nil {
 		stream.Push(map[string]any{"t": "end"})
 	}
 }
 
-func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *codexSessionState, securityWorkspace string) {
+func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, state *codexSessionState, securityWorkspace string, tel TelemetryEnv) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		stream.Push(zeroUsageChunkEnd())
@@ -176,6 +176,8 @@ func runCodexOnce(parent context.Context, prompt []byte, stream Pusher, metrics 
 		SessionID: state.controlledSessionID,
 		Workspace: cwd,
 		ShimDir:   brokerShimDirForAgent(AgentIDCodex),
+		Ctx:       ctx,
+		Telemetry: tel,
 	})
 	cmd.WaitDelay = 5 * time.Second
 	if cwd != "" {

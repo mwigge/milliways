@@ -28,6 +28,8 @@ import (
 	"time"
 
 	"github.com/mwigge/milliways/internal/daemon"
+	"github.com/mwigge/milliways/internal/daemon/runners"
+	"github.com/mwigge/milliways/internal/maitre"
 )
 
 var version = "dev"
@@ -78,6 +80,14 @@ func main() {
 	srv, err := daemon.NewServer(*socket)
 	if err != nil {
 		die("new server: %v", err)
+	}
+	if cfg, err := maitre.LoadConfig(maitre.DefaultConfigPath()); err != nil {
+		slog.Warn("config load failed", "err", err)
+	} else {
+		srv.SetTelemetry(runners.TelemetryEnv{
+			SignozEndpoint:  cfg.Telemetry.SignozEndpoint,
+			EnhancedTracing: cfg.Telemetry.EnhancedTracing,
+		})
 	}
 	defer func() {
 		if err := srv.Close(); err != nil {

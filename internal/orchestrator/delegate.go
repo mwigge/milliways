@@ -76,6 +76,7 @@ func traceDelegate(ctx context.Context, emitter *observability.TraceEmitter, run
 
 	delegateCtx, delegateSpan := observability.StartAgentDelegateSpan(thinkCtx, sessionID, agent, dir, durMS, outcome)
 	delegateSpan.End()
+	observability.RecordDelegateOutcome(delegateCtx, outcome)
 	if emitter != nil {
 		data := map[string]any{
 			"agent":       agent,

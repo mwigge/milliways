@@ -76,10 +76,10 @@ const geminiChunkSize = 4 * 1024
 //   - When `input` is closed, RunGemini pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
 func RunGemini(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
-	RunGeminiWithSecurityWorkspace(ctx, input, stream, metrics, "")
+	RunGeminiWithSecurityWorkspace(ctx, input, stream, metrics, "", TelemetryEnv{})
 }
 
-func RunGeminiWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
+func RunGeminiWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string, tel TelemetryEnv) {
 	sessionID := newControlledRunnerSessionID(AgentIDGemini)
 	for {
 		select {
@@ -98,12 +98,12 @@ func RunGeminiWithSecurityWorkspace(ctx context.Context, input <-chan []byte, st
 			if stream == nil {
 				continue
 			}
-			runGeminiOnce(ctx, prompt, stream, metrics, securityWorkspace, sessionID)
+			runGeminiOnce(ctx, prompt, stream, metrics, securityWorkspace, sessionID, tel)
 		}
 	}
 }
 
-func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace, sessionID string) {
+func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace, sessionID string, tel TelemetryEnv) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		stream.Push(geminiChunkEndEvent())
@@ -127,7 +127,7 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		return
 	}
 	cmd := exec.CommandContext(ctx, resolveRunnerBinary(geminiBinary), geminiArgsBuilder(text)...)
-	cmd.Env = controlledExternalCLIEnv(AgentIDGemini, sessionID, cwd)
+	cmd.Env = controlledExternalCLIEnvWithTelemetry(ctx, AgentIDGemini, sessionID, cwd, tel)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}

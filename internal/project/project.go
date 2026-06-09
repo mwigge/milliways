@@ -126,15 +126,18 @@ func validGitRepoRoot(dir string) bool {
 	if root == "" {
 		return false
 	}
-	got, err := filepath.Abs(root)
+	// Use os.SameFile rather than path comparison: on macOS /var is a symlink
+	// to /private/var so git returns the real path while t.TempDir() returns
+	// the symlinked path. SameFile compares inodes and is symlink-agnostic.
+	gotInfo, err := os.Stat(root)
 	if err != nil {
 		return false
 	}
-	want, err := filepath.Abs(dir)
+	wantInfo, err := os.Stat(dir)
 	if err != nil {
 		return false
 	}
-	return got == want
+	return os.SameFile(gotInfo, wantInfo)
 }
 
 func validGitDirLayout(gitDir string) bool {

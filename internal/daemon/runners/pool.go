@@ -68,10 +68,10 @@ const poolChunkSize = 4 * 1024
 //   - When `input` is closed, RunPool pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
 func RunPool(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
-	RunPoolWithSecurityWorkspace(ctx, input, stream, metrics, "")
+	RunPoolWithSecurityWorkspace(ctx, input, stream, metrics, "", TelemetryEnv{})
 }
 
-func RunPoolWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
+func RunPoolWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string, tel TelemetryEnv) {
 	sessionID := newControlledRunnerSessionID(AgentIDPool)
 	for {
 		select {
@@ -90,12 +90,12 @@ func RunPoolWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stre
 			if stream == nil {
 				continue
 			}
-			runPoolOnce(ctx, prompt, stream, metrics, securityWorkspace, sessionID)
+			runPoolOnce(ctx, prompt, stream, metrics, securityWorkspace, sessionID, tel)
 		}
 	}
 }
 
-func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace, sessionID string) {
+func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace, sessionID string, tel TelemetryEnv) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		stream.Push(poolChunkEndEvent())
@@ -122,7 +122,7 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 		return
 	}
 	cmd := exec.CommandContext(ctx, resolveRunnerBinary(poolBinary), poolArgsBuilder(text, cwd)...)
-	cmd.Env = controlledExternalCLIEnv(AgentIDPool, sessionID, cwd)
+	cmd.Env = controlledExternalCLIEnvWithTelemetry(ctx, AgentIDPool, sessionID, cwd, tel)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}

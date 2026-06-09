@@ -132,6 +132,17 @@ func Open(path string) (*Store, error) {
 // Path returns the metrics.db file path.
 func (s *Store) Path() string { return s.path }
 
+// SetNow overrides the time source used for bucket alignment and retention cutoffs.
+// Pass nil to restore the default (time.Now). Intended for testing.
+func (s *Store) SetNow(fn func() time.Time) {
+	if fn == nil {
+		fn = time.Now
+	}
+	s.mu.Lock()
+	s.now = fn
+	s.mu.Unlock()
+}
+
 // SetTimezone overrides the calendar timezone used for daily/weekly/
 // monthly bucket alignment. Defaults to time.Local.
 func (s *Store) SetTimezone(loc *time.Location) {

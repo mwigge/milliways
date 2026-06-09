@@ -139,6 +139,14 @@ func TestProbeSkipsShimBinaryWhenResolvingExternalCLI(t *testing.T) {
 	if err := os.Remove(filepath.Join(realDir, "gemini")); err != nil {
 		t.Fatalf("remove real gemini: %v", err)
 	}
+
+	// The system may have a real gemini installed in fallback dirs (e.g.
+	// /opt/homebrew/bin). If so, the probe legitimately finds it and
+	// Available=true is correct; the shim-exclusion logic still works.
+	if _, err := execLookPathInRunnerPathExcluding("gemini", shimDir); err == nil {
+		t.Skip("system gemini binary found outside test-controlled dirs; shim-only phase not applicable")
+	}
+
 	info = probeGemini(context.Background())
 	if info.Available {
 		t.Fatalf("probeGemini Available = true with only shim binary, want false")

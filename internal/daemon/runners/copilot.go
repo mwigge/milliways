@@ -53,10 +53,10 @@ const copilotChunkSize = 4 * 1024
 //   - When `input` is closed, RunCopilot pushes {"t":"end"} and returns.
 //   - The caller (AgentRegistry) is responsible for Close()ing the stream.
 func RunCopilot(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver) {
-	RunCopilotWithSecurityWorkspace(ctx, input, stream, metrics, "")
+	RunCopilotWithSecurityWorkspace(ctx, input, stream, metrics, "", TelemetryEnv{})
 }
 
-func RunCopilotWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string) {
+func RunCopilotWithSecurityWorkspace(ctx context.Context, input <-chan []byte, stream Pusher, metrics MetricsObserver, securityWorkspace string, tel TelemetryEnv) {
 	sessionID := newControlledRunnerSessionID(AgentIDCopilot)
 	for {
 		select {
@@ -75,12 +75,12 @@ func RunCopilotWithSecurityWorkspace(ctx context.Context, input <-chan []byte, s
 			if stream == nil {
 				continue
 			}
-			runCopilotOnce(ctx, prompt, stream, metrics, securityWorkspace, sessionID)
+			runCopilotOnce(ctx, prompt, stream, metrics, securityWorkspace, sessionID, tel)
 		}
 	}
 }
 
-func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace, sessionID string) {
+func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metrics MetricsObserver, securityWorkspace, sessionID string, tel TelemetryEnv) {
 	text := strings.TrimRight(string(prompt), "\r\n")
 	if text == "" {
 		stream.Push(zeroUsageChunkEnd())
@@ -104,7 +104,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		return
 	}
 	cmd := exec.CommandContext(ctx, resolveRunnerBinary(copilotBinary), copilotArgsBuilder(text, cwd)...)
-	cmd.Env = controlledExternalCLIEnv(AgentIDCopilot, sessionID, cwd)
+	cmd.Env = controlledExternalCLIEnvWithTelemetry(ctx, AgentIDCopilot, sessionID, cwd, tel)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}

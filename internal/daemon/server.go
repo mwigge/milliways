@@ -81,6 +81,8 @@ type Server struct {
 
 	// currentAgent is the last agent opened via agent.open.
 	currentAgent string
+	// lastRoutingReason records the reason the last provider was selected.
+	lastRoutingReason string
 
 	// agentSecurityWorkspaces tracks the most recent security workspace opened
 	// per agent id so runner-side security hooks follow the active session.
@@ -116,6 +118,18 @@ type Server struct {
 	testMPClient parallel.MPClient
 	// testCGClient overrides codeGraphClient() in tests. nil in production.
 	testCGClient parallel.CodeGraphClient
+
+	// telemetry holds the Scope B OTLP injection settings loaded from carte.yaml.
+	// Zero value disables all milliways-injected OTel vars.
+	telemetryMu sync.RWMutex
+	telemetry   runners.TelemetryEnv
+
+	// delegate outcome counters — incremented each time a workflow delegate
+	// completes; reset only on daemon restart.
+	delegatePass           atomic.Int64
+	delegateRework         atomic.Int64
+	delegateFail           atomic.Int64
+	lastDelegateOutcome    atomic.Pointer[string]
 }
 
 // NewServer binds a UDS at socket with mode 0600. Removes any stale socket
@@ -264,6 +278,35 @@ func NewServer(socket string) (*Server, error) {
 
 	go s.statusBroadcaster()
 	return s, nil
+}
+
+// SetTelemetry configures Scope B OTLP injection for all runner subprocesses.
+// Call once after NewServer with values loaded from carte.yaml.
+func (s *Server) SetTelemetry(tel runners.TelemetryEnv) {
+	s.telemetryMu.Lock()
+	s.telemetry = tel
+	s.telemetryMu.Unlock()
+}
+
+func (s *Server) runnerTelemetry() runners.TelemetryEnv {
+	s.telemetryMu.RLock()
+	defer s.telemetryMu.RUnlock()
+	return s.telemetry
+}
+
+func (s *Server) recordDelegateOutcome(outcome string) {
+	switch outcome {
+	case "pass":
+		s.delegatePass.Add(1)
+	case "rework":
+		s.delegateRework.Add(1)
+	case "fail":
+		s.delegateFail.Add(1)
+	default:
+		// no-op — unknown outcomes are intentionally ignored
+		return
+	}
+	s.lastDelegateOutcome.Store(&outcome)
 }
 
 func installSecurityShimsForServer(stateDir string) {
