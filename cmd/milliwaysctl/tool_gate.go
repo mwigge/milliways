@@ -93,9 +93,11 @@ func toolGateDecision(in toolGateHookInput) (decision, reason string) {
 	}
 	// This call blocks until the user responds (or the daemon's approval
 	// timeout) when the policy says "ask" — that's intentional.
+	// If the connection drops while blocked (daemon died mid-approval), deny:
+	// the tool was explicitly pending human review, so failing safe is correct.
 	var res toolGateResult
 	if err := client.Call("security.gate_tool", params, &res); err != nil {
-		return "allow", "milliways gate error; allowing: " + err.Error()
+		return "deny", "milliways approval interrupted (daemon connection lost mid-decision) — denied"
 	}
 	if strings.EqualFold(res.Decision, "deny") {
 		if strings.TrimSpace(res.Reason) == "" {

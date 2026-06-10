@@ -15,6 +15,7 @@
 package main
 
 import (
+	"net"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -35,5 +36,38 @@ func TestToolGateDecision_FailsOpenWhenDaemonUnreachable(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(reason), "unreachable") && !strings.Contains(strings.ToLower(reason), "allowing") {
 		t.Fatalf("reason = %q, want it to explain the fail-open", reason)
+	}
+}
+
+// TestToolGateDecision_DeniesWhenDaemonDropsMidCall verifies that a connection
+// that succeeds but then drops while waiting for the user's approval results in
+// a "deny" decision (fail-safe) rather than a fail-open allow.
+func TestToolGateDecision_DeniesWhenDaemonDropsMidCall(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "fake.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	// Accept the connection and immediately close it to simulate daemon death.
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		conn.Close()
+	}()
+
+	t.Setenv("MILLIWAYS_DAEMON_SOCKET", sock)
+	dec, reason := toolGateDecision(toolGateHookInput{
+		ToolName:  "Bash",
+		ToolInput: map[string]any{"command": "rm -rf /"},
+	})
+	if dec != "deny" {
+		t.Fatalf("decision = %q, want deny on mid-call connection drop; reason=%q", dec, reason)
+	}
+	if !strings.Contains(reason, "interrupted") && !strings.Contains(reason, "denied") {
+		t.Fatalf("reason = %q, want it to explain the denial", reason)
 	}
 }
