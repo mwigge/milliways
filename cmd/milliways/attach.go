@@ -502,21 +502,6 @@ type deckEnforcementInfo struct {
 	Reason        string `json:"reason,omitempty"`
 }
 
-func deckProtectionLabel(p deckProviderInfo) string {
-	level := strings.TrimSpace(p.Enforcement.Level)
-	switch level {
-	case "full":
-		return "protected"
-	case "brokered":
-		if p.Enforcement.ControlledEnv || strings.TrimSpace(p.Enforcement.BrokerPath) != "" {
-			return "preflight-only"
-		}
-		return "unprotected"
-	default:
-		return "unprotected"
-	}
-}
-
 func renderDeckNavigator(w int, providers []deckProviderInfo, selected int, active string, polled bool, quotas map[string]parallel.QuotaSummary) string {
 	return renderDeckNavigatorSized(w, 0, providers, selected, active, polled, quotas)
 }

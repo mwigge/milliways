@@ -144,9 +144,9 @@ func TestRecordDelegateOutcomeIgnoresUnknown(t *testing.T) {
 func TestRecordDelegateOutcomeHandlesNilContext(t *testing.T) {
 	setupDelegateTestState(t)
 	// Must not panic.
-	RecordDelegateOutcome(nil, "pass")
-	RecordDelegateOutcome(nil, "rework")
-	RecordDelegateOutcome(nil, "fail")
+	RecordDelegateOutcome(context.Background(), "pass")
+	RecordDelegateOutcome(context.Background(), "rework")
+	RecordDelegateOutcome(context.Background(), "fail")
 }
 
 func TestStartAgentDelegateSpanSetsOutcomeAttribute(t *testing.T) {

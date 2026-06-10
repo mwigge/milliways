@@ -166,10 +166,6 @@ func controlledRunnerEnv(opts controlledRunnerEnvOptions) []string {
 	return appendControlledRunnerMetadata(env, opts)
 }
 
-func controlledExternalCLIEnv(ctx context.Context, agentID, sessionID, workspace string) []string {
-	return controlledExternalCLIEnvWithTelemetry(ctx, agentID, sessionID, workspace, TelemetryEnv{})
-}
-
 func controlledExternalCLIEnvWithTelemetry(ctx context.Context, agentID, sessionID, workspace string, tel TelemetryEnv) []string {
 	tel.AgentID = agentID
 	tel.SessionID = sessionID
