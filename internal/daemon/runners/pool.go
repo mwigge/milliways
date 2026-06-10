@@ -217,8 +217,8 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 
 	streamPoolStdout(stdout, stream)
 
-	waitErr := cmd.Wait()
 	stderrWg.Wait()
+	waitErr := cmd.Wait()
 
 	stderrMu.Lock()
 	lines := append([]string(nil), stderrLines...)
