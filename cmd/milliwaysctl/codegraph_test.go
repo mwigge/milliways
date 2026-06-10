@@ -127,6 +127,60 @@ func TestRunCodegraphIndex_FailurePropagatesExitCode(t *testing.T) {
 	}
 }
 
+// TestRunCodegraphInit_Success verifies the `init` verb invokes the binary
+// with the init verb and an absolute path.
+func TestRunCodegraphInit_Success(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+
+	binDir := t.TempDir()
+	fake := writeTestBinary(t, binDir, "codegraph", "#!/bin/sh\necho \"verb=$1\"\nexit 0\n")
+	t.Setenv("MILLIWAYS_CODEGRAPH_MCP_CMD", fake)
+
+	var stdout, stderr bytes.Buffer
+	code := runCodegraph([]string{"init", t.TempDir()}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("init exit = %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "verb=init") {
+		t.Fatalf("expected codegraph called with verb=init; stdout=%q", stdout.String())
+	}
+}
+
+// TestRunCodegraphIndex_AutoInitsOnFailure verifies that when `index` fails
+// because the store isn't initialized, runCodegraph runs `init` and retries.
+func TestRunCodegraphIndex_AutoInitsOnFailure(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
+
+	binDir := t.TempDir()
+	// index fails until init creates the marker file in the repo dir ($2).
+	script := "#!/bin/sh\n" +
+		"marker=\"$2/.cg-initialized\"\n" +
+		"case \"$1\" in\n" +
+		"  init) : > \"$marker\"; echo initialized; exit 0 ;;\n" +
+		"  index) if [ -f \"$marker\" ]; then echo indexed; exit 0; else echo 'graph not initialized' >&2; exit 1; fi ;;\n" +
+		"esac\n"
+	fake := writeTestBinary(t, binDir, "codegraph", script)
+	t.Setenv("MILLIWAYS_CODEGRAPH_MCP_CMD", fake)
+
+	indexPath := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	code := runCodegraph([]string{"index", indexPath}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("index auto-init exit = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "initialized") || !strings.Contains(stdout.String(), "indexed") {
+		t.Fatalf("expected init then index to run; stdout=%q", stdout.String())
+	}
+	envPath := filepath.Join(tmp, ".config", "milliways", "local.env")
+	if _, err := os.ReadFile(envPath); err != nil {
+		t.Fatalf("expected local.env written after successful auto-init index: %v", err)
+	}
+}
+
 // TestRunCodegraphIndex_NoBinaryReturnsError verifies that when no codegraph
 // binary can be found runCodegraph returns 1 and prints a diagnostic.
 func TestRunCodegraphIndex_NoBinaryReturnsError(t *testing.T) {

@@ -222,6 +222,7 @@ var chatCtlAliases = map[string][]string{
 	"opsx-archive":  {"opsx", "archive"},
 	"opsx-validate": {"opsx", "validate"},
 	// CodeGraph index
+	"repoinit":  {"codegraph", "init"},
 	"repoindex": {"codegraph", "index"},
 }
 
@@ -362,7 +363,7 @@ func buildCompleter(agentID string) []string {
 		// OpenSpec
 		"/opsx-list", "/opsx-status", "/opsx-show", "/opsx-archive", "/opsx-validate",
 		// CodeGraph
-		"/repoindex",
+		"/repoinit", "/repoindex",
 		// Artifact + context commands (milliways-level, work for all runners).
 		"/ring", "/blocks", "/search", "/jump", "/copy-last", "/copy-last response",
 		"/copy-last prompt", "/copy-last block", "/copy-last code", "/history", "/cost",
@@ -4085,7 +4086,7 @@ func (l *chatLoop) printHelp() {
 	fmt.Fprintf(l.out, "%s▸%s  /local-endpoint <url>     point at a different OpenAI-compatible backend\n", dim, reset)
 	fmt.Fprintf(l.out, "%s▸%s  /local-temp <0.0–2.0|default> · /local-max-tokens <N|off> · /local-hot on|off\n", dim, reset)
 	fmt.Fprintf(l.out, "%s▸%s  /opsx-list|status|show|archive|validate  OpenSpec workflow\n", dim, reset)
-	fmt.Fprintf(l.out, "%s▸%s  /repoindex [path]         index repo with CodeGraph\n", dim, reset)
+	fmt.Fprintf(l.out, "%s▸%s  /repoinit [path]          create CodeGraph store · /repoindex [path]  index (auto-inits)\n", dim, reset)
 	fmt.Fprintln(l.out)
 
 	fmt.Fprintf(l.out, "%sSession%s\n", accent, reset)
