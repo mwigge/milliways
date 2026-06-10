@@ -614,6 +614,8 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		s.approvalList(enc, req)
 	case "approval.respond":
 		s.approvalRespond(enc, req)
+	case "security.gate_tool":
+		s.securityGateTool(enc, req)
 	case "coding.changes":
 		s.codingChanges(enc, req)
 	case "coding.diff":

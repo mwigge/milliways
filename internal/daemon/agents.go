@@ -613,6 +613,26 @@ func (r *AgentRegistry) Get(handle AgentHandle) (*AgentSession, bool) {
 	return s, ok
 }
 
+// PushToSession pushes an event to the subscriber streams of every session
+// whose SessionID matches. Best-effort: used to surface out-of-band events
+// (e.g. a tool-approval prompt raised by an external CLI's PreToolUse hook).
+func (r *AgentRegistry) PushToSession(sessionID string, event any) {
+	if strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	r.mu.Lock()
+	var targets []*AgentSession
+	for _, s := range r.sessions {
+		if s.SessionID == sessionID {
+			targets = append(targets, s)
+		}
+	}
+	r.mu.Unlock()
+	for _, s := range targets {
+		s.pushEvent(event)
+	}
+}
+
 // Close terminates the session and removes it from the registry.
 func (r *AgentRegistry) Close(handle AgentHandle) {
 	r.mu.Lock()

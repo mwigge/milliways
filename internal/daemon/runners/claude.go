@@ -224,6 +224,9 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	}
 	// Register the local_code MCP tool when a local LLM server is reachable.
 	args = append(args, claudeLocalCoderArgs()...)
+	// Install the PreToolUse approval hook so tool calls are gated through
+	// milliways' permission policy (ask → /approve → run). MILLIWAYS_TOOL_GATE=off disables.
+	args = append(args, claudeToolGateArgs()...)
 	if cwd != "" {
 		args = append(args, "--add-dir", cwd)
 	}

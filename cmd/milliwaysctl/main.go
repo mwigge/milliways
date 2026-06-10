@@ -84,6 +84,9 @@ func main() {
 	if sub == "mcp-localcoder" {
 		os.Exit(runMCPLocalCoder(rest))
 	}
+	if sub == "tool-gate" {
+		os.Exit(runToolGate(rest))
+	}
 
 	fs := flag.NewFlagSet(sub, flag.ExitOnError)
 	socket := fs.String("socket", "", "UDS path (default: ${state}/sock)")
