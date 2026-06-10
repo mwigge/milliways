@@ -96,7 +96,7 @@ func secFindingToWire(f pantry.SecurityFinding, accepted bool) securityFindingWi
 // Result: {findings: [...]}
 func (s *Server) securityList(enc *json.Encoder, req *Request) {
 	if s.pantryDB == nil {
-		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		writeError(enc, req.ID, ErrInternal, "pantry not available")
 		return
 	}
 
@@ -120,7 +120,7 @@ func (s *Server) securityList(enc *json.Encoder, req *Request) {
 		findings, err = store.ListActive(nil)
 	}
 	if err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("list findings: %v", err))
+		writeError(enc, req.ID, ErrInternal, fmt.Sprintf("list findings: %v", err))
 		return
 	}
 
@@ -155,7 +155,7 @@ func (s *Server) securityList(enc *json.Encoder, req *Request) {
 // Result: {finding: {...}}
 func (s *Server) securityShow(enc *json.Encoder, req *Request) {
 	if s.pantryDB == nil {
-		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		writeError(enc, req.ID, ErrInternal, "pantry not available")
 		return
 	}
 
@@ -175,7 +175,7 @@ func (s *Server) securityShow(enc *json.Encoder, req *Request) {
 
 	f, err := s.pantryDB.Security().GetByCVE(p.CVEID)
 	if err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("get CVE: %v", err))
+		writeError(enc, req.ID, ErrInternal, fmt.Sprintf("get CVE: %v", err))
 		return
 	}
 
@@ -187,7 +187,7 @@ func (s *Server) securityShow(enc *json.Encoder, req *Request) {
 // Result: {exists: bool}
 func (s *Server) securityExists(enc *json.Encoder, req *Request) {
 	if s.pantryDB == nil {
-		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		writeError(enc, req.ID, ErrInternal, "pantry not available")
 		return
 	}
 
@@ -207,7 +207,7 @@ func (s *Server) securityExists(enc *json.Encoder, req *Request) {
 
 	exists, err := s.pantryDB.Security().CVEExists(p.CVEID)
 	if err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("check CVE: %v", err))
+		writeError(enc, req.ID, ErrInternal, fmt.Sprintf("check CVE: %v", err))
 		return
 	}
 	writeResult(enc, req.ID, map[string]any{"exists": exists})
@@ -219,7 +219,7 @@ func (s *Server) securityExists(enc *json.Encoder, req *Request) {
 // Result: {ok: true}
 func (s *Server) securityAccept(enc *json.Encoder, req *Request) {
 	if s.pantryDB == nil {
-		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		writeError(enc, req.ID, ErrInternal, "pantry not available")
 		return
 	}
 
@@ -267,7 +267,7 @@ func (s *Server) securityAccept(enc *json.Encoder, req *Request) {
 	}
 
 	if err := s.pantryDB.Security().InsertAcceptedRisk(p.CVEID, p.PackageName, p.Reason, expiresAt); err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("accept risk: %v", err))
+		writeError(enc, req.ID, ErrInternal, fmt.Sprintf("accept risk: %v", err))
 		return
 	}
 	writeResult(enc, req.ID, map[string]any{
@@ -281,7 +281,7 @@ func (s *Server) securityAccept(enc *json.Encoder, req *Request) {
 // Uses the live runner when available (30s timeout); falls back to cached DB findings.
 func (s *Server) securityScan(enc *json.Encoder, req *Request) {
 	if s.pantryDB == nil {
-		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		writeError(enc, req.ID, ErrInternal, "pantry not available")
 		return
 	}
 	var p securityScanParams
@@ -295,7 +295,7 @@ func (s *Server) securityScan(enc *json.Encoder, req *Request) {
 	if len(p.Layers) > 0 || p.Staged || strings.TrimSpace(p.Diff) != "" {
 		result, err := s.runLayeredSecurityScan(context.Background(), workspace, p)
 		if err != nil {
-			writeError(enc, req.ID, ErrInvalidParams, "security scan: "+err.Error())
+			writeError(enc, req.ID, ErrInternal, "security scan: "+err.Error())
 			return
 		}
 		writeResult(enc, req.ID, result)
@@ -314,7 +314,7 @@ func (s *Server) securityScan(enc *json.Encoder, req *Request) {
 
 	findings, err := s.pantryDB.Security().ListActiveForWorkspace(workspace, nil)
 	if err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("list active findings: %v", err))
+		writeError(enc, req.ID, ErrInternal, fmt.Sprintf("list active findings: %v", err))
 		return
 	}
 
@@ -568,7 +568,7 @@ func (s *Server) securityEnable(enc *json.Encoder, req *Request) {
 		writeResult(enc, req.ID, map[string]any{"enabled": true})
 		return
 	}
-	writeError(enc, req.ID, ErrInvalidParams, "security runner not available")
+	writeError(enc, req.ID, ErrInternal, "security runner not available")
 }
 
 // securityDisable handles "security.disable" — turns off OSV scanning.
@@ -578,7 +578,7 @@ func (s *Server) securityDisable(enc *json.Encoder, req *Request) {
 		writeResult(enc, req.ID, map[string]any{"enabled": false})
 		return
 	}
-	writeError(enc, req.ID, ErrInvalidParams, "security runner not available")
+	writeError(enc, req.ID, ErrInternal, "security runner not available")
 }
 
 // securityStatus handles "security.status" — reports scanner state.
@@ -1102,7 +1102,7 @@ func cloneScannerStatuses(in []map[string]any) []map[string]any {
 // deterministic local scanner and persisting warnings into pantry.
 func (s *Server) securityStartupScan(enc *json.Encoder, req *Request) {
 	if s.pantryDB == nil {
-		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		writeError(enc, req.ID, ErrInternal, "pantry not available")
 		return
 	}
 	var p struct {
@@ -1123,7 +1123,7 @@ func (s *Server) securityStartupScan(enc *json.Encoder, req *Request) {
 	defer cancel()
 	result, err := s.runStartupSecurityScan(ctx, workspace, p.Strict)
 	if err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("startup scan: %v", err))
+		writeError(enc, req.ID, ErrInternal, fmt.Sprintf("startup scan: %v", err))
 		return
 	}
 	writeResult(enc, req.ID, result)
@@ -1243,12 +1243,12 @@ func setWorkspaceStatusPreservingMode(store *pantry.SecurityStore, workspace, fa
 // securityWarnings handles "security.warnings".
 func (s *Server) securityWarnings(enc *json.Encoder, req *Request) {
 	if s.pantryDB == nil {
-		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		writeError(enc, req.ID, ErrInternal, "pantry not available")
 		return
 	}
 	warnings, err := s.pantryDB.Security().ListActiveWarnings(s.securityWorkspaceRoot())
 	if err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("list warnings: %v", err))
+		writeError(enc, req.ID, ErrInternal, fmt.Sprintf("list warnings: %v", err))
 		return
 	}
 	out := make([]map[string]any, 0, len(warnings))
@@ -1270,7 +1270,7 @@ func (s *Server) securityWarnings(enc *json.Encoder, req *Request) {
 // securityMode handles "security.mode" get/set for the current workspace.
 func (s *Server) securityMode(enc *json.Encoder, req *Request) {
 	if s.pantryDB == nil {
-		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		writeError(enc, req.ID, ErrInternal, "pantry not available")
 		return
 	}
 	var p struct {
@@ -1290,13 +1290,13 @@ func (s *Server) securityMode(enc *json.Encoder, req *Request) {
 			return
 		}
 		if err := s.pantryDB.Security().SetWorkspaceStatus(workspace, string(mode), s.activeAgent()); err != nil {
-			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("set mode: %v", err))
+			writeError(enc, req.ID, ErrInternal, fmt.Sprintf("set mode: %v", err))
 			return
 		}
 	}
 	status, err := s.pantryDB.Security().SecurityStatus(workspace)
 	if err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("security status: %v", err))
+		writeError(enc, req.ID, ErrInternal, fmt.Sprintf("security status: %v", err))
 		return
 	}
 	writeResult(enc, req.ID, map[string]any{
@@ -1359,7 +1359,7 @@ func (s *Server) securityCommandCheck(enc *json.Encoder, req *Request) {
 	}
 	if s.pantryDB != nil {
 		if err := s.recordSecurityPolicyDecision(p, result); err != nil {
-			writeError(enc, req.ID, ErrInvalidParams, err.Error())
+			writeError(enc, req.ID, ErrInternal, err.Error())
 			return
 		}
 	}
@@ -1391,7 +1391,7 @@ func (s *Server) securityPolicyDecide(enc *json.Encoder, req *Request) {
 	}
 	if s.pantryDB != nil {
 		if err := s.recordSecurityPolicyDecision(p, result); err != nil {
-			writeError(enc, req.ID, ErrInvalidParams, err.Error())
+			writeError(enc, req.ID, ErrInternal, err.Error())
 			return
 		}
 	}
@@ -1410,7 +1410,7 @@ type securityPolicyAuditParams struct {
 // securityPolicyAudit handles "security.policy_audit".
 func (s *Server) securityPolicyAudit(enc *json.Encoder, req *Request) {
 	if s.pantryDB == nil {
-		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		writeError(enc, req.ID, ErrInternal, "pantry not available")
 		return
 	}
 	var p securityPolicyAuditParams
@@ -1446,7 +1446,7 @@ func (s *Server) securityPolicyAudit(enc *json.Encoder, req *Request) {
 		Limit:     limit,
 	})
 	if err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("list policy decisions: %v", err))
+		writeError(enc, req.ID, ErrInternal, fmt.Sprintf("list policy decisions: %v", err))
 		return
 	}
 
@@ -1906,7 +1906,7 @@ func activeClientProfileBlockCount(warnings []pantry.SecurityWarning, client str
 
 func (s *Server) securityClientProfile(enc *json.Encoder, req *Request) {
 	if s.pantryDB == nil {
-		writeError(enc, req.ID, ErrInvalidParams, "pantry not available")
+		writeError(enc, req.ID, ErrInternal, "pantry not available")
 		return
 	}
 	var p struct {
@@ -1931,7 +1931,7 @@ func (s *Server) securityClientProfile(enc *json.Encoder, req *Request) {
 	defer cancel()
 	result, err := s.runClientProfileSecurity(ctx, workspace, p.Client)
 	if err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("client profile: %v", err))
+		writeError(enc, req.ID, ErrInternal, fmt.Sprintf("client profile: %v", err))
 		return
 	}
 	writeResult(enc, req.ID, result)
@@ -1963,13 +1963,13 @@ func (s *Server) securityQuarantine(enc *json.Encoder, req *Request) {
 		LaunchAgentRoots: quarantineRoots("launch-agents", filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents")),
 	})
 	if err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("plan quarantine: %v", err))
+		writeError(enc, req.ID, ErrInternal, fmt.Sprintf("plan quarantine: %v", err))
 		return
 	}
 	if p.Apply {
 		applied, err := quarantine.ApplyPlan(ctx, plan, quarantine.ApplyOptions{})
 		if err != nil {
-			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("apply quarantine: %v", err))
+			writeError(enc, req.ID, ErrInternal, fmt.Sprintf("apply quarantine: %v", err))
 			return
 		}
 		actions := make([]map[string]any, 0, len(applied.Actions))
@@ -2045,12 +2045,12 @@ func (s *Server) securityRulesList(enc *json.Encoder, req *Request) {
 	workspace := s.securityWorkspaceRoot()
 	packs, err := rulepacks.LoadAll(securityRulePackOptions(workspace))
 	if err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("load rule packs: %v", err))
+		writeError(enc, req.ID, ErrInternal, fmt.Sprintf("load rule packs: %v", err))
 		return
 	}
 	persisted, err := s.persistSecurityRulePacks(workspace, packs)
 	if err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("persist rule packs: %v", err))
+		writeError(enc, req.ID, ErrInternal, fmt.Sprintf("persist rule packs: %v", err))
 		return
 	}
 	writeResult(enc, req.ID, map[string]any{
@@ -2066,12 +2066,12 @@ func (s *Server) securityRulesUpdate(enc *json.Encoder, req *Request) {
 	workspace := s.securityWorkspaceRoot()
 	packs, err := rulepacks.LoadAll(securityRulePackOptions(workspace))
 	if err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("verify rule packs: %v", err))
+		writeError(enc, req.ID, ErrInternal, fmt.Sprintf("verify rule packs: %v", err))
 		return
 	}
 	persisted, err := s.persistSecurityRulePacks(workspace, packs)
 	if err != nil {
-		writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("persist rule packs: %v", err))
+		writeError(enc, req.ID, ErrInternal, fmt.Sprintf("persist rule packs: %v", err))
 		return
 	}
 	writeResult(enc, req.ID, map[string]any{
