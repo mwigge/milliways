@@ -215,10 +215,10 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 		}
 	}()
 
-	streamPoolStdout(stdout, stream)
+	readErr := streamPoolStdout(stdout, stream)
 
-	waitErr := cmd.Wait()
 	stderrWg.Wait()
+	waitErr := cmd.Wait()
 
 	stderrMu.Lock()
 	lines := append([]string(nil), stderrLines...)
@@ -231,7 +231,11 @@ func runPoolOnce(parent context.Context, prompt []byte, stream Pusher, metrics M
 		return
 	}
 
-	if waitErr != nil {
+	if readErr != nil {
+		observeError(metrics, AgentIDPool)
+		spanErr = readErr.Error()
+		stream.Push(map[string]any{"t": "err", "agent": AgentIDPool, "code": -32012, "msg": "pool: output stream error — " + readErr.Error()})
+	} else if waitErr != nil {
 		observeError(metrics, AgentIDPool)
 		if ctx.Err() != nil {
 			spanErr = ctx.Err().Error()
@@ -285,7 +289,8 @@ func poolLimitErrorEvent(kind string) map[string]any {
 // streamPoolStdout reads stdout in poolChunkSize chunks and pushes each
 // non-empty chunk as {"t":"data","b64":...}. Plain text — no JSON parsing —
 // pool's exec -p output is human-readable.
-func streamPoolStdout(r io.Reader, stream Pusher) {
+// Returns a non-nil error if the stream ended due to a read error (not EOF).
+func streamPoolStdout(r io.Reader, stream Pusher) error {
 	buf := make([]byte, poolChunkSize)
 	for {
 		n, err := r.Read(buf)
@@ -293,7 +298,10 @@ func streamPoolStdout(r io.Reader, stream Pusher) {
 			stream.Push(encodeData(string(buf[:n])))
 		}
 		if err != nil {
-			return
+			if err != io.EOF {
+				return err
+			}
+			return nil
 		}
 	}
 }

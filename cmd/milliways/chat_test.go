@@ -2432,3 +2432,36 @@ func TestRefreshPromptHint_SessionCostAccumulates(t *testing.T) {
 		t.Errorf("sessionCost = %v, want >= 0.002", got)
 	}
 }
+
+func TestEnrichPromptSmallPassthrough(t *testing.T) {
+	t.Parallel()
+	const bundle = "# project rules\nbe helpful"
+	loop := &chatLoop{toolkitBundle: bundle}
+	prompt := "what is 2+2?"
+	got := loop.enrichPrompt(t.Context(), prompt)
+	want := loop.enrichWithToolkit(prompt)
+	if got != want {
+		t.Errorf("small prompt was modified:\ngot:  %q\nwant: %q", got, want)
+	}
+	if len(got) > maxEnrichedPromptBytes {
+		t.Errorf("small prompt exceeds cap: %d bytes", len(got))
+	}
+}
+
+func TestEnrichPromptOversizedToolkitTruncated(t *testing.T) {
+	t.Parallel()
+	// Build a bundle that alone exceeds the 64 KB cap.
+	bundle := strings.Repeat("x", maxEnrichedPromptBytes+1024)
+	const userPrompt = "hello world, this is my prompt"
+	loop := &chatLoop{toolkitBundle: bundle}
+	got := loop.enrichPrompt(t.Context(), userPrompt)
+	if len(got) > maxEnrichedPromptBytes {
+		t.Errorf("enriched prompt is %d bytes, want ≤ %d", len(got), maxEnrichedPromptBytes)
+	}
+	if !strings.HasSuffix(got, userPrompt) {
+		t.Errorf("user prompt not preserved at end:\n%s", got[max(0, len(got)-200):])
+	}
+	if !strings.Contains(got, "[toolkit truncated:") {
+		t.Error("truncation marker missing from result")
+	}
+}

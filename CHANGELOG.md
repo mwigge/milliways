@@ -4,6 +4,78 @@ All notable changes to milliways. Follows [Keep a Changelog](https://keepachange
 
 ---
 
+## [1.0.58] — 2026-06-10
+
+### Fixed
+- **Pipe-drain ordering in claude/gemini/pool runners** — `stderrWg.Wait()` is now called before `cmd.Wait()` so buffered stderr lines (session-limit/error detection) are never dropped.
+- **Stdout stream errors surfaced** — `scanner.Err()` / read errors after the stdout loop are now pushed as error events in all four runners (claude, gemini, copilot, pool) instead of silently truncating output.
+- **OTel CVEs GO-2026-4985 and GO-2026-4394** — bumped `otlpmetrichttp`, `otlptracehttp`, and `otel/sdk` to v1.43.0; govulncheck reports no reachable vulnerabilities.
+- **`ErrInvalidParams` misuse in JSON-RPC handlers** — backend failures ("pantry not available", store errors, scan failures) in `security_methods.go` now return `ErrInternal` (-32603) instead of `ErrInvalidParams` (-32602), letting clients distinguish bad requests from daemon faults.
+- **Prompt enrichment E2BIG guard** — `enrichPrompt` enforces a 64 KB total cap, dropping codegraph then palace layers before truncating the toolkit bundle; the user's prompt is always delivered intact.
+- **TUI data race on `l.sess`** — `drainStream`'s goroutine now reads `l.sess` via `isActiveSess` (RLock) while the main goroutine writes under `sessMu.Lock()`, eliminating the race. Also adds a `default: slog.Debug(...)` case to the event-type switch for unknown event types.
+- **Tool-gate fail-safe on daemon death mid-approval** — `milliwaysctl tool-gate` now returns `deny` when the daemon connection drops while a tool call is pending human review; the pre-existing fail-open behavior on initial dial failure is preserved.
+
+### Changed
+- **`*.bak` files excluded from git** — added `*.bak` to `.gitignore`; committed stale `.bak` files removed.
+
+### Docs
+- **CHANGELOG backfill** — added entries for v1.0.53–v1.0.57.
+
+---
+
+## [1.0.57] — 2026-06-10
+
+### Added
+- **Interactive tool-permission approval** — Claude runs in headless `--print` mode, so every `Bash`/`Edit`/file tool call is now routed through a `PreToolUse` hook (`milliwaysctl tool-gate`) that blocks on the user's approval before allowing execution; the approval prompt appears in the milliways TUI. Infrastructure failures fail open; mid-decision daemon death fails safe (deny).
+- **CodeGraph auto-init** — `milliwaysctl codegraph init` / `/repoinit` bootstraps a CodeGraph index for the current project; the TUI also auto-inits on `/repoindex` if no index is detected.
+
+### Changed
+- **Claude default timeout raised to 6 h** — `CLAUDE_TIMEOUT` now defaults to 6 hours; agentic coding sessions no longer expire on long-running tasks. Timeout and SIGKILL events produce a legible `"claude: timed out after Xm"` / `"claude: killed"` message instead of a raw exit-code error.
+
+### Fixed
+- **CI proxy flake hardening** — Go module fetches in release CI now use `|`-separated `GOPROXY` fallback list so transient proxy errors retry through `goproxy.io` and `direct` instead of failing the build.
+
+---
+
+## [1.0.56] — 2026-06-09
+
+### Fixed
+- **E2BIG "claude not installed" on large toolkit bundles** — prompts are now delivered to CLI agents (claude, codex, gemini) via stdin (`--stdin` / `--input -`) rather than as an inline argv argument; toolkit bundle + user prompt combinations that exceeded `MAX_ARG_STRLEN` (128 KiB) would silently fail with a confusing "not installed" error.
+- **Honest runner start errors** — `runnerStartHint` now surfaces the real underlying error (binary not found, permission denied, etc.) alongside install hints, replacing the generic "command not found" message.
+
+---
+
+## [1.0.55] — 2026-06-09
+
+### Added
+- **`milliwaysctl security install-scanner`** — installs all supported security scanners (`osv-scanner`, `gitleaks`, `govulncheck`, `semgrep`) automatically via a single command; each installer is platform-aware and skips already-installed tools.
+
+> **Note:** release CI assets for v1.0.55 were not published due to a transient CI failure; the v1.0.56 binary includes these changes.
+
+---
+
+## [1.0.54] — 2026-06-09
+
+### Added
+- **AgentOps observability panel** — real-time per-provider metrics (request count, token rates, cost, latency histograms) rendered in the observe panel; forwarded via OpenTelemetry to SigNoz or any OTLP-compatible backend.
+- **SigNoz integration guide** — `docs/signoz.md` documents how to run a local SigNoz instance and point milliways at it with `OTEL_EXPORTER_OTLP_ENDPOINT`.
+
+### Fixed
+- **Go PATH fallback for scanner installs** — when `go` is not on `PATH` at hook-invocation time, the scanner install logic now probes `~/go/bin`, `~/.local/bin`, and `/usr/local/go/bin` before giving up, fixing "go: command not found" on fresh macOS installs.
+- **Always-visible observe panel sections** — performance and provider sections are now shown even when metrics are zero, eliminating the confusing "empty panel" state on first launch.
+
+---
+
+## [1.0.53] — 2026-06-09
+
+### Added
+- **`milliwaysctl security install-scanner`** *(preview)* — groundwork for one-command scanner installation; included in this release as a preview (superseded by the full implementation in v1.0.55).
+
+### Fixed
+- **Go PATH fallback for scanners** *(landed in v1.0.53)* — see v1.0.54 note; the fix shipped across two patch releases.
+
+---
+
 ## [1.0.52] — 2026-06-07
 
 ### Changed

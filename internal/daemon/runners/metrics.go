@@ -106,21 +106,6 @@ func observeOperationDuration(m MetricsObserver, agentID string, durationSeconds
 	m.ObserveHistogram(MetricOperationDuration, agentID, durationSeconds)
 }
 
-// observeTTFT records time-to-first-token in seconds (streaming).
-func observeTTFT(m MetricsObserver, agentID string, ttftSeconds float64) {
-	if m == nil {
-		return
-	}
-	m.ObserveHistogram(MetricTimeToFirstToken, agentID, ttftSeconds)
-}
-
-// observeTPOT records time-per-output-token in seconds (streaming).
-func observeTPOT(m MetricsObserver, agentID string, tpotSeconds float64) {
-	if m == nil {
-		return
-	}
-	m.ObserveHistogram(MetricTimePerOutputToken, agentID, tpotSeconds)
-}
 
 func zeroUsageChunkEnd() map[string]any {
 	return map[string]any{
