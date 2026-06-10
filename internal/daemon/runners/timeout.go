@@ -26,6 +26,17 @@ func runnerRequestTimeout(envKey string) time.Duration {
 	return runnerRequestTimeoutAny(envKey)
 }
 
+// runnerRequestTimeoutOrDefault returns the timeout configured via envKey, or
+// def when the variable is unset. An explicit "off"/"none"/"0" still disables
+// the cap (returns 0) even when a default is supplied, so a long-running
+// agentic session can opt out entirely.
+func runnerRequestTimeoutOrDefault(envKey string, def time.Duration) time.Duration {
+	if strings.TrimSpace(os.Getenv(envKey)) == "" {
+		return def
+	}
+	return runnerRequestTimeout(envKey)
+}
+
 func runnerRequestTimeoutAny(envKeys ...string) time.Duration {
 	raw := ""
 	for _, envKey := range envKeys {

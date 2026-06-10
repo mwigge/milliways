@@ -116,8 +116,12 @@ type claudeResult struct {
 // claudeBinary is the executable name; var (not const) so tests can swap it.
 var claudeBinary = "claude"
 
-// claudeTimeout caps a single agent.send call's subprocess lifetime.
-const claudeTimeout = 5 * time.Minute
+// claudeDefaultTimeout caps a single agent.send call's subprocess lifetime
+// when CLAUDE_TIMEOUT is unset. Claude runs full agentic sessions (tool use,
+// long edits), so the cap is generous; set CLAUDE_TIMEOUT (e.g. "2h", "90m",
+// or "off"/"0" to disable) to override. A too-short cap is what previously
+// SIGKILLed long runs and surfaced as the opaque "claude exited (code -1)".
+const claudeDefaultTimeout = 6 * time.Hour
 
 // RunClaude is the daemon-side claude session loop. It reads prompts from
 // `input`, spawns one `claude --print --output-format stream-json` per
@@ -199,7 +203,7 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 	chunkEnd := map[string]any{"t": "chunk_end", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 	chunkEndPushed := false
 	spanCtx, span := startDispatchSpan(parent, AgentIDClaude, "")
-	ctx, cancel := context.WithTimeout(spanCtx, claudeTimeout)
+	ctx, cancel := contextWithOptionalTimeout(spanCtx, runnerRequestTimeoutOrDefault("CLAUDE_TIMEOUT", claudeDefaultTimeout))
 	defer cancel()
 	defer func() {
 		if !chunkEndPushed {
@@ -349,6 +353,12 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 			"agent": AgentIDClaude,
 			"msg":   "claude: session limit reached",
 		})
+	} else if ctxErr := ctx.Err(); ctxErr != nil {
+		// Timeout (CLAUDE_TIMEOUT) or cancellation killed the subprocess. Report
+		// it as a legible timeout/cancel instead of the raw "exited (code -1)"
+		// that a SIGKILL would otherwise produce.
+		observeError(metrics, AgentIDClaude)
+		stream.Push(classifyDispatchError(AgentIDClaude, ctxErr))
 	} else if waitErr != nil {
 		observeError(metrics, AgentIDClaude)
 		stream.Push(map[string]any{"t": "err", "agent": AgentIDClaude, "msg": exitMsg("claude", waitErr, lines)})

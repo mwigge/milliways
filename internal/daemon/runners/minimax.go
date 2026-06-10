@@ -430,11 +430,23 @@ func minimaxBodyLooksQuota(body string) bool {
 // alongside classifyDispatchError as the shared error-formatting home.
 func exitMsg(binary string, waitErr error, stderrLines []string) string {
 	code := "?"
+	signal := ""
 	var ee *exec.ExitError
 	if errors.As(waitErr, &ee) {
 		code = fmt.Sprintf("%d", ee.ExitCode())
+		// ExitCode() returns -1 when the process was terminated by a signal
+		// rather than exiting normally. Surface which signal so an OOM-kill or
+		// an external SIGKILL isn't reported as the opaque "exited (code -1)".
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			signal = ws.Signal().String()
+		}
 	}
-	msg := binary + " exited (code " + code + ")"
+	var msg string
+	if signal != "" {
+		msg = binary + " was killed (" + signal + ") — likely out of memory or stopped externally"
+	} else {
+		msg = binary + " exited (code " + code + ")"
+	}
 	// Walk from the end to find the last non-empty stderr line — the CLI
 	// typically writes the most relevant error there. scrubProviderSecrets strips
 	// any token values the CLI may have echoed in its own error output.
