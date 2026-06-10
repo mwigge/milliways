@@ -879,6 +879,9 @@ type chatLoop struct {
 	// ring is the ordered fallback list for automatic runner rotation on
 	// session limits. Defaults to chatSwitchableAgents order. Can be
 	// reconfigured with /ring <r1,r2,...>. Empty = auto-rotation disabled.
+	// sessMu protects sess which is written by the main goroutine and read
+	// by the drainStream goroutine.
+	sessMu sync.RWMutex
 	// ringMu protects ring and exhausted which are read by drainStream's
 	// goroutine and written by the main input goroutine.
 	ringMu    sync.Mutex
@@ -1037,7 +1040,9 @@ func (l *chatLoop) run(ctx context.Context) error {
 //   - rate_limit — surface as inline notice
 //   - end        — agent session closed
 func (l *chatLoop) drainStream(sessions ...*chatSession) {
+	l.sessMu.RLock()
 	sess := l.sess
+	l.sessMu.RUnlock()
 	if len(sessions) > 0 {
 		sess = sessions[0]
 	}
@@ -1070,7 +1075,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			if model, _ := ev["model"].(string); strings.TrimSpace(model) != "" {
 				source, _ := ev["source"].(string)
 				sess.setModel(model, source)
-				if l.sess == sess {
+				if l.isActiveSess(sess) {
 					l.updateActiveTitle("")
 				}
 			}
@@ -1079,7 +1084,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 				if raw, err := base64.StdEncoding.DecodeString(b64); err == nil {
 					if msg := formatThinkingFragment(string(raw)); msg != "" {
 						l.beginStreamOutput(sess)
-						if l.sess == sess {
+						if l.isActiveSess(sess) {
 							l.setPromptState("thinking")
 						}
 						// Flush any partial response line so the cursor is at
@@ -1128,7 +1133,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 					}
 					if firstData {
 						// First token of this response segment — update title.
-						if l.sess == sess {
+						if l.isActiveSess(sess) {
 							l.setPromptState("streaming")
 							l.updateActiveTitle("streaming…")
 						}
@@ -1146,7 +1151,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 					sess.pendingMu.Unlock()
 					// Bug 5: update deck streaming state.
 					if l.deck != nil {
-						l.deck.AppendData(sess.agentID, string(raw), l.sess == sess)
+						l.deck.AppendData(sess.agentID, string(raw), l.isActiveSess(sess))
 					}
 				}
 			}
@@ -1195,7 +1200,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 				saved, _ := ev["saved"].(bool)
 				l.deck.MarkChunkEnd(sess.agentID, int(inTok), int(outTok), cost, saved)
 			}
-			if l.sess == sess {
+			if l.isActiveSess(sess) {
 				l.setPromptState("")
 			}
 			// Reset per-turn state so the next prompt starts clean.
@@ -1216,7 +1221,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			sess.busyMu.Unlock()
 			// Reset title from "streaming…"/"thinking…" to ready state so
 			// the tab doesn't falsely advertise in-flight work after an error.
-			if l.sess == sess {
+			if l.isActiveSess(sess) {
 				l.setPromptState("")
 				l.updateActiveTitle("")
 			}
@@ -1241,7 +1246,7 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			sess.busyMu.Lock()
 			sess.busy = false
 			sess.busyMu.Unlock()
-			if l.sess == sess {
+			if l.isActiveSess(sess) {
 				l.setPromptState("")
 			}
 			// Bug 5: update deck on rate_limit (treat as error state).
@@ -1253,6 +1258,8 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			flushThinking()
 			l.endStreamOutput(sess)
 			return
+		default:
+			slog.Debug("drainStream: unknown event type", "t", t)
 		}
 	}
 }
@@ -1274,7 +1281,7 @@ func renderProviderThinkingData(agentID, text string) (string, bool) {
 }
 
 func (l *chatLoop) beginStreamOutput(sess *chatSession) {
-	if l == nil || l.rl == nil || sess == nil || l.sess != sess {
+	if l == nil || l.rl == nil || sess == nil || !l.isActiveSess(sess) {
 		return
 	}
 	sess.outputMu.Lock()
@@ -1297,6 +1304,14 @@ func (l *chatLoop) endStreamOutput(sess *chatSession) {
 	}
 	sess.outputHidden = false
 	l.rl.EndExternalOutput()
+}
+
+// isActiveSess reports whether sess is the current active session.
+// Safe to call from any goroutine.
+func (l *chatLoop) isActiveSess(sess *chatSession) bool {
+	l.sessMu.RLock()
+	defer l.sessMu.RUnlock()
+	return l.sess == sess
 }
 
 func formatThinkingFragment(text string) string {
@@ -1744,7 +1759,9 @@ func (l *chatLoop) cancelActiveSession() bool {
 	agentID := l.sess.agentID
 	_ = l.sess.close()
 	delete(l.sessions, agentID)
+	l.sessMu.Lock()
 	l.sess = nil
+	l.sessMu.Unlock()
 	if l.rl != nil {
 		l.rl.SetPrompt(chatPrompt(""))
 	}
@@ -2074,9 +2091,11 @@ func (l *chatLoop) reconnectDaemonClient() error {
 				sess.streamCancel()
 			}
 			delete(l.sessions, agentID)
+			l.sessMu.Lock()
 			if l.sess != nil && l.sess.agentID == agentID {
 				l.sess = nil
 			}
+			l.sessMu.Unlock()
 		}
 	}
 	return nil
@@ -2095,15 +2114,17 @@ func (l *chatLoop) sendWithReconnect(sess *chatSession, prompt string) error {
 		return err
 	}
 	agentID := sess.agentID
+	l.sessMu.Lock()
 	wasActive := l.sess == sess || (l.sess != nil && l.sess.agentID == agentID)
+	if l.sess == sess {
+		l.sess = nil
+	}
+	l.sessMu.Unlock()
 	if sess.streamCancel != nil {
 		sess.streamCancel()
 	}
 	if l.sessions != nil {
 		delete(l.sessions, agentID)
-	}
-	if l.sess == sess {
-		l.sess = nil
 	}
 	if reconnectErr := l.reconnectDaemonConnection(); reconnectErr != nil {
 		return fmt.Errorf("%w; reconnect failed: %v", err, reconnectErr)
@@ -2223,7 +2244,9 @@ func (l *chatLoop) activateSession(sess *chatSession) {
 	if sess == nil {
 		return
 	}
+	l.sessMu.Lock()
 	l.sess = sess
+	l.sessMu.Unlock()
 	if l.deck != nil {
 		l.deck.SetActive(sess.agentID)
 	}
@@ -3994,6 +4017,36 @@ func agentThinkingColor(name string) string {
 		return "\033[38;5;75m" // muted light blue
 	}
 	return unknownAgentThinkingColor // unknown provider
+}
+
+// agentThinkingBg returns the background colour for reasoning blocks.
+// Each runner has a muted background in its hue family so thinking
+// content visually separates from the final response.
+func agentThinkingBg(name string) string {
+	if !ansiEnabled() {
+		return ""
+	}
+	switch name {
+	case "claude":
+		return "\033[48;5;236m" // very dark gray
+	case "codex":
+		return "\033[48;5;52m"  // dark amber
+	case "copilot":
+		return "\033[48;5;17m"  // dark blue
+	case "minimax":
+		return "\033[48;5;54m"  // dark purple
+	case "kimi":
+		return "\033[48;5;17m"  // dark blue
+	case "deepseek":
+		return "\033[48;5;22m"  // dark green
+	case "gemini":
+		return "\033[48;5;52m"  // dark orange
+	case "local":
+		return "\033[48;5;52m"  // dark red
+	case "pool":
+		return "\033[48;5;17m"  // dark blue
+	}
+	return "\033[48;5;235m"   // dark gray fallback
 }
 
 func humanRoleColor() string {
