@@ -2301,7 +2301,7 @@ func (l *chatLoop) sendAgentPrompt(agentID, prompt string) {
 	if l.deck != nil {
 		l.deck.MarkPrompt(agentID, prompt)
 	}
-	enriched := l.enrichWithToolkit(l.enrichWithCodeGraph(context.Background(), l.enrichWithPalace(context.Background(), prompt)))
+	enriched := l.enrichPrompt(context.Background(), prompt)
 	if err := l.sendWithReconnect(sess, enriched); err != nil {
 		fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 		return
@@ -3205,7 +3205,7 @@ func (l *chatLoop) handleRetry() {
 	}
 	fmt.Fprintf(l.out, "  retrying: %s\n\n", truncate(lastUser, 80))
 	l.appendTurn(chatTurn{Role: "user", Text: lastUser})
-	enriched := l.enrichWithToolkit(l.enrichWithCodeGraph(context.Background(), l.enrichWithPalace(context.Background(), lastUser)))
+	enriched := l.enrichPrompt(context.Background(), lastUser)
 	if err := l.sendWithReconnect(l.sess, enriched); err != nil {
 		fmt.Fprintln(l.errw, friendlyError("✗ send: ", "", err))
 	}
@@ -3460,6 +3460,46 @@ func (l *chatLoop) enrichWithToolkit(prompt string) string {
 	return sb.String()
 }
 
+const maxEnrichedPromptBytes = 64 * 1024
+
+// enrichPrompt applies the full toolkit + codegraph + palace enrichment chain
+// and enforces a 64 KB total cap. Layers are dropped in order (codegraph
+// first, then palace) before falling back to truncating the toolkit bundle.
+// The user's original prompt is always delivered intact.
+func (l *chatLoop) enrichPrompt(ctx context.Context, prompt string) string {
+	full := l.enrichWithToolkit(l.enrichWithCodeGraph(ctx, l.enrichWithPalace(ctx, prompt)))
+	if len(full) <= maxEnrichedPromptBytes {
+		return full
+	}
+	// Drop codegraph context.
+	noCodeGraph := l.enrichWithToolkit(l.enrichWithPalace(ctx, prompt))
+	if len(noCodeGraph) <= maxEnrichedPromptBytes {
+		return noCodeGraph
+	}
+	// Drop palace/memory too.
+	toolkitOnly := l.enrichWithToolkit(prompt)
+	if len(toolkitOnly) <= maxEnrichedPromptBytes {
+		return toolkitOnly
+	}
+	// Truncate the toolkit bundle to the remaining budget.
+	const (
+		tkOpen   = "<toolkit_context>\n"
+		tkClose  = "\n</toolkit_context>\n"
+		tkFooter = "(The above is the project toolkit: CLAUDE.md rules, skills, and agent definitions. Follow any rules and use the skills defined there.)\n\n"
+		tkMarker = "\n[toolkit truncated: exceeded 64KB enrichment budget]\n"
+	)
+	overhead := len(tkOpen) + len(tkClose) + len(tkFooter) + len(tkMarker) + len(prompt)
+	budget := maxEnrichedPromptBytes - overhead
+	if budget <= 0 {
+		return prompt
+	}
+	bundle := l.toolkitBundle
+	if len(bundle) > budget {
+		bundle = bundle[:budget]
+	}
+	return tkOpen + bundle + tkMarker + tkClose + tkFooter + prompt
+}
+
 // isSessionLimitMsg returns true when an error message signals that the
 // runner has hit a context window, session, or quota limit.
 func isSessionLimitMsg(msg string) bool {
@@ -3695,7 +3735,7 @@ func (l *chatLoop) handlePrompt(prompt string) {
 	l.exhausted = nil // new prompt clears the per-prompt exhausted set
 	l.ringMu.Unlock()
 	l.appendTurn(chatTurn{Role: "user", Text: prompt})
-	enriched := l.enrichWithToolkit(l.enrichWithCodeGraph(context.Background(), l.enrichWithPalace(context.Background(), prompt)))
+	enriched := l.enrichPrompt(context.Background(), prompt)
 	// Show "thinking…" in the window title while the runner is generating.
 	// drainStream will update to "streaming…" on the first data event, then
 	// refreshPromptHint will replace it with real stats on chunk_end.
