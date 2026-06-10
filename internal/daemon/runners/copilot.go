@@ -158,7 +158,7 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		}
 	}()
 
-	streamCopilotStdout(stdout, stream)
+	readErr := streamCopilotStdout(stdout, stream)
 
 	stderrWg.Wait()
 	waitErr := cmd.Wait()
@@ -181,7 +181,11 @@ func runCopilotOnce(parent context.Context, prompt []byte, stream Pusher, metric
 		return
 	}
 
-	if waitErr != nil {
+	if readErr != nil {
+		observeError(metrics, AgentIDCopilot)
+		spanErr = readErr.Error()
+		stream.Push(map[string]any{"t": "err", "agent": AgentIDCopilot, "code": -32012, "msg": "copilot: output stream error — " + readErr.Error()})
+	} else if waitErr != nil {
 		observeError(metrics, AgentIDCopilot)
 		spanErr = waitErr.Error()
 		stream.Push(map[string]any{"t": "err", "agent": AgentIDCopilot, "code": -32010, "msg": exitMsg("copilot", waitErr, lines)})
@@ -284,7 +288,8 @@ func copilotStartError(stage string, err error) map[string]any {
 // streamCopilotStdout reads from r in copilotChunkSize chunks and pushes
 // each non-empty chunk as {"t":"data","b64":...}. Plain text — no JSON
 // parsing — copilot's `-p` output is human-readable.
-func streamCopilotStdout(r io.Reader, stream Pusher) {
+// Returns a non-nil error if the stream ended due to a read error (not EOF).
+func streamCopilotStdout(r io.Reader, stream Pusher) error {
 	buf := make([]byte, copilotChunkSize)
 	for {
 		n, err := r.Read(buf)
@@ -292,7 +297,10 @@ func streamCopilotStdout(r io.Reader, stream Pusher) {
 			stream.Push(encodeData(string(buf[:n])))
 		}
 		if err != nil {
-			return
+			if err != io.EOF {
+				return err
+			}
+			return nil
 		}
 	}
 }

@@ -197,7 +197,7 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		}
 	}()
 
-	streamGeminiStdout(stdout, stream)
+	readErr := streamGeminiStdout(stdout, stream)
 
 	stderrWg.Wait()
 	waitErr := cmd.Wait()
@@ -220,7 +220,11 @@ func runGeminiOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		return
 	}
 
-	if waitErr != nil {
+	if readErr != nil {
+		observeError(metrics, AgentIDGemini)
+		spanErr = readErr.Error()
+		stream.Push(map[string]any{"t": "err", "agent": AgentIDGemini, "code": -32012, "msg": "gemini: output stream error — " + readErr.Error()})
+	} else if waitErr != nil {
 		observeError(metrics, AgentIDGemini)
 		spanErr = waitErr.Error()
 		stream.Push(geminiExitErrorEvent(waitErr, lines))
@@ -301,7 +305,8 @@ func geminiExitErrorEvent(waitErr error, stderrLines []string) map[string]any {
 // streamGeminiStdout reads stdout in geminiChunkSize chunks and pushes
 // each non-empty chunk as {"t":"data","b64":...}. Plain text — no JSON
 // parsing — gemini's `-p -y` headless output is human-readable.
-func streamGeminiStdout(r io.Reader, stream Pusher) {
+// Returns a non-nil error if the stream ended due to a read error (not EOF).
+func streamGeminiStdout(r io.Reader, stream Pusher) error {
 	buf := make([]byte, geminiChunkSize)
 	for {
 		n, err := r.Read(buf)
@@ -309,7 +314,10 @@ func streamGeminiStdout(r io.Reader, stream Pusher) {
 			stream.Push(encodeData(string(buf[:n])))
 		}
 		if err != nil {
-			return
+			if err != io.EOF {
+				return err
+			}
+			return nil
 		}
 	}
 }

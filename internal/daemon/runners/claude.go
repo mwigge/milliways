@@ -341,6 +341,7 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 			lastResult = r
 		}
 	}
+	scanErr := scanner.Err()
 
 	stderrWg.Wait()
 	waitErr := cmd.Wait()
@@ -362,6 +363,9 @@ func runClaudeOnce(parent context.Context, prompt []byte, stream Pusher, metrics
 		// that a SIGKILL would otherwise produce.
 		observeError(metrics, AgentIDClaude)
 		stream.Push(classifyDispatchError(AgentIDClaude, ctxErr))
+	} else if scanErr != nil {
+		observeError(metrics, AgentIDClaude)
+		stream.Push(map[string]any{"t": "err", "agent": AgentIDClaude, "code": -32012, "msg": "claude: output stream error — " + scrubBearer(scanErr.Error())})
 	} else if waitErr != nil {
 		observeError(metrics, AgentIDClaude)
 		stream.Push(map[string]any{"t": "err", "agent": AgentIDClaude, "msg": exitMsg("claude", waitErr, lines)})
