@@ -4019,36 +4019,6 @@ func agentThinkingColor(name string) string {
 	return unknownAgentThinkingColor // unknown provider
 }
 
-// agentThinkingBg returns the background colour for reasoning blocks.
-// Each runner has a muted background in its hue family so thinking
-// content visually separates from the final response.
-func agentThinkingBg(name string) string {
-	if !ansiEnabled() {
-		return ""
-	}
-	switch name {
-	case "claude":
-		return "\033[48;5;236m" // very dark gray
-	case "codex":
-		return "\033[48;5;52m"  // dark amber
-	case "copilot":
-		return "\033[48;5;17m"  // dark blue
-	case "minimax":
-		return "\033[48;5;54m"  // dark purple
-	case "kimi":
-		return "\033[48;5;17m"  // dark blue
-	case "deepseek":
-		return "\033[48;5;22m"  // dark green
-	case "gemini":
-		return "\033[48;5;52m"  // dark orange
-	case "local":
-		return "\033[48;5;52m"  // dark red
-	case "pool":
-		return "\033[48;5;17m"  // dark blue
-	}
-	return "\033[48;5;235m"   // dark gray fallback
-}
-
 func humanRoleColor() string {
 	if !ansiEnabled() {
 		return ""
