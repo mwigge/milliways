@@ -379,6 +379,9 @@ func TestRunLocal_AgenticToolLoop(t *testing.T) {
 
 func TestRunLocal_ApprovalGatePlansBeforeTools(t *testing.T) {
 	t.Setenv("MILLIWAYS_PLAN_APPROVAL_GATE", "on")
+	// Pin an XML-tool model so the planning prompt exercises the XML tool-def
+	// path regardless of localDefaultModel.
+	t.Setenv("MILLIWAYS_LOCAL_MODEL", "qwen2.5-7b")
 	var turn atomic.Int32
 	var firstBody atomic.Value
 	stubLocalTransport(t, func(r *http.Request) (*http.Response, error) {

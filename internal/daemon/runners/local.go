@@ -50,7 +50,7 @@ import (
 
 const (
 	localDefaultEndpoint = "http://localhost:8765/v1"
-	localDefaultModel    = "qwen2.5-7b"
+	localDefaultModel    = "gemma4:12b"
 )
 
 // localSystemPrompt mirrors minimaxSystemPrompt — same guidance, different
