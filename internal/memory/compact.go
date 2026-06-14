@@ -24,7 +24,14 @@ import (
 	"github.com/mwigge/milliways/internal/session"
 )
 
-const defaultCompactThreshold = 0.7
+const (
+	defaultCompactThreshold = 0.7
+
+	// compactSummaryTimeout bounds how long session compaction waits for the
+	// provider to summarize the transcript, so a stalled model can't hang
+	// compaction (and the session) indefinitely.
+	compactSummaryTimeout = 2 * time.Minute
+)
 
 // Provider summarizes a transcript using a model-backed implementation.
 type Provider interface {
@@ -48,10 +55,13 @@ func Compact(sess *session.Session, provider Provider) (*session.Session, error)
 	if provider == nil {
 		return nil, errors.New("nil provider")
 	}
-	_, span := observability.StartSessionCompactSpan(context.Background(), sess.ID)
+	ctx, cancel := context.WithTimeout(context.Background(), compactSummaryTimeout)
+	defer cancel()
+
+	ctx, span := observability.StartSessionCompactSpan(ctx, sess.ID)
 	defer span.End()
 
-	summary, err := provider.Summarize(context.Background(), sess.Messages)
+	summary, err := provider.Summarize(ctx, sess.Messages)
 	if err != nil {
 		return nil, err
 	}
