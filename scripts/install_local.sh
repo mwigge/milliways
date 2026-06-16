@@ -208,6 +208,7 @@ install_rs_llmctl_from_local_repo() {
   for repo in \
     "$RS_LLMCTL_LOCAL_REPO" \
     "${MILLIWAYS_ROOT}/../rs-llmctl" \
+    "$HOME/dev/src/pprojects/rs-llmctl" \
     "$HOME/dev/src/rs-llmctl" \
     "$HOME/src/rs-llmctl"
   do
