@@ -4,6 +4,13 @@ All notable changes to milliways. Follows [Keep a Changelog](https://keepachange
 
 ---
 
+## [1.0.62] — 2026-06-16
+
+### Changed
+- **rs-llmctl 1.6.2** — `install-gpu-server` now installs rs-llmctl 1.6.2, which adds Gemma4 GGUF tokenizer support. Gemma4 models previously failed at startup with `unsupported tokenizer model 'gemma4'`; the engine now builds the tokenizer directly from GGUF vocab and BPE merges using Metaspace (▁) whitespace escaping.
+
+---
+
 ## [1.0.58] — 2026-06-10
 
 ### Fixed
