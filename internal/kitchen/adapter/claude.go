@@ -454,12 +454,12 @@ func (a *ClaudeAdapter) ProcessID() int {
 
 // Capabilities returns Claude continuity features.
 func (a *ClaudeAdapter) Capabilities() Capabilities {
-	return Capabilities{
+	return MergeCapabilities(Capabilities{
 		NativeResume:        true,
 		InteractiveSend:     true,
 		StructuredEvents:    true,
 		ExhaustionDetection: "structured+stdout+stderr",
-	}
+	}, SupervisorCapabilityReport("claude"))
 }
 
 func parseClaudeExhaustionText(kitchenName, text string, now time.Time, detectionKind string) *Event {

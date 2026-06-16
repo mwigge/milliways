@@ -229,10 +229,10 @@ func (a *GeminiAdapter) ProcessID() int {
 
 // Capabilities returns Gemini continuity features.
 func (a *GeminiAdapter) Capabilities() Capabilities {
-	return Capabilities{
+	return MergeCapabilities(Capabilities{
 		NativeResume:        false,
 		InteractiveSend:     false,
 		StructuredEvents:    true,
 		ExhaustionDetection: "stderr",
-	}
+	}, SupervisorCapabilityReport("gemini"))
 }

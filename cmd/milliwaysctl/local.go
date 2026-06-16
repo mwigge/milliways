@@ -1306,6 +1306,10 @@ type localGPUInfo struct {
 }
 
 func (g localGPUInfo) LlamaAccel(override string) (string, error) {
+	return g.llamaAccel(override, hasHIPToolchain())
+}
+
+func (g localGPUInfo) llamaAccel(override string, hipAvailable bool) (string, error) {
 	if override != "" && override != "auto" {
 		switch override {
 		case "vulkan", "cuda", "hip", "rocm":
@@ -1324,7 +1328,7 @@ func (g localGPUInfo) LlamaAccel(override string) (string, error) {
 		}
 		return "vulkan", nil
 	case "amd":
-		if hasHIPToolchain() {
+		if hipAvailable {
 			return "hip", nil
 		}
 		return "vulkan", nil

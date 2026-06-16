@@ -1,0 +1,18 @@
+{
+  "schema": "milliways-four-language-local-workflow/v1",
+  "qualified": true,
+  "backend": "rocm",
+  "hardware_class": "gfx1200-16g",
+  "model": "gemma-4-12b-it-Q4_K_M.gguf",
+  "artifact_sha256": "43fec98c5102b1c446b4ddd0a9439f1db3a2e1f2e0b8cd143ce1ea619a9403d6",
+  "runtime_revision": "rs-llmctl/1.3.1",
+  "worker_revision": "5f04dc7ac3f40271f60105574be0f617887195bb",
+  "languages": {
+    "go": true,
+    "rust": true,
+    "python": true,
+    "typescript": true
+  },
+  "expected_output": "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n",
+  "source_evidence": "../rs-llmctl/evidence/gemma4-readiness/2026-06-15-gemma-4-12b-it-q4-k-m.json"
+}

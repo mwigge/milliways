@@ -203,10 +203,10 @@ func (a *GenericAdapter) ProcessID() int {
 
 // Capabilities returns generic fallback continuity features.
 func (a *GenericAdapter) Capabilities() Capabilities {
-	return Capabilities{
+	return MergeCapabilities(Capabilities{
 		NativeResume:        false,
 		InteractiveSend:     true,
 		StructuredEvents:    false,
 		ExhaustionDetection: "none",
-	}
+	}, SupervisorCapabilityReport(a.kitchen.Name()))
 }

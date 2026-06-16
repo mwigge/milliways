@@ -29,10 +29,23 @@ var ErrNotInteractive = errors.New("kitchen adapter does not support interactive
 
 // Capabilities describes continuity-relevant adapter features.
 type Capabilities struct {
-	NativeResume        bool
-	InteractiveSend     bool
-	StructuredEvents    bool
-	ExhaustionDetection string
+	NativeResume         bool
+	InteractiveSend      bool
+	StructuredEvents     bool
+	ExhaustionDetection  string
+	Planning             bool
+	StructuredDelegation bool
+	ResultReview         bool
+	Continuation         bool
+	NativeProtocol       string
+	ToolCalls            bool
+	StructuredResults    bool
+	ModelTierAliases     bool
+}
+
+// SupervisoryQualified reports whether the adapter can own a tiered workflow.
+func (c Capabilities) SupervisoryQualified() bool {
+	return c.Planning && c.StructuredDelegation && c.ResultReview && c.Continuation && c.StructuredResults
 }
 
 // Adapter translates a kitchen's native protocol to the Event stream.

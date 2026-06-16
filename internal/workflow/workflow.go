@@ -31,6 +31,7 @@ const (
 	StatusWaitingApproval Status = "waiting_approval"
 	StatusResumed         Status = "resumed"
 	StatusVerifying       Status = "verifying"
+	StatusDraining        Status = "draining"
 	StatusCompleted       Status = "completed"
 	StatusFailed          Status = "failed"
 	StatusCanceled        Status = "canceled"
@@ -50,6 +51,16 @@ const (
 	NodeCommit       NodeType = "commit"
 	NodeRelease      NodeType = "release"
 	NodeSummary      NodeType = "summary"
+	NodePlan         NodeType = "plan"
+	NodeQualify      NodeType = "qualify"
+	NodePrewarm      NodeType = "prewarm"
+	NodeExecute      NodeType = "execute"
+	NodeVerify       NodeType = "verify"
+	NodeReview       NodeType = "review"
+	NodeRepair       NodeType = "repair"
+	NodeReroute      NodeType = "reroute"
+	NodeAccept       NodeType = "accept"
+	NodeTakeover     NodeType = "supervisor_takeover"
 )
 
 // ApprovalMode describes the approval requirement attached to a node.
@@ -815,7 +826,7 @@ func RecoverInterrupted(wf Workflow, recoveredAt time.Time, reason string) (Work
 	changed := false
 	for i, node := range updated.Nodes {
 		switch node.Status {
-		case StatusRunning, StatusResumed, StatusVerifying:
+		case StatusRunning, StatusResumed, StatusVerifying, StatusDraining:
 			updated.Nodes[i].Status = StatusFailed
 			updated.Nodes[i].EndedAt = recoveredAt
 			updated.Nodes[i].Error = reason
@@ -887,7 +898,7 @@ func findNodeIndex(nodes []Node, nodeID string) int {
 
 func isActiveStatus(status Status) bool {
 	switch status {
-	case StatusQueued, StatusRunning, StatusWaitingApproval, StatusResumed, StatusVerifying:
+	case StatusQueued, StatusRunning, StatusWaitingApproval, StatusResumed, StatusVerifying, StatusDraining:
 		return true
 	default:
 		return false
@@ -897,7 +908,7 @@ func isActiveStatus(status Status) bool {
 func hasOngoingNode(nodes []Node) bool {
 	for _, node := range nodes {
 		switch node.Status {
-		case StatusRunning, StatusWaitingApproval, StatusResumed, StatusVerifying:
+		case StatusRunning, StatusWaitingApproval, StatusResumed, StatusVerifying, StatusDraining:
 			return true
 		}
 	}

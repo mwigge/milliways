@@ -461,10 +461,7 @@ GPU[0]          : VRAM Total Memory (B): 25757220864`)
 }
 
 func TestLocalGPUInfoLlamaAccelDefaultsAMDtoVulkanWithoutHIP(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-	t.Setenv("ROCM_PATH", t.TempDir())
-
-	got, err := (localGPUInfo{Vendor: "amd"}).LlamaAccel("")
+	got, err := (localGPUInfo{Vendor: "amd"}).llamaAccel("", false)
 	if err != nil {
 		t.Fatal(err)
 	}

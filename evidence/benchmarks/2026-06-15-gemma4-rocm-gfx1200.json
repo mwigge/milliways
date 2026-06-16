@@ -1,0 +1,157 @@
+{
+  "schema": "specialist-qualification-benchmark/v1",
+  "candidate": {
+    "model": "gemma4",
+    "backend": "rocm",
+    "hardware_class": "gfx1200-16g"
+  },
+  "shadow": true,
+  "applied_edits": false,
+  "results": [
+    {
+      "case_id": "go-generation",
+      "language": "go",
+      "kind": "generation",
+      "quality": 0.25,
+      "latency_ms": 6542,
+      "memory_bytes": 9178537984,
+      "verifier_pass": false
+    },
+    {
+      "case_id": "go-bug-fix",
+      "language": "go",
+      "kind": "bug-fix",
+      "quality": 0.25,
+      "latency_ms": 6576,
+      "memory_bytes": 9178537984,
+      "verifier_pass": false
+    },
+    {
+      "case_id": "go-test-creation",
+      "language": "go",
+      "kind": "test-creation",
+      "quality": 1,
+      "latency_ms": 6555,
+      "memory_bytes": 9178537984,
+      "verifier_pass": true
+    },
+    {
+      "case_id": "go-constrained-refactor",
+      "language": "go",
+      "kind": "constrained-refactor",
+      "quality": 0.25,
+      "latency_ms": 6594,
+      "memory_bytes": 9178537984,
+      "verifier_pass": false
+    },
+    {
+      "case_id": "rust-generation",
+      "language": "rust",
+      "kind": "generation",
+      "quality": 1,
+      "latency_ms": 6575,
+      "memory_bytes": 9178537984,
+      "verifier_pass": true
+    },
+    {
+      "case_id": "rust-bug-fix",
+      "language": "rust",
+      "kind": "bug-fix",
+      "quality": 0,
+      "latency_ms": 6578,
+      "memory_bytes": 9178537984,
+      "verifier_pass": false
+    },
+    {
+      "case_id": "rust-test-creation",
+      "language": "rust",
+      "kind": "test-creation",
+      "quality": 1,
+      "latency_ms": 6572,
+      "memory_bytes": 9178537984,
+      "verifier_pass": true
+    },
+    {
+      "case_id": "rust-constrained-refactor",
+      "language": "rust",
+      "kind": "constrained-refactor",
+      "quality": 0,
+      "latency_ms": 6594,
+      "memory_bytes": 9178537984,
+      "verifier_pass": false
+    },
+    {
+      "case_id": "python-generation",
+      "language": "python",
+      "kind": "generation",
+      "quality": 1,
+      "latency_ms": 6572,
+      "memory_bytes": 9178537984,
+      "verifier_pass": true
+    },
+    {
+      "case_id": "python-bug-fix",
+      "language": "python",
+      "kind": "bug-fix",
+      "quality": 0.25,
+      "latency_ms": 6573,
+      "memory_bytes": 9178537984,
+      "verifier_pass": false
+    },
+    {
+      "case_id": "python-test-creation",
+      "language": "python",
+      "kind": "test-creation",
+      "quality": 0.25,
+      "latency_ms": 6572,
+      "memory_bytes": 9178537984,
+      "verifier_pass": false
+    },
+    {
+      "case_id": "python-constrained-refactor",
+      "language": "python",
+      "kind": "constrained-refactor",
+      "quality": 0.25,
+      "latency_ms": 6572,
+      "memory_bytes": 9178537984,
+      "verifier_pass": false
+    },
+    {
+      "case_id": "typescript-generation",
+      "language": "typescript",
+      "kind": "generation",
+      "quality": 1,
+      "latency_ms": 6575,
+      "memory_bytes": 9178537984,
+      "verifier_pass": true
+    },
+    {
+      "case_id": "typescript-bug-fix",
+      "language": "typescript",
+      "kind": "bug-fix",
+      "quality": 0.25,
+      "latency_ms": 6570,
+      "memory_bytes": 9178537984,
+      "verifier_pass": false
+    },
+    {
+      "case_id": "typescript-test-creation",
+      "language": "typescript",
+      "kind": "test-creation",
+      "quality": 0.25,
+      "latency_ms": 6573,
+      "memory_bytes": 9178537984,
+      "verifier_pass": false
+    },
+    {
+      "case_id": "typescript-constrained-refactor",
+      "language": "typescript",
+      "kind": "constrained-refactor",
+      "quality": 0,
+      "latency_ms": 6582,
+      "memory_bytes": 9178537984,
+      "verifier_pass": false
+    }
+  ],
+  "recorded_at": "2026-06-15T07:38:02.555602606Z"
+}

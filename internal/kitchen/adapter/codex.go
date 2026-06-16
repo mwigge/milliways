@@ -241,10 +241,10 @@ func (a *CodexAdapter) ProcessID() int {
 
 // Capabilities returns Codex continuity features.
 func (a *CodexAdapter) Capabilities() Capabilities {
-	return Capabilities{
+	return MergeCapabilities(Capabilities{
 		NativeResume:        false,
 		InteractiveSend:     true,
 		StructuredEvents:    true,
 		ExhaustionDetection: "stdout",
-	}
+	}, SupervisorCapabilityReport("codex"))
 }

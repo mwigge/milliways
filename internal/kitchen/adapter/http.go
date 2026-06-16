@@ -432,10 +432,10 @@ func (a *httpKitchenAdapter) SessionID() string { return "" }
 func (a *httpKitchenAdapter) ProcessID() int { return 0 }
 
 func (a *httpKitchenAdapter) Capabilities() Capabilities {
-	return Capabilities{
+	return MergeCapabilities(Capabilities{
 		NativeResume:        false,
 		InteractiveSend:     false,
 		StructuredEvents:    true,
 		ExhaustionDetection: "none",
-	}
+	}, SupervisorCapabilityReport(a.kitchen.Name()))
 }
