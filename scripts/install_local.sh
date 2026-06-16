@@ -26,7 +26,7 @@ LOG_DIR="${LOG_DIR:-$HOME/.local/share/milliways/local}"
 MODEL_DIR="${MODEL_DIR:-$HOME/.local/share/milliways/models}"
 LLAMA_BIN_DIR="${LLAMA_BIN_DIR:-$HOME/.local/bin}"
 LLAMA_LIB_DIR="${LLAMA_LIB_DIR:-$HOME/.local/lib/milliways}"
-RS_LLMCTL_VERSION="${RS_LLMCTL_VERSION:-v1.2.1}"
+RS_LLMCTL_VERSION="${RS_LLMCTL_VERSION:-latest}"
 RS_LLMCTL_REPO="${RS_LLMCTL_REPO:-mwigge/rs-llmctl}"
 RS_LLMCTL_LOCAL_REPO="${RS_LLMCTL_LOCAL_REPO:-}"
 RS_LLMCTL_CONFIG="${RS_LLMCTL_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/milliways/rs-llmctl.toml}"
@@ -187,8 +187,14 @@ install_rs_llmctl() {
     return
   fi
 
+  local install_ref
+  if [ "$RS_LLMCTL_VERSION" = "latest" ]; then
+    install_ref="main"
+  else
+    install_ref="$RS_LLMCTL_VERSION"
+  fi
   info "Installing rs-llmctl ${RS_LLMCTL_VERSION}..."
-  if ! curl -fsSL "https://raw.githubusercontent.com/${RS_LLMCTL_REPO}/${RS_LLMCTL_VERSION}/install.sh" | \
+  if ! curl -fsSL "https://raw.githubusercontent.com/${RS_LLMCTL_REPO}/${install_ref}/install.sh" | \
     PREFIX="$HOME/.local" RS_LLMCTL_VERSION="$RS_LLMCTL_VERSION" RS_LLMCTL_REPO="$RS_LLMCTL_REPO" LLMCTL_INSTALL_SYSTEMD=0 sh; then
     fail "rs-llmctl install failed. Install llmctl manually, set RS_LLMCTL_BIN=/path/to/llmctl, or set RS_LLMCTL_LOCAL_REPO=/path/to/rs-llmctl"
   fi
