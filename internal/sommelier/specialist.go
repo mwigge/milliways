@@ -286,6 +286,10 @@ func (manager *ModelManager) EnsureLoaded(ctx context.Context, alias string) (bo
 					model.State = ModelFailed
 				}
 				model.Error = err.Error()
+			} else if model.State == ModelStandby {
+				// CancelLoad transitioned the model to ModelStandby while
+				// the load was in flight; honour the cancellation rather
+				// than overwriting it with ModelReady.
 			} else {
 				model.State = ModelReady
 				model.Progress = 100
@@ -295,6 +299,35 @@ func (manager *ModelManager) EnsureLoaded(ctx context.Context, alias string) (bo
 			manager.mu.Unlock()
 			return true, manager.now().Sub(started), err
 		}
+	}
+}
+
+// CancelLoad aborts a load for a model that is in ModelStandby or
+// ModelLoading state. It transitions the model back to ModelStandby under the
+// lock so concurrent EnsureLoaded callers observe the state change, then calls
+// loader.Unload outside the lock to release any partial resources without
+// holding the mutex across a blocking I/O call.
+func (manager *ModelManager) CancelLoad(ctx context.Context, alias string) error {
+	manager.mu.Lock()
+	model, ok := manager.models[alias]
+	if !ok {
+		manager.mu.Unlock()
+		return fmt.Errorf("unknown model %q", alias)
+	}
+	switch model.State {
+	case ModelLoading, ModelStandby:
+		model.State = ModelStandby
+		manager.mu.Unlock()
+		// Unload is called without the lock to avoid holding mu across I/O.
+		// A failed Unload is not promoted to an error here because the
+		// model is already reset to Standby and the partial resource release
+		// is best-effort.
+		_ = manager.loader.Unload(ctx, alias)
+		return nil
+	default:
+		state := model.State
+		manager.mu.Unlock()
+		return fmt.Errorf("model %q is %s, not loading; use Quarantine to remove a ready model", alias, state)
 	}
 }
 

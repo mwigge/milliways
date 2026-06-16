@@ -13,13 +13,20 @@ type fakeLoader struct {
 	loads   int
 	unloads []string
 	loadErr error
+	// loadFn, when non-nil, overrides the default Load behaviour. It is called
+	// without the lock held so callers can block or inspect manager state.
+	loadFn func(context.Context, string, func(int)) error
 }
 
-func (loader *fakeLoader) Load(_ context.Context, _ string, progress func(int)) error {
+func (loader *fakeLoader) Load(ctx context.Context, alias string, progress func(int)) error {
 	loader.mu.Lock()
 	loader.loads++
 	err := loader.loadErr
+	fn := loader.loadFn
 	loader.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, alias, progress)
+	}
 	progress(50)
 	if err != nil {
 		return err
@@ -199,6 +206,134 @@ func TestDecideSpecialistDefensiveClamps(t *testing.T) {
 				t.Errorf("DecideSpecialist(%+v) = %+v, want non-supervisor tier", tt.request, decision)
 			}
 		})
+	}
+}
+
+func TestModelManagerCancelLoadTransitionsLoadingToStandby(t *testing.T) {
+	loader := &fakeLoader{}
+	manager := NewModelManager(10, time.Hour, loader)
+	manager.Register(ModelRuntime{Alias: "model", MemoryBytes: 4})
+
+	// Drive the model into ModelLoading by starting a load and intercepting
+	// it mid-flight so we can call CancelLoad while the state is ModelLoading.
+	block := make(chan struct{})
+	var unblockOnce sync.Once
+	unblock := func() { unblockOnce.Do(func() { close(block) }) }
+	// Unblock the loader goroutine if the test exits early to prevent a leak.
+	defer unblock()
+
+	loader.loadFn = func(_ context.Context, _ string, _ func(int)) error {
+		<-block
+		return nil
+	}
+
+	loaded := make(chan error, 1)
+	go func() {
+		_, _, err := manager.EnsureLoaded(context.Background(), "model")
+		loaded <- err
+	}()
+
+	// Poll until the model has entered ModelLoading.
+	for {
+		snap := manager.Snapshot()
+		if len(snap) > 0 && snap[0].State == ModelLoading {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if err := manager.CancelLoad(context.Background(), "model"); err != nil {
+		t.Fatalf("CancelLoad returned unexpected error: %v", err)
+	}
+
+	// Unblock the in-flight load so the goroutine can finish.
+	unblock()
+
+	// Wait for EnsureLoaded to return.
+	if err := <-loaded; err != nil {
+		t.Fatalf("EnsureLoaded returned unexpected error after cancel: %v", err)
+	}
+
+	snap := manager.Snapshot()
+	if len(snap) != 1 || snap[0].State != ModelStandby {
+		t.Fatalf("after CancelLoad, state = %q, want %q", snap[0].State, ModelStandby)
+	}
+
+	loader.mu.Lock()
+	unloads := append([]string(nil), loader.unloads...)
+	loader.mu.Unlock()
+
+	found := false
+	for _, u := range unloads {
+		if u == "model" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("Unload was not called for %q; unloads = %v", "model", unloads)
+	}
+}
+
+func TestModelManagerCancelLoadOnStandbyModelCallsUnload(t *testing.T) {
+	loader := &fakeLoader{}
+	manager := NewModelManager(10, time.Hour, loader)
+	manager.Register(ModelRuntime{Alias: "idle", MemoryBytes: 4})
+
+	if err := manager.CancelLoad(context.Background(), "idle"); err != nil {
+		t.Fatalf("CancelLoad on standby model returned error: %v", err)
+	}
+
+	snap := manager.Snapshot()
+	if len(snap) != 1 || snap[0].State != ModelStandby {
+		t.Fatalf("state = %q, want %q", snap[0].State, ModelStandby)
+	}
+
+	loader.mu.Lock()
+	unloads := append([]string(nil), loader.unloads...)
+	loader.mu.Unlock()
+
+	if len(unloads) != 1 || unloads[0] != "idle" {
+		t.Fatalf("unloads = %v, want [idle]", unloads)
+	}
+}
+
+func TestModelManagerCancelLoadOnNonExistentAliasReturnsError(t *testing.T) {
+	loader := &fakeLoader{}
+	manager := NewModelManager(10, time.Hour, loader)
+
+	err := manager.CancelLoad(context.Background(), "ghost")
+	if err == nil {
+		t.Fatal("expected error for unknown alias, got nil")
+	}
+}
+
+func TestModelManagerCancelLoadOnReadyModelReturnsError(t *testing.T) {
+	loader := &fakeLoader{}
+	manager := NewModelManager(10, time.Hour, loader)
+	manager.Register(ModelRuntime{Alias: "model", State: ModelReady, MemoryBytes: 4})
+
+	err := manager.CancelLoad(context.Background(), "model")
+	if err == nil {
+		t.Fatal("expected error when cancelling a ready model, got nil")
+	}
+}
+
+func TestModelManagerCancelLoadPreservesOtherModels(t *testing.T) {
+	loader := &fakeLoader{}
+	manager := NewModelManager(20, time.Hour, loader)
+	manager.Register(ModelRuntime{Alias: "alpha", State: ModelReady, MemoryBytes: 4})
+	manager.Register(ModelRuntime{Alias: "beta", MemoryBytes: 4})
+
+	if err := manager.CancelLoad(context.Background(), "beta"); err != nil {
+		t.Fatalf("CancelLoad returned error: %v", err)
+	}
+
+	snap := manager.Snapshot()
+	for _, m := range snap {
+		if m.Alias == "alpha" && m.State != ModelReady {
+			t.Fatalf("alpha state changed to %q; CancelLoad must not touch other models", m.State)
+		}
 	}
 }
 
