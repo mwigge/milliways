@@ -185,12 +185,18 @@ func runLocalInstallGPUServer(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	ctxSize := contextSizeForVRAMAndModel(gpu.VRAMGB, model.sizeGB())
+	if gpu.Vendor == "amd" && ctxSize > 32768 {
+		ctxSize = 32768
+	}
 	newAlias := strings.ToLower(model.Name)
 	currentAlias := localEnvValue("MILLIWAYS_LOCAL_MODEL")
 
 	_, _ = fmt.Fprintf(stdout, "GPU: %s (%s, %.1fGB VRAM)\n", gpu.Name, gpu.Vendor, gpu.VRAMGB)
 	fmt.Fprintf(stdout, "Best match for your hardware: %s (%s %s, %.1fGB)\n", model.Name, model.Repo, model.Quant, model.sizeGB())
 	fmt.Fprintf(stdout, "Accel: %s\n", accel)
+	if gpu.Vendor == "amd" {
+		fmt.Fprintln(stdout, "Backend: llama.cpp HIP (AMD); rs-llmctl/Candle remains the backend for Metal and NVIDIA")
+	}
 	if os.Getenv("CTX_SIZE") == "" {
 		_, _ = fmt.Fprintf(stdout, "Context: %d tokens\n", ctxSize)
 	}
@@ -210,17 +216,27 @@ func runLocalInstallGPUServer(args []string, stdout, stderr io.Writer) int {
 	}
 
 	env := map[string]string{
-		"MILLIWAYS_LOCAL_GPU":   "1",
-		"LLAMA_CPP_ACCEL":       accel,
-		"MODEL_REPO":            model.Repo,
-		"MODEL_QUANT":           model.Quant,
-		"MODEL_ALIAS":           strings.ToLower(model.Name),
-		"MILLIWAYS_GPU_VENDOR":  gpu.Vendor,
-		"MILLIWAYS_GPU_NAME":    gpu.Name,
-		"MILLIWAYS_GPU_VRAM_GB": fmt.Sprintf("%.1f", gpu.VRAMGB),
+		"MILLIWAYS_LOCAL_GPU":         "1",
+		"LLAMA_CPP_ACCEL":             accel,
+		"MODEL_REPO":                  model.Repo,
+		"MODEL_QUANT":                 model.Quant,
+		"MODEL_ALIAS":                 strings.ToLower(model.Name),
+		"MILLIWAYS_GPU_VENDOR":        gpu.Vendor,
+		"MILLIWAYS_GPU_NAME":          gpu.Name,
+		"MILLIWAYS_GPU_VRAM_GB":       fmt.Sprintf("%.1f", gpu.VRAMGB),
+		"RS_LLMCTL_GPU_VENDOR":        gpu.Vendor,
+		"RS_LLMCTL_OTEL_SERVICE_NAME": "rs-llmctl-" + gpu.Vendor,
+		"RS_LLMCTL_OTEL_ENVIRONMENT":  "local",
 	}
 	if os.Getenv("CTX_SIZE") == "" {
 		env["CTX_SIZE"] = fmt.Sprintf("%d", ctxSize)
+	}
+	if gpu.Vendor == "amd" {
+		_ = runLocalServerStop(nil, stdout, stderr)
+		if code := runInstallScriptWithEnv("scripts/install_local_amd_hip.sh", env, stdout, stderr); code != 0 {
+			return code
+		}
+		return activateLocalInstall(stdout, stderr)
 	}
 	if code := runInstallScriptWithEnv("scripts/install_local.sh", env, stdout, stderr); code != 0 {
 		return code
@@ -1136,6 +1152,8 @@ func enrichedEnvForScripts() []string {
 	home, _ := userHomeDirFn()
 	extra := []string{
 		"/opt/homebrew/bin",  // Apple Silicon Homebrew
+		"/opt/rocm/bin",      // ROCm tools: hipcc, rocminfo, rocm-smi
+		"/opt/rocm/llvm/bin", // ROCm clang toolchain on Arch/CachyOS
 		"/usr/local/bin",     // Intel Homebrew + manual installs
 		"/opt/pkg/bin",       // MacPorts
 		home + "/.local/bin", // user installs (milliways itself)
@@ -1379,6 +1397,13 @@ func selectGPUCatalogModel(vramGB float64) (catalogEntry, error) {
 func selectGPUCatalogModelForVendor(vramGB float64, vendor string) (catalogEntry, error) {
 	if vramGB <= 0 {
 		return catalogEntry{}, fmt.Errorf("GPU VRAM is unknown; install rocm-smi or nvidia-smi, or use /setup-model manually")
+	}
+	if strings.EqualFold(vendor, "amd") && vramGB >= 15 && vramGB <= 18 {
+		for _, entry := range builtinCatalog {
+			if entry.Name == "Qwen3-14B" {
+				return entry, nil
+			}
+		}
 	}
 	// Apple Silicon uses unified memory shared between CPU and GPU. KV-cache
 	// and Metal overhead are lighter than discrete GPU, so we can use a larger

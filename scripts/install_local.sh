@@ -33,6 +33,13 @@ RS_LLMCTL_CONFIG="${RS_LLMCTL_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/milliway
 RS_LLMCTL_DATA_DIR="${RS_LLMCTL_DATA_DIR:-$HOME/.local/share/milliways/rs-llmctl}"
 RS_LLMCTL_SECRET_FILE="${RS_LLMCTL_SECRET_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/milliways/rs-llmctl-api-key.txt}"
 LLMCTL_BIN="${RS_LLMCTL_BIN:-}"
+RS_LLMCTL_GPU_VENDOR="${RS_LLMCTL_GPU_VENDOR:-${MILLIWAYS_GPU_VENDOR:-auto}}"
+OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://127.0.0.1:4318}"
+OTEL_EXPORTER_OTLP_PROTOCOL="${OTEL_EXPORTER_OTLP_PROTOCOL:-http/protobuf}"
+RS_LLMCTL_OTEL_PROTOCOL="${RS_LLMCTL_OTEL_PROTOCOL:-http-protobuf}"
+RS_LLMCTL_OTEL_SERVICE_NAME="${RS_LLMCTL_OTEL_SERVICE_NAME:-rs-llmctl-local}"
+RS_LLMCTL_OTEL_ENVIRONMENT="${RS_LLMCTL_OTEL_ENVIRONMENT:-local}"
+RS_LLMCTL_AMD_GPU_EXPERIMENTAL="${RS_LLMCTL_AMD_GPU_EXPERIMENTAL:-0}"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 MILLIWAYS_ROOT="$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)"
 
@@ -122,8 +129,9 @@ llama_binary_has_missing_libs() {
   LD_LIBRARY_PATH="$LLAMA_LIB_DIR:/usr/lib/milliways:${LD_LIBRARY_PATH:-}" ldd "$bin" 2>/dev/null | grep -q "not found"
 }
 
-# Ensure Homebrew and ~/.local/bin are on PATH when launched from a GUI app.
-export PATH="/opt/homebrew/bin:$HOME/.local/bin:/usr/local/bin:$PATH"
+# Ensure GPU toolchains, Homebrew, and ~/.local/bin are on PATH when launched
+# from a GUI app.
+export PATH="/opt/rocm/bin:/opt/rocm/llvm/bin:/opt/homebrew/bin:$HOME/.local/bin:/usr/local/bin:$PATH"
 
 # ---------------------------------------------------------------------------
 # 1. Install rs-llmctl. Legacy llama.cpp helpers remain for swap/setup paths.
@@ -194,6 +202,12 @@ install_rs_llmctl() {
     install_ref="$RS_LLMCTL_VERSION"
   fi
   info "Installing rs-llmctl ${RS_LLMCTL_VERSION}..."
+  if [ "$RS_LLMCTL_VERSION" != "latest" ] && install_rs_llmctl_direct; then
+    ok "rs-llmctl installed: $LLMCTL_BIN"
+    return
+  fi
+
+  # Fall back to upstream install.sh (may be broken on some releases — see install_rs_llmctl_direct).
   if ! curl -fsSL "https://raw.githubusercontent.com/${RS_LLMCTL_REPO}/${install_ref}/install.sh" | \
     PREFIX="$HOME/.local" RS_LLMCTL_VERSION="$RS_LLMCTL_VERSION" RS_LLMCTL_REPO="$RS_LLMCTL_REPO" LLMCTL_INSTALL_SYSTEMD=0 sh; then
     fail "rs-llmctl install failed. Install llmctl manually, set RS_LLMCTL_BIN=/path/to/llmctl, or set RS_LLMCTL_LOCAL_REPO=/path/to/rs-llmctl"
@@ -201,6 +215,76 @@ install_rs_llmctl() {
   LLMCTL_BIN="$HOME/.local/bin/llmctl"
   [ -x "$LLMCTL_BIN" ] || fail "rs-llmctl install completed but $LLMCTL_BIN is missing"
   ok "rs-llmctl installed: $LLMCTL_BIN"
+}
+
+# install_rs_llmctl_direct downloads the pre-built tarball from GitHub
+# Releases and extracts llmctl directly, bypassing the upstream install.sh
+# (which in v1.2.1 has a bug where it checks SHA256SUMS for the wrong filename).
+install_rs_llmctl_direct() {
+  local platform
+  case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64)   platform="linux-x86_64" ;;
+    Linux-aarch64)  platform="linux-aarch64" ;;
+    Darwin-x86_64)  platform="darwin-x86_64" ;;
+    Darwin-arm64)   platform="darwin-aarch64" ;;
+    *)
+      warn "no pre-built rs-llmctl for $(uname -s)-$(uname -m)"
+      return 1
+      ;;
+  esac
+
+  local tarball="rs-llmctl-${platform}.tar.gz"
+  local url="https://github.com/${RS_LLMCTL_REPO}/releases/download/${RS_LLMCTL_VERSION}/${tarball}"
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  if ! curl -fsSL -o "${tmpdir}/${tarball}" "$url"; then
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  # Verify checksum using the platform-specific filename (the correct key in SHA256SUMS).
+  local sha256url="https://github.com/${RS_LLMCTL_REPO}/releases/download/${RS_LLMCTL_VERSION}/SHA256SUMS"
+  if curl -fsSL -o "${tmpdir}/SHA256SUMS" "$sha256url" 2>/dev/null; then
+    local sha256_cmd
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256_cmd="sha256sum"
+    elif command -v shasum >/dev/null 2>&1; then
+      sha256_cmd="shasum -a 256"
+    fi
+    if [ -n "$sha256_cmd" ]; then
+      local expected actual
+      expected="$(grep "  ${tarball}$" "${tmpdir}/SHA256SUMS" | awk '{print $1}')"
+      if [ -n "$expected" ]; then
+        actual="$(cd "$tmpdir" && $sha256_cmd "$tarball" | awk '{print $1}')"
+        if [ "$expected" != "$actual" ]; then
+          warn "SHA256 mismatch for ${tarball} — aborting direct install"
+          rm -rf "$tmpdir"
+          return 1
+        fi
+      fi
+    fi
+  fi
+
+  tar -xzf "${tmpdir}/${tarball}" -C "$tmpdir"
+  local bin=""
+  for candidate in "${tmpdir}/llmctl" "${tmpdir}/rs-llmctl-${platform}/llmctl"; do
+    if [ -f "$candidate" ]; then
+      bin="$candidate"
+      break
+    fi
+  done
+  if [ -z "$bin" ]; then
+    warn "could not find llmctl binary in ${tarball}"
+    rm -rf "$tmpdir"
+    return 1
+  fi
+
+  mkdir -p "$HOME/.local/bin"
+  install -m 0755 "$bin" "$HOME/.local/bin/llmctl"
+  rm -rf "$tmpdir"
+  LLMCTL_BIN="$HOME/.local/bin/llmctl"
+  return 0
 }
 
 install_rs_llmctl_from_local_repo() {
@@ -219,7 +303,7 @@ install_rs_llmctl_from_local_repo() {
     info "Found local rs-llmctl repo: $repo"
     mkdir -p "$HOME/.local/bin"
 
-    if [ -x "$repo/target/release/llmctl" ]; then
+    if [ "${MILLIWAYS_LOCAL_GPU:-0}" != "1" ] && [ -x "$repo/target/release/llmctl" ]; then
       install -m 0755 "$repo/target/release/llmctl" "$HOME/.local/bin/llmctl"
       LLMCTL_BIN="$HOME/.local/bin/llmctl"
       ok "rs-llmctl installed from local release binary"
@@ -228,7 +312,7 @@ install_rs_llmctl_from_local_repo() {
 
     local tarball
     tarball="$(find "$repo/dist" -maxdepth 1 -type f -name 'rs-llmctl-*.tar.gz' 2>/dev/null | sort | head -n 1 || true)"
-    if [ -n "$tarball" ]; then
+    if [ "${MILLIWAYS_LOCAL_GPU:-0}" != "1" ] && [ -n "$tarball" ]; then
       if [ -f "$repo/dist/SHA256SUMS" ]; then
         PREFIX="$HOME/.local" LLMCTL_INSTALL_SYSTEMD=0 RS_LLMCTL_TARBALL="$tarball" RS_LLMCTL_SHA256SUMS="$repo/dist/SHA256SUMS" "$repo/install.sh"
       else
@@ -241,8 +325,37 @@ install_rs_llmctl_from_local_repo() {
     fi
 
     if command -v cargo >/dev/null 2>&1; then
-      info "Building rs-llmctl from local repo..."
-      (cd "$repo" && cargo build --release --bin llmctl)
+      local -a cargo_args
+      cargo_args=(build --release --bin llmctl)
+      if [ "${MILLIWAYS_LOCAL_GPU:-0}" = "1" ]; then
+        case "$RS_LLMCTL_GPU_VENDOR" in
+          amd)
+            if [ "$RS_LLMCTL_AMD_GPU_EXPERIMENTAL" != "1" ]; then
+              fail "rs-llmctl AMD GPU build is currently blocked by Candle's CUDA dependency chain requiring NVIDIA nvcc/PTX. SigNoz and Qwen3-14B config are ready, but use CPU rs-llmctl or llama.cpp HIP until rs-llmctl ships a ROCm-native backend. Set RS_LLMCTL_AMD_GPU_EXPERIMENTAL=1 to try the failing build anyway."
+            fi
+            info "Building rs-llmctl from local repo with ROCm/HIP GPU support..."
+            cargo_args+=(--features native-candle,native-tokenizers,gpu-cuda)
+            ;;
+          nvidia)
+            info "Building rs-llmctl from local repo with CUDA GPU support..."
+            cargo_args+=(--features native-candle,native-tokenizers,gpu-cuda)
+            ;;
+          apple)
+            info "Building rs-llmctl from local repo with Metal GPU support..."
+            cargo_args+=(--features native-candle,native-tokenizers,gpu-metal)
+            ;;
+          *)
+            info "Building rs-llmctl from local repo..."
+            ;;
+        esac
+      else
+        info "Building rs-llmctl from local repo..."
+      fi
+      if [ "$RS_LLMCTL_GPU_VENDOR" = "amd" ] && [ "${MILLIWAYS_LOCAL_GPU:-0}" = "1" ]; then
+        (cd "$repo" && HIP_PLATFORM=amd cargo "${cargo_args[@]}")
+      else
+        (cd "$repo" && cargo "${cargo_args[@]}")
+      fi
       install -m 0755 "$repo/target/release/llmctl" "$HOME/.local/bin/llmctl"
       LLMCTL_BIN="$HOME/.local/bin/llmctl"
       ok "rs-llmctl built and installed from local repo"
@@ -525,8 +638,16 @@ patch_rs_llmctl_config() {
   escaped_path="$(toml_escape "$MODEL_PATH")"
   escaped_family="$(toml_escape "$MODEL_FAMILY")"
   awk -v port="$PORT" -v worker="$((PORT + 10000))" -v ctx="$CTX_SIZE" \
-    -v alias="$escaped_alias" -v model_path="$escaped_path" -v family="$escaped_family" '
+    -v alias="$escaped_alias" -v model_path="$escaped_path" -v family="$escaped_family" \
+    -v gpu_vendor="$RS_LLMCTL_GPU_VENDOR" -v service="$RS_LLMCTL_OTEL_SERVICE_NAME" \
+    -v environment="$RS_LLMCTL_OTEL_ENVIRONMENT" -v otlp_endpoint="$OTEL_EXPORTER_OTLP_ENDPOINT" \
+    -v otlp_protocol="$RS_LLMCTL_OTEL_PROTOCOL" '
+    skip_block && /^\[/ { skip_block = 0 }
+    /^\[resources\]$/ { skip_block = 1; next }
+    /^\[observability\]$/ { skip_block = 1; next }
+    /^\[observability\.exporter\]$/ { skip_block = 1; next }
     /^\[\[models\]\]/ { skip_model = 1; next }
+    skip_block { next }
     skip_model && /^\[/ { skip_model = 0 }
     !skip_model {
       if ($0 ~ /^port = /) { print "port = " port; next }
@@ -538,6 +659,23 @@ patch_rs_llmctl_config() {
       print
     }
     END {
+      print ""
+      print "[resources]"
+      print "budget = 0.80"
+      print "cpu_only = false"
+      print "gpu_vendor = \"" gpu_vendor "\""
+      print ""
+      print "[observability]"
+      print "service_name = \"" service "\""
+      print "environment = \"" environment "\""
+      print "traces_enabled = true"
+      print "metrics_enabled = true"
+      print "logs_enabled = true"
+      print ""
+      print "[observability.exporter]"
+      print "endpoint = \"" otlp_endpoint "\""
+      print "protocol = \"" otlp_protocol "\""
+      print "timeout_ms = 5000"
       print ""
       print "[[models]]"
       print "alias = \"" alias "\""
@@ -554,6 +692,10 @@ write_launcher() {
   mkdir -p "$LOG_DIR" "$HOME/.local/bin"
   cat > "$HOME/.local/bin/milliways-local-server" <<EOF
 #!/usr/bin/env bash
+export PATH="/opt/rocm/bin:/opt/rocm/llvm/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\${PATH:-}"
+export HIP_PLATFORM="${HIP_PLATFORM:-amd}"
+export OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT}"
+export OTEL_EXPORTER_OTLP_PROTOCOL="${OTEL_EXPORTER_OTLP_PROTOCOL}"
 exec "$LLMCTL_BIN" --config "$RS_LLMCTL_CONFIG" server run
 EOF
   chmod +x "$HOME/.local/bin/milliways-local-server"

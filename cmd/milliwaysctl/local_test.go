@@ -433,6 +433,18 @@ func TestSelectGPUCatalogModelChoosesLargestSafeFit(t *testing.T) {
 	}
 }
 
+func TestSelectGPUCatalogModelForVendorChoosesTier3AMD16(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	got, err := selectGPUCatalogModelForVendor(16, "amd")
+	if err != nil {
+		t.Fatalf("selectGPUCatalogModelForVendor: %v", err)
+	}
+	if got.Name != "Qwen3-14B" {
+		t.Fatalf("model = %s, want Qwen3-14B", got.Name)
+	}
+}
+
 func TestFirstMemoryGB(t *testing.T) {
 	cases := map[string]float64{
 		"Total VRAM: 16384 MB":      16,
@@ -493,6 +505,18 @@ func TestWithEnvOverrides(t *testing.T) {
 	}
 	if strings.Contains(joined, "MODEL_REPO=old") {
 		t.Fatalf("env kept old override: %#v", got)
+	}
+}
+
+func TestEnrichedEnvForScriptsIncludesROCMPaths(t *testing.T) {
+	orig := userHomeDirFn
+	userHomeDirFn = func() (string, error) { return t.TempDir(), nil }
+	t.Cleanup(func() { userHomeDirFn = orig })
+	t.Setenv("PATH", "/usr/bin")
+
+	got := strings.Join(enrichedEnvForScripts(), "\n")
+	if !strings.Contains(got, "PATH=/opt/homebrew/bin:/opt/rocm/bin:/opt/rocm/llvm/bin:") {
+		t.Fatalf("PATH does not include ROCm toolchain early enough: %s", got)
 	}
 }
 
