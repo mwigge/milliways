@@ -205,3 +205,28 @@ func stringField(m map[string]any, key string) string {
 	s, _ := v.(string)
 	return s
 }
+
+// handleLoop implements the /loop slash command.
+// It shells to milliwaysctl loop with the given args, streaming its output
+// inline. The loop runs an agentic TDD loop against an OpenSpec change.
+func (l *chatLoop) handleLoop(rest string) {
+	if rest == "" {
+		fmt.Fprintln(l.errw, "usage: /loop <change-name> [--path DIR]")
+		fmt.Fprintln(l.errw, "  Run an agentic TDD loop against an OpenSpec change.")
+		fmt.Fprintln(l.errw, "  --path DIR   project root (default: current working directory)")
+		return
+	}
+	// /loop is a ctl alias; delegate to runCtl for consistent subprocess
+	// handling, auth-gating, and output streaming.
+	l.runCtl(append([]string{"loop"}, splitFields(rest)...))
+}
+
+// handleLoopStatus implements the /loop-status slash command.
+func (l *chatLoop) handleLoopStatus(rest string) {
+	if rest == "" {
+		fmt.Fprintln(l.errw, "usage: /loop-status <change-name> [--path DIR]")
+		fmt.Fprintln(l.errw, "  Show pending tasks for an OpenSpec change.")
+		return
+	}
+	l.runCtl(append([]string{"loop-status"}, splitFields(rest)...))
+}

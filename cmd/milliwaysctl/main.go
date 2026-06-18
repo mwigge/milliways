@@ -54,6 +54,12 @@ func main() {
 	if sub == "opsx" {
 		os.Exit(runOpsx(rest, os.Stdout, os.Stderr))
 	}
+	if sub == "loop" {
+		os.Exit(runLoop(rest, os.Stdout, os.Stderr))
+	}
+	if sub == "loop-status" {
+		os.Exit(runLoopStatus(rest, os.Stdout, os.Stderr))
+	}
 	if sub == "install" {
 		os.Exit(runInstall(rest, os.Stdout, os.Stderr))
 	}
@@ -863,6 +869,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  history-summary --agent <id> [--index N]    — compact cost+token summary for wezterm status")
 	fmt.Fprintln(os.Stderr, "  local <verb> [args...]                     — local-model bootstrap (try `milliwaysctl local --help`)")
 	fmt.Fprintln(os.Stderr, "  opsx <verb> [args...]                      — openspec wrapper (try `milliwaysctl opsx --help`)")
+	fmt.Fprintln(os.Stderr, "  loop <change>                              — run agentic TDD loop for an OpenSpec change")
+	fmt.Fprintln(os.Stderr, "  loop-status <change>                       — show pending tasks for a change")
 	fmt.Fprintln(os.Stderr, "  install <client>                           — install/setup client (claude|codex|copilot|minimax|kimi|deepseek|gemini|local|scanners)")
 	fmt.Fprintln(os.Stderr, "  upgrade [--check] [--yes] [--version <tag>] — upgrade milliways to the latest release")
 	fmt.Fprintln(os.Stderr, "  codegraph <verb> [args...]                 — CodeGraph index management (try `milliwaysctl codegraph --help`)")

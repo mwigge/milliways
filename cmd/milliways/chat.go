@@ -221,6 +221,9 @@ var chatCtlAliases = map[string][]string{
 	"opsx-show":     {"opsx", "show"},
 	"opsx-archive":  {"opsx", "archive"},
 	"opsx-validate": {"opsx", "validate"},
+	// Agentic loop
+	"loop":         {"loop"},
+	"loop-status":  {"loop-status"},
 	// CodeGraph index
 	"repoinit":  {"codegraph", "init"},
 	"repoindex": {"codegraph", "index"},
@@ -1348,8 +1351,55 @@ func shouldFlushThinkingFragment(text string) bool {
 // formatThinkingLine renders runner reasoning as a visible status line.
 // Uses the agent's bright color for the badge and a few shades darker for
 // the message text, so it's visible without competing with the final response.
+func renderThinkingBlock(agentID, msg string, width int) string {
+	dim := agentThinkingColor(agentID)
+	bg := agentThinkingBg(agentID)
+	cyan := "\033[38;2;125;207;255m"
+	colorEnabled := ansiEnabled()
+	reset := "\033[0m"
+	if !colorEnabled {
+		reset = ""
+		cyan = ""
+		dim = ""
+		bg = ""
+	}
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return ""
+	}
+
+	prefix := "⏺ reasoning: "
+	continuation := "  "
+	budget := width - displayWidth(prefix)
+	if budget < 24 {
+		budget = 24
+	}
+	lines := wrapPlainForTerminal(msg, budget)
+	if len(lines) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, line := range lines {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(bg) // set background
+		if i == 0 {
+			b.WriteString(cyan)
+			b.WriteString(prefix)
+			b.WriteString(dim)
+		} else {
+			b.WriteString(dim)
+			b.WriteString(continuation)
+		}
+		b.WriteString(line)
+		b.WriteString(reset)
+	}
+	return b.String()
+}
+
 func formatThinkingLine(agentID, msg string) string {
-	return formatThinkingLineWidth(agentID, msg, streamTextWidth())
+	return renderThinkingBlock(agentID, msg, streamTextWidth())
 }
 
 func streamTextWidth() int {
@@ -1672,6 +1722,10 @@ func (l *chatLoop) handleSlash(line string) {
 		l.handleParallelView(rest)
 	case "scan":
 		l.handleScan(rest)
+	case "loop":
+		l.handleLoop(rest)
+	case "loop-status":
+		l.handleLoopStatus(rest)
 	case "security":
 		l.handleSecurity(rest)
 	case "help", "?":
@@ -4017,6 +4071,37 @@ func agentThinkingColor(name string) string {
 		return "\033[38;5;75m" // muted light blue
 	}
 	return unknownAgentThinkingColor // unknown provider
+}
+
+// agentThinkingBg returns a 256-colour ANSI background for runner thinking blocks.
+// Pairs with agentThinkingColor for a cohesive dim-on-dark visual.
+func agentThinkingBg(name string) string {
+	if !ansiEnabled() {
+		return ""
+	}
+	switch name {
+	case "berget":
+		return "\033[48;5;52m"
+	case "claude":
+		return "\033[48;5;236m"
+	case "codex":
+		return "\033[48;5;52m"
+	case "copilot":
+		return "\033[48;5;17m"
+	case "minimax":
+		return "\033[48;5;53m"
+	case "kimi":
+		return "\033[48;5;17m"
+	case "deepseek":
+		return "\033[48;5;22m"
+	case "gemini":
+		return "\033[48;5;52m"
+	case "local":
+		return "\033[48;5;52m"
+	case "pool":
+		return "\033[48;5;17m"
+	}
+	return "\033[48;5;235m"
 }
 
 func humanRoleColor() string {

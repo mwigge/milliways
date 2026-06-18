@@ -16,6 +16,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 )
@@ -85,6 +86,89 @@ func TestBuildOpsxArgs(t *testing.T) {
 				t.Errorf("buildOpsxArgs(%q,%v) = %v, want %v", c.verb, c.rest, got, c.want)
 			}
 		})
+	}
+}
+
+func TestRunOpsx_HelpShowsExploreApply(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	code := runOpsx([]string{"--help"}, &stdout, io.Discard)
+	if code != 0 {
+		t.Errorf("exit = %d, want 0", code)
+	}
+	for _, want := range []string{"explore", "apply", "OPSX_AGENT"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("help output missing %q; got: %s", want, stdout.String())
+		}
+	}
+}
+
+func TestRunOpsx_HelpShowsPathFlag(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	code := runOpsx([]string{"--help"}, &stdout, io.Discard)
+	if code != 0 {
+		t.Errorf("exit = %d, want 0", code)
+	}
+	for _, want := range []string{"--path", "-p", "project root"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("help output missing %q; got: %s", want, stdout.String())
+		}
+	}
+}
+
+func TestRunOpsx_PathFlagChdirsAndListFails(t *testing.T) {
+	// --path to a non-openspec directory should fail because openspec
+	// binary won't find an openspec project (or any openspec binary at all).
+	t.Setenv("OPENSPEC_BIN", "/no/such/openspec")
+
+	var stdout, stderr bytes.Buffer
+	code := runOpsx([]string{"--path", "/tmp", "list"}, &stdout, &stderr)
+	if code == 0 {
+		t.Errorf("exit = 0, want non-zero")
+	}
+}
+
+func TestRunOpsx_PathFlagWithEqualsSyntax(t *testing.T) {
+	t.Setenv("OPENSPEC_BIN", "/no/such/openspec")
+
+	var stdout, stderr bytes.Buffer
+	code := runOpsx([]string{"--path=/tmp", "list"}, &stdout, &stderr)
+	if code == 0 {
+		t.Errorf("exit = 0, want non-zero")
+	}
+}
+
+// Path flag parsing tests removed to avoid Setenv + t.Parallel conflicts.
+
+func TestRunOpsx_ExploreRequiresChangeArg(t *testing.T) {
+	t.Parallel()
+
+	// explore without args: check it reaches the "change name required" path.
+	// We can't fully exercise it without a daemon, but we can verify it
+	// doesn't panic and returns non-zero.
+	var stdout, stderr bytes.Buffer
+	code := runOpsx([]string{"explore"}, &stdout, &stderr)
+	if code == 0 {
+		t.Errorf("exit = 0, want non-zero (change name required)")
+	}
+	if !strings.Contains(stderr.String(), "change name required") {
+		t.Errorf("stderr = %q, want it to mention 'change name required'", stderr.String())
+	}
+}
+
+func TestRunOpsx_ApplyRequiresChangeArg(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	code := runOpsx([]string{"apply"}, &stdout, &stderr)
+	if code == 0 {
+		t.Errorf("exit = 0, want non-zero (change name required)")
+	}
+	if !strings.Contains(stderr.String(), "change name required") {
+		t.Errorf("stderr = %q, want it to mention 'change name required'", stderr.String())
 	}
 }
 
