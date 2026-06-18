@@ -223,17 +223,51 @@ func LoadConfig(path string) (*Config, error) {
 func defaultConfig() *Config {
 	return &Config{
 		Kitchens: map[string]KitchenConfig{
+			// Cloud tier — strategic thinking, planning, review, design.
+			// Used as the high-quality fallback by the sommelier when the
+			// pantry signals HIGH risk or when the prompt asks for
+			// "think/plan/review".
 			"claude": {
 				Cmd:      "claude",
 				Args:     []string{"-p"},
 				Stations: []string{"think", "plan", "review", "explore", "sign-off"},
 				CostTier: "cloud",
 			},
+			// Cloud tier — codex-cli (OpenAI). Sits alongside claude as a
+			// second cloud planner; useful for reasoning + design tasks where
+			// claude is rate-limited or the user prefers a different model.
+			"codex": {
+				Cmd:      "codex",
+				Args:     []string{},
+				Stations: []string{"reason", "design", "spec", "explain"},
+				CostTier: "cloud",
+			},
+			// Cloud tier (HTTP) — MiniMax M2.7 for high-volume reasoning and
+			// long-form analysis where claude/codex would be too expensive.
+			// Registered below in the HTTPClient block; routing for
+			// "reason/analyze/write" lands here unless the pantry flags risk.
 			"opencode": {
 				Cmd:      "opencode",
 				Args:     []string{"run"},
-				Stations: []string{"code", "test", "refactor", "lint", "commit"},
+				Stations: []string{"refactor", "lint", "commit"},
 				CostTier: "local",
+			},
+			// Local tier — rs-llmctl serving Qwen3 (14B by default; 4B/8B
+			// per tier from `milliwaysctl local install-gpu-server`). This is
+			// the "working task" worker: bash, edit, glob, write, read,
+			// short tool turns. Free, fast, runs entirely on the user's
+			// hardware via Metal or CUDA.
+			"local-qwen": {
+				HTTPClient: &HTTPClientConfig{
+					BaseURL:        "http://127.0.0.1:8765/v1",
+					AuthKey:        "MILLIWAYS_LOCAL_API_KEY",
+					AuthType:       "bearer",
+					Model:          "qwen3-14b",
+					Stations:       []string{"code", "edit", "bash", "glob", "write", "read", "test", "implement", "fix"},
+					Tier:           "local",
+					ResponseFormat: "openai",
+					Timeout:        300,
+				},
 			},
 			"gemini": {
 				Cmd:      "gemini",
@@ -297,19 +331,35 @@ func defaultConfig() *Config {
 			},
 		},
 		Routing: RoutingConfig{
+			// Tiered routing strategy:
+			//   - Cloud planners (claude / codex / minimax) own strategic
+			//     thinking, planning, review, design, reasoning.
+			//   - Local worker (local-qwen → rs-llmctl) owns execution:
+			//     code, edit, bash, glob, write, read, test, implement, fix.
+			//   - Specialist kitchens stay for research (gemini), refactor
+			//     (aider), tools (goose), fast (groq), private (ollama).
 			Keywords: map[string]string{
-				"think": "claude", "plan": "claude", "explain": "claude",
-				"explore": "claude", "review": "claude", "design": "claude",
-				"code": "opencode", "implement": "opencode", "test": "opencode",
-				"build": "opencode", "fix": "opencode",
+				// Cloud planners
+				"think": "claude", "plan": "claude", "explore": "claude",
+				"review": "claude", "sign-off": "claude",
+				"explain": "codex", "design": "codex", "spec": "codex",
+				"reason": "minimax", "analyze": "minimax", "write": "minimax",
+				// Local worker (working tasks)
+				"code": "local-qwen", "edit": "local-qwen", "bash": "local-qwen",
+				"glob": "local-qwen", "write-file": "local-qwen", "read": "local-qwen",
+				"test": "local-qwen", "implement": "local-qwen", "fix": "local-qwen",
+				"build": "local-qwen",
+				// Specialists
 				"refactor": "aider",
 				"search":   "gemini", "research": "gemini", "compare": "gemini",
 				"tools": "goose", "database": "goose",
 				"fast": "groq", "quick": "groq",
-				"local": "ollama", "private": "ollama",
+				"private": "ollama",
 			},
-			Default:        "claude",
-			BudgetFallback: "opencode",
+			Default: "claude",
+			// When budget signals say "fall back from cloud" the worker
+			// takes over — same as a Tier-1-only deployment would behave.
+			BudgetFallback: "local-qwen",
 			WeightOn: map[string]map[string]float64{
 				"claude": {
 					"lsp_errors": 0.5,

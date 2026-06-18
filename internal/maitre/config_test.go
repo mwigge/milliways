@@ -20,12 +20,20 @@ import (
 	"testing"
 )
 
+// expectedDefaultKitchenCount tracks the number of kitchens shipped in the
+// default carte. Updated when a new kitchen is added to defaultConfig().
+// Current set (11):
+//
+//	claude, codex, opencode, gemini, aider, goose, cline, minimax,
+//	groq, ollama, local-qwen
+const expectedDefaultKitchenCount = 11
+
 func TestDefaultConfig(t *testing.T) {
 	t.Parallel()
 	cfg := defaultConfig()
 
-	if len(cfg.Kitchens) != 9 {
-		t.Errorf("expected 9 default kitchens, got %d", len(cfg.Kitchens))
+	if len(cfg.Kitchens) != expectedDefaultKitchenCount {
+		t.Errorf("expected %d default kitchens, got %d", expectedDefaultKitchenCount, len(cfg.Kitchens))
 	}
 
 	claude, ok := cfg.Kitchens["claude"]
@@ -39,11 +47,32 @@ func TestDefaultConfig(t *testing.T) {
 		t.Error("expected claude enabled by default")
 	}
 
+	// Cloud planner tier: claude + codex + minimax all present.
+	if _, ok := cfg.Kitchens["codex"]; !ok {
+		t.Error("expected codex kitchen in defaults (cloud planner tier)")
+	}
+	if _, ok := cfg.Kitchens["minimax"]; !ok {
+		t.Error("expected minimax kitchen in defaults (cloud planner tier)")
+	}
+
+	// Local worker: local-qwen routes working tasks to rs-llmctl.
+	localQwen, ok := cfg.Kitchens["local-qwen"]
+	if !ok {
+		t.Fatal("expected local-qwen kitchen in defaults (local worker tier)")
+	}
+	if localQwen.HTTPClient == nil {
+		t.Fatal("expected local-qwen to be an HTTP client kitchen")
+	}
+	if localQwen.HTTPClient.Tier != "local" {
+		t.Errorf("expected local-qwen tier=local, got %q", localQwen.HTTPClient.Tier)
+	}
+
 	if cfg.Routing.Default != "claude" {
 		t.Errorf("expected default routing to claude, got %q", cfg.Routing.Default)
 	}
-	if cfg.Routing.BudgetFallback != "opencode" {
-		t.Errorf("expected budget fallback to opencode, got %q", cfg.Routing.BudgetFallback)
+	// When the budget pressure pushes off cloud, the local worker takes over.
+	if cfg.Routing.BudgetFallback != "local-qwen" {
+		t.Errorf("expected budget fallback to local-qwen, got %q", cfg.Routing.BudgetFallback)
 	}
 	if cfg.Routing.WeightOn["claude"]["lsp_errors"] != 0.5 {
 		t.Errorf("expected default claude lsp_errors weight 0.5, got %v", cfg.Routing.WeightOn["claude"]["lsp_errors"])
@@ -59,7 +88,7 @@ func TestLoadConfig_FileNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error for missing file, got %v", err)
 	}
-	if len(cfg.Kitchens) != 9 {
+	if len(cfg.Kitchens) != expectedDefaultKitchenCount {
 		t.Errorf("expected defaults when file missing, got %d kitchens", len(cfg.Kitchens))
 	}
 }
