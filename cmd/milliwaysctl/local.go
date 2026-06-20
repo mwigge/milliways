@@ -195,7 +195,11 @@ func runLocalInstallGPUServer(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "Best match for your hardware: %s (%s %s, %.1fGB)\n", model.Name, model.Repo, model.Quant, model.sizeGB())
 	fmt.Fprintf(stdout, "Accel: %s\n", accel)
 	if gpu.Vendor == "amd" {
-		fmt.Fprintln(stdout, "Backend: llama.cpp HIP (AMD); rs-llmctl/Candle remains the backend for Metal and NVIDIA")
+		arch := gpu.GfxArch
+		if arch == "" {
+			arch = "unknown"
+		}
+		fmt.Fprintf(stdout, "Backend: llama.cpp HIP (AMD %s); rs-llmctl/Candle remains the backend for Metal and NVIDIA\n", arch)
 	}
 	if os.Getenv("CTX_SIZE") == "" {
 		_, _ = fmt.Fprintf(stdout, "Context: %d tokens\n", ctxSize)
@@ -230,6 +234,9 @@ func runLocalInstallGPUServer(args []string, stdout, stderr io.Writer) int {
 	}
 	if os.Getenv("CTX_SIZE") == "" {
 		env["CTX_SIZE"] = fmt.Sprintf("%d", ctxSize)
+	}
+	if gpu.GfxArch != "" {
+		env["AMDGPU_TARGETS"] = gpu.GfxArch
 	}
 	if gpu.Vendor == "amd" {
 		_ = runLocalServerStop(nil, stdout, stderr)
@@ -1318,9 +1325,10 @@ func (e catalogEntry) sizeGB() float64 {
 }
 
 type localGPUInfo struct {
-	Vendor string
-	Name   string
-	VRAMGB float64
+	Vendor  string
+	Name    string
+	VRAMGB  float64
+	GfxArch string // e.g. "gfx1200" for RDNA4; empty if unknown
 }
 
 func (g localGPUInfo) LlamaAccel(override string) (string, error) {
@@ -1514,14 +1522,61 @@ func detectNVIDIAGPU() (localGPUInfo, bool) {
 }
 
 func detectAMDGPU() (localGPUInfo, bool) {
-	if gpu, ok := detectAMDGPUFromSysfs(); ok {
-		return gpu, true
+	var gpu localGPUInfo
+	var ok bool
+	if gpu, ok = detectAMDGPUFromSysfs(); !ok {
+		out, err := execCommand("rocm-smi", "--showproductname", "--showmeminfo", "vram").CombinedOutput()
+		if err != nil {
+			return localGPUInfo{}, false
+		}
+		if gpu, ok = parseROCMSMIOutput(string(out)); !ok {
+			return localGPUInfo{}, false
+		}
 	}
-	out, err := execCommand("rocm-smi", "--showproductname", "--showmeminfo", "vram").CombinedOutput()
-	if err != nil {
-		return localGPUInfo{}, false
+	gpu.GfxArch = detectAMDGfxArch()
+	return gpu, true
+}
+
+// detectAMDGfxArch returns the GFX architecture string (e.g. "gfx1200") by
+// querying rocminfo, falling back to vulkaninfo. Returns "" if neither is
+// available or produces a recognisable gfx token.
+func detectAMDGfxArch() string {
+	out, err := execCommand("rocminfo").Output()
+	if err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if idx := strings.Index(strings.ToLower(line), "gfx"); idx >= 0 {
+				tok := strings.ToLower(line[idx:])
+				end := strings.IndexFunc(tok, func(r rune) bool {
+					return !('a' <= r && r <= 'z') && !('0' <= r && r <= '9')
+				})
+				if end > 3 {
+					tok = tok[:end]
+				}
+				if tok != "gfx0" && len(tok) > 4 {
+					return tok
+				}
+			}
+		}
 	}
-	return parseROCMSMIOutput(string(out))
+	out, err = execCommand("vulkaninfo").Output()
+	if err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			lower := strings.ToLower(line)
+			if idx := strings.Index(lower, "gfx"); idx >= 0 {
+				tok := lower[idx:]
+				end := strings.IndexFunc(tok, func(r rune) bool {
+					return !('a' <= r && r <= 'z') && !('0' <= r && r <= '9')
+				})
+				if end > 3 {
+					tok = tok[:end]
+				}
+				if tok != "gfx0" && len(tok) > 4 {
+					return tok
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func detectAMDGPUFromSysfs() (localGPUInfo, bool) {

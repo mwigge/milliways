@@ -21,6 +21,7 @@ N_PARALLEL="${N_PARALLEL:-1}"
 BATCH_SIZE="${BATCH_SIZE:-512}"
 UBATCH_SIZE="${UBATCH_SIZE:-256}"
 CACHE_TYPE_K="${CACHE_TYPE_K:-q8_0}"
+CACHE_TYPE_V="${CACHE_TYPE_V:-q8_0}"
 MODEL_TEMP="${MODEL_TEMP:-0.60}"
 LOG_DIR="${LOG_DIR:-$HOME/.local/share/milliways/local}"
 MODEL_DIR="${MODEL_DIR:-$HOME/.local/share/milliways/models}"
@@ -28,6 +29,20 @@ LLAMA_BIN_DIR="${LLAMA_BIN_DIR:-$HOME/.local/bin}"
 LLAMA_LIB_DIR="${LLAMA_LIB_DIR:-$HOME/.local/lib/milliways}"
 LLAMA_CPP_REF="${LLAMA_CPP_REF:-24bba7b98ea1544cc89352c7a573baedcb831a64}"
 OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://127.0.0.1:4318}"
+
+# Detect the GFX architecture from rocminfo so the HIP build targets the
+# actual installed GPU instead of the gfx1100 (RDNA3) default. rocminfo is
+# part of every ROCm install; vulkaninfo is a fallback. The conservative
+# hardcoded default is gfx1200 (RDNA4 / RX 9060 XT).
+detect_amdgpu_targets() {
+  local gfx
+  gfx=$(rocminfo 2>/dev/null | grep -Eo 'gfx[0-9]+' | grep -v '^gfx0' | head -1)
+  [ -n "$gfx" ] && { echo "$gfx"; return; }
+  gfx=$(vulkaninfo 2>/dev/null | grep -Eoi 'gfx[0-9a-f]+' | head -1 | tr '[:upper:]' '[:lower:]')
+  [ -n "$gfx" ] && { echo "$gfx"; return; }
+  echo "gfx1200"
+}
+AMDGPU_TARGETS="${AMDGPU_TARGETS:-$(detect_amdgpu_targets)}"
 
 color() { printf '\033[1;%sm%s\033[0m\n' "$1" "$2"; }
 info()  { color 36 "==> $*"; }
@@ -60,6 +75,18 @@ require_rocm() {
   command -v git >/dev/null 2>&1 || fail "git not found. Install git."
 }
 
+check_gpu_groups() {
+  local missing=()
+  id -Gn 2>/dev/null | grep -qw render || missing+=("render")
+  id -Gn 2>/dev/null | grep -qw video  || missing+=("video")
+  if [ ${#missing[@]} -gt 0 ]; then
+    warn "Current user is not in the following groups required for GPU device access: ${missing[*]}"
+    warn "Run: sudo usermod -aG ${missing[*]} \$USER   then log out and back in (or use 'newgrp render')."
+    warn "Without these groups, ROCm will silently fall back to CPU and all VRAM will go unused."
+  fi
+  [ -c /dev/kfd ] || warn "/dev/kfd not found — ROCm kernel driver may not be loaded. Check: lsmod | grep amdgpu"
+}
+
 install_llama_shared_libs() {
   local src_dir="$1"
   mkdir -p "$LLAMA_LIB_DIR"
@@ -79,6 +106,14 @@ install_llama_shared_libs() {
 
 llama_server_is_hip() {
   local bin="$1"
+  local bin_dir
+  bin_dir="$(dirname "$bin")"
+  # Modern llama.cpp (>= b3000) loads HIP as a runtime plugin (libggml-hip.so)
+  # rather than linking HIP libraries into the main binary. Check both the
+  # plugin presence and the legacy direct-link path.
+  if [ -f "$bin_dir/libggml-hip.so" ] || [ -f "$LLAMA_LIB_DIR/libggml-hip.so" ]; then
+    return 0
+  fi
   LD_LIBRARY_PATH="$LLAMA_LIB_DIR:/opt/rocm/lib:/opt/rocm/lib64:${LD_LIBRARY_PATH:-}" \
     ldd "$bin" 2>/dev/null | grep -Eq 'libamdhip64|libhipblas|librocblas'
 }
@@ -101,10 +136,11 @@ install_llamacpp_hip() {
   trap "rm -rf '$tmp'" EXIT
   git clone --depth 1 https://github.com/ggml-org/llama.cpp "$tmp/llama.cpp"
   (cd "$tmp/llama.cpp" && git fetch --depth 1 origin "$LLAMA_CPP_REF" && git checkout --detach FETCH_HEAD)
+  info "Building for AMDGPU_TARGETS=$AMDGPU_TARGETS"
   cmake -S "$tmp/llama.cpp" -B "$tmp/llama.cpp/build" \
     -DGGML_HIP=ON \
     -DGGML_NATIVE=OFF \
-    -DAMDGPU_TARGETS="${AMDGPU_TARGETS:-gfx1100}" \
+    -DAMDGPU_TARGETS="$AMDGPU_TARGETS" \
     -DCMAKE_BUILD_TYPE=Release \
     -DLLAMA_CURL=OFF \
     -DLLAMA_BUILD_UI=OFF \
@@ -166,6 +202,7 @@ exec "$LLAMA_BIN_DIR/llama-server" \\
   --n-gpu-layers "$N_GPU_LAYERS" \\
   --temp "$MODEL_TEMP" \\
   --cache-type-k "$CACHE_TYPE_K" \\
+  --cache-type-v "$CACHE_TYPE_V" \\
   --jinja \\
   --metrics \\
   --flash-attn off
@@ -228,6 +265,7 @@ main() {
     ok "using port $PORT instead"
   fi
 
+  check_gpu_groups
   install_llamacpp_hip
   fetch_model
   write_launcher
