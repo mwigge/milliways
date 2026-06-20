@@ -639,7 +639,7 @@ func chatPromptState(agentID, state string) string {
 		return "[select: /1 minimax · /2 berget · /3 claude · /help] " + arrow + " "
 	}
 	color := agentColor(agentID)
-	thinkColor := agentThinkingColor(agentID)
+	thinkColor, _ := agentTheme(agentID)
 	reset := "\033[0m"
 	if color == "" {
 		reset = ""
@@ -1276,7 +1276,7 @@ func renderProviderThinkingData(agentID, text string) (string, bool) {
 		return "", false
 	}
 	body := strings.TrimRight(text, "\r\n")
-	color := agentThinkingColor(agentID)
+	color, _ := agentTheme(agentID)
 	if color == "" {
 		return body, true
 	}
@@ -1352,8 +1352,7 @@ func shouldFlushThinkingFragment(text string) bool {
 // Uses the agent's bright color for the badge and a few shades darker for
 // the message text, so it's visible without competing with the final response.
 func renderThinkingBlock(agentID, msg string, width int) string {
-	dim := agentThinkingColor(agentID)
-	bg := agentThinkingBg(agentID)
+	dim, bg := agentTheme(agentID)
 	cyan := "\033[38;2;125;207;255m"
 	colorEnabled := ansiEnabled()
 	reset := "\033[0m"
@@ -1411,7 +1410,7 @@ func streamTextWidth() int {
 }
 
 func formatThinkingLineWidth(agentID, msg string, width int) string {
-	dim := agentThinkingColor(agentID)
+	dim, _ := agentTheme(agentID)
 	cyan := "\033[38;2;125;207;255m"
 	colorEnabled := ansiEnabled()
 	reset := "\033[0m"
@@ -4041,67 +4040,35 @@ func agentColor(name string) string {
 	return unknownAgentColor // unknown provider
 }
 
-// agentThinkingColor returns the quieter companion colour for runner progress.
-// It follows the same hue family as agentColor, but darker so reasoning/status
-// lines are visible without competing with the final response.
-func agentThinkingColor(name string) string {
+// agentTheme returns the fg and bg ANSI escape codes for agent thinking blocks.
+// fg is the quieter companion to agentColor; bg pairs with it for thinking block backgrounds.
+func agentTheme(name string) (fg, bg string) {
 	if !ansiEnabled() {
-		return ""
+		return "", ""
 	}
 	switch name {
 	case "berget":
-		return "\033[38;5;166m" // muted orange
+		return "\033[38;5;166m", "\033[48;5;52m" // muted orange
 	case "claude":
-		return "\033[38;5;250m" // muted pearl
+		return "\033[38;5;250m", "\033[48;5;236m" // muted pearl
 	case "codex":
-		return "\033[38;5;172m" // muted amber
+		return "\033[38;5;172m", "\033[48;5;52m" // muted amber
 	case "copilot":
-		return "\033[38;5;67m" // muted blue
+		return "\033[38;5;67m", "\033[48;5;17m" // muted blue
 	case "minimax":
-		return "\033[38;5;98m" // muted purple
+		return "\033[38;5;98m", "\033[48;5;53m" // muted purple
 	case "kimi":
-		return "\033[38;5;74m" // muted blue
+		return "\033[38;5;74m", "\033[48;5;17m" // muted blue
 	case "deepseek":
-		return "\033[38;5;35m" // muted green
+		return "\033[38;5;35m", "\033[48;5;22m" // muted green
 	case "gemini":
-		return "\033[38;5;166m" // muted orange
+		return "\033[38;5;166m", "\033[48;5;52m" // muted orange
 	case "local":
-		return "\033[38;5;124m" // muted red
+		return "\033[38;5;124m", "\033[48;5;52m" // muted red
 	case "pool":
-		return "\033[38;5;75m" // muted light blue
+		return "\033[38;5;75m", "\033[48;5;17m" // muted light blue
 	}
-	return unknownAgentThinkingColor // unknown provider
-}
-
-// agentThinkingBg returns a 256-colour ANSI background for runner thinking blocks.
-// Pairs with agentThinkingColor for a cohesive dim-on-dark visual.
-func agentThinkingBg(name string) string {
-	if !ansiEnabled() {
-		return ""
-	}
-	switch name {
-	case "berget":
-		return "\033[48;5;52m"
-	case "claude":
-		return "\033[48;5;236m"
-	case "codex":
-		return "\033[48;5;52m"
-	case "copilot":
-		return "\033[48;5;17m"
-	case "minimax":
-		return "\033[48;5;53m"
-	case "kimi":
-		return "\033[48;5;17m"
-	case "deepseek":
-		return "\033[48;5;22m"
-	case "gemini":
-		return "\033[48;5;52m"
-	case "local":
-		return "\033[48;5;52m"
-	case "pool":
-		return "\033[48;5;17m"
-	}
-	return "\033[48;5;235m"
+	return unknownAgentThinkingColor, "\033[48;5;235m"
 }
 
 func humanRoleColor() string {
