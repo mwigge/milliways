@@ -27,7 +27,7 @@
 - [x] `smj session checkpoint list <session-id>` subcommand: table of turn_n, ts, message count
 - [x] `smj session rollback <session-id> <turn-n>` subcommand: calls session.rollback RPC
 - [x] `smj session fork <session-id> [--turn <N>]` subcommand: clone checkpoint → new session; print new session ID
-- [ ] Write unit tests: save/load round-trip (messages JSON unchanged); rollback to turn 5 discards turns 6+; fork produces independent session
+- [x] Write unit tests: save/load round-trip (messages JSON unchanged); rollback to turn 5 discards turns 6+; fork produces independent session
 
 ## 4. ACP Endpoint
 
@@ -38,7 +38,7 @@
 - [x] `POST /acp/v1/session/:id/mode`: call agent-mode switch (same as `/agent` command)
 - [x] `DELETE /acp/v1/session/:id`: close session cleanly
 - [x] ACP endpoint disabled by default; activated by `SMEDJA_ACP_PORT` env var
-- [ ] Write integration test: create session via ACP; send a prompt; verify streamed response chunks arrive; close session
+- [x] Write integration test: create session via ACP; send a prompt; verify streamed response chunks arrive; close session
 
 ## 5. Cost Ledger
 
@@ -63,7 +63,7 @@
 - [x] Add `Stratum` type to `crates/smedja-memory/src/working.rs`: `Hot | Warm | Cold`; `StrataConfig { hot_depth: usize, warm_depth: usize }`
 - [x] `SetBudget(tier: &str, context_window: usize)` method: configure hot/warm/cold boundaries based on tier
 - [x] `BuildPrompt`: assemble hot (always) + warm (structured compact summaries) + cold retrieval (top-K from smedja-vault)
-- [ ] Cold retrieval: when current turn references symbols/files that appear only in cold strata, call `smedja-vault.retrieve(query, k=3)`; promote results to bottom of warm before BuildPrompt
+- [x] Cold retrieval: when current turn references symbols/files that appear only in cold strata, call `smedja-vault.retrieve(query, k=3)`; promote results to bottom of warm before BuildPrompt
 - [x] Context budget table: fast=hot+top5warm, deep=hot+allwarm+top3cold, local=hot+top10warm
 - [x] Write unit tests: hot turns never compacted; warm turns appear as compact summaries; cold retrieval returns expected turns by cosine similarity
 

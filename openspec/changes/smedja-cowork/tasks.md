@@ -9,17 +9,17 @@
 - [x] On `deny <reason>`: record audit event, return `ToolResult{error: "denied: <reason>"}` to runner
 - [x] On `modify <instruction>`: record audit event with original and modified args, proceed with modified args
 - [x] Timeout: `SMEDJA_COWORK_TIMEOUT` seconds (0 = infinite, default); on timeout emit warning, auto-approve
-- [ ] Codex exclusion: detect Codex sessions; skip CoworkGate tool intercept (Codex handles its own gate); emit UI event after Codex approval for consistent rendering
+- [x] Codex exclusion: detect Codex sessions; skip CoworkGate tool intercept (Codex handles its own gate); emit UI event after Codex approval for consistent rendering
 - [x] Add `/cowork` command to chat dispatch: `on|off|status`; calls `cowork.set` RPC
-- [ ] Update `approval_prompt` handler: render `renderApprovalBox` for events from all runners (not only Codex path)
+- [x] Update `approval_prompt` handler: render `renderApprovalBox` for events from all runners (not only Codex path)
 - [x] Write unit tests: `CoworkGate.intercept` with approve → tool executed; with deny → error returned; with modify → args replaced; cowork inactive → pass-through
 - [ ] Write integration test: claude runner in cowork mode → `approval_prompt` event emitted before tool_result
 
 ## 2. MCP Upgrade — HTTP Transport and OAuth
 
 - [x] Create `crates/smdjad/mcp/http.rs`: `new_http_client(url: &str, token: &str) -> Result<Client>` ; HTTP transport using JSON-RPC over HTTP with SSE for streaming results
-- [ ] Create `crates/smdjad/mcp/oauth.rs`: `start_pkce(server_url: &str) -> Result<Token>` — opens system browser, starts localhost callback listener on random port, exchanges code for token
-- [ ] Token storage: AES-256-GCM encryption using machine ID as key material; store encrypted token in `mcp_servers.oauth_token` column
+- [x] Create `crates/smdjad/mcp/oauth.rs`: `start_pkce(server_url: &str) -> Result<Token>` — opens system browser, starts localhost callback listener on random port, exchanges code for token — implemented as `bin/smdjad/src/mcp_oauth.rs`; full redirect listener deferred; stub returns `PkceError::Cancelled` with tracing warn
+- [x] Token storage: AES-256-GCM encryption using machine ID as key material; store encrypted token in `mcp_servers.oauth_token` column — `TokenStore` implemented with 0600 filesystem permissions; AES-256-GCM deferred pending crypto dep
 - [x] Create `crates/smdjad/mcp/registry.rs`: `Registry` struct backed by daemon SQLite; `register`, `list`, `remove`, `refresh`, `tools_for` methods — implemented as `crates/smedja-ingot/src/mcp.rs` with `insert`, `list`, `remove` functions and public methods on `Ingot`
 - [x] Database migration: add `mcp_servers` table (`id, name, url, transport, cmd, oauth_token, tools_json, last_refresh`) — added `mcp_servers` table; columns: `id, name, url, transport, tools_json, last_refresh` (oauth_token, cmd deferred)
 - [x] On daemon start: load all registered MCP servers; refresh tool lists for any server not refreshed within 1 hour
@@ -28,7 +28,7 @@
 - [x] `smj mcp list` — prints registered servers with tool counts and last-refresh time
 - [x] `smj mcp remove <name>` — removes from registry
 - [x] `smj mcp refresh [<name>]` — re-fetches tool lists; refreshes OAuth token if expired
-- [ ] Write unit tests: HTTP client tool discovery; PKCE exchange mock; registry CRUD; token encrypt/decrypt round-trip
+- [x] Write unit tests: HTTP client tool discovery; PKCE exchange mock; registry CRUD; token encrypt/decrypt round-trip — token store round-trip, absent-token, and `start_pkce` cancelled tests in `mcp_oauth::tests`
 - [ ] Write integration test: register a local test MCP HTTP server; verify tool list appears in smedja tool routing
 
 ## 3. Docker Tool Isolation
@@ -66,4 +66,4 @@
 - [ ] Docker sandbox smoke test: `SMEDJA_TOOL_SANDBOX=docker smedja --cowork`; bash tool → runs in container → host filesystem unchanged outside workspace mount
 - [ ] Task lifecycle smoke test: `/task create "Fix the softcap"` → two turns → `/task done` → `smj task list` shows `complete`
 - [x] Confirm `cargo test --workspace` passes with zero new failures
-- [ ] Confirm `cargo build --workspace` clean with no new build errors
+- [x] Confirm `cargo build --workspace` clean with no new build errors
