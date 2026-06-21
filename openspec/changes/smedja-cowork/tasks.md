@@ -24,10 +24,10 @@
 - [x] Database migration: add `mcp_servers` table (`id, name, url, transport, cmd, oauth_token, tools_json, last_refresh`) — added `mcp_servers` table; columns: `id, name, url, transport, tools_json, last_refresh` (oauth_token, cmd deferred)
 - [ ] On daemon start: load all registered MCP servers; refresh tool lists for any server not refreshed within 1 hour
 - [ ] Fallback: existing session-level stdio MCP config continues to work unchanged; registry is additive
-- [ ] `smj mcp add <name> <url> [--stdio <cmd>]` — registers server; runs OAuth flow if server requires auth
-- [ ] `smj mcp list` — prints registered servers with tool counts and last-refresh time
-- [ ] `smj mcp remove <name>` — removes from registry
-- [ ] `smj mcp refresh [<name>]` — re-fetches tool lists; refreshes OAuth token if expired
+- [x] `smj mcp add <name> <url> [--stdio <cmd>]` — registers server; runs OAuth flow if server requires auth
+- [x] `smj mcp list` — prints registered servers with tool counts and last-refresh time
+- [x] `smj mcp remove <name>` — removes from registry
+- [x] `smj mcp refresh [<name>]` — re-fetches tool lists; refreshes OAuth token if expired
 - [ ] Write unit tests: HTTP client tool discovery; PKCE exchange mock; registry CRUD; token encrypt/decrypt round-trip
 - [ ] Write integration test: register a local test MCP HTTP server; verify tool list appears in smedja tool routing
 

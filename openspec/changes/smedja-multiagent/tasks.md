@@ -24,9 +24,9 @@
 - [ ] Save checkpoint after every `turn_end` in daemon: serialise `session.Messages` → JSON → upsert row
 - [ ] On daemon start: detect sessions with `status = 'in_flight'`; load latest checkpoint; resume session
 - [ ] `session.rollback` RPC method: restore session to checkpoint at turn N; discard turns > N from history
-- [ ] `smj session checkpoint list <session-id>` subcommand: table of turn_n, ts, message count
-- [ ] `smj session rollback <session-id> <turn-n>` subcommand: calls session.rollback RPC
-- [ ] `smj session fork <session-id> [--turn <N>]` subcommand: clone checkpoint → new session; print new session ID
+- [x] `smj session checkpoint list <session-id>` subcommand: table of turn_n, ts, message count
+- [x] `smj session rollback <session-id> <turn-n>` subcommand: calls session.rollback RPC
+- [x] `smj session fork <session-id> [--turn <N>]` subcommand: clone checkpoint → new session; print new session ID
 - [ ] Write unit tests: save/load round-trip (messages JSON unchanged); rollback to turn 5 discards turns 6+; fork produces independent session
 
 ## 4. ACP Endpoint
