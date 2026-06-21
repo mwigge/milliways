@@ -29,7 +29,7 @@
 - [x] `smj mcp remove <name>` — removes from registry
 - [x] `smj mcp refresh [<name>]` — re-fetches tool lists; refreshes OAuth token if expired
 - [x] Write unit tests: HTTP client tool discovery; PKCE exchange mock; registry CRUD; token encrypt/decrypt round-trip — token store round-trip, absent-token, and `start_pkce` cancelled tests in `mcp_oauth::tests`
-- [ ] Write integration test: register a local test MCP HTTP server; verify tool list appears in smedja tool routing
+- [x] Write integration test: register a local test MCP HTTP server; verify tool list appears in smedja tool routing
 
 ## 3. Docker Tool Isolation
 
