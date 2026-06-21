@@ -51,12 +51,12 @@
 - [x] Add `task_id` foreign key to `audit_events` table (nullable; existing rows unaffected)
 - [x] RPC method `task.create { title, description }` → creates task, starts OTel span `smedja.task`, returns `task_id`
 - [x] RPC method `task.close { task_id, status }` → transitions status; closes OTel span with `task.status`, `task.turns_count`
-- [ ] Inject task title + description into agent system prompt when a task is active
+- [x] Inject task title + description into agent system prompt when a task is active
 - [x] `/task create <description>` command in chat: calls `task.create` RPC; displays task ID
 - [x] `/task done` command: calls `task.close { status: "complete" }` for the active task
 - [x] `smj task list [--status <status>]` — queries `tasks` table; prints formatted table
 - [x] `smj task show <id>` — prints task details, turns count, linked audit events
-- [ ] Write unit tests: `TaskStore` CRUD; status transition guards (can't close a Planned task without starting it); OTel span lifecycle mock
+- [x] Write unit tests: `TaskStore` CRUD; status transition guards (can't close a Planned task without starting it); OTel span lifecycle mock
 - [ ] Integration test: create task → two turns → `/task done` → verify `audit_events` rows carry `task_id`; verify OTel span closed
 
 ## 5. End-to-End Validation
@@ -65,5 +65,5 @@
 - [ ] MCP HTTP smoke test: configure a test MCP HTTP server; `smj mcp add`; verify tools appear in session tool routing
 - [ ] Docker sandbox smoke test: `SMEDJA_TOOL_SANDBOX=docker smedja --cowork`; bash tool → runs in container → host filesystem unchanged outside workspace mount
 - [ ] Task lifecycle smoke test: `/task create "Fix the softcap"` → two turns → `/task done` → `smj task list` shows `complete`
-- [ ] Confirm `cargo test --workspace` passes with zero new failures
+- [x] Confirm `cargo test --workspace` passes with zero new failures
 - [ ] Confirm `cargo build --workspace` clean with no new build errors
