@@ -13,7 +13,7 @@
 - [x] Add `/cowork` command to chat dispatch: `on|off|status`; calls `cowork.set` RPC
 - [x] Update `approval_prompt` handler: render `renderApprovalBox` for events from all runners (not only Codex path)
 - [x] Write unit tests: `CoworkGate.intercept` with approve → tool executed; with deny → error returned; with modify → args replaced; cowork inactive → pass-through
-- [ ] Write integration test: claude runner in cowork mode → `approval_prompt` event emitted before tool_result
+- [x] Write integration test: claude runner in cowork mode → `approval_prompt` event emitted before tool_result
 
 ## 2. MCP Upgrade — HTTP Transport and OAuth
 
@@ -42,7 +42,7 @@
 - [x] Sandboxed tools: `bash`, `write_file`, `edit_file`, `run_command`
 - [x] Exempt tools (read-only, no sandbox): `read_file`, `list_files`, `graph_query`, `mcp_call`
 - [x] Write unit tests: `SandboxExecutor::exec` with a mock Docker client; verify workspace mount args; verify network-none flag
-- [ ] Smoke test: `smj sandbox build` produces an image; a bash tool call in cowork mode runs in the container and returns stdout
+- [x] Smoke test: `smj sandbox build` produces an image; a bash tool call in cowork mode runs in the container and returns stdout
 
 ## 4. Task Entity
 
@@ -57,13 +57,13 @@
 - [x] `smj task list [--status <status>]` — queries `tasks` table; prints formatted table
 - [x] `smj task show <id>` — prints task details, turns count, linked audit events
 - [x] Write unit tests: `TaskStore` CRUD; status transition guards (can't close a Planned task without starting it); OTel span lifecycle mock
-- [ ] Integration test: create task → two turns → `/task done` → verify `audit_events` rows carry `task_id`; verify OTel span closed
+- [x] Integration test: create task → two turns → `/task done` → verify `audit_events` rows carry `task_id`; verify OTel span closed
 
 ## 5. End-to-End Validation
 
-- [ ] Cowork mode smoke test: start a session with `--cowork`; issue a task that requires `edit_file`; verify `approval_prompt` event appears; `/approve`; verify tool executed; verify audit log entry
-- [ ] MCP HTTP smoke test: configure a test MCP HTTP server; `smj mcp add`; verify tools appear in session tool routing
-- [ ] Docker sandbox smoke test: `SMEDJA_TOOL_SANDBOX=docker smedja --cowork`; bash tool → runs in container → host filesystem unchanged outside workspace mount
-- [ ] Task lifecycle smoke test: `/task create "Fix the softcap"` → two turns → `/task done` → `smj task list` shows `complete`
+- [x] Cowork mode smoke test: start a session with `--cowork`; issue a task that requires `edit_file`; verify `approval_prompt` event appears; `/approve`; verify tool executed; verify audit log entry
+- [x] MCP HTTP smoke test: configure a test MCP HTTP server; `smj mcp add`; verify tools appear in session tool routing
+- [x] Docker sandbox smoke test: `SMEDJA_TOOL_SANDBOX=docker smedja --cowork`; bash tool → runs in container → host filesystem unchanged outside workspace mount
+- [x] Task lifecycle smoke test: `/task create "Fix the softcap"` → two turns → `/task done` → `smj task list` shows `complete`
 - [x] Confirm `cargo test --workspace` passes with zero new failures
 - [x] Confirm `cargo build --workspace` clean with no new build errors

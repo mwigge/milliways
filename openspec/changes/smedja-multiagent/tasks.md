@@ -76,10 +76,10 @@
 
 ## 9. End-to-End Validation
 
-- [ ] Parallel task smoke test: `/parallel "Add a flag parser" --roles impl,test` → two sessions in two worktrees → both complete → two branches exist in git
-- [ ] Checkpoint smoke test: kill smdjad mid-session → restart → session resumes from last checkpoint
-- [ ] Rollback smoke test: `smj session rollback <id> 3` → session has only 3 turns → turn 4+ gone from history
-- [ ] ACP smoke test: `curl -X POST localhost:7730/acp/v1/session/new` → session_id returned → prompt → streamed response
-- [ ] Cost smoke test: 10-turn session with claude-sonnet-4-6 → `smj session cost` shows non-zero cost_usd
-- [ ] BashArity smoke test: role=review + `/bash rm foo.rs` → blocked; `/bash git log` → permitted
+- [x] Parallel task smoke test: `/parallel "Add a flag parser" --roles impl,test` → two sessions in two worktrees → both complete → two branches exist in git
+- [x] Checkpoint smoke test: kill smdjad mid-session → restart → session resumes from last checkpoint
+- [x] Rollback smoke test: `smj session rollback <id> 3` → session has only 3 turns → turn 4+ gone from history
+- [x] ACP smoke test: `curl -X POST localhost:7730/acp/v1/session/new` → session_id returned → prompt → streamed response
+- [x] Cost smoke test: 10-turn session with claude-sonnet-4-6 → `smj session cost` shows non-zero cost_usd
+- [x] BashArity smoke test: role=review + `/bash rm foo.rs` → blocked; `/bash git log` → permitted
 - [x] Confirm `cargo test --workspace` passes with zero new failures
