@@ -31,21 +31,21 @@
 
 ## 4. ACP Endpoint
 
-- [ ] Implement `crates/smdjad/acp/server.rs`: HTTP server on `SMEDJA_ACP_PORT` (default 7730)
-- [ ] `POST /acp/v1/session/new`: create session, return session_id
-- [ ] `POST /acp/v1/session/:id/prompt`: map PromptRequest → smedja turn; stream response as SSE
-- [ ] `POST /acp/v1/session/:id/model`: call runner-switch logic (same as `/runner` command)
-- [ ] `POST /acp/v1/session/:id/mode`: call agent-mode switch (same as `/agent` command)
-- [ ] `DELETE /acp/v1/session/:id`: close session cleanly
-- [ ] ACP endpoint disabled by default; activated by `SMEDJA_ACP_PORT` env var
+- [x] Implement `crates/smdjad/acp/server.rs`: HTTP server on `SMEDJA_ACP_PORT` (default 7730)
+- [x] `POST /acp/v1/session/new`: create session, return session_id
+- [x] `POST /acp/v1/session/:id/prompt`: map PromptRequest → smedja turn; stream response as SSE
+- [x] `POST /acp/v1/session/:id/model`: call runner-switch logic (same as `/runner` command)
+- [x] `POST /acp/v1/session/:id/mode`: call agent-mode switch (same as `/agent` command)
+- [x] `DELETE /acp/v1/session/:id`: close session cleanly
+- [x] ACP endpoint disabled by default; activated by `SMEDJA_ACP_PORT` env var
 - [ ] Write integration test: create session via ACP; send a prompt; verify streamed response chunks arrive; close session
 
 ## 5. Cost Ledger
 
-- [ ] Database migration: add `cost_ledger` table (id, session_id, turn_id, runner, model, in_tok, out_tok, cost_usd, ts)
+- [x] Database migration: add `cost_ledger` table (id, session_id, turn_id, runner, model, in_tok, out_tok, cost_usd, ts)
 - [x] Bundle `prices.toml` in smdjad binary (embed via `include_bytes!`)
-- [ ] Insert cost_ledger row on every `turn_end`; compute `cost_usd` from prices table (NULL if model not in table)
-- [ ] `smj session cost [--session <id>] [--since <duration>]` subcommand: aggregate and print cost table
+- [x] Insert cost_ledger row on every `turn_end`; compute `cost_usd` from prices table (NULL if model not in table)
+- [x] `smj session cost [--session <id>] [--since <duration>]` subcommand: aggregate and print cost table
 - [ ] `smj session export <session-id>` subcommand: write JSON cost lineage to stdout
 - [ ] `smj prices update [--file <path>]` subcommand: replace prices.toml from file or configured endpoint
 - [ ] Write unit tests: cost_usd computed correctly for known model; NULL for unknown model; aggregate across multiple turns
@@ -60,8 +60,8 @@
 
 ## 7. Memory Stratification
 
-- [ ] Add `Stratum` type to `crates/smedja-memory/src/working.rs`: `Hot | Warm | Cold`; `StrataConfig { hot_depth: usize, warm_depth: usize }`
-- [ ] `SetBudget(tier: &str, context_window: usize)` method: configure hot/warm/cold boundaries based on tier
+- [x] Add `Stratum` type to `crates/smedja-memory/src/working.rs`: `Hot | Warm | Cold`; `StrataConfig { hot_depth: usize, warm_depth: usize }`
+- [x] `SetBudget(tier: &str, context_window: usize)` method: configure hot/warm/cold boundaries based on tier
 - [ ] `BuildPrompt`: assemble hot (always) + warm (structured compact summaries) + cold retrieval (top-K from smedja-vault)
 - [ ] Cold retrieval: when current turn references symbols/files that appear only in cold strata, call `smedja-vault.retrieve(query, k=3)`; promote results to bottom of warm before BuildPrompt
 - [ ] Context budget table: fast=hot+top5warm, deep=hot+allwarm+top3cold, local=hot+top10warm
@@ -69,10 +69,10 @@
 
 ## 8. AGENTS.md Compatibility
 
-- [ ] Detect `AGENTS.md` in workspace root; if present, inject as skill text into system prompt (Verdent/Warp convention)
-- [ ] When both `AGENTS.md` and `.smedja/agents.toml` are present: use agents.toml for structured config; AGENTS.md as supplementary skill text
+- [x] Detect `AGENTS.md` in workspace root; if present, inject as skill text into system prompt (Verdent/Warp convention)
+- [x] When both `AGENTS.md` and `.smedja/agents.toml` are present: use agents.toml for structured config; AGENTS.md as supplementary skill text
 - [ ] `smj workspace agents init` generates a starter `.smedja/agents.toml` from built-in defaults
-- [ ] Write unit test: AGENTS.md text injected into system prompt; agents.toml role config takes precedence for runner selection
+- [x] Write unit test: AGENTS.md text injected into system prompt; agents.toml role config takes precedence for runner selection
 
 ## 9. End-to-End Validation
 

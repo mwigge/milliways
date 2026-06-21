@@ -17,13 +17,13 @@
 
 ## 2. MCP Upgrade — HTTP Transport and OAuth
 
-- [ ] Create `crates/smdjad/mcp/http.rs`: `new_http_client(url: &str, token: &str) -> Result<Client>` ; HTTP transport using JSON-RPC over HTTP with SSE for streaming results
+- [x] Create `crates/smdjad/mcp/http.rs`: `new_http_client(url: &str, token: &str) -> Result<Client>` ; HTTP transport using JSON-RPC over HTTP with SSE for streaming results
 - [ ] Create `crates/smdjad/mcp/oauth.rs`: `start_pkce(server_url: &str) -> Result<Token>` — opens system browser, starts localhost callback listener on random port, exchanges code for token
 - [ ] Token storage: AES-256-GCM encryption using machine ID as key material; store encrypted token in `mcp_servers.oauth_token` column
 - [x] Create `crates/smdjad/mcp/registry.rs`: `Registry` struct backed by daemon SQLite; `register`, `list`, `remove`, `refresh`, `tools_for` methods — implemented as `crates/smedja-ingot/src/mcp.rs` with `insert`, `list`, `remove` functions and public methods on `Ingot`
 - [x] Database migration: add `mcp_servers` table (`id, name, url, transport, cmd, oauth_token, tools_json, last_refresh`) — added `mcp_servers` table; columns: `id, name, url, transport, tools_json, last_refresh` (oauth_token, cmd deferred)
-- [ ] On daemon start: load all registered MCP servers; refresh tool lists for any server not refreshed within 1 hour
-- [ ] Fallback: existing session-level stdio MCP config continues to work unchanged; registry is additive
+- [x] On daemon start: load all registered MCP servers; refresh tool lists for any server not refreshed within 1 hour
+- [x] Fallback: existing session-level stdio MCP config continues to work unchanged; registry is additive
 - [x] `smj mcp add <name> <url> [--stdio <cmd>]` — registers server; runs OAuth flow if server requires auth
 - [x] `smj mcp list` — prints registered servers with tool counts and last-refresh time
 - [x] `smj mcp remove <name>` — removes from registry
@@ -34,28 +34,28 @@
 ## 3. Docker Tool Isolation
 
 - [x] Create `scripts/sandbox/Dockerfile`: Alpine 3.20 + bash, curl, git, jq, ripgrep, fd; no ENTRYPOINT
-- [ ] `smj sandbox build` subcommand: `docker build -t smedja-sandbox:latest scripts/sandbox/`; prints image digest
-- [ ] Create `crates/smdjad/tools/sandbox.rs`: `SandboxExecutor` wrapping bash/write/edit tools with Docker API
-- [ ] `SandboxExecutor::exec(ctx: &Context, cmd: &str) -> Result<String>`: runs `docker run --rm -v <workspace>:/workspace:rw --network none <image_digest> bash -c <cmd>`
-- [ ] Image digest verification at daemon start: if digest mismatch or image absent, `self.available = false`; log warning; continue without sandbox
-- [ ] Activate when `SMEDJA_TOOL_SANDBOX=docker` is set and Docker is reachable; skip silently if neither
-- [ ] Sandboxed tools: `bash`, `write_file`, `edit_file`, `run_command`
-- [ ] Exempt tools (read-only, no sandbox): `read_file`, `list_files`, `graph_query`, `mcp_call`
-- [ ] Write unit tests: `SandboxExecutor::exec` with a mock Docker client; verify workspace mount args; verify network-none flag
+- [x] `smj sandbox build` subcommand: `docker build -t smedja-sandbox:latest scripts/sandbox/`; prints image digest
+- [x] Create `crates/smdjad/tools/sandbox.rs`: `SandboxExecutor` wrapping bash/write/edit tools with Docker API
+- [x] `SandboxExecutor::exec(ctx: &Context, cmd: &str) -> Result<String>`: runs `docker run --rm -v <workspace>:/workspace:rw --network none <image_digest> bash -c <cmd>`
+- [x] Image digest verification at daemon start: if digest mismatch or image absent, `self.available = false`; log warning; continue without sandbox
+- [x] Activate when `SMEDJA_TOOL_SANDBOX=docker` is set and Docker is reachable; skip silently if neither
+- [x] Sandboxed tools: `bash`, `write_file`, `edit_file`, `run_command`
+- [x] Exempt tools (read-only, no sandbox): `read_file`, `list_files`, `graph_query`, `mcp_call`
+- [x] Write unit tests: `SandboxExecutor::exec` with a mock Docker client; verify workspace mount args; verify network-none flag
 - [ ] Smoke test: `smj sandbox build` produces an image; a bash tool call in cowork mode runs in the container and returns stdout
 
 ## 4. Task Entity
 
-- [ ] Create `crates/smdjad/task/task.rs`: `Task` struct, `TaskStatus` enum, `TaskStore` backed by daemon SQLite
-- [ ] Database migration: add `tasks` table (`id, title, description, status, session_id, created_at, closed_at, turns_count`)
-- [ ] Add `task_id` foreign key to `audit_events` table (nullable; existing rows unaffected)
-- [ ] RPC method `task.create { title, description }` → creates task, starts OTel span `smedja.task`, returns `task_id`
-- [ ] RPC method `task.close { task_id, status }` → transitions status; closes OTel span with `task.status`, `task.turns_count`
+- [x] Create `crates/smdjad/task/task.rs`: `Task` struct, `TaskStatus` enum, `TaskStore` backed by daemon SQLite
+- [x] Database migration: add `tasks` table (`id, title, description, status, session_id, created_at, closed_at, turns_count`)
+- [x] Add `task_id` foreign key to `audit_events` table (nullable; existing rows unaffected)
+- [x] RPC method `task.create { title, description }` → creates task, starts OTel span `smedja.task`, returns `task_id`
+- [x] RPC method `task.close { task_id, status }` → transitions status; closes OTel span with `task.status`, `task.turns_count`
 - [ ] Inject task title + description into agent system prompt when a task is active
-- [ ] `/task create <description>` command in chat: calls `task.create` RPC; displays task ID
-- [ ] `/task done` command: calls `task.close { status: "complete" }` for the active task
-- [ ] `smj task list [--status <status>]` — queries `tasks` table; prints formatted table
-- [ ] `smj task show <id>` — prints task details, turns count, linked audit events
+- [x] `/task create <description>` command in chat: calls `task.create` RPC; displays task ID
+- [x] `/task done` command: calls `task.close { status: "complete" }` for the active task
+- [x] `smj task list [--status <status>]` — queries `tasks` table; prints formatted table
+- [x] `smj task show <id>` — prints task details, turns count, linked audit events
 - [ ] Write unit tests: `TaskStore` CRUD; status transition guards (can't close a Planned task without starting it); OTel span lifecycle mock
 - [ ] Integration test: create task → two turns → `/task done` → verify `audit_events` rows carry `task_id`; verify OTel span closed
 
