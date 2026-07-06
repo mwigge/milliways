@@ -1,5 +1,38 @@
 # Changelog
 
+## v1.0.63
+
+Security control-plane hardening, documentation honesty, TUI polish, and dead-code
+removal (from a full review).
+
+### Security & correctness
+- Brokered shells now restore the shim dir on the child PATH, so a subshell can't
+  run its subtree unprotected (S1).
+- Fixed subscribe-stream / statusSubscribers / observability-loop leaks on
+  disconnect (S4/S5); RPC methods reject malformed params (S10); `security scan
+  --layers` enumerates real workspace files instead of hardcoded paths (S3); status
+  conveys the in-process-firewall vs PATH-shim enforcement mechanism (S2); workflow
+  save + audit-row errors are logged (S7/S9/S11).
+
+### Docs
+- Reworded quota-rotation to match the code (rotate + `/retry`, not
+  auto-re-dispatch — that's `/takeover`); qualified the skill-rules keyword-injection
+  claim (the consuming CLIs do the matching); added the "when MemPalace is
+  configured" caveat to project memory.
+
+### TUI
+- Unified to one brand palette (navy #0b1220 + brand hexes) across chat chrome, a
+  custom brand chroma style for code panels, and the shipped terminal theme;
+  animated braille streaming spinner; inline markdown (bold/code/italic); a
+  persistent role gutter and turn separators.
+
+### Removed
+- Deleted dead/unwired packages that duplicated live behavior: internal/memory,
+  internal/plugins, internal/rules (skill-rules loader), session/store.go
+  (test-only), and a dead cmd/milliways/run.go. (The live paths — event-history
+  NDJSON, the toolkit-bundle injection, same-process briefing — are unchanged.)
+
+
 All notable changes to milliways. Follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) conventions.
 
 ---
