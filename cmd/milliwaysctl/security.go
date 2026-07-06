@@ -1026,25 +1026,26 @@ func runSecurityShimExec(args []string, stdout, stderr io.Writer, sock string) i
 	if rc != 0 {
 		if os.Getenv("MILLIWAYS_SHIM_FAIL_OPEN") == "1" {
 			fmt.Fprintln(stderr, "milliways security shim: policy unavailable; continuing because MILLIWAYS_SHIM_FAIL_OPEN=1")
-			return execResolvedCommand(realBinary, realArgs, stdout, stderr)
+			return execResolvedCommand(realBinary, realArgs, stdout, stderr, shimExecChildEnv(nil))
 		}
 		fmt.Fprintln(stderr, "milliways security shim: policy unavailable; blocked by default")
 		return 126
 	}
+	childEnv := shimExecChildEnv(decisionEnvironment(decision))
 	action := strings.ToLower(firstStringField(decision, "decision", "action"))
 	reason := firstStringField(decision, "reason")
 	switch action {
 	case "allow", "":
-		return execResolvedCommand(realBinary, realArgs, stdout, stderr)
+		return execResolvedCommand(realBinary, realArgs, stdout, stderr, childEnv)
 	case "warn":
 		fmt.Fprintf(stderr, "milliways security warning: %s\n", fallbackSecurityReason(reason))
-		return execResolvedCommand(realBinary, realArgs, stdout, stderr)
+		return execResolvedCommand(realBinary, realArgs, stdout, stderr, childEnv)
 	case "needs-confirmation":
 		if !confirmShimExecution(stderr, commandText, reason) {
 			fmt.Fprintln(stderr, "milliways security shim: command cancelled")
 			return 126
 		}
-		return execResolvedCommand(realBinary, realArgs, stdout, stderr)
+		return execResolvedCommand(realBinary, realArgs, stdout, stderr, childEnv)
 	case "block":
 		fmt.Fprintf(stderr, "milliways security block: %s\n", fallbackSecurityReason(reason))
 		return 126
@@ -1105,12 +1106,12 @@ func shellQuoteForPolicy(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
-func execResolvedCommand(path string, args []string, stdout, stderr io.Writer) int {
+func execResolvedCommand(path string, args []string, stdout, stderr io.Writer, childEnv []string) int {
 	cmd := exec.Command(path, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	cmd.Env = sanitizedShimExecEnv(os.Environ())
+	cmd.Env = childEnv
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return exitErr.ExitCode()
@@ -1180,6 +1181,65 @@ func sanitizedShimExecEnv(env []string) []string {
 			continue
 		}
 		out = append(out, entry)
+	}
+	return out
+}
+
+// shimExecChildEnv builds the environment for the real binary a broker exec is
+// about to run. The generated shim script removes the shim directory from PATH
+// before handing control to milliwaysctl, which means an approved shell (bash,
+// sh -c, ...) would otherwise spawn nested bare-name commands (curl/npm/pip)
+// that resolve to the real binaries and bypass the broker entirely.
+//
+// We restore the shim directory on the child's PATH so nested bare-name
+// commands are re-brokered. The real binary itself is exec'd by its ABSOLUTE
+// resolved path, so restoring the shim dir does not re-broker the shell process
+// recursively — only its bare-name children. The original PATH is carried in
+// EnvOriginalPath by the shim; the daemon may additionally override the child
+// environment via the decision's "environment" map.
+func shimExecChildEnv(decisionEnv map[string]string) []string {
+	env := sanitizedShimExecEnv(os.Environ())
+
+	restorePath := strings.TrimSpace(os.Getenv(shims.EnvOriginalPath))
+	if p := strings.TrimSpace(decisionEnv["PATH"]); p != "" {
+		restorePath = p
+	}
+	if restorePath != "" {
+		env = setEnvVar(env, "PATH", restorePath)
+	}
+	for k, v := range decisionEnv {
+		if k == "" || k == "PATH" {
+			continue
+		}
+		env = setEnvVar(env, k, v)
+	}
+	return env
+}
+
+// setEnvVar replaces the first "key=" entry in env or appends a new one.
+func setEnvVar(env []string, key, value string) []string {
+	prefix := key + "="
+	for i, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			env[i] = prefix + value
+			return env
+		}
+	}
+	return append(env, prefix+value)
+}
+
+// decisionEnvironment extracts the optional "environment" override map the
+// daemon may return in a policy decision.
+func decisionEnvironment(decision map[string]any) map[string]string {
+	raw, ok := decision["environment"].(map[string]any)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for k, v := range raw {
+		if s, ok := v.(string); ok {
+			out[k] = s
+		}
 	}
 	return out
 }
@@ -1821,7 +1881,17 @@ func renderSecurityClientEnforcement(raw any, shimsReady bool, hasShims bool) st
 		if strings.TrimSpace(detail) == "" {
 			detail = "unknown"
 		}
-		if level == "brokered" {
+		// Make the enforcement MECHANISM explicit so a strict-mode user is not
+		// misled into thinking every "protected" client is guarded the same
+		// way. Only the in-process (http/local) runners run commands through
+		// the deterministic firewall in-process; subprocess CLI runners are
+		// enforced out-of-process via PATH command shims that broker each
+		// command, which only holds while the shim is installed and ready.
+		switch level {
+		case "full":
+			detail += ", in-process firewall"
+		case "brokered":
+			detail += " via PATH shim"
 			if hasShims {
 				if shimsReady {
 					detail += ", shim ready"
@@ -1831,6 +1901,8 @@ func renderSecurityClientEnforcement(raw any, shimsReady bool, hasShims bool) st
 			} else {
 				detail += ", shim unknown"
 			}
+		case "preflight-only":
+			detail += ", startup preflight only (no command brokerage)"
 		}
 		parts = append(parts, fmt.Sprintf("%s %s (%s)", name, state, detail))
 	}

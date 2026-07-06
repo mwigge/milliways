@@ -444,6 +444,12 @@ func (s *Server) handleSidecar(conn net.Conn, preamble []byte) {
 	if _, err := io.Copy(io.Discard, conn); err != nil && !errors.Is(err, net.ErrClosed) {
 		slog.Debug("sidecar drain err", "err", err, "stream_id", streamID)
 	}
+	// The sidecar has disconnected. Close the stream (removing it from the
+	// registry and marking it closed so background pushers exit) and drop any
+	// status-subscriber registration so broadcastStatus stops pushing to a dead
+	// stream every tick.
+	stream.Close()
+	s.deregisterStatusSubscriber(streamID)
 }
 
 // statusBroadcaster ticks at 1 Hz and pushes a Status snapshot to every
@@ -464,6 +470,13 @@ func (s *Server) statusBroadcaster() {
 
 func (s *Server) broadcastStatus() {
 	s.statusMu.Lock()
+	// Prune subscribers whose sidecar has dropped so we don't push to dead
+	// streams forever (they never get explicitly removed on some paths).
+	for id, sub := range s.statusSubscribers {
+		if streamIsClosed(sub) {
+			delete(s.statusSubscribers, id)
+		}
+	}
 	subs := make([]*Stream, 0, len(s.statusSubscribers))
 	for _, sub := range s.statusSubscribers {
 		subs = append(subs, sub)
@@ -481,6 +494,12 @@ func (s *Server) broadcastStatus() {
 func (s *Server) registerStatusSubscriber(stream *Stream) {
 	s.statusMu.Lock()
 	s.statusSubscribers[stream.ID] = stream
+	s.statusMu.Unlock()
+}
+
+func (s *Server) deregisterStatusSubscriber(id int64) {
+	s.statusMu.Lock()
+	delete(s.statusSubscribers, id)
 	s.statusMu.Unlock()
 }
 

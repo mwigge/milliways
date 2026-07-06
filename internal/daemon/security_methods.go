@@ -20,6 +20,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -369,22 +371,101 @@ func securityScanChanges(workspace string, p securityScanParams) ([]outputgate.F
 			return nil, err
 		}
 	}
-	return securityScanLayerChanges(p.Layers), nil
+	return securityScanWorkspaceChanges(workspace, p.Layers)
 }
 
-func securityScanLayerChanges(layers []string) []outputgate.FileChange {
-	changes := make([]outputgate.FileChange, 0)
-	for _, layer := range layers {
-		switch security.ScanKind(strings.TrimSpace(layer)) {
-		case security.ScanSecret:
-			changes = append(changes, outputgate.FileChange{Path: ".env.local", Status: outputgate.StatusModified, Source: outputgate.SourceStaged})
-		case security.ScanSAST:
-			changes = append(changes, outputgate.FileChange{Path: "main.go", Status: outputgate.StatusModified, Source: outputgate.SourceStaged})
-		case security.ScanDependency:
-			changes = append(changes, outputgate.FileChange{Path: "go.mod", Status: outputgate.StatusModified, Source: outputgate.SourceStaged})
+// securityScanFileCap bounds how many workspace files a layered scan enumerates
+// when there is no staged diff, keeping a whole-workspace scan bounded on very
+// large repositories.
+const securityScanFileCap = 5000
+
+// securityScanWorkspaceChanges enumerates the real workspace files so a
+// `security scan --layers` run without a staged diff analyzes actual repository
+// content instead of a hardcoded representative file per layer. It prefers the
+// git tracked+untracked set (which honors .gitignore) and falls back to a
+// bounded filesystem walk for non-git workspaces. The output-gate planner
+// classifies each file into the requested layers, so unrelated files are
+// dropped by filterSecurityScanPlan downstream.
+func securityScanWorkspaceChanges(workspace string, _ []string) ([]outputgate.FileChange, error) {
+	files, err := gitWorkspaceFiles(workspace)
+	if err != nil || len(files) == 0 {
+		files = walkWorkspaceFiles(workspace, securityScanFileCap)
+	}
+	if len(files) > securityScanFileCap {
+		files = files[:securityScanFileCap]
+	}
+	changes := make([]outputgate.FileChange, 0, len(files))
+	for _, f := range files {
+		changes = append(changes, outputgate.FileChange{
+			Path:   f,
+			Status: outputgate.StatusModified,
+			Source: outputgate.SourceStaged,
+		})
+	}
+	return changes, nil
+}
+
+// gitWorkspaceFiles returns tracked and untracked-but-not-ignored files relative
+// to workspace, or an error if the directory is not a usable git repository.
+func gitWorkspaceFiles(workspace string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	seen := map[string]struct{}{}
+	files := make([]string, 0, 256)
+	for _, args := range [][]string{
+		{"ls-files", "-z"},
+		{"ls-files", "--others", "--exclude-standard", "-z"},
+	} {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = workspace
+		out, err := cmd.Output()
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+			f = strings.TrimSpace(f)
+			if f == "" {
+				continue
+			}
+			if _, ok := seen[f]; ok {
+				continue
+			}
+			seen[f] = struct{}{}
+			files = append(files, filepath.ToSlash(f))
 		}
 	}
-	return changes
+	return files, nil
+}
+
+// walkWorkspaceFiles is the non-git fallback: a bounded filesystem walk that
+// skips common heavyweight/vendored directories.
+func walkWorkspaceFiles(workspace string, limit int) []string {
+	skipDirs := map[string]struct{}{
+		".git": {}, "node_modules": {}, "vendor": {}, "target": {},
+		"dist": {}, "build": {}, ".venv": {}, ".mypy_cache": {},
+	}
+	files := make([]string, 0, 256)
+	_ = filepath.WalkDir(workspace, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if _, skip := skipDirs[d.Name()]; skip {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(workspace, path)
+		if err != nil {
+			return nil
+		}
+		files = append(files, filepath.ToSlash(rel))
+		if len(files) >= limit {
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return files
 }
 
 func daemonGitStagedChanges(workspace string) ([]outputgate.FileChange, error) {
@@ -475,7 +556,7 @@ func persistOutputGateScanResult(store *pantry.SecurityStore, workspace string, 
 		return
 	}
 	for _, warning := range execResult.Warnings {
-		_ = store.UpsertWarning(pantry.SecurityWarning{
+		if err := store.UpsertWarning(pantry.SecurityWarning{
 			Workspace:    workspace,
 			Category:     string(warning.Category),
 			Severity:     securityWarningSeverity(warning.Severity),
@@ -486,7 +567,9 @@ func persistOutputGateScanResult(store *pantry.SecurityStore, workspace string, 
 			LastSeen:     warning.LastSeen,
 			EvidenceHash: warning.EvidenceHash,
 			Remediation:  warning.Remediation,
-		})
+		}); err != nil {
+			slog.Warn("persist output-gate security warning", "err", err, "workspace", workspace, "category", string(warning.Category))
+		}
 	}
 	for _, result := range execResult.Results {
 		for _, finding := range result.Findings {
@@ -494,7 +577,7 @@ func persistOutputGateScanResult(store *pantry.SecurityStore, workspace string, 
 			if category == "" {
 				category = string(categoryForScanKind(result.Kind))
 			}
-			_ = store.UpsertFinding(pantry.SecurityFinding{
+			if err := store.UpsertFinding(pantry.SecurityFinding{
 				Workspace:        workspace,
 				Category:         category,
 				CVEID:            outputGateFindingID(finding),
@@ -507,7 +590,9 @@ func persistOutputGateScanResult(store *pantry.SecurityStore, workspace string, 
 				Status:           string(security.FindingActive),
 				FirstSeen:        result.ScannedAt,
 				LastSeen:         result.ScannedAt,
-			})
+			}); err != nil {
+				slog.Warn("persist output-gate security finding", "err", err, "workspace", workspace, "category", category)
+			}
 		}
 	}
 }
@@ -1155,7 +1240,9 @@ func runStartupSecurityScanWithStore(ctx context.Context, store *pantry.Security
 	})
 	if err != nil {
 		if runID > 0 {
-			_ = store.CompleteScanRun(runID, "error", 0, 0, 0, err.Error())
+			if cerr := store.CompleteScanRun(runID, "error", 0, 0, 0, err.Error()); cerr != nil {
+				slog.Warn("record startup scan run error", "err", cerr, "run_id", runID)
+			}
 		}
 		return nil, err
 	}
@@ -1197,7 +1284,9 @@ func runStartupSecurityScanWithStore(ctx context.Context, store *pantry.Security
 		return nil, fmt.Errorf("resolve stale startup warnings: %w", err)
 	}
 	if runID > 0 {
-		_ = store.CompleteScanRun(runID, "completed", len(result.Findings), warnCount, blockCount, "")
+		if cerr := store.CompleteScanRun(runID, "completed", len(result.Findings), warnCount, blockCount, ""); cerr != nil {
+			slog.Warn("record startup scan run completion", "err", cerr, "run_id", runID)
+		}
 	}
 	if err := store.MarkStartupScanCompleted(result.WorkspaceRoot, startupScanConfigHash(result.WorkspaceRoot)); err != nil {
 		return nil, fmt.Errorf("mark startup scan completed: %w", err)
@@ -1975,7 +2064,7 @@ func (s *Server) securityQuarantine(enc *json.Encoder, req *Request) {
 		actions := make([]map[string]any, 0, len(applied.Actions))
 		for _, a := range applied.Actions {
 			if s.pantryDB != nil {
-				_ = s.pantryDB.Security().RecordQuarantineAction(pantry.SecurityQuarantineAction{
+				if err := s.pantryDB.Security().RecordQuarantineAction(pantry.SecurityQuarantineAction{
 					Workspace:        plan.WorkspaceRoot,
 					Kind:             string(a.Kind),
 					SourcePath:       a.SourcePath,
@@ -1987,7 +2076,9 @@ func (s *Server) securityQuarantine(enc *json.Encoder, req *Request) {
 					RollbackHint:     a.RollbackHint,
 					AdditionalFields: a.AdditionalFields,
 					AppliedAt:        a.AppliedAt,
-				})
+				}); err != nil {
+					slog.Warn("record quarantine action", "err", err, "workspace", plan.WorkspaceRoot, "kind", string(a.Kind), "source", a.SourcePath)
+				}
 			}
 			actions = append(actions, quarantineAppliedActionWire(a))
 		}
@@ -2232,7 +2323,9 @@ func (s *Server) runClientProfileSecurity(ctx context.Context, workspace, client
 		status = "error"
 	}
 	if runID > 0 {
-		_ = store.CompleteScanRun(runID, status, len(result.Warnings), warnCount, blockCount, scanErr)
+		if cerr := store.CompleteScanRun(runID, status, len(result.Warnings), warnCount, blockCount, scanErr); cerr != nil {
+			slog.Warn("record client scan run completion", "err", cerr, "run_id", runID)
+		}
 	}
 	if err := setWorkspaceStatusPreservingMode(store, workspace, string(security.ModeWarn), client); err != nil {
 		return nil, err

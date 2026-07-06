@@ -882,7 +882,14 @@ func (s *AgentSession) appendHistory(payload map[string]any) {
 	s.stateMu.Unlock()
 
 	stateDir := filepath.Dir(s.server.socket)
+	// Tie the fire-and-forget history write to the daemon's background
+	// wait-group so Shutdown drains it instead of leaving a goroutine racing
+	// against process exit (which could truncate/lose the append or panic on a
+	// closed store).
+	srv := s.server
+	srv.bgWG.Add(1)
 	go func(agent string, dir string, pl any) {
+		defer srv.bgWG.Done()
 		if err := history.AppendAgentHistory(dir, agent, pl, history.DefaultMaxLines); err != nil {
 			slog.Debug("append history", "err", err, "agent", agent)
 		}

@@ -4,7 +4,7 @@
 
 Milliways is an AI terminal for macOS and Linux. Berget, MiniMax, Claude, Codex, Pool, Gemini, Copilot, Kimi, DeepSeek, and local models all run from the same workspace, with the same observable control plane around them.
 
-Open a tab and you're talking to a runner. Switch runners mid-session with a structured briefing from the active turn log. Hit a quota limit and milliways rotates to the next one automatically. Daemon event history, metrics, project memory, and security posture are persisted and surfaced while you work; the live REPL turn log stays in memory until it is compacted, handed off, or written through the daemon.
+Open a tab and you're talking to a runner. Hand off mid-session with `/takeover`, which carries a structured briefing from the active turn log to the next runner. Hit a quota limit and milliways rotates to the next available runner automatically — re-run your prompt (or `/retry`) on it to continue. Daemon event history, metrics, and security posture are persisted and surfaced while you work (project memory too, when MemPalace is configured); the live REPL turn log stays in memory until it is compacted, handed off, or written through the daemon.
 
 The security focus is simple: AI clients should not each invent their own workstation safety story in isolation. Milliways adds a terminal-owned control plane for startup scans, client profile checks, command risk classification, command shims, output scanning, quarantine planning, SBOM evidence, and CRA readiness. It is not a magic shield, but it gives you one place to see and manage risk before, during, and after agent work.
 
@@ -416,7 +416,7 @@ Milliways wraps each AI CLI as a first-class runner. They all speak the same int
    │                      ├─────────────────────────>│ (next runner)
 ```
 
-When a runner hits a context or quota limit, milliways rotates to the next one in your ring and re-dispatches the original prompt — the new runner gets a structured briefing so it knows exactly where things left off.
+When a runner hits a context or quota limit, milliways rotates to the next available runner in your ring and skips exhausted ones. Re-run your prompt (or `/retry`) on the new runner to continue where you left off.
 
 ### Claude Code
 
@@ -600,7 +600,7 @@ Kitchen: claude  Tier: learned  Risk: high
 
 ## Runner switching and takeover
 
-Type `/<runner>` or `/switch <runner>` to move to a different runner mid-session. In the same REPL process, milliways builds a structured briefing from the recent turn log and folds it into that runner's next user prompt, so HTTP runners do not answer the briefing as a separate turn. Cross-pane takeover uses MemPalace handoff when project memory is configured; without it, the switch still works but only has the context available in the current process.
+Type `/<runner>` or `/switch <runner>` to move the visible workspace to a different runner mid-session; this changes which runner you're talking to without carrying a briefing. To hand off *with* context, use `/takeover <runner>`: in the same REPL process, milliways builds a structured briefing from the recent turn log and folds it into that runner's next user prompt, so HTTP runners do not answer the briefing as a separate turn. Cross-pane takeover uses MemPalace handoff when project memory is configured; without it, the takeover still works but only has the context available in the current process.
 
 ```
 [briefing from claude → codex]
@@ -629,7 +629,7 @@ When claude hits its limit the terminal shows:
 [codex] ▶ ▌
 ```
 
-The new runner receives the turn-log briefing inside the re-dispatched user prompt. Exhausted runners are skipped automatically. The exhausted set clears on each new user prompt so runners become available again after a cooling period.
+milliways switches you to the next available runner and skips exhausted ones automatically — re-run your prompt (or `/retry`) on it to continue. The exhausted set clears on each new user prompt so runners become available again after a cooling period.
 
 For berget, minimax, kimi, deepseek, and local (HTTP runners with a 100-turn agentic loop), hitting the limit triggers a structured summarisation before rotation:
 
@@ -644,7 +644,8 @@ For berget, minimax, kimi, deepseek, and local (HTTP runners with a 100-turn age
 ### Manual switch with context
 
 ```bash
-▶ /switch codex          # switch and carry briefing
+▶ /takeover codex        # switch and carry a structured briefing
+▶ /switch codex          # switch the visible runner (no briefing)
 ▶ /compact               # summarise + shrink the turn log first
 ▶ /clear                 # wipe log for a clean start
 ```
@@ -1207,7 +1208,7 @@ milliways reads from `$MILLIWAYS_AGENTS_DIR`:
 | `skill-rules.json` | Regex rules that map prompt keywords to skills |
 | `AGENTS.md` / `CLAUDE.md` | Global conventions prepended to every context |
 
-Skills are auto-matched against your prompt before each dispatch. Matching skill content is injected into the context so the active runner has domain-specific guidance without you needing to invoke it explicitly.
+milliways prepends your project toolkit bundle — the root `CLAUDE.md` plus the `.claude/{skills,rules,agents,commands}` files in your working directory — to every dispatch, so all runners (not just Claude) see your project rules and skills. This bundle is injected whole, up to a size budget; milliways does not keyword-filter it. The keyword-selective activation described by `skill-rules.json` is applied by the agent CLIs that consume the bundle (Claude Code, OpenCode, Codex), not by milliways' in-process enrichment.
 
 ### Agents
 
@@ -1238,7 +1239,7 @@ Invoke via `@agent-name` (Claude Code / OpenCode). All agents are leaf agents �
 
 ### Skills
 
-Skills are auto-activated by keyword matching (`skill-rules.json`). You can also invoke them explicitly with `/skill-name` in Claude Code or OpenCode.
+Skills are auto-activated by keyword matching (`skill-rules.json`) inside the agent CLIs that read the bundle (Claude Code, OpenCode, Codex). You can also invoke them explicitly with `/skill-name` in Claude Code or OpenCode.
 
 **Languages & runtimes**
 

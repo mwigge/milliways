@@ -132,7 +132,7 @@ Milliways handles this as a briefing flow.
 
 1. The active runner has the current task and recent turn log.
 2. Milliways builds a structured briefing with intent, decisions, and the next step.
-3. For same-window switching, that briefing is injected directly into the target runner.
+3. For a same-window `/takeover`, that briefing is injected directly into the target runner.
 4. For cross-pane takeover, the daemon writes a handoff fact through MemPalace when configured.
 5. The target runner reads project memory and the handoff briefing before continuing.
 

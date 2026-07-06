@@ -16,6 +16,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/mwigge/milliways/internal/daemon/metrics"
@@ -62,7 +63,10 @@ var observabilitySubscribeTickInterval = 1 * time.Second
 func (s *Server) observabilitySubscribe(enc *json.Encoder, req *Request) {
 	var p observabilitySubscribeParams
 	if len(req.Params) > 0 {
-		_ = json.Unmarshal(req.Params, &p)
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+			return
+		}
 	}
 	stream := s.streams.Allocate()
 	writeResult(enc, req.ID, map[string]any{
@@ -103,6 +107,9 @@ func (s *Server) observabilitySubscribeLoop(stream *Stream, firstSince time.Time
 		case <-s.bgCtx.Done():
 			return
 		case <-ticker.C:
+			if streamIsClosed(stream) {
+				return
+			}
 			push(time.Now().Add(-60*time.Second), 50)
 		}
 	}

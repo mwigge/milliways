@@ -976,10 +976,10 @@ func TestRunSecurityStatusRendersExtendedFields(t *testing.T) {
 		"workspace-ioc@1.2.3",
 		"scanners: installed osv-scanner (osv-scanner 2.0.0), semgrep; missing gitleaks, govulncheck",
 		"shims: not ready 2/3; missing broker milliwaysctl; missing npm",
-		"claude preflight-only (brokered, shim not ready)",
-		"codex preflight-only (brokered, shim not ready)",
+		"claude preflight-only (brokered via PATH shim, shim not ready)",
+		"codex preflight-only (brokered via PATH shim, shim not ready)",
 		"custom unprotected (unknown)",
-		"minimax protected (full)",
+		"minimax protected (full, in-process firewall)",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("status missing %q; got:\n%s", want, stdout.String())
@@ -1012,8 +1012,8 @@ func TestRunSecurityStatusRendersProtectedBrokeredClientsWhenShimsReady(t *testi
 	}
 	for _, want := range []string{
 		"shims: ready 3/3; broker /run/milliways/security-shims/milliwaysctl",
-		"codex protected (brokered, shim ready)",
-		"custom unprotected (brokered, shim ready)",
+		"codex protected (brokered via PATH shim, shim ready)",
+		"custom unprotected (brokered via PATH shim, shim ready)",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("status missing %q; got:\n%s", want, stdout.String())

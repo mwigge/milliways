@@ -34,19 +34,19 @@ The runner doesn't know the memories came from elsewhere. It just sees context t
 
 **The practical effect is that every runner can start informed.** Switch from Claude to Codex mid-session and Codex can receive project structure, architectural decisions, and constraints already captured in project memory. You stop re-explaining the same background to every new tool.
 
-Beyond project memory, milliways maintains a rolling turn log inside the active REPL process. When you switch runners in that process, the recent log is compiled into a structured briefing and folded into the new runner's next user prompt. Daemon event history is persisted per runner; the active REPL turn log is currently in-memory unless compacted, handed off, or written through the daemon path.
+Beyond project memory, milliways maintains a rolling turn log inside the active REPL process. When you hand off to another runner in that process with `/takeover`, the recent log is compiled into a structured briefing and folded into the new runner's next user prompt. Daemon event history is persisted per runner; the active REPL turn log is currently in-memory unless compacted, handed off, or written through the daemon path.
 
 ---
 
-## The rotation ring — uninterrupted flow across session limits
+## The rotation ring — controlled transitions across session limits
 
 Every runner has limits: context windows, daily quotas, session timeouts. The rotation ring turns those limits from blockers into controlled transitions.
 
 Configure a priority order once — `/ring claude,codex,minimax` — and milliways handles the rest.
 
-When the active runner exhausts — hitting a session limit, context window, or quota — milliways automatically rotates to the next runner in the ring and re-dispatches your original prompt with a structured briefing. You see the transition instead of losing the task.
+When the active runner exhausts — hitting a session limit, context window, or quota — milliways automatically rotates to the next available runner in the ring and skips the exhausted one. Re-run your prompt (or `/retry`) on the new runner to continue — you see the transition instead of losing the task.
 
-The handoff is structured, not raw. Milliways builds a briefing from the turn log before rotating, and the incoming runner treats it as ground truth.
+Rotation itself just moves you to a live runner; re-run the prompt and keep going. When you want the incoming runner to inherit the full context in one step, `/takeover` builds a structured briefing from the turn log and the incoming runner treats it as ground truth.
 
 **Here's what that looks like in practice.** A code review of milliways can move across runners without copy-pasting the entire prior exchange:
 
@@ -54,7 +54,7 @@ The handoff is structured, not raw. Milliways builds a briefing from the turn lo
 
 The chain is codex → gemini → pool. Three runners, three completely different architectures (OpenAI CLI subprocess, Google CLI subprocess, Poolside ACP HTTP client), and the briefing carried the full review context across all of them. Gemini acknowledged the handoff from codex immediately. Pool narrated its own onboarding — it read the briefing, understood what was in progress, and correctly decided to wait for the next prompt.
 
-No manual transcript copying. The user typed `/gemini`, then `/pool`. The active process carried the briefing.
+No manual transcript copying. The user ran `/takeover gemini`, then `/takeover pool`. The active process carried the briefing.
 
 ---
 

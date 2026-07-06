@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -181,7 +182,9 @@ func markPendingToolApprovalDenied(store *pantry.CodingStore, approvalID int64, 
 	if err != nil || decision != "" {
 		return
 	}
-	_ = store.UpdateToolApprovalDecision(approvalID, "deny", reason)
+	if err := store.UpdateToolApprovalDecision(approvalID, "deny", reason); err != nil {
+		slog.Warn("record tool approval denial", "err", err, "approval_id", approvalID)
+	}
 }
 
 func observableMutationMetadata(meta mwtools.MutationMetadata) map[string]any {

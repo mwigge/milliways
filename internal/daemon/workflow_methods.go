@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"time"
@@ -342,7 +343,19 @@ func (s *Server) finishWorkflowDelegate(ctx context.Context, store *workflow.Fil
 		return
 	}
 	updated.UpdatedAt = endedAt
-	_ = store.Save(context.Background(), updated)
+	if saveErr := store.Save(context.Background(), updated); saveErr != nil {
+		// The terminal state could not be persisted. The node stays Running
+		// on disk (it was saved as Running when the delegate started), so log
+		// loudly and leave that persisted Running marker in place: on the next
+		// daemon start RecoverTieredInterrupted will fail/requeue it instead of
+		// it hanging silently forever.
+		slog.Warn("workflow delegate save failed; node left Running for recovery",
+			"workflow_id", workflowID,
+			"node_id", nodeID,
+			"outcome", outcome,
+			"intended_status", updated.Status,
+			"err", saveErr)
+	}
 }
 
 func (s *Server) workflowNodeComplete(enc *json.Encoder, req *Request) {

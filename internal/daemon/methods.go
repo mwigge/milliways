@@ -634,7 +634,12 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		writeResult(enc, req.ID, []RoutingDecision{})
 	case "observability.spans":
 		var p observabilitySpansParams
-		_ = json.Unmarshal(req.Params, &p)
+		if len(req.Params) > 0 {
+			if err := json.Unmarshal(req.Params, &p); err != nil {
+				writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode params: %v", err))
+				return
+			}
+		}
 		writeResult(enc, req.ID, s.spans.Snapshot(p.parsedSince(), p.Limit))
 	case "observability.subscribe":
 		s.observabilitySubscribe(enc, req)
@@ -674,7 +679,10 @@ func (s *Server) dispatch(enc *json.Encoder, req *Request) {
 		}
 		var anyPayload any
 		if len(p.Payload) > 0 {
-			_ = json.Unmarshal(p.Payload, &anyPayload)
+			if err := json.Unmarshal(p.Payload, &anyPayload); err != nil {
+				writeError(enc, req.ID, ErrInvalidParams, fmt.Sprintf("decode payload: %v", err))
+				return
+			}
 		}
 		if err := history.AppendAgentHistory(stateDir, p.AgentID, anyPayload, p.MaxLines); err != nil {
 			writeError(enc, req.ID, ErrInvalidParams, err.Error())
