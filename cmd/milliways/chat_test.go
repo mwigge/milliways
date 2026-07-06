@@ -352,6 +352,7 @@ func TestDrainStreamClearsPromptBeforeStreamingData(t *testing.T) {
 }
 
 func TestDrainStreamDoesNotAddBlankLineAfterNewlineTerminatedData(t *testing.T) {
+	t.Setenv("NO_COLOR", "1") // exercise the plain-terminal path (no gutter/color)
 	stream := make(chan []byte, 3)
 	sess := &chatSession{
 		agentID:      "pool",
@@ -380,12 +381,22 @@ func TestDrainStreamDoesNotAddBlankLineAfterNewlineTerminatedData(t *testing.T) 
 	close(stream)
 
 	loop.drainStream(sess)
-	if got := stripANSISequences(out.String()); got != "done\n" {
+	// The response ends with a single newline plus the intentional turn
+	// separator rule — never a blank line (the regression this guards).
+	got := stripANSISequences(out.String())
+	if !strings.HasPrefix(got, "done\n") {
+		t.Fatalf("chunk end response body wrong: %q", got)
+	}
+	if strings.Contains(got, "\n\n") {
 		t.Fatalf("chunk end added extra vertical space: %q", got)
+	}
+	if !strings.Contains(got, strings.Repeat("─", plainMarkdownWrapWidth())) {
+		t.Fatalf("chunk end missing turn separator: %q", got)
 	}
 }
 
 func TestDrainStreamProviderThinkingDataDoesNotAddChunkEndBlankLine(t *testing.T) {
+	t.Setenv("NO_COLOR", "1") // exercise the plain-terminal path (no gutter/color)
 	stream := make(chan []byte, 3)
 	sess := &chatSession{
 		agentID:      "pool",
@@ -414,7 +425,11 @@ func TestDrainStreamProviderThinkingDataDoesNotAddChunkEndBlankLine(t *testing.T
 	close(stream)
 
 	loop.drainStream(sess)
-	if got := stripANSISequences(out.String()); got != "Thinking...\n" {
+	got := stripANSISequences(out.String())
+	if !strings.HasPrefix(got, "Thinking...\n") {
+		t.Fatalf("provider thinking chunk end response body wrong: %q", got)
+	}
+	if strings.Contains(got, "\n\n") {
 		t.Fatalf("provider thinking chunk end added extra vertical space: %q", got)
 	}
 }
@@ -754,7 +769,7 @@ func TestChatPromptFormat(t *testing.T) {
 func TestChatPromptShowsInFlightState(t *testing.T) {
 	t.Parallel()
 
-	got := stripANSISequences(chatPromptState("minimax", "streaming"))
+	got := stripANSISequences(chatPromptState("minimax", "streaming", 0))
 	if !strings.Contains(got, "minimax") || !strings.Contains(got, "streaming") {
 		t.Fatalf("prompt state = %q, want provider and streaming state", got)
 	}
@@ -766,8 +781,8 @@ func TestChatPromptUsesProviderForegroundColor(t *testing.T) {
 	if got := chatPrompt("minimax"); !strings.HasPrefix(got, agentColor("minimax")+"minimax") {
 		t.Fatalf("minimax prompt missing provider foreground color: %q", got)
 	}
-	state := chatPromptState("minimax", "thinking")
-	if !strings.Contains(state, agentThinkingColor("minimax")+promptStateGlyph("thinking")) {
+	state := chatPromptState("minimax", "thinking", 0)
+	if !strings.Contains(state, agentThinkingColor("minimax")+promptStateGlyph("thinking", 0)) {
 		t.Fatalf("thinking prompt missing darker provider-family color: %q", state)
 	}
 }
@@ -2463,5 +2478,152 @@ func TestEnrichPromptOversizedToolkitTruncated(t *testing.T) {
 	}
 	if !strings.Contains(got, "[toolkit truncated:") {
 		t.Error("truncation marker missing from result")
+	}
+}
+
+// --- Transcript polish: spinner, gutter, separators ------------------------
+
+func TestSpinnerFrameCycles(t *testing.T) {
+	t.Parallel()
+	n := len(promptSpinnerFrames)
+	if n == 0 {
+		t.Fatal("no spinner frames defined")
+	}
+	// Frame index wraps modulo the frame count and tolerates negatives.
+	if spinnerFrame(0) != promptSpinnerFrames[0] {
+		t.Errorf("spinnerFrame(0) = %q, want %q", spinnerFrame(0), promptSpinnerFrames[0])
+	}
+	if spinnerFrame(n) != promptSpinnerFrames[0] {
+		t.Errorf("spinnerFrame(%d) did not wrap to frame 0", n)
+	}
+	if spinnerFrame(n+1) != promptSpinnerFrames[1] {
+		t.Errorf("spinnerFrame(%d) = %q, want %q", n+1, spinnerFrame(n+1), promptSpinnerFrames[1])
+	}
+	if spinnerFrame(-1) != promptSpinnerFrames[n-1] {
+		t.Errorf("spinnerFrame(-1) = %q, want %q", spinnerFrame(-1), promptSpinnerFrames[n-1])
+	}
+}
+
+func TestPromptStateGlyphAnimatesAndFallsBack(t *testing.T) {
+	withoutNoColor(t)
+	// With color, consecutive frames differ (animation) and carry the label.
+	a := promptStateGlyph("thinking", 0)
+	b := promptStateGlyph("thinking", 1)
+	if a == b {
+		t.Errorf("thinking glyph did not animate between frames: %q", a)
+	}
+	if !strings.Contains(a, "thinking") || !strings.Contains(a, promptSpinnerFrames[0]) {
+		t.Errorf("thinking glyph missing spinner/label: %q", a)
+	}
+	// Unknown states pass through untouched.
+	if got := promptStateGlyph("done", 3); got != "done" {
+		t.Errorf("unknown state glyph = %q, want %q", got, "done")
+	}
+}
+
+func TestPromptStateGlyphPlainFallback(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	if got := promptStateGlyph("streaming", 5); got != "↯streaming" {
+		t.Errorf("plain streaming glyph = %q, want %q", got, "↯streaming")
+	}
+	if got := promptStateGlyph("thinking", 5); got != "…thinking" {
+		t.Errorf("plain thinking glyph = %q, want %q", got, "…thinking")
+	}
+	if strings.ContainsAny(promptStateGlyph("thinking", 5), "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏") {
+		t.Error("plain fallback should not emit a braille spinner")
+	}
+}
+
+func TestRoleGutterColorsByRole(t *testing.T) {
+	withoutNoColor(t)
+	user := roleGutter("user")
+	agent := roleGutter("claude")
+	if !strings.Contains(user, "│") || !strings.HasSuffix(user, " ") {
+		t.Errorf("user gutter malformed: %q", user)
+	}
+	if !strings.HasPrefix(user, humanRoleColor()) {
+		t.Errorf("user gutter not in human role color: %q", user)
+	}
+	if !strings.HasPrefix(agent, agentColor("claude")) {
+		t.Errorf("agent gutter not in agent color: %q", agent)
+	}
+}
+
+func TestRoleGutterEmptyWithoutColor(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	if got := roleGutter("claude"); got != "" {
+		t.Errorf("gutter with NO_COLOR = %q, want empty", got)
+	}
+}
+
+func TestPrefixGutterLines(t *testing.T) {
+	t.Parallel()
+	body := "line one\nline two\n\nline three"
+	got := prefixGutterLines(body, "> ")
+	want := "> line one\n> line two\n\n> line three"
+	if got != want {
+		t.Fatalf("prefixGutterLines = %q, want %q", got, want)
+	}
+	// Empty gutter is a no-op (default / copy-friendly path).
+	if got := prefixGutterLines(body, ""); got != body {
+		t.Fatalf("empty gutter mutated body: %q", got)
+	}
+	// Blank lines stay bare even with a gutter.
+	if strings.Contains(prefixGutterLines("\n\n", "| "), "| ") {
+		t.Error("gutter prefixed a blank line")
+	}
+}
+
+func TestTurnSeparator(t *testing.T) {
+	withoutNoColor(t)
+	got := turnSeparator(10)
+	if !strings.Contains(got, strings.Repeat("─", 10)) {
+		t.Errorf("separator missing rule: %q", got)
+	}
+	if !strings.HasPrefix(got, brandLine) {
+		t.Errorf("separator not dimmed with brand line color: %q", got)
+	}
+	// Non-positive width falls back to a short rule.
+	if got := turnSeparator(0); len(stripANSISequences(got)) == 0 {
+		t.Error("separator with width 0 produced empty rule")
+	}
+}
+
+func TestDrainStreamAppliesAndClearsRoleGutter(t *testing.T) {
+	withoutNoColor(t)
+	stream := make(chan []byte, 4)
+	sess := &chatSession{
+		agentID:      "claude",
+		streamCh:     stream,
+		done:         make(chan struct{}),
+		streamCancel: func() {},
+	}
+	var out bytes.Buffer
+	h := newCodeHighlighter(&out)
+	loop := &chatLoop{
+		out:      h,
+		errw:     &bytes.Buffer{},
+		sess:     sess,
+		sessions: map[string]*chatSession{"claude": sess},
+	}
+
+	data, _ := json.Marshal(map[string]any{
+		"t":   "data",
+		"b64": base64.StdEncoding.EncodeToString([]byte("hello world\nsecond line\n")),
+	})
+	stream <- data
+	stream <- []byte(`{"t":"chunk_end"}`)
+	stream <- []byte(`{"t":"end"}`)
+	close(stream)
+
+	loop.drainStream(sess)
+
+	got := stripANSISequences(out.String())
+	if !strings.Contains(got, "│ hello world") || !strings.Contains(got, "│ second line") {
+		t.Fatalf("streamed prose missing role gutter:\n%q", got)
+	}
+	// After the turn the gutter must be cleared so command output stays clean.
+	if h.gutter != "" {
+		t.Fatalf("gutter not cleared after stream: %q", h.gutter)
 	}
 }

@@ -33,34 +33,37 @@ config.unix_domains = {}
 
 -- ── Appearance ──────────────────────────────────────────────────────────────
 
--- TokyoNight-Storm palette — soft blue-white on dark navy.
+-- milliways brand palette — ink on deep navy. Canonical hexes shared with the
+-- Go terminal chrome (cmd/milliways/highlight.go) and the marketing render
+-- scripts (docs/render_control_plane_assets.py). Enforces the brand navy
+-- terminal background so the shipped terminal matches the transcript rendering.
 config.colors = {
-  foreground = '#c0caf5',   -- soft blue-white
-  background = '#1a1b26',   -- dark navy
-  cursor_bg  = '#7aa2f7',  -- accent blue
-  cursor_fg  = '#1a1b26',
-  cursor_border = '#7aa2f7',
-  selection_bg = '#292e42', -- dark selection
-  selection_fg = '#c0caf5', -- light text
+  foreground = '#f7fafc',   -- ink
+  background = '#0b1220',   -- brand navy
+  cursor_bg  = '#7aa2ff',  -- accent blue
+  cursor_fg  = '#0b1220',
+  cursor_border = '#7aa2ff',
+  selection_bg = '#15253d', -- panel-2 selection
+  selection_fg = '#f7fafc', -- ink
   ansi = {
-    '#1a1b26',  -- black (background)
-    '#f7768e',  -- red (error)
-    '#9ece6a',  -- green (ok)
-    '#e0af68',  -- yellow (warn)
-    '#7aa2f7',  -- blue (accent)
-    '#bb9af7',  -- magenta
-    '#7dcfff',  -- cyan
-    '#c0caf5',  -- white (foreground)
+    '#0b1220',  -- black (background)
+    '#f87171',  -- red (error)
+    '#38d47a',  -- green (ok)
+    '#f2b84b',  -- yellow (warn)
+    '#7aa2ff',  -- blue (accent)
+    '#b28cff',  -- magenta (purple)
+    '#40c7ff',  -- cyan
+    '#f7fafc',  -- white (ink)
   },
   brights = {
-    '#5c6370',  -- bright black (dim)
-    '#f7768e',  -- bright red
-    '#9ece6a',  -- bright green
-    '#e0af68',  -- bright yellow
-    '#7aa2f7',  -- bright blue
-    '#bb9af7',  -- bright magenta
-    '#7dcfff',  -- bright cyan
-    '#acb0c0',  -- bright white
+    '#5f7394',  -- bright black (line / dim)
+    '#f87171',  -- bright red
+    '#38d47a',  -- bright green
+    '#f2b84b',  -- bright yellow
+    '#7aa2ff',  -- bright blue
+    '#b28cff',  -- bright magenta (purple)
+    '#40c7ff',  -- bright cyan
+    '#f7fafc',  -- bright white (ink)
   },
 }
 config.font               = wezterm.font_with_fallback({

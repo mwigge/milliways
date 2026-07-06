@@ -53,6 +53,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -222,8 +223,8 @@ var chatCtlAliases = map[string][]string{
 	"opsx-archive":  {"opsx", "archive"},
 	"opsx-validate": {"opsx", "validate"},
 	// Agentic loop
-	"loop":         {"loop"},
-	"loop-status":  {"loop-status"},
+	"loop":        {"loop"},
+	"loop-status": {"loop-status"},
 	// CodeGraph index
 	"repoinit":  {"codegraph", "init"},
 	"repoindex": {"codegraph", "index"},
@@ -627,11 +628,11 @@ func (w *crlfWriter) Write(p []byte) (int, error) {
 // reset brings everything back to default before the ▶ cursor.
 // The empty-string case is the plain landing-zone prompt.
 func chatPrompt(agentID string) string {
-	return chatPromptState(agentID, "")
+	return chatPromptState(agentID, "", 0)
 }
 
-func chatPromptState(agentID, state string) string {
-	arrow := "\033[38;2;122;162;247m▶\033[0m"
+func chatPromptState(agentID, state string, frame int) string {
+	arrow := brandBlue + "▶" + ansiReset
 	if !ansiEnabled() {
 		arrow = "▶"
 	}
@@ -645,22 +646,47 @@ func chatPromptState(agentID, state string) string {
 		reset = ""
 	}
 	if state = strings.TrimSpace(state); state != "" {
-		return color + agentID + reset + " " + thinkColor + promptStateGlyph(state) + reset + " " + arrow + " "
+		return color + agentID + reset + " " + thinkColor + promptStateGlyph(state, frame) + reset + " " + arrow + " "
 	}
 	return color + agentID + reset + " " + arrow + " "
 }
 
-func promptStateGlyph(state string) string {
+// promptSpinnerFrames is the braille spinner cycled through the streaming /
+// thinking prompt state. One frame is advanced per prompt redraw so the state
+// visibly animates in the active runner's accent colour.
+var promptSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// spinnerFrame returns the braille glyph for frame n, cycling and tolerating
+// negative counters. Pure — the caller owns the frame counter.
+func spinnerFrame(n int) string {
+	if len(promptSpinnerFrames) == 0 {
+		return ""
+	}
+	i := n % len(promptSpinnerFrames)
+	if i < 0 {
+		i += len(promptSpinnerFrames)
+	}
+	return promptSpinnerFrames[i]
+}
+
+// promptStateGlyph renders the in-flight runner state for the prompt header.
+// On color-capable terminals it animates via a braille spinner; on dumb /
+// non-color terminals it degrades to a static text label so nothing is lost.
+func promptStateGlyph(state string, frame int) string {
 	switch state {
-	case "thinking":
-		return "…thinking"
-	case "streaming":
-		return "↯streaming"
-	case "waiting":
-		return "?waiting"
+	case "thinking", "streaming", "waiting":
 	default:
 		return state
 	}
+	if !ansiEnabled() {
+		switch state {
+		case "streaming":
+			return "↯streaming"
+		default:
+			return "…" + state
+		}
+	}
+	return spinnerFrame(frame) + " " + state
 }
 
 // handoffWriter is the interface for writing a cross-pane takeover
@@ -921,6 +947,10 @@ type chatLoop struct {
 	// (handleParallelView) can honour cancellation without needing ctx
 	// threaded through every call chain.
 	ctx context.Context
+
+	// spinnerTick advances the prompt-state spinner one frame per redraw.
+	// Read/written from both the main and drainStream goroutines, so atomic.
+	spinnerTick atomic.Uint64
 }
 
 // hintPayload carries chunk_end metadata from drainStream to the main
@@ -1168,6 +1198,12 @@ func (l *chatLoop) drainStream(sessions ...*chatSession) {
 			} else {
 				_, _ = fmt.Fprintln(l.out)
 			}
+			// Close the exchange with a dim rule so the transcript has scan
+			// rhythm between turns. Active session only — background streams
+			// must not inject rules into the foreground transcript.
+			if l.isActiveSess(sess) {
+				l.writeTranscriptRule()
+			}
 			// Snapshot + reset the streamed response into a turn entry.
 			sess.pendingMu.Lock()
 			assistantText := strings.TrimRight(sess.pendingAssistant.String(), "\n")
@@ -1284,7 +1320,17 @@ func renderProviderThinkingData(agentID, text string) (string, bool) {
 }
 
 func (l *chatLoop) beginStreamOutput(sess *chatSession) {
-	if l == nil || l.rl == nil || sess == nil || !l.isActiveSess(sess) {
+	if l == nil || sess == nil || !l.isActiveSess(sess) {
+		return
+	}
+	// Drive the transcript's role gutter from the active runner's accent so
+	// continuation lines of this turn stay attributable on scrollback. Only the
+	// active session touches the gutter, and this is independent of the line
+	// reader so headless/test rendering picks it up too.
+	if h, ok := l.out.(*codeHighlighter); ok {
+		h.gutter = roleGutter(sess.agentID)
+	}
+	if l.rl == nil {
 		return
 	}
 	sess.outputMu.Lock()
@@ -1297,7 +1343,18 @@ func (l *chatLoop) beginStreamOutput(sess *chatSession) {
 }
 
 func (l *chatLoop) endStreamOutput(sess *chatSession) {
-	if l == nil || l.rl == nil || sess == nil {
+	if l == nil || sess == nil {
+		return
+	}
+	// Clear the transcript gutter so it does not bleed into subsequent command
+	// output (/help, /agents, …) that also writes through l.out. Scoped to the
+	// active session so a background stream ending cannot wipe the foreground.
+	if l.isActiveSess(sess) {
+		if h, ok := l.out.(*codeHighlighter); ok {
+			h.gutter = ""
+		}
+	}
+	if l.rl == nil {
 		return
 	}
 	sess.outputMu.Lock()
@@ -1353,7 +1410,7 @@ func shouldFlushThinkingFragment(text string) bool {
 // the message text, so it's visible without competing with the final response.
 func renderThinkingBlock(agentID, msg string, width int) string {
 	dim, bg := agentTheme(agentID)
-	cyan := "\033[38;2;125;207;255m"
+	cyan := brandCyan
 	colorEnabled := ansiEnabled()
 	reset := "\033[0m"
 	if !colorEnabled {
@@ -1411,7 +1468,7 @@ func streamTextWidth() int {
 
 func formatThinkingLineWidth(agentID, msg string, width int) string {
 	dim, _ := agentTheme(agentID)
-	cyan := "\033[38;2;125;207;255m"
+	cyan := brandCyan
 	colorEnabled := ansiEnabled()
 	reset := "\033[0m"
 	if !colorEnabled {
@@ -2358,7 +2415,14 @@ func (l *chatLoop) setPromptState(state string) {
 	if l.rl == nil || l.sess == nil {
 		return
 	}
-	l.rl.SetPrompt(chatPromptState(l.sess.agentID, state))
+	// Advance the spinner one frame per redraw. Called from both the main input
+	// goroutine and drainStream (on each thinking/streaming transition), so the
+	// counter is atomic. A zero frame is used for cleared/idle states.
+	frame := 0
+	if strings.TrimSpace(state) != "" {
+		frame = int(l.spinnerTick.Add(1))
+	}
+	l.rl.SetPrompt(chatPromptState(l.sess.agentID, state, frame))
 	l.rl.Refresh()
 }
 
@@ -3030,11 +3094,11 @@ func (l *chatLoop) printFullBlock(block chatBlock) {
 	reset := "\033[0m"
 	fmt.Fprintf(l.out, "%s┌─ block #%d · %s%s\n", color, block.ID, agent, reset)
 	fmt.Fprintln(l.out, roleLabel("user"))
-	writeRenderedMarkdown(l.out, block.UserText)
+	writeGutteredMarkdown(l.out, block.UserText, "user")
 	if block.AssistantText != "" {
 		fmt.Fprintln(l.out)
 		fmt.Fprintln(l.out, roleLabel(agent))
-		writeRenderedMarkdown(l.out, block.AssistantText)
+		writeGutteredMarkdown(l.out, block.AssistantText, agent)
 	}
 	fmt.Fprintf(l.out, "%s└─ end block #%d%s\n", color, block.ID, reset)
 }
@@ -4071,6 +4135,14 @@ func agentTheme(name string) (fg, bg string) {
 	return unknownAgentThinkingColor, "\033[48;5;235m"
 }
 
+// agentThinkingColor returns the quieter companion colour for a runner's
+// in-flight progress (reasoning lines, prompt state). It is the foreground
+// half of agentTheme, exposed separately for callers that only need the fg.
+func agentThinkingColor(name string) string {
+	fg, _ := agentTheme(name)
+	return fg
+}
+
 func humanRoleColor() string {
 	if !ansiEnabled() {
 		return ""
@@ -4090,14 +4162,94 @@ func roleLabel(role string) string {
 	return color + label + "\033[0m"
 }
 
+// roleGutter returns a styled 1-column bar (│ plus a space) in the role's
+// accent colour. Prefixed to continuation lines of a turn's body so role
+// attribution survives scrollback on long turns. Returns "" when colour is
+// disabled so plain-terminal output stays clean and copy-friendly.
+func roleGutter(role string) string {
+	if !ansiEnabled() {
+		return ""
+	}
+	color := humanRoleColor()
+	if role != "user" {
+		color = agentColor(role)
+	}
+	if color == "" {
+		return ""
+	}
+	return color + "│" + ansiReset + " "
+}
+
+// prefixGutterLines prefixes every non-blank physical line of body with gutter.
+// Blank lines are left bare so the bar does not create trailing noise. Pure —
+// with an empty gutter it returns body unchanged.
+func prefixGutterLines(body, gutter string) string {
+	if gutter == "" || body == "" {
+		return body
+	}
+	lines := strings.Split(body, "\n")
+	var b strings.Builder
+	for i, line := range lines {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		if strings.TrimSpace(stripANSISequences(line)) == "" {
+			b.WriteString(line)
+			continue
+		}
+		b.WriteString(gutter)
+		b.WriteString(line)
+	}
+	return b.String()
+}
+
+// turnSeparator returns a dim full-width rule that divides transcript
+// exchanges, giving the stream scan rhythm. A non-positive width falls back to
+// a short rule.
+func turnSeparator(width int) string {
+	if width <= 0 {
+		width = 40
+	}
+	rule := strings.Repeat("─", width)
+	if !ansiEnabled() {
+		return rule
+	}
+	return brandLine + rule + ansiReset
+}
+
+// writeTranscriptRule prints a turn separator to the underlying writer,
+// bypassing the markdown highlighter so the rule is not re-wrapped.
+func (l *chatLoop) writeTranscriptRule() {
+	if l == nil || l.out == nil {
+		return
+	}
+	w := l.out
+	if h, ok := l.out.(*codeHighlighter); ok {
+		w = h.out
+	}
+	_, _ = io.WriteString(w, turnSeparator(plainMarkdownWrapWidth())+"\n")
+}
+
+// writeGutteredMarkdown renders text as terminal markdown and writes it with a
+// role gutter so replayed blocks carry the same attribution bar as the live
+// stream.
+func writeGutteredMarkdown(out io.Writer, text, role string) {
+	rendered := strings.TrimRight(renderMarkdownForTerminal(text), "\n")
+	if rendered == "" {
+		return
+	}
+	rendered = prefixGutterLines(rendered, roleGutter(role))
+	_, _ = io.WriteString(out, rendered+"\n")
+}
+
 // printLanding is the chat-startup banner. Keep it intentionally small:
 // /help is the full command reference, while the deck owns rich status panels.
 func (l *chatLoop) printLanding() {
 	if os.Getenv("MILLIWAYS_DECK_MODE") == "1" {
 		return
 	}
-	accent := "\033[38;2;122;162;247m"
-	dim := "\033[38;2;92;99;112m"
+	accent := brandBlue
+	dim := brandLine
 	reset := "\033[0m"
 	if !ansiEnabled() {
 		accent, dim, reset = "", "", ""
@@ -4172,8 +4324,8 @@ func (l *chatLoop) printQuota() {
 // printHelp shows the full command reference. Kept separate from
 // printLanding so the startup banner stays minimal.
 func (l *chatLoop) printHelp() {
-	accent := "\033[38;2;122;162;247m"
-	dim := "\033[38;2;92;99;112m"
+	accent := brandBlue
+	dim := brandLine
 	reset := "\033[0m"
 	if !ansiEnabled() {
 		accent, dim, reset = "", "", ""

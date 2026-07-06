@@ -8,36 +8,55 @@ from pathlib import Path
 OUT = Path(__file__).resolve().parent / "images"
 
 
+# Canonical milliways brand palette — the single source of truth shared with
+# docs/render_control_plane_assets.py, docs/render_local_model_assets.py and the
+# Go terminal chrome (cmd/milliways/highlight.go). Replaces the earlier Tailwind
+# slate/violet variant so every asset speaks one visual language.
+BG = "#0b1220"
+HEADER = "#07111f"
+PANEL = "#111c2f"
+PANEL_2 = "#15253d"
+INK = "#f7fafc"
+MUTED = "#9fb0c7"
+LINE = "#5f7394"
+GREEN = "#38d47a"
+AMBER = "#f2b84b"
+RED = "#f87171"
+CYAN = "#40c7ff"
+BLUE = "#7aa2ff"
+PURPLE = "#b28cff"
+
+
 def write(path: str, body: str) -> None:
     (OUT / path).write_text(body, encoding="utf-8")
 
 
 def svg(width: int, height: int, content: str) -> str:
     return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
-  <rect width="{width}" height="{height}" fill="#111827"/>
+  <rect width="{width}" height="{height}" fill="{BG}"/>
   <style>
-    .title {{ font: 700 20px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #f9fafb; }}
-    .label {{ font: 600 14px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #e5e7eb; }}
-    .text {{ font: 13px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #cbd5e1; }}
-    .mono {{ font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; fill: #d1d5db; }}
-    .muted {{ fill: #94a3b8; }}
-    .ok {{ fill: #34d399; }}
-    .warn {{ fill: #fbbf24; }}
-    .accent {{ fill: #8b5cf6; }}
-    .cyan {{ fill: #38bdf8; }}
-    .pearl {{ fill: #f5f5f4; }}
-    .box {{ fill: #1f2937; stroke: #475569; stroke-width: 1.4; rx: 10; }}
-    .box2 {{ fill: #172033; stroke: #64748b; stroke-width: 1.4; rx: 10; }}
-    .store {{ fill: #0f172a; stroke: #38bdf8; stroke-width: 1.4; rx: 10; }}
-    .line {{ stroke: #94a3b8; stroke-width: 2; fill: none; marker-end: url(#arrow); }}
-    .line2 {{ stroke: #8b5cf6; stroke-width: 2; fill: none; marker-end: url(#arrow2); }}
+    .title {{ font: 700 20px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: {INK}; }}
+    .label {{ font: 600 14px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: {INK}; }}
+    .text {{ font: 13px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: {MUTED}; }}
+    .mono {{ font: 13px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; fill: {MUTED}; }}
+    .muted {{ fill: {MUTED}; }}
+    .ok {{ fill: {GREEN}; }}
+    .warn {{ fill: {AMBER}; }}
+    .accent {{ fill: {PURPLE}; }}
+    .cyan {{ fill: {CYAN}; }}
+    .pearl {{ fill: {INK}; }}
+    .box {{ fill: {PANEL}; stroke: {LINE}; stroke-width: 1.4; rx: 10; }}
+    .box2 {{ fill: {PANEL_2}; stroke: {LINE}; stroke-width: 1.4; rx: 10; }}
+    .store {{ fill: {BG}; stroke: {CYAN}; stroke-width: 1.4; rx: 10; }}
+    .line {{ stroke: {MUTED}; stroke-width: 2; fill: none; marker-end: url(#arrow); }}
+    .line2 {{ stroke: {PURPLE}; stroke-width: 2; fill: none; marker-end: url(#arrow2); }}
   </style>
   <defs>
     <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L7,3 z" fill="#94a3b8"/>
+      <path d="M0,0 L0,6 L7,3 z" fill="{MUTED}"/>
     </marker>
     <marker id="arrow2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
-      <path d="M0,0 L0,6 L7,3 z" fill="#8b5cf6"/>
+      <path d="M0,0 L0,6 L7,3 z" fill="{PURPLE}"/>
     </marker>
   </defs>
 {content}
@@ -49,8 +68,8 @@ def terminal(name: str, title: str, lines: list[tuple[str, str]], width: int = 1
     row_h = 22
     height = 74 + len(lines) * row_h
     out = [
-        f'<rect x="24" y="22" width="{width - 48}" height="{height - 44}" rx="14" fill="#020617" stroke="#334155"/>',
-        '<circle cx="52" cy="48" r="6" fill="#ef4444"/><circle cx="74" cy="48" r="6" fill="#f59e0b"/><circle cx="96" cy="48" r="6" fill="#22c55e"/>',
+        f'<rect x="24" y="22" width="{width - 48}" height="{height - 44}" rx="14" fill="{HEADER}" stroke="{LINE}"/>',
+        f'<circle cx="52" cy="48" r="6" fill="{RED}"/><circle cx="74" cy="48" r="6" fill="{AMBER}"/><circle cx="96" cy="48" r="6" fill="{GREEN}"/>',
         f'<text x="124" y="53" class="mono muted">{escape(title)}</text>',
     ]
     y = 88
@@ -246,7 +265,7 @@ write(
         "\n".join(
             [
                 '<text x="40" y="52" class="title">Security status in the observability cockpit</text>',
-                '<rect x="42" y="88" width="996" height="350" rx="18" fill="#020617" stroke="#334155"/>',
+                f'<rect x="42" y="88" width="996" height="350" rx="18" fill="{HEADER}" stroke="{LINE}"/>',
                 '<text x="70" y="128" class="mono accent">milliways observability -- secure workspace</text>',
                 '<text x="70" y="170" class="mono ok">SEC WARN 2     mode warn     workspace ./service-api</text>',
                 '<text x="70" y="210" class="mono pearl">startup: current     dependency scan: 10:02Z     client: codex warn</text>',

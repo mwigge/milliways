@@ -36,6 +36,74 @@ var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:
 var diagnosticWordRe = regexp.MustCompile(`(?i)\b(error|failed|failure|warning|warn|todo):`)
 var codePanelTermWidth = termWidth
 
+// Brand palette — the single source of truth for milliways terminal chrome.
+//
+// These hexes mirror the marketing render scripts
+// (docs/render_control_plane_assets.py, docs/render_local_model_assets.py) so
+// the interactive transcript, the shipped images, and the custom code-panel
+// chroma style all speak one visual language. They replace the ad-hoc Tokyo
+// Night truecolor codes and the Catppuccin Mocha code-panel style that used to
+// coexist across chat.go / highlight.go.
+const (
+	brandHexBG     = "#0b1220" // deep navy background
+	brandHexPanel  = "#111c2f" // raised panel
+	brandHexPanel2 = "#15253d" // secondary panel / inline-code tint
+	brandHexInk    = "#f7fafc" // primary foreground
+	brandHexMuted  = "#9fb0c7" // muted foreground
+	brandHexLine   = "#5f7394" // borders, rules, dim chrome
+	brandHexBlue   = "#7aa2ff" // primary accent
+	brandHexPurple = "#b28cff" // secondary accent
+	brandHexGreen  = "#38d47a" // success / additions
+	brandHexAmber  = "#f2b84b" // warning / actions
+	brandHexRed    = "#f87171" // error / deletions
+	brandHexCyan   = "#40c7ff" // links / inline code
+)
+
+// Brand ANSI truecolor escapes derived from the brand hexes. These are raw
+// escapes (always populated); callers gate on ansiEnabled() before emitting
+// them, matching the existing convention.
+var (
+	brandBG         = bgHex(brandHexBG)
+	brandPanelBG    = bgHex(brandHexPanel2)
+	brandBlue       = fgHex(brandHexBlue)
+	brandPurple     = fgHex(brandHexPurple)
+	brandGreen      = fgHex(brandHexGreen)
+	brandAmber      = fgHex(brandHexAmber)
+	brandRed        = fgHex(brandHexRed)
+	brandCyan       = fgHex(brandHexCyan)
+	brandInk        = fgHex(brandHexInk)
+	brandMuted      = fgHex(brandHexMuted)
+	brandLine       = fgHex(brandHexLine)
+	ansiReset       = "\033[0m"
+	ansiBold        = "\033[1m"
+	ansiItalic      = "\033[3m"
+	inlineCodeStyle = brandPanelBG + brandCyan
+)
+
+// fgHex / bgHex convert a "#rrggbb" brand hex into a 24-bit ANSI SGR escape.
+func fgHex(hex string) string { return sgrHex(38, hex) }
+func bgHex(hex string) string { return sgrHex(48, hex) }
+
+func sgrHex(kind int, hex string) string {
+	r, g, b := hexRGB(hex)
+	return "\033[" + strconv.Itoa(kind) + ";2;" + strconv.Itoa(r) + ";" + strconv.Itoa(g) + ";" + strconv.Itoa(b) + "m"
+}
+
+// hexRGB parses a "#rrggbb" (or "rrggbb") string into its RGB components.
+// Malformed input yields black rather than an error so chrome rendering never
+// panics on a bad palette constant.
+func hexRGB(hex string) (r, g, b int) {
+	hex = strings.TrimPrefix(strings.TrimSpace(hex), "#")
+	if len(hex) != 6 {
+		return 0, 0, 0
+	}
+	v, err := strconv.ParseUint(hex, 16, 32)
+	if err != nil {
+		return 0, 0, 0
+	}
+	return int(v>>16) & 0xff, int(v>>8) & 0xff, int(v) & 0xff
+}
+
 func ansiEnabled() bool {
 	return termcolor.Enabled()
 }
@@ -54,9 +122,63 @@ func linkifyURLs(text string) string {
 	})
 }
 
+// Inline markdown emphasis matchers. Code spans are extracted first so their
+// contents are shielded from bold/italic styling. Italic matchers require a
+// non-word boundary before the marker so snake_case identifiers and a*b*c
+// arithmetic are left untouched.
+var (
+	mdCodeSpanRe   = regexp.MustCompile("`([^`]+)`")
+	mdBoldRe       = regexp.MustCompile(`\*\*([^*]+)\*\*|__([^_]+)__`)
+	mdItalicStarRe = regexp.MustCompile(`(^|[^\w*])\*([^*\s][^*]*?)\*([^\w*]|$)`)
+	mdItalicUndRe  = regexp.MustCompile(`(^|[^\w_])_([^_\s][^_]*?)_([^\w_]|$)`)
+)
+
+// styleInlineMarkdown applies inline markdown emphasis — **bold**/__bold__,
+// *italic*/_italic_, and `code` — using the brand palette. When enabled is
+// false (dumb/non-color terminals) the markers are left verbatim so nothing is
+// lost. The function is pure in (text, enabled) for straightforward testing.
+func styleInlineMarkdown(text string, enabled bool) string {
+	if !enabled || !strings.ContainsAny(text, "*_`") {
+		return text
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range mdCodeSpanRe.FindAllStringSubmatchIndex(text, -1) {
+		b.WriteString(styleEmphasis(text[last:m[0]]))
+		b.WriteString(inlineCodeStyle)
+		b.WriteString(text[m[2]:m[3]])
+		b.WriteString(ansiReset)
+		last = m[1]
+	}
+	b.WriteString(styleEmphasis(text[last:]))
+	return b.String()
+}
+
+// styleEmphasis handles the bold/italic layer (no code spans). Bold is applied
+// before italic so a lone remaining marker inside bolded text can still be
+// italicised without the bold matcher re-triggering on injected escapes.
+func styleEmphasis(text string) string {
+	if !strings.ContainsAny(text, "*_") {
+		return text
+	}
+	text = mdBoldRe.ReplaceAllStringFunc(text, func(m string) string {
+		inner := strings.Trim(m, "*_")
+		return ansiBold + inner + ansiReset
+	})
+	text = mdItalicStarRe.ReplaceAllString(text, "$1"+ansiItalic+"$2"+ansiReset+"$3")
+	text = mdItalicUndRe.ReplaceAllString(text, "$1"+ansiItalic+"$2"+ansiReset+"$3")
+	return text
+}
+
 func renderInlinePlainText(text string) string {
 	if strings.ContainsRune(text, '\x1b') {
 		return text
+	}
+	// Inline emphasis takes precedence: if the line carries markdown markers,
+	// style them (this injects ANSI, so URL/diagnostic passes are skipped for
+	// this line to avoid double-processing escapes).
+	if styled := styleInlineMarkdown(text, ansiEnabled()); styled != text {
+		return styled
 	}
 	if !ansiEnabled() || !diagnosticWordRe.MatchString(text) {
 		return linkifyURLs(text)
@@ -80,14 +202,14 @@ func renderInlinePlainText(text string) string {
 
 func renderDiagnosticWord(match string) string {
 	lower := strings.ToLower(match)
-	color := "\033[38;2;133;190;74m"
+	color := brandGreen
 	switch {
 	case strings.HasPrefix(lower, "error"), strings.HasPrefix(lower, "failed"), strings.HasPrefix(lower, "failure"):
-		color = "\033[38;2;247;118;142m"
+		color = brandRed
 	case strings.HasPrefix(lower, "warn"):
-		color = "\033[38;2;224;175;104m"
+		color = brandAmber
 	}
-	return color + "\033[1m" + match + "\033[0m"
+	return color + ansiBold + match + ansiReset
 }
 
 // codeHighlighter wraps an io.Writer and intercepts markdown code fences.
@@ -103,9 +225,13 @@ type codeHighlighter struct {
 	tableLines []string     // accumulates a possible markdown table outside fences
 	lang       string       // language extracted from the opening fence line
 	codeWidth  int          // content width for the currently open code panel
-	inFence    bool
-	lastBlank  bool
-	lastNL     bool
+	// gutter, when non-empty, is a styled 1-column bar prefixed to each prose
+	// (non-fence) line of the turn's body so role attribution survives
+	// scrollback. Empty by default; set per active session by the chat loop.
+	gutter    string
+	inFence   bool
+	lastBlank bool
+	lastNL    bool
 }
 
 // newCodeHighlighter returns a codeHighlighter that writes to out.
@@ -123,6 +249,17 @@ func (h *codeHighlighter) writeString(s string) {
 
 func (h *codeHighlighter) endsWithNewline() bool {
 	return h.lastNL
+}
+
+// writeProse writes a rendered prose line, prefixing the configured role
+// gutter to each physical line. With no gutter set it is identical to
+// writeString, so the default (block-replay, tests) path is unchanged.
+func (h *codeHighlighter) writeProse(s string) {
+	if h.gutter == "" {
+		h.writeString(s)
+		return
+	}
+	h.writeString(prefixGutterLines(s, h.gutter))
 }
 
 // Write implements io.Writer. It processes p line by line:
@@ -188,7 +325,7 @@ func (h *codeHighlighter) processLine(line string) {
 			h.writeString(rendered)
 			return
 		}
-		h.writeString(renderPlainMarkdownLine(line, true))
+		h.writeProse(renderPlainMarkdownLine(line, true))
 		return
 	}
 
@@ -223,7 +360,7 @@ func (h *codeHighlighter) Flush() error {
 				h.writeString(strings.TrimSuffix(rendered, "\n"))
 				return nil
 			}
-			h.writeString(strings.TrimSuffix(renderPlainMarkdownLine(line, false), "\n"))
+			h.writeProse(strings.TrimSuffix(renderPlainMarkdownLine(line, false), "\n"))
 		}
 	}
 	h.flushTable()
@@ -250,7 +387,7 @@ func (h *codeHighlighter) flushTable() {
 		return
 	}
 	for _, line := range lines {
-		h.writeString(renderPlainMarkdownLine(line, true))
+		h.writeProse(renderPlainMarkdownLine(line, true))
 	}
 	h.lastBlank = false
 }
@@ -337,17 +474,17 @@ func renderHeadingLine(trimmed string, addNewline bool) (string, bool) {
 	width := plainMarkdownWrapWidth()
 	switch level {
 	case 1:
-		style = "\033[38;2;122;162;247m"
+		style = brandBlue
 		ruleChar = "═"
 	case 2:
-		style = "\033[38;2;187;154;247m"
+		style = brandPurple
 		ruleChar = "─"
 	case 3:
-		style = "\033[38;2;158;206;106m"
+		style = brandGreen
 	default:
-		style = "\033[38;2;192;202;245m"
+		style = brandInk
 	}
-	reset := "\033[0m"
+	reset := ansiReset
 	if !ansiEnabled() {
 		style, reset, ruleChar = "", "", ""
 	}
@@ -360,7 +497,7 @@ func renderHeadingLine(trimmed string, addNewline bool) (string, bool) {
 		ruleWidth := min(displayWidth(text), width)
 		b.WriteByte('\n')
 		if ansiEnabled() {
-			b.WriteString("\033[38;2;92;99;112m")
+			b.WriteString(brandLine)
 		}
 		b.WriteString(strings.Repeat(ruleChar, ruleWidth))
 		if ansiEnabled() {
@@ -530,10 +667,10 @@ func renderMarkdownTable(lines []string) (string, bool) {
 		}
 	}
 
-	const (
-		border      = "\033[38;5;240m"
-		headerStyle = "\033[1;38;5;253m"
-		reset       = "\033[0m"
+	var (
+		border      = brandLine
+		headerStyle = ansiBold + brandInk
+		reset       = ansiReset
 	)
 	var b strings.Builder
 	writeTableRule(&b, border, reset, "┌", "┬", "┐", widths)
@@ -833,9 +970,53 @@ var langAliases = map[string]string{
 }
 
 const (
-	defaultDarkHighlightStyle  = "catppuccin-mocha"
+	brandHighlightStyleName    = "milliways-brand"
+	defaultDarkHighlightStyle  = brandHighlightStyleName
 	defaultLightHighlightStyle = "github"
 )
+
+// brandChromaStyle is a Chroma style built from the brand palette so terminal
+// code panels match the surrounding TUI chrome instead of shipping Catppuccin
+// Mocha. It is registered once at package init and selected by default via
+// defaultDarkHighlightStyle; users can still override with
+// MILLIWAYS_HIGHLIGHT_STYLE.
+var brandChromaStyle = registerBrandChromaStyle()
+
+func registerBrandChromaStyle() *chroma.Style {
+	style := chroma.MustNewStyle(brandHighlightStyleName, chroma.StyleEntries{
+		chroma.Background:          brandHexInk + " bg:" + brandHexBG,
+		chroma.Error:               brandHexRed,
+		chroma.Comment:             brandHexMuted,
+		chroma.CommentPreproc:      brandHexAmber,
+		chroma.Keyword:             brandHexPurple,
+		chroma.KeywordConstant:     brandHexAmber,
+		chroma.KeywordType:         brandHexCyan,
+		chroma.KeywordDeclaration:  brandHexPurple,
+		chroma.KeywordNamespace:    brandHexPurple,
+		chroma.Name:                brandHexInk,
+		chroma.NameBuiltin:         brandHexCyan,
+		chroma.NameClass:           brandHexAmber,
+		chroma.NameConstant:        brandHexAmber,
+		chroma.NameDecorator:       brandHexAmber,
+		chroma.NameFunction:        brandHexBlue,
+		chroma.NameTag:             brandHexPurple,
+		chroma.NameAttribute:       brandHexBlue,
+		chroma.NameVariable:        brandHexInk,
+		chroma.LiteralString:       brandHexGreen,
+		chroma.LiteralStringEscape: brandHexCyan,
+		chroma.LiteralNumber:       brandHexAmber,
+		chroma.Operator:            brandHexMuted,
+		chroma.OperatorWord:        brandHexPurple,
+		chroma.Punctuation:         brandHexMuted,
+		chroma.GenericHeading:      "bold " + brandHexBlue,
+		chroma.GenericSubheading:   brandHexBlue,
+		chroma.GenericDeleted:      brandHexRed,
+		chroma.GenericInserted:     brandHexGreen,
+		chroma.GenericEmph:         "italic",
+		chroma.GenericStrong:       "bold",
+	})
+	return styles.Register(style)
+}
 
 // highlightStyleName returns the Chroma style used by terminal code panels.
 // MILLIWAYS_HIGHLIGHT_STYLE is the preferred user-facing knob; the older
@@ -1025,10 +1206,10 @@ func codePanelLabel(lang string) string {
 
 func renderCodePanelTop(lang string, contentWidth int) string {
 	label := truncateCodePanelLabel(codePanelLabel(lang), contentWidth+2)
-	const (
-		border = "\033[38;2;92;99;112m"
-		title  = "\033[38;2;122;162;247m"
-		reset  = "\033[0m"
+	var (
+		border = brandLine
+		title  = brandBlue
+		reset  = ansiReset
 	)
 	var b strings.Builder
 	b.WriteString(border)
@@ -1053,9 +1234,9 @@ func renderCodePanelLine(line, lang string, contentWidth int) string {
 
 func renderHighlightedCodePanelLine(line string, contentWidth int) string {
 	segments := wrapANSILine(line, contentWidth)
-	const (
-		border = "\033[38;2;92;99;112m"
-		reset  = "\033[0m"
+	var (
+		border = brandLine
+		reset  = ansiReset
 	)
 	var b strings.Builder
 	for _, seg := range segments {
@@ -1132,9 +1313,9 @@ func wrapANSILine(s string, maxWidth int) []string {
 }
 
 func renderCodePanelBottom(contentWidth int) string {
-	const (
-		border = "\033[38;2;92;99;112m"
-		reset  = "\033[0m"
+	var (
+		border = brandLine
+		reset  = ansiReset
 	)
 	var b strings.Builder
 	b.WriteString(border)
@@ -1263,13 +1444,15 @@ func writePrefixedRenderedMarkdown(out io.Writer, text, prefix string) {
 // client is the runner id, operation is the kind of action, action is the task text.
 func renderApprovalBox(client, operation, action string) string {
 	const (
-		border  = "\033[38;2;224;175;104m" // TokyoNight warn amber
-		titleC  = "\033[38;2;224;175;104m"
-		dimC    = "\033[38;2;92;99;112m"
-		textC   = "\033[38;2;192;202;245m"
-		reset   = "\033[0m"
-		label   = " approval gate "
-		footer  = " y to proceed · n to cancel · or give feedback"
+		label  = " approval gate "
+		footer = " y to proceed · n to cancel · or give feedback"
+	)
+	var (
+		border = brandAmber
+		titleC = brandAmber
+		dimC   = brandLine
+		textC  = brandInk
+		reset  = ansiReset
 	)
 	useANSI := ansiEnabled()
 	bdr, ttl, dm, txt, rst := border, titleC, dimC, textC, reset
@@ -1373,11 +1556,11 @@ func renderApprovalBox(client, operation, action string) string {
 // renderToolUseAction renders a compact "Tool: name · command" line for
 // tool-use events surfaced from the claude subprocess JSON stream.
 func renderToolUseAction(name, cmd string) string {
-	const (
-		reset  = "\033[0m"
-		dim    = "\033[38;5;245m"
-		accent = "\033[38;2;224;175;104m"
-		code   = "\033[38;5;117m"
+	var (
+		reset  = ansiReset
+		dim    = brandLine
+		accent = brandAmber
+		code   = brandCyan
 	)
 	if !ansiEnabled() {
 		if cmd != "" {

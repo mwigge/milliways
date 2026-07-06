@@ -423,8 +423,8 @@ func TestHighlighterRendersMarkdownTable(t *testing.T) {
 	if strings.Contains(result, "|---|") {
 		t.Errorf("markdown separator should be rendered, not passed through; got:\n%s", result)
 	}
-	if !strings.Contains(result, "\x1b[38;5;240m") {
-		t.Errorf("expected muted border ANSI in rendered table; got:\n%q", result)
+	if !strings.Contains(result, brandLine) {
+		t.Errorf("expected brand line-colour border ANSI in rendered table; got:\n%q", result)
 	}
 }
 
@@ -491,7 +491,9 @@ func TestHighlighterNormalizesOverIndentedMarkdown(t *testing.T) {
 			t.Fatalf("markdown indentation was not normalized; found %q in:\n%s", bad, got)
 		}
 	}
-	for _, want := range []string{"**Issues:**", "- Completely disconnected", "  manually navigate to the Learning", "- No \"After reading"} {
+	// "Issues:" appears whether or not inline emphasis strips the ** markers,
+	// so this stays robust to color being on or off in the test environment.
+	for _, want := range []string{"Issues:", "- Completely disconnected", "  manually navigate to the Learning", "- No \"After reading"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("normalized markdown missing %q:\n%s", want, got)
 		}
@@ -617,10 +619,10 @@ func TestRenderPlainMarkdownLineHighlightsDiagnostics(t *testing.T) {
 	withoutNoColor(t)
 
 	got := renderPlainMarkdownLine("warning: see https://example.com retry failed: timeout", true)
-	if !strings.Contains(got, "\x1b[38;2;224;175;104m") {
+	if !strings.Contains(got, brandAmber) {
 		t.Fatalf("warning line missing warning color:\n%q", got)
 	}
-	if !strings.Contains(got, "\x1b[38;2;247;118;142m") {
+	if !strings.Contains(got, brandRed) {
 		t.Fatalf("failed line missing error color:\n%q", got)
 	}
 	if !strings.Contains(got, "\x1b]8;;https://example.com") {
@@ -628,5 +630,110 @@ func TestRenderPlainMarkdownLineHighlightsDiagnostics(t *testing.T) {
 	}
 	if stripANSISequences(got) != "warning: see https://example.com retry failed: timeout\n" {
 		t.Fatalf("diagnostic highlighting changed text:\n%q", got)
+	}
+}
+
+// --- Brand palette + inline markdown (transcript polish) -------------------
+
+func TestHexRGBParsesBrandHexes(t *testing.T) {
+	t.Parallel()
+	cases := map[string][3]int{
+		"#0b1220": {11, 18, 32},
+		"#7aa2ff": {122, 162, 255},
+		"#38d47a": {56, 212, 122},
+		"f2b84b":  {242, 184, 75}, // tolerant of a missing leading '#'
+	}
+	for hex, want := range cases {
+		r, g, b := hexRGB(hex)
+		if r != want[0] || g != want[1] || b != want[2] {
+			t.Errorf("hexRGB(%q) = %d,%d,%d, want %v", hex, r, g, b, want)
+		}
+	}
+	// Malformed input yields black rather than panicking.
+	if r, g, b := hexRGB("nope"); r != 0 || g != 0 || b != 0 {
+		t.Errorf("hexRGB(bad) = %d,%d,%d, want 0,0,0", r, g, b)
+	}
+}
+
+func TestBrandPaletteConstantsAreCanonical(t *testing.T) {
+	t.Parallel()
+	// The brand ANSI escapes must derive exactly from the canonical hexes in
+	// docs/render_control_plane_assets.py — the single source of truth.
+	want := map[string]string{
+		brandBG:     "\033[48;2;11;18;32m",
+		brandBlue:   "\033[38;2;122;162;255m",
+		brandPurple: "\033[38;2;178;140;255m",
+		brandGreen:  "\033[38;2;56;212;122m",
+		brandAmber:  "\033[38;2;242;184;75m",
+		brandRed:    "\033[38;2;248;113;113m",
+		brandCyan:   "\033[38;2;64;199;255m",
+		brandInk:    "\033[38;2;247;250;252m",
+		brandMuted:  "\033[38;2;159;176;199m",
+		brandLine:   "\033[38;2;95;115;148m",
+	}
+	for got, expect := range want {
+		if got != expect {
+			t.Errorf("brand escape = %q, want %q", got, expect)
+		}
+	}
+}
+
+func TestBrandChromaStyleRegistered(t *testing.T) {
+	t.Parallel()
+	if defaultDarkHighlightStyle != brandHighlightStyleName {
+		t.Fatalf("default dark style = %q, want %q", defaultDarkHighlightStyle, brandHighlightStyleName)
+	}
+	style := resolveHighlightStyle(brandHighlightStyleName)
+	if style == nil || style.Name != brandHighlightStyleName {
+		t.Fatalf("brand chroma style not registered: %#v", style)
+	}
+}
+
+func TestStyleInlineMarkdownDisabledIsVerbatim(t *testing.T) {
+	t.Parallel()
+	in := "a **bold** and `code` and _italic_ line"
+	if got := styleInlineMarkdown(in, false); got != in {
+		t.Fatalf("disabled inline markdown mutated text: %q", got)
+	}
+}
+
+func TestStyleInlineMarkdownBoldCodeItalic(t *testing.T) {
+	t.Parallel()
+	got := styleInlineMarkdown("a **bold** b `code` c _italic_ d", true)
+	// Markers are consumed; inner text survives once ANSI is stripped.
+	if plain := stripANSISequences(got); plain != "a bold b code c italic d" {
+		t.Fatalf("stripped inline markdown = %q, want %q", plain, "a bold b code c italic d")
+	}
+	if !strings.Contains(got, ansiBold+"bold"+ansiReset) {
+		t.Errorf("bold not styled: %q", got)
+	}
+	if !strings.Contains(got, inlineCodeStyle+"code"+ansiReset) {
+		t.Errorf("code span not styled: %q", got)
+	}
+	if !strings.Contains(got, ansiItalic+"italic"+ansiReset) {
+		t.Errorf("italic not styled: %q", got)
+	}
+}
+
+func TestStyleInlineMarkdownLeavesSnakeCaseAndArithmetic(t *testing.T) {
+	t.Parallel()
+	// Underscores in identifiers and lone asterisks must not be treated as
+	// emphasis.
+	for _, in := range []string{"call foo_bar_baz now", "compute a * b * c"} {
+		if got := styleInlineMarkdown(in, true); got != in {
+			t.Errorf("styleInlineMarkdown(%q) = %q, want unchanged", in, got)
+		}
+	}
+}
+
+func TestStyleInlineMarkdownShieldsCodeContents(t *testing.T) {
+	t.Parallel()
+	// Emphasis markers inside a code span are literal, not styled.
+	got := styleInlineMarkdown("see `a**b**c` here", true)
+	if strings.Contains(got, ansiBold) {
+		t.Errorf("bold applied inside code span: %q", got)
+	}
+	if plain := stripANSISequences(got); plain != "see a**b**c here" {
+		t.Errorf("code span contents altered: %q", plain)
 	}
 }
